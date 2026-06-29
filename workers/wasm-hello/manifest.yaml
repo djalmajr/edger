@@ -1,0 +1,5 @@
+name: wasm-hello
+version: "1.0.0"
+entrypoint: index.wasm
+kind: wasm
+visibility: protected

@@ -48,7 +48,7 @@
 
 ### Acceptance criteria
 - [x] Módulo WAT mínimo responde via `WasmIsolate::execute_wasm` (ABI v1: `http_status` + `http_body_len`)
-- [ ] Worker `workers/wasm-hello/` com kind `wasm` responde GET via pool com body determinístico.
+- [x] Worker `workers/wasm-hello/` responde GET via `pool.fetch` com body `wasm-hello` (test `wasm_pool_integration.rs`)
 - [ ] Módulo malformado ou path fora do dir falha com `IsolationError` claro.
 - [ ] WASI não concede acesso a filesystem fora do worker dir (teste negativo).
 - [ ] Env vars `*_SECRET` não passam para Wasm (filtro portado).

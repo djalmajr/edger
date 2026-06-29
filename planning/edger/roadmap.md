@@ -67,7 +67,7 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 
 ## Verification
 - [x] Fase 1 (Fundação) complete: functional Bun loader + 11+ examples with deno.server index compat running + tests + docs/lints clean.
-- [ ] Roadmap objectives são observáveis (ex: "servidor básico rodando com workers JS e extensão auth" após Fase 5).
+- [x] Roadmap objectives são observáveis (servidor `edger` + pipeline + auth ext após Fase 5–6).
 - [x] Sequência faz sentido com dependências (core antes de tudo, spike cedo).
 - [x] Link claro entre roadmap, design PRs e futuros epics/stories.
 - [x] Incorpora learnings de ai-memory (testes, core puro, AGENTS, single-actor patterns) e visão Buntime + estrutura Edge.

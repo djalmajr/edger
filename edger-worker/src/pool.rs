@@ -159,6 +159,9 @@ impl WorkerPool {
         self.ensure_active()?;
         let started = Instant::now();
 
+        let mut config = config.clone();
+        config.worker_dir = Some(worker_dir.to_path_buf());
+
         let _ephemeral_permit = if config.ttl_ms == 0 {
             Some(self.inner.ephemeral.acquire().await?)
         } else {
@@ -198,12 +201,12 @@ impl WorkerPool {
 
         let isolate_arc = instance.isolate();
         let mut isolate = isolate_arc.lock().await;
-        let res = dispatch_to_isolate(isolate.as_mut(), kind, req, config)
+        let res = dispatch_to_isolate(isolate.as_mut(), kind, req, &config)
             .await
             .map_err(WorkerError::Isolation)?;
         drop(isolate);
 
-        Supervisor::on_request_complete(instance, config, self).await?;
+        Supervisor::on_request_complete(instance, &config, self).await?;
 
         self.inner
             .metrics

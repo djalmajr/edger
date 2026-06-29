@@ -4,9 +4,11 @@
 //! `cargo check -p edger-isolation --features wasm`
 
 mod handler;
+mod load;
 mod wasi;
 
 pub use handler::WasmHttpHandler;
+pub use load::load_wasm_from_worker_dir;
 pub use wasi::WasiConfig;
 
 use async_trait::async_trait;
@@ -78,7 +80,14 @@ impl Isolate for WasmIsolate {
         req: SerializedRequest,
         config: &WorkerConfig,
     ) -> Result<SerializedResponse, IsolationError> {
-        let _ = (&req, config);
+        let _ = &req;
+        if self.wasm_bytes.is_none() {
+            if let (Some(dir), Some(entry)) =
+                (config.worker_dir.as_ref(), config.entrypoint.as_deref())
+            {
+                self.wasm_bytes = Some(load_wasm_from_worker_dir(dir, entry)?);
+            }
+        }
         let bytes = self.wasm_bytes.as_ref().ok_or_else(|| {
             IsolationError::new(
                 "WASM_NOT_LOADED",

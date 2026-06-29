@@ -3,7 +3,7 @@
 #![cfg(feature = "wasm")]
 
 use edger_core::{Isolate, SerializedRequest, WorkerConfig, WorkerManifest};
-use edger_isolation::{WasmIsolate, WasiConfig};
+use edger_isolation::{WasiConfig, WasmIsolate};
 
 fn default_config() -> WorkerConfig {
     edger_core::parse_worker_config(&WorkerManifest {
@@ -36,10 +36,7 @@ async fn wasm_isolate_returns_body_from_module() {
         request_id: "wasm-it".into(),
         base_href: None,
     };
-    let res = isolate
-        .execute_wasm(req, &default_config())
-        .await
-        .unwrap();
+    let res = isolate.execute_wasm(req, &default_config()).await.unwrap();
     assert_eq!(res.status, 200);
     assert_eq!(
         res.body.as_ref().map(|b| b.as_ref()),

@@ -5,16 +5,20 @@ Epic 06 Extensibilidade — COMPLETED 2026-06-29
   Commit: 7e20a33
   Closure: status/checkpoint-2026-06-29-epic-06-closure.md
 
+Epic 02 edger-core — COMPLETED (checkpoints 02-01..04 + refinement-story-02-*.txt)
+
 Epic 07 Avançado — IN PROGRESS
-  07.05 Wasm v1 slice (WasmHttpHandler ABI + tests) — WIP
+  07.05 Wasm — pool E2E + load from worker dir (wasm_pool_integration)
   07.04 Real JS — BLOCKED (deno_core V8 boot, see spike.md)
   Pendências: planning/edger/docs/pendencies-epic-07.md
 
 Gates (last run):
   cargo test --workspace — PASS
+  cargo test -p edger-worker pool_fetch_wasm — PASS
   cargo test -p edger-isolation --features wasm — PASS
   cargo clippy --workspace -D warnings — PASS
   bun test — 6 pass
   run-gates.sh — ALL PLANNING GATES PASS
+  Evidence: SCRATCH/cargo-*.txt, gates.ok
 
-Next: 07.05 pool wiring + wasm-hello fixture OR 07.04 deno_core boot spike
+Next: 07.05 WASI sandbox + 07.04 deno_core boot

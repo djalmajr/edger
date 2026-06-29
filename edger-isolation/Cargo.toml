@@ -20,6 +20,7 @@ wat = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tempfile = "3"
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
 wat.workspace = true
