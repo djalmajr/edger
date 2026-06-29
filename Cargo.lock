@@ -593,6 +593,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "bytes",
  "edger-core",
  "edger-isolation",
  "edger-worker",

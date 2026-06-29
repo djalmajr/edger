@@ -82,7 +82,14 @@ async fn ready(State(state): State<ServerState>) -> impl IntoResponse {
     }
 }
 
-async fn request_id_middleware(req: Request<axum::body::Body>, next: Next) -> Response {
+pub fn request_id_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
+
+pub async fn request_id_middleware(req: Request<axum::body::Body>, next: Next) -> Response {
     let request_id = req
         .headers()
         .get("x-request-id")
@@ -108,8 +115,7 @@ pub fn router(state: ServerState) -> Router {
 }
 
 /// Bind and serve until the listener stops (graceful shutdown wired in the binary).
-pub async fn serve(config: ServerConfig, state: ServerState) -> anyhow::Result<()> {
-    let app = router(state);
+pub async fn serve(config: ServerConfig, app: Router) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
     info!(%config.addr, "edger listening");
     axum::serve(listener, app).await?;

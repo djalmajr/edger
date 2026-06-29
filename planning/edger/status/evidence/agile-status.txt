@@ -1,14 +1,15 @@
 /agile-status — consolidation snapshot
-generated=2026-06-29T03:25:00Z
+generated=2026-06-29T03:30:00Z
 
-Epic 02: completed (17 core tests)
-Epic 03: completed (14 isolation tests)
-Epic 04: completed (24 worker tests)
-Epic 05: in-progress — 05.01 + 05.02 delivered
+Epic 02: completed
+Epic 03: completed
+Epic 04: completed
+Epic 05: in-progress — 05.01–05.03 delivered
 
-Per-story checkpoints: 02-01..04, 03-01..04, 04-01..04, 05-01, 05-02
+Checkpoints: 05-01, 05-02, 05-03
 
-bun test: 6 pass / 0 fail
-cargo test --workspace: 82 Rust tests pass
+bun test: 6 pass
+cargo test --workspace: 87 Rust tests pass
+refinement-lint: 0 RED
 
-Next: Story 05.03 request pipeline (Fase 5 Orquestrador)
+Next: Story 05.04 auth namespace gate

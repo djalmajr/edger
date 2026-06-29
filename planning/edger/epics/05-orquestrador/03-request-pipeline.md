@@ -46,11 +46,18 @@ Handlers health isolados; sem `build_pipeline`; sem conversão wire.
 - **Out:** auth gate real, registry com prioridade, short-circuit (05.04–05.05)
 
 ### Critérios de aceite
-- [ ] `SerializedRequest` roundtrip preserva method, path, headers críticos, body
-- [ ] Request a worker mock retorna resposta do pool mock
-- [ ] Reserved paths não chamam `pool.fetch`
-- [ ] `build_pipeline` compõe com tower layers (tracing, body limit stub)
-- [ ] Teste E2E: fixture worker dir + mock response 200
+- [x] `SerializedRequest` roundtrip preserva method, path, headers críticos, body
+- [x] Request a worker mock retorna resposta do pool mock
+- [x] Reserved paths não chamam `pool.fetch`
+- [x] `build_pipeline` compõe com tower layers (tracing, body limit stub)
+- [x] Teste E2E: fixture worker dir + mock response 200
+
+## Pendências
+- `PluginBase` retorna 501 até dispatch de plugin (Epic 06/07).
+- `HookRunner` stub vazio; registry + short-circuit na 05.05.
+- `RequestContext.principal` sempre `None` até 05.04.
+- Bin `edger` usa `ManifestIndex` vazio; carga de dirs em 07.01.
+- Body limit via `MAX_BODY_BYTES` (4 MiB); tower layer dedicado opcional depois.
 
 ### Dependências
 - Stories 05.01, 05.02
@@ -67,15 +74,15 @@ Handlers health isolados; sem `build_pipeline`; sem conversão wire.
 **Nível:** integração (`pipeline_integration.rs`) + unit (`wire.rs`)
 
 ## Tasks
-- [ ] Implementar `wire.rs` (hyper/axum ↔ Serialized*)
-- [ ] Criar `RequestContext` e propagar `X-Request-Id`
-- [ ] Implementar `OrchestratorService` com tower Service trait ou axum handler state
-- [ ] Integrar `resolve_route` antes do dispatch
-- [ ] Chamar `WorkerPool::fetch` para rotas Worker
-- [ ] Stub `HookRunner` vazio (interface para 05.05)
-- [ ] Mapear erros `anyhow` → HTTP status
-- [ ] Teste E2E com temp dir worker + manifest mínimo
-- [ ] Conectar pipeline ao bin `edger.rs`
+- [x] Implementar `wire.rs` (hyper/axum ↔ Serialized*)
+- [x] Criar `RequestContext` e propagar `X-Request-Id`
+- [x] Implementar `OrchestratorState` + `build_pipeline` (axum fallback handler)
+- [x] Integrar `resolve_route` antes do dispatch
+- [x] Chamar `WorkerPool::fetch` para rotas Worker
+- [x] Stub `HookRunner` vazio (interface para 05.05)
+- [x] Mapear erros `CoreError`/`WorkerError` → HTTP status
+- [x] Teste E2E com worker index + mock pool
+- [x] Conectar pipeline ao bin `edger.rs`
 
 ## Verification
 ```bash
