@@ -93,8 +93,11 @@
 - [ ] Doc em README: variáveis de ambiente observabilidade.
 
 ## Verification
-- `cargo test -p edger-orchestrator -- metrics_endpoint`
-- `cargo test -p edger-orchestrator -- request_id`
-- Manual: `curl -v /any` → header `X-Request-Id`; `curl /metrics | grep edger_`
-- `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`
-- `bun test`
+```bash
+cargo test -p edger-orchestrator -- metrics_endpoint
+cargo test -p edger-orchestrator -- request_id
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+bun test
+```

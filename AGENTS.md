@@ -23,7 +23,8 @@
 
 ## Discipline
 - Run `bun test` before report complete. No exceptions.
-- Run `memory_lint` (with explicit scope) + `agile-refinement` periodically on planning docs.
+- Planning maturity: `/agile-refinement` Mode 1 on `planning/edger/` + `refinement-lint.py` (see `planning/edger/scripts/run-gates.sh`). Only the orchestrator agent calls ai-memory tools; subagents must not.
+- `memory_lint` (workspace `djalmajr`, project `edger`): orchestrator only, when the remote server is stable — excluded from planning gates if unstable.
 - Fix all warnings even in untouched files.
 - Rust: cargo test / clippy / fmt when src added.
 - No emojis in code/comments/commits.
@@ -37,8 +38,8 @@
 
 ## Verification gate
 - bun test
-- memory_lint (edger scope)
-- agile-refinement report clean
+- `/agile-refinement` Mode 1 report clean (`planning/edger/status/evidence/refinement-report.txt`)
+- memory_lint (edger scope; orchestrator only; optional when server stable)
 - multiple `bun edger.ts --dir workers/xxx` + curl responses match expected
 - docs cross-refs current (no stale to non-existing epics/stories)
 

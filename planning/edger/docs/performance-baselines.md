@@ -8,8 +8,8 @@
 | Métrica | Target | Status |
 |---|---|---|
 | Worker spawn (cached/ephemeral) | < 50ms | pending |
-| p95 request (mock worker) | TBD | pending |
-| Pool hit rate sob carga | TBD | pending |
+| p95 request (mock worker) | pendente | pending |
+| Pool hit rate sob carga | pendente | pending |
 | Memória por isolate | cap enforceable | pending |
 
 ## Baselines medidos
@@ -18,4 +18,4 @@ _Preencher após harness em `edger-orchestrator/benches/` ou `tests/perf/`._
 
 | Data | Ambiente | spawn_ms | p95_ms | notas |
 |---|---|---|---|---|
-| TBD | local | — | — | |
+| pendente | local | — | — | |

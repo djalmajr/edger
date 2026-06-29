@@ -89,9 +89,12 @@
 - [ ] `cargo test --workspace` + clippy verde.
 
 ## Verification
-- `cargo test -p edger-core -- manifest`
-- `cargo test -p edger-orchestrator -- manifest_loader`
-- `cargo test -p edger-orchestrator -- kind_dispatch`
-- `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`
-- `bun test` (regressão loader Bun)
-- Evidência: log de startup listando workers carregados por dir (sem secrets)
+```bash
+cargo test -p edger-core -- manifest
+cargo test -p edger-orchestrator -- manifest_loader
+cargo test -p edger-orchestrator -- kind_dispatch
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+bun test
+```

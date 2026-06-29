@@ -9,11 +9,11 @@
 
 ## Resumo executivo
 
-_TBD após spike (story 03.01)._
+_A preencher após spike (story 03.01)._
 
 ## Metodologia
 
-- Ambiente: _TBD_
+- Ambiente: _a definir_
 - Time-box: 2–3 dias (conforme story)
 - Exemplos: `edger-isolation/examples/embedding-spike-deno.rs`, `embedding-spike-wasm.rs`
 
@@ -21,30 +21,30 @@ _TBD após spike (story 03.01)._
 
 | Métrica | Valor | Notas |
 |---|---|---|
-| spawn_ms | TBD | cold start |
-| exec_ms | TBD | fetch roundtrip |
-| memória aprox. | TBD | se API disponível |
+| spawn_ms | pendente | cold start |
+| exec_ms | pendente | fetch roundtrip |
+| memória aprox. | pendente | se API disponível |
 
 ## Resultados wasmtime
 
 | Métrica | Valor | Notas |
 |---|---|---|
-| compile_ms | TBD | |
-| invoke_ms | TBD | WASI |
+| compile_ms | pendente | |
+| invoke_ms | pendente | WASI |
 
 ## Sharp edges
 
-- V8 platform singleton: _TBD_
-- Op registration: _TBD_
-- Async ops dispatch: _TBD_
-- Versões pinadas: _TBD_
+- V8 platform singleton: _a documentar_
+- Op registration: _a documentar_
+- Async ops dispatch: _a documentar_
+- Versões pinadas: _a documentar_
 
 ## Go/no-go
 
 | Backend | Decisão | Justificativa |
 |---|---|---|
-| JS/TS (deno_core + facade) | TBD | Precedente Edge Runtime |
-| Wasm (wasmtime + WASI standalone) | TBD | Decisão usuário |
+| JS/TS (deno_core + facade) | pendente | Precedente Edge Runtime |
+| Wasm (wasmtime + WASI standalone) | pendente | Decisão usuário |
 
 ## Recomendação de layout de módulos
 
@@ -59,4 +59,4 @@ _Detalhar após spike._
 
 ## Impacto em Epic 04 / PR 10
 
-_TBD._
+_A preencher após spike._

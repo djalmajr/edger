@@ -33,6 +33,9 @@ Establish the engineering baseline for edger using ai-memory patterns and buntim
 - [x] Update docs
 
 ## Verification
-- bun test (n/a)
-- memory_lint dry no critical for edger planning
-- docs have current cross refs
+```bash
+bun test
+test -f AGENTS.md
+test -f planning/edger/roadmap.md
+rg -q 'planning/edger' AGENTS.md
+```

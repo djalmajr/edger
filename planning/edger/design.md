@@ -123,7 +123,7 @@ graph TD
 - `edger-isolation`: depends on core. Implements execution backends.
 - `edger-worker`: depends on core (and later isolation). Owns pool/supervisor.
 - `edger-orchestrator`: depends on core + worker + isolation. Owns server wiring, routing, registry, pipeline.
-- Extensions: depend on core/orchestrator traits; registered into orchestrator.
+- Extensions: depend on `edger-core` only (traits defined in core); registered into orchestrator at compose time.
 
 #### Crate Ownership Table
 | Crate             | Owns                                      | Depends On                  | Forbidden (to prevent cycles) |
@@ -132,9 +132,9 @@ graph TD
 | edger-isolation   | Isolate impls, embedding glue, resource limits | core                       | orchestrator, worker (for types) |
 | edger-worker      | WorkerPool, Supervisor, WorkerInstance, metrics, lifecycle | core                       | orchestrator |
 | edger-orchestrator| Pipeline, Router, ExtensionRegistry, Auth gate, main composition, shell logic | core, worker, isolation    | (none) |
-| edger-ext-*       | Concrete impls of traits                  | core (+ orchestrator for some) | direct sibling logic |
+| edger-ext-*       | Concrete impls of traits                  | core only (registered at compose time in orchestrator bin) | orchestrator, worker, isolation |
 
-The first PR will fix the skeleton `Cargo.toml`s and add placeholder `src/lib.rs` + module structure. All later PRs assume the corrected graph.
+The first PR will fix the skeleton `Cargo.toml`s and add stub `src/lib.rs` + module structure. All later PRs assume the corrected graph.
 
 ### Request Flow (High-Level)
 
@@ -217,7 +217,7 @@ flowchart LR
     Orchestrator --> Registry
 ```
 
-- Extensions implement traits defined in `edger-core` / `edger-orchestrator`.
+- Extensions implement traits defined in `edger-core` only (orchestrator consumes via registry, no crate dep on orchestrator).
 - Registration: initially static (via `inventory` or `linkme` crate, or explicit `register_extensions!` macro in the server binary). Later: dynamic loading if required (careful with Rust ABI).
 - Order: topological or declared priority (replace Buntime Kahn sort with Rust equivalent).
 - No duplication of API: an extension crate provides either persistent middleware or worker handlers (mirrors "choose ONE API mode").
@@ -840,7 +840,7 @@ No release/publish commands. Total 12 PRs for foundation (extra early PRs for sk
 1. **PR Title**: `chore: align existing skeleton, correct inter-crate deps, and sync README`  
    **Files/components affected**: Root `Cargo.toml` (minor), all 4 `edger-*/Cargo.toml` (remove bad `edger-core -> edger-worker` dep; ensure core has no sibling deps, worker/isolation depend only on core, orchestrator on the three), add `edger-*/src/lib.rs` + `mod.rs` skeletons with ownership comments, root `README.md` (English + accurate crate roles per ownership table), `.gitignore`, basic `rustfmt.toml` / `clippy.toml` if needed.  
    **Dependencies on other PRs**: None (this is the new starting PR).  
-   **Description**: Reconcile the design with the checked-out skeleton. Enforce "core is leaf" dep graph. Add placeholder source layout. Make README match proposed responsibilities. `cargo build` + full lint suite passes cleanly. All later PRs assume this state. Explicitly references current edger checkout state.
+   **Description**: Reconcile the design with the checked-out skeleton. Enforce "core is leaf" dep graph. Add stub source layout. Make README match proposed responsibilities. `cargo build` + full lint suite passes cleanly. All later PRs assume this state. Explicitly references current edger checkout state.
 
 2. **PR Title**: `spike(isolation): evaluate JS/TS/Wasm embedding options (deno_core + facade primary; wasmtime for Wasm)`  
    **Files/components affected**: `edger-isolation/` (new `examples/embedding-spike.rs` or temp module, `Cargo.toml` additions under [dev-dependencies] or optional), spike results document (in planning/ or spike.md).  

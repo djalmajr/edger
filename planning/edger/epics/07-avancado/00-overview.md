@@ -58,7 +58,7 @@ Consolidar o runtime para uso real e migração Buntime: execução production-p
 
 ## Story backlog
 
-| Story | File | Size | Status | Depends on |
+| Story | Arquivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|
 | 07.01 Manifests + kinds completos | `01-full-manifests-kinds.md` | large | not started | 07.04, 07.05, Epic 05 |
 | 07.02 Shell routing | `02-shell-routing.md` | medium | not started | 07.01 |

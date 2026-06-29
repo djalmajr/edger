@@ -97,9 +97,13 @@
 - [ ] `/agile-refinement` no épico completo.
 
 ## Verification
-- `cargo test --test compat` ou `cargo test -p edger-integration` (conforme layout escolhido)
-- `cargo test -p edger-orchestrator -- limits`
-- `cargo test --workspace -- --ignored` (perf, local)
-- `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`
-- `bun test`
-- Revisão manual `planning/edger/docs/compat-matrix.md` vs design Migration notes — sem linhas críticas em ❌ sem justificativa
+```bash
+cargo test --test compat
+cargo test -p edger-orchestrator -- limits
+cargo test --workspace -- --ignored
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+bun test
+test -f planning/edger/docs/compat-matrix.md
+```

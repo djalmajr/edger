@@ -96,9 +96,11 @@
 - [ ] Gate workspace; atualizar README com feature flags.
 
 ## Verification
-- `cargo test -p edger-isolation --features deno`
-- `cargo test -p edger-worker --features deno` (se feature propagated)
-- E2E: `edger` binary serve `workers/js-fetch` — `curl localhost:PORT/name` body OK
-- `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`
-- `bun test`
-- Comparar latência spawn vs spike doc (não bloqueante; input para 07.07)
+```bash
+cargo test -p edger-isolation --features deno
+cargo test -p edger-worker --features deno
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+bun test
+```

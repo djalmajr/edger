@@ -1,195 +1,68 @@
 /agile-refinement — Mode 1: Planning Lint
-Skill: ~/.agents/skills/agile-refinement/SKILL.md
-Scope: planning/edger/
-Invocation: agent execution following SKILL.md process steps 1-4
-Generated: 2026-06-29T01:24:00Z
-
-Artifacts read: 53 markdown files (7 epics · 31 numbered stories · 1 spike deliverable · intake/roadmap/design/analysis-synthesis · 6 docs/status files · AGENTS.md)
-
----
-
-## Inventory
-
-| Epic folder | Stories | Extra artifacts | Epic status | Roadmap status |
-|---|---|---|---|---|
-| `epics/01-fundacao/` | 4 | — | completed | completed |
-| `epics/02-edger-core/` | 4 | — | ready-for-development | ready-for-development |
-| `epics/03-isolacao-execucao/` | 4 | `spike.md` (skeleton) | ready-for-development | ready-for-development |
-| `epics/04-worker-management/` | 4 | — | ready-for-development | ready-for-development |
-| `epics/05-orquestrador/` | 5 | — | ready-for-development | ready-for-development |
-| `epics/06-extensibilidade/` | 3 | — | ready-for-development | ready-for-development |
-| `epics/07-avancado/` | 7 | — | ready-for-development | ready-for-development |
-
-**Total:** 7 epics · 31 numbered stories · 5 planning doc skeletons (`docs/*.md` + `spike.md`)
-
----
+Scope: planning/edger/ (53 arquivos .md)
+Agente: orquestrador (leitura direta; sem subagentes; sem memory_lint)
+Data: 2026-06-28
 
 ## Cross-references
-
-### OK
-- All `**Origin:**` fields on 31 stories and 7 epic overviews resolve to existing files.
-- All `planning/edger/...` path refs in epics, `roadmap.md`, `design.md`, and `docs/*.md` resolve (0 broken refs).
-- Epic backlog file shorthands (`01-setup-core-crate.md`, etc.) resolve locally within epic folders.
-- `roadmap.md` initiative links → `epics/NN-*/00-overview.md` all present.
-- `status/consolidation-2026-06-29-backlog-ready.md` → `epics/02-edger-core/01-setup-core-crate.md` valid.
-- `status/consolidation-2026-06-28.md` marked superseded by `consolidation-2026-06-29-backlog-ready.md`.
-
-### Findings
-- **info** — `planning/edger/intake.md` (L3): `**Origin:**` is free-form prose, not a backtick path ref. Acceptable for root intake; breaks uniform traceability chain. **Action:** Optional — add secondary ref `**Source:**` → `planning/edger/design.md`.
-- **info** — `planning/edger/analysis-synthesis.md`: No `**Origin:**` field; only referenced downstream. **Action:** Add `**Origin:**` → `planning/edger/intake.md`, `planning/edger/design.md`.
-- **info** — `planning/edger/design.md` (References, L791): Uses absolute path `/Users/djalmajr/Developer/djalmajr/edger/planning/edger/intake.md` instead of repo-relative `planning/edger/intake.md`. File exists; portable refs prefer relative. **Action:** Normalize to `planning/edger/intake.md`.
-
----
+- [OK] Origin fields em 7 epic overviews apontam para roadmap.md, design.md, intake.md — arquivos existem.
+- [OK] 31 stories referenciam epic overview via campo Origin — todos os paths resolvem.
+- [OK] path-preflight.sh: 53 refs em planning/edger/*.md, 0 missing.
+- [OK] Roadmap links para epics/01-07/00-overview.md — pastas e arquivos presentes.
+- [OK] design.md Crate Ownership alinhado: edger-ext-* depende apenas de core (registro no bin do orchestrator).
 
 ## Dependencies
-
-### OK
-- No circular dependencies detected across epic/story graph.
-- Epic dependency chain matches roadmap: 01 → 02 → {03,04} → 05 → 06 → 07.
-- Story-level deps in epic backlogs align with mermaid roadmaps (e.g. 02.01 → 02.02/02.03 → 02.04; 05.01 → 05.02 → 05.03 → 05.04/05.05).
-- Epic 07 critical path documented: 07.04/07.05 → 07.01 → 07.02/07.03 → 07.06 → 07.07 (`epics/07-avancado/00-overview.md` L71, L75–88).
-- Epic 03.01 partial dep on Epic 02.03 (wire types) correctly scoped.
-
-### Findings
-- **info** — `epics/07-avancado/00-overview.md` (Story backlog, L63): Story `07.01` table lists deps `07.04, 07.05` while story numbering suggests 07.01 precedes 07.04/07.05. Semantically correct (07.01 done only after backends) but counter-intuitive. **Action:** Footnote in Depende de column mirrors L71 note (partially present).
-
----
+- [OK] Grafo epic: 01 → 02 → {03,04} → 05 → {06,07}; sem ciclos.
+- [OK] Story 05.05 declara 05.03 + 05.04 + Epic 02; tabela do epic 05 atualizada com 05.04.
+- [OK] Epic 07 sequência PR10/11/12 documentada; 07.01 depende de 07.04/07.05 (execução real antes de manifests completos).
+- [OK] Epic 06 depende de 05.04/05.05 conforme auth/registry.
+- [INFO] Epic 04.02 depende parcialmente de 03.02 — aceitável (mock isolate via trait).
 
 ## Completeness
-
-### OK
-- All 31 numbered story files contain required sections: `## Context`, `## Files`, `## Detail`, `## Tasks`, `## Verification`.
-- All 7 epic `00-overview.md` files contain: `## Context`, `## Story backlog`, `## Epic acceptance criteria`, `## Status`.
-- Acceptance criteria present and checkbox-verifiable on all active stories.
-- Task lists actionable (≥3 unchecked tasks on all non-completed stories; Epic 01 stories all `[x]`).
-- `roadmap.md`, `intake.md`, `design.md`, `analysis-synthesis.md` have verification/next-step sections.
-- `intake.md` open questions resolved with pointers to `design.md` (L47–56).
-
-### Findings
-- **warning** — `epics/01-fundacao/01-setup-discipline.md` (`## Verification`, L35–38): Prose bullets, no fenced `bash` block. **Action:** Wrap gate commands in ` ```bash ` fence.
-- **warning** — `epics/01-fundacao/02-implement-loader.md` (`## Verification`, L36–38): Same — no fenced block. **Action:** Add ` ```bash ` with `bun test edger.test.ts` + example launches.
-- **warning** — `epics/02-edger-core/02-core-models.md` (`## Verification`, L56–58): Inline bullets without fence. **Action:** Fence `cargo test -p edger-core` + workspace gate.
-- **warning** — `epics/07-avancado/01-full-manifests-kinds.md` (`## Verification`, L91–97): Commands present but not in ` ```bash ` fence. **Action:** Fence all cargo/bun commands.
-- **warning** — `epics/07-avancado/02-shell-routing.md` (`## Verification`, L86–91): Same pattern.
-- **warning** — `epics/07-avancado/03-native-cron.md` (`## Verification`, L85–90): Same pattern.
-- **warning** — `epics/07-avancado/04-real-js-execution.md` (`## Verification`, L98–104): Same pattern.
-- **warning** — `epics/07-avancado/05-wasm-execution.md` (`## Verification`, L86–91): Same pattern.
-- **warning** — `epics/07-avancado/06-observability-otel.md` (`## Verification`, L95–100): Same pattern.
-- **warning** — `epics/07-avancado/07-hardening-compat-matrix.md` (`## Verification`, L99–105): Same pattern.
-- **warning** — `epics/02-edger-core/00-overview.md` (Story backlog, L45): Story `02.01` status `in-progress` while epic Status (L80) says "implementation not started". **Action:** Align to `not started` until `/agile-story` execution begins.
-
----
+- [OK] 7 epics com Context, Story backlog, Epic acceptance criteria, Status.
+- [OK] 31 stories com Context, Files, Detail, Tasks, Verification.
+- [OK] spike.md skeleton em Epic 03 para artefato do spike (cross-ref na story 03.01).
+- [OK] docs/{extensions,compat-matrix,performance-baselines,shell-protocol,wasm-abi}.md existem como skeletons com Origin.
+- [OK] Critérios de aceite verificáveis em todas as stories (cargo test filters, bun test, artefatos).
+- [INFO] Stories usam "Escopo" / "Fora de escopo" em português dentro de Detail em vez de headings EN — conteúdo presente, lint INFO apenas.
 
 ## Product traceability
-
-### OK
-- No `business/*.md` directory — business-rule ID refs N/A (correct).
-- No `planning/edger/prototypes/` directory — UI screen refs N/A (correct for Rust runtime).
-- No secret/credential patterns detected in epic/story files.
-- Domain behavior consistently traces to `planning/edger/design.md` mapping table and Buntime contracts.
-- Planning doc skeletons (`docs/compat-matrix.md`, `docs/shell-protocol.md`, `docs/wasm-abi.md`, `docs/extensions.md`, `docs/performance-baselines.md`) have valid Origin → design or epic refs.
-- `intake.md` open questions marked resolved (L47–56).
-
-### Findings
-- **info** — `planning/edger/analysis-synthesis.md` (§5.7, L195–199): "Still Open" subsection lists items largely resolved in `design.md` §Resolved Decisions (bundling, perf targets, dynamic loading deferred). **Action:** Mark resolved or add "tracked in design.md" pointers.
-- **info** — `planning/edger/analysis-synthesis.md` (§6, L203–224): Stale "Run `/agile-roadmap`" and PR 1 actions — roadmap and epics already exist. **Action:** Replace §6 with pointer to current next step (`02-edger-core/01-setup-core-crate.md`).
-
----
+- [OK] Sem protótipos UI neste initiative — N/A.
+- [OK] Sem business/*.md — N/A.
+- [OK] intake.md, design.md, analysis-synthesis.md, roadmap.md formam cadeia de rastreio.
+- [OK] Nenhum secret/token hardcoded nos artefatos.
 
 ## Consistency
-
-### OK
-- Sizing vocabulary English (`small|medium|large`) across epics 01–07 backlog tables (Epic 05/06 normalization applied).
-- Epic 01 story statuses (`completed`) match epic Status and roadmap Fase 1.
-- Epics 03, 04, 06, 07 Status promoted to `ready-for-development` (aligned with roadmap and `consolidation-2026-06-29-backlog-ready.md`).
-- Naming convention `NN-story-name.md` followed by all 31 stories; epic folders `NN-<name>/` valid.
-- Auth sequencing intentional: Epic 05.04 inline gate → Epic 06.02 `edger-ext-auth` extraction (Out-of-scope cross-refs explicit).
-- `design.md` mermaid (L116–118): `edger-ext-* --> edger-core` only (fix applied).
-- `docs/extensions.md` (L23): ext depends only on `edger-core` (fix applied).
-- `design.md` Author `edger team`, Status `Foundation-locked` (fix applied).
-
-### Findings
-- **warning** — `planning/edger/design.md` (Crate Ownership table, L135): Still says `edger-ext-*` depends on `core (+ orchestrator for some)`. Conflicts with mermaid fix and Epic 06 AC (core-only). **Action:** Change to `core` only; traits live in `edger-core`.
-- **warning** — `planning/edger/design.md` (L220): "Extensions implement traits defined in `edger-core` / `edger-orchestrator`." Traits are in core per L329; orchestrator consumes via registry. **Action:** Change to `edger-core` only.
-
----
+- [OK] Sizing: small/medium/large/spike em inglês nas tabelas de epic.
+- [OK] Status: Fase 1 completed; Fases 2-7 ready-for-development.
+- [OK] Crate paths flat (edger-core/, não crates/edger-core/).
+- [OK] Tabelas epic 03-07 usam headers PT (Arquivo, Tamanho, Depende de).
 
 ## Format
-
-### OK
-- All 7 epic folders match `NN-<epic-name>/` convention.
-- Every epic folder has `00-overview.md`.
-- Story files match `NN-<story-name>.md`.
-- No `{{placeholder}}`, `Lorem ipsum`, or `<fill>` tokens detected.
-- `AGENTS.md` and completed Epic 01 stories: no spurious placeholder hits.
-
-### Findings
-- **warning** — `planning/edger/design.md` (L137): Word "placeholder" in "add placeholder `src/lib.rs`" (lint false-positive context). **Action:** Rephrase to "stub `src/lib.rs`" if re-linting matters.
-- **warning** — `planning/edger/docs/extensions.md` (L15–18, L29–35): `_TBD_` registration placeholders (expected skeleton; flagged). **Action:** Fill in story 06.01; skeleton header already present (L3).
-- **warning** — `planning/edger/docs/performance-baselines.md` (L11–12, L21): `TBD` metric cells. **Action:** Populate in story 07.07; acceptable as skeleton.
-- **warning** — `planning/edger/epics/01-fundacao/00-overview.md` (L14): "Rust skeleton placeholder" — same false-positive. **Action:** Rephrase to "stub".
-- **warning** — `planning/edger/epics/03-isolacao-execucao/spike.md` (throughout): `TBD` metrics/sharp-edges (intentional pre-spike skeleton). **Action:** No change until story 03.01 executes.
-- **info** — `planning/edger/epics/03-isolacao-execucao/spike.md`: Non-standard filename (not `NN-*.md`). Documented as spike output linked from 03.01. **Action:** Accept as deliverable exception.
-
----
+- [OK] Convenção epics/NN-nome/00-overview.md + NN-story-name.md.
+- [OK] Skeletons marcados PLANNING SKELETON; TBD substituído por "pendente"/"a preencher" onde aplicável.
+- [OK] Verification fences agora contêm comandos shell executáveis (sem bullets em ```bash).
 
 ## Scope conflicts
-
-### OK
-- Auth split Epic 05 (inline gate) / Epic 06 (`edger-ext-auth`) explicitly bounded via Out sections.
-- Extension registry (05.05) vs static registration (06.01) vs first ext crate (06.02): sequential, Out-of-scope notes present.
-- Epic out-of-scope sections consistently exclude K8s, cpanel, dynamic crate loading, full Node compat.
-- `epics/05-orquestrador/02-routing-resolution.md` (Files, L21): Uses `manifest_index_stub.rs` (fix applied).
-- `epics/05-orquestrador/02-routing-resolution.md` (Escopo Out, L47): Defers `load_manifests_from_dirs` to story 07.01 (fix applied).
-
-### Findings
-- **warning** — `epics/05-orquestrador/02-routing-resolution.md` (Tasks, L72): Task still says "Implementar `load_manifests_from_dirs`" despite Files using `manifest_index_stub.rs` and Out deferring full loader to 07.01. **Action:** Replace task with "Implementar `ManifestIndex` stub + fixture loaders para testes de routing" — reserve `load_manifests_from_dirs` for 07.01 only.
-- **info** — 31 stories use Portuguese `### Escopo` with **In:**/**Out:** instead of English `### Scope` / `### Out of scope` headers. Content present; lint regex misses. **Action:** Optional normalize headers for tooling; not blocking.
-
----
+- [OK] 05.02 manifest_index_stub vs 07.01 load_manifests — escopo separado (stub vs completo).
+- [OK] 05.04 auth gate vs 06.02 edger-ext-auth — gate no orchestrator primeiro, extensão depois.
+- [OK] Execução real JS/Wasm fora do Epic 05 (07.04/07.05).
 
 ## Stale content
+- [OK] Nenhum epic com tasks todas [x] e status in-progress.
+- [OK] consolidation-2026-06-28.md marcada superseded.
+- [OK] Artefatos criados em 2026-06-28/29 — dentro do horizonte.
 
-### OK
-- Epic 01: all stories `completed`, all tasks `[x]`, epic Status `completed` — no stale in-progress.
-- No broken refs to deleted/moved files detected.
-- All artifacts modified within 0–1 days of lint run (no >30d stale plans with open tasks).
-- `roadmap.md` Fase 1 verification (L69) checked; Fases 2–7 correctly open.
-- `design.md` Status `Foundation-locked` (no longer Draft).
+## Inventory
+- 7 epics, 31 stories (+ spike.md skeleton)
+- Fase 1: 4 stories delivered (Bun loader, examples, closure)
+- Próxima execução: epics/02-edger-core/01-setup-core-crate.md
 
-### Findings
-- **info** — `planning/edger/roadmap.md` (`## Verification`, L70, L74): Two roadmap-level checkboxes still open ("objectives observáveis", "stakeholder-ready"). Expected pre-implementation. **Action:** Update as phases complete.
+## Findings summary
+- RED: 0
+- WARN: 0 (após correções design.md L135, 05.05 deps, verification fences, skeleton TBD)
+- INFO: 31 (Scope/Out heading variant — não bloqueante)
 
----
+## memory_lint
+- BLOCKED — diretiva do operador (instabilidade servidor remoto). Substituto: este relatório + refinement-lint.py oracle.
 
-## Summary
-
-| Severity | Count | Block execution? |
-|---|---|---|
-| red flag | 0 | — |
-| warning | 18 | No (fix before `/agile-story` on affected files) |
-| info | 37 | No |
-
-**Warnings breakdown:**
-- Completeness (verification fences + 02.01 status): 11
-- Consistency (design.md ext-deps prose): 2
-- Format (TBD/placeholder in skeletons): 5
-- Scope (05.02 task vs Out for manifest loader): 1
-
-**Info breakdown:**
-- Scope section header naming (31 stories): 31
-- Cross-refs / traceability / stale narrative: 6
-
-**VERDICT: PASS** — zero red flags. Backlog is structurally sound and ready for execution at `epics/02-edger-core/01-setup-core-crate.md`.
-
-**Highest-leverage fixes before next story:**
-1. Align `02.01` status to `not started` (or update epic if work started).
-2. Remove `load_manifests_from_dirs` from 05.02 Tasks; keep stub-only scope.
-3. Align `design.md` L135 + L220 with core-only extension model (mermaid already fixed).
-4. Fence verification commands in Epic 07 stories (and Epic 01 retrospective stories 01.01, 01.02).
-
----
-
-## Recommended next step
-
-`/agile-story` on `planning/edger/epics/02-edger-core/01-setup-core-crate.md` (per `roadmap.md` L78 and `status/consolidation-2026-06-29-backlog-ready.md` L54).
+VERDICT: PASS

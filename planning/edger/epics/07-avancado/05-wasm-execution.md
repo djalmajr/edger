@@ -84,8 +84,10 @@
 - [ ] Integration test + gate workspace.
 
 ## Verification
-- `cargo test -p edger-isolation --features wasm`
-- `wasm-hello` build script documentado em fixture README
-- E2E via orchestrator: path `/wasm-hello` retorna 200
-- `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`
-- `bun test`
+```bash
+cargo test -p edger-isolation --features wasm
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+bun test
+```

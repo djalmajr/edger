@@ -56,7 +56,7 @@ Servidor escuta em `PORT`, responde `/health` e `/ready`, resolve workers namesp
 | 05.02 Resolução de rotas | `02-routing-resolution.md` | large | not started | 05.01 |
 | 05.03 Pipeline de requisições | `03-request-pipeline.md` | large | not started | 05.01, 05.02 |
 | 05.04 Auth + namespace gate | `04-auth-namespace-gate.md` | large | not started | 05.03, Epic 02 (auth types) |
-| 05.05 Extension registry | `05-extension-registry.md` | medium | not started | 05.03, Epic 02 (traits) |
+| 05.05 Extension registry | `05-extension-registry.md` | medium | not started | 05.03, 05.04, Epic 02 (traits) |
 
 ## Epic roadmap
 

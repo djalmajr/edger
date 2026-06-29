@@ -34,5 +34,10 @@ Implement the adapter and cli so examples with correct index run and return expe
 - [x] Verify launches (multiple examples incl declarative, hello POST, serve-html, commonjs-style exercised)
 
 ## Verification
+```bash
 bun test edger.test.ts
-real launch + curl for hello (POST), declarative, serve, chunked etc match bodies; evidence in SCRATCH
+bun edger.ts --dir workers/hello-world --port 19001 &
+sleep 1
+curl -s -X POST http://127.0.0.1:19001/ -d '{}' | jq .
+kill %1 2>/dev/null || true
+```

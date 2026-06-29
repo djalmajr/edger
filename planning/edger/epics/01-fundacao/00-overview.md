@@ -11,7 +11,7 @@
 - Problem: Edger skeleton exists but no real loader/runtime, no AGENTS discipline, no tests, no support for edge-runtime examples with Deno.serve compatible index entrypoints.
 - Objective: Align skeleton, establish engineering gates from ai-memory + buntime, implement core loadWorkerHandler that supports the required index patterns, copy and run several examples.
 - Value: Functional edger app that can serve the examples, docs clean, tests pass, launches repeatable.
-- Constraints: New project; use Bun for functional (Rust skeleton placeholder); preserve example verbatim indexes; explicit memory scopes for buntime project.
+- Constraints: New project; use Bun for functional (Rust workspace skeleton); preserve example verbatim indexes; explicit memory scopes for buntime project.
 
 ## Story backlog
 

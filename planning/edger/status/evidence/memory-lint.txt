@@ -1,0 +1,8 @@
+memory_lint — BLOCKED (not executed)
+
+Reason: operator directive 2026-06-29 — remote ai-memory server instability.
+Scope would have been: workspace=djalmajr project=edger
+
+Substitute gate: /agile-refinement Mode 1 + refinement-lint.py (0 RED, 0 WARN)
+
+Only the orchestrator agent may invoke memory tools; subagents must not.

@@ -1,12 +1,34 @@
-# Status Consolidation: Backlog maduro — pronto para desenvolvimento
+# Status: Backlog edger — maduro e pronto para desenvolvimento
 
-**Date:** 2026-06-29
-**Mode:** consolidation (post planning decomposition)
+**Source:** `planning/edger/roadmap.md`, decomposição `/agile-epic` + `/agile-story`  
+**Mode:** Consolidation
 
-## Scope
-Decomposição completa do roadmap Fases 1-7 em epics/stories/tasks via fluxo `/agile-*`.
+## Context
+- **Project/initiative:** edger — runtime edge em Rust (visão Buntime + estrutura Edge Runtime)
+- **Period:** 2026-06-28 — 2026-06-29 (decomposição e refinamento contínuo)
+- **Current objective:** Backlog Fases 1–7 decomposto em epics/stories/tasks, validado para iniciar Fase 2 (edger-core)
+- **Related epic/story/issue:** Epic 01 complete; próximo `epics/02-edger-core/01-setup-core-crate.md`
 
-## Backlog summary
+---
+
+## Consolidation (period report)
+
+### Progress
+- **Completed:**
+  - Intake, design, analysis-synthesis, roadmap
+  - 7 epics com overview + acceptance criteria + story backlog
+  - 31 stories com Context, Files, Detail, Tasks, Verification
+  - Fase 1 (Fundação): Bun loader funcional, 6 testes, examples copiados, closure documentado
+  - Scripts de gate: `refinement-lint.py`, `path-preflight.sh`, `run-gates.sh`, `render-status-from-gates.sh`
+  - `/agile-refinement` Mode 1: 0 RED, 0 WARN (orquestrador)
+- **In progress:**
+  - Nenhuma story em execução — backlog em estado ready-for-development
+- **Relevant deviations:**
+  - `memory_lint` excluído dos gates de planejamento (instabilidade servidor; diretiva operador)
+  - Maturidade validada via `/agile-refinement` + `refinement-lint.py` oracle
+  - Skeletons (`spike.md`, `docs/extensions.md`, etc.) existem como templates — conteúdo operacional preenchido nas stories indicadas
+
+### Backlog summary
 
 | Fase | Epic folder | Stories | Planning status | Implementation |
 |---|---|---|---|---|
@@ -18,13 +40,27 @@ Decomposição completa do roadmap Fases 1-7 em epics/stories/tasks via fluxo `/
 | 6 Extensibilidade | `epics/06-extensibilidade/` | 3 | ready-for-development | not started |
 | 7 Avançado | `epics/07-avancado/` | 7 | ready-for-development | not started |
 
-**Total:** 7 epics, 31 stories, todas com Context/Files/Detail/Tasks/Verification.
+### Blockers and risks
 
-**Artefatos de planejamento (skeletons):** `epics/03-isolacao-execucao/spike.md`, `docs/{extensions,compat-matrix,performance-baselines,shell-protocol,wasm-abi}.md` — existem como templates; conteúdo operacional preenchido nas stories indicadas.
+| Blocker / Risk | Impact | Owner | Next action |
+|---|---|---|---|
+| memory_lint remoto instável | Sem auditoria wiki automática neste gate | operador | Reativar quando servidor estável; apenas orquestrador chama memory tools |
+| Embedding spike (Fase 3) | Pode alterar estimativas PR 10 | dev | Executar story 03.01 time-boxed; atualizar spike.md |
+| Drift contratos Buntime | Migração futura | dev | Matriz compat em 07.07; referenciar design.md em cada PR |
+
+### Decisions needed
+- Nenhuma bloqueante para iniciar Fase 2 — decisões de embedding já registradas no design (deno_core + facade, wasmtime WASI).
+
+### Next steps
+- [ ] Executar `/agile-story` em `planning/edger/epics/02-edger-core/01-setup-core-crate.md`
+- [ ] Após cada story: `/agile-status` checkpoint + `/agile-refinement` code review
+- [ ] Reavaliar `memory_lint` quando servidor ai-memory estável
+
+---
 
 ## Maturity gates (planning)
 
-_Rendered at 2026-06-29T01:27:19Z after run-gates.sh. memory_lint excluded (server stability)._
+_Rendered at 2026-06-29T01:32:13Z after run-gates.sh. memory_lint excluded (server stability)._
 
 - [x] 7 epics / 31 stories decomposed com secoes obrigatorias
 - [x] /agile-refinement Mode 1 — 0 red flags (status/evidence/refinement-report.txt)
@@ -48,15 +84,6 @@ flowchart LR
     E05 --> E07[07 Avançado]
     E06 --> E07
 ```
-
-## Next execution step
-`/agile-story` em `planning/edger/epics/02-edger-core/01-setup-core-crate.md` — completar módulos do core e gate Rust.
-
-## Deviations from prior consolidation
-- Backlog expandido de 2 epics parciais para 7 epics completos (31 stories).
-- Fase 1 ganhou stories 03-copy-examples e 04-closure-evidence (retrospectiva documentada).
-- Gate I/O decoupled: `run-gates.sh` + `render-status-from-gates.sh` (no hand-written PASS claims)
-- **`memory_lint` excluído dos gates de planejamento** — operador reportou instabilidade no servidor remoto; maturidade validada via `/agile-refinement` Mode 1 apenas.
 
 ## Evidence (committed)
 

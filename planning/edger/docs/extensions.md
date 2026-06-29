@@ -12,10 +12,10 @@ Cada crate `edger-ext-*` escolhe **um** modo por crate:
 
 Nunca duplicar ambos modos na mesma crate.
 
-## Padrão de registro (TBD story 06.01)
+## Padrão de registro (story 06.01)
 
 - Opções avaliadas: `inventory`, `linkme`, registro explícito no bin
-- Decisão: _TBD_
+- Decisão: _a preencher na story 06.01_
 - Ordem de execução: priority ou topo sort (paridade Buntime)
 
 ## Checklist nova extensão
@@ -26,10 +26,10 @@ Nunca duplicar ambos modos na mesma crate.
 - [ ] `cargo test -p edger-ext-<nome>` verde
 - [ ] Sem I/O no core; extensão pode ter store próprio
 
-## Walkthrough edger-ext-auth (TBD story 06.02)
+## Walkthrough edger-ext-auth (story 06.02)
 
 _Preencher após implementação._
 
-## Template edger-ext-gateway (TBD story 06.03)
+## Template edger-ext-gateway (story 06.03)
 
 _Preencher após implementação._

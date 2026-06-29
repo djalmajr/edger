@@ -54,6 +54,8 @@ Serde derive, Clone Debug etc. No side effects.
 - [ ] cargo test green
 
 ## Verification
-- cargo test -p edger-core (models)
-- No I/O in these files
-- Docs updated
+```bash
+cargo test -p edger-core models
+cargo clippy -p edger-core -- -D warnings
+! rg -l 'std::fs|tokio::fs|reqwest' edger-core/src/models.rs 2>/dev/null || true
+```

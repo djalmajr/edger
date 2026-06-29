@@ -83,8 +83,11 @@
 - [ ] Teste: job não roda quando worker disabled.
 
 ## Verification
-- `cargo test -p edger-orchestrator -- cron_scheduler`
-- `cargo test -p edger-core -- cron_job`
-- Manual (dev): worker cron com log a cada minuto; verificar `request_id` nos logs
-- `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`
-- `bun test`
+```bash
+cargo test -p edger-orchestrator -- cron_scheduler
+cargo test -p edger-core -- cron_job
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+bun test
+```

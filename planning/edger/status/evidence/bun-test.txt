@@ -3,15 +3,15 @@ bun test v1.3.14 (0d9b296a)
 edger.test.ts:
 server started modified
 (pass) edger loadWorkerHandler (Deno.serve + default export compat) > loads hello-world and returns correct json for POST [0.73ms]
-(pass) edger loadWorkerHandler (Deno.serve + default export compat) > loads serve-declarative-style and returns Hello, world [0.21ms]
-(pass) edger loadWorkerHandler (Deno.serve + default export compat) > loads empty-response and returns 204 [0.17ms]
+(pass) edger loadWorkerHandler (Deno.serve + default export compat) > loads serve-declarative-style and returns Hello, world [0.19ms]
+(pass) edger loadWorkerHandler (Deno.serve + default export compat) > loads empty-response and returns 204 [0.19ms]
 server started modified
 serving request
-(pass) edger loadWorkerHandler (Deno.serve + default export compat) > loads read-body and returns totalSize json [1.43ms]
-(pass) edger loadWorkerHandler (Deno.serve + default export compat) > loads chunked-text and returns meow stream text [0.96ms]
-(pass) edger loadWorkerHandler (Deno.serve + default export compat) > loads serve-html and serves foo.html content via Deno.readTextFile shim [0.30ms]
+(pass) edger loadWorkerHandler (Deno.serve + default export compat) > loads read-body and returns totalSize json [1.45ms]
+(pass) edger loadWorkerHandler (Deno.serve + default export compat) > loads chunked-text and returns meow stream text [0.95ms]
+(pass) edger loadWorkerHandler (Deno.serve + default export compat) > loads serve-html and serves foo.html content via Deno.readTextFile shim [0.33ms]
 
  6 pass
  0 fail
  11 expect() calls
-Ran 6 tests across 1 file. [13.00ms]
+Ran 6 tests across 1 file. [14.00ms]
