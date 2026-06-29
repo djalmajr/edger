@@ -7,8 +7,7 @@ dist/
 out/
 *.tgz
 
-# ai-memory routing (operator-local; see aim-init)
-.ai-memory.toml
+# MCP config (operator-local)
 .mcp.json
 
 # Backups from tooling

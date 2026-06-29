@@ -1,0 +1,10 @@
+workspace = "djalmajr"
+project   = "edger"
+
+# OIDC onboarding profile (non-secret). Hooks parse workspace/project only;
+# this block lets aim-init self-serve device-flow setup for new developers.
+[instance]
+issuer     = "https://keycloak.djalmajr.dev/realms/memory"
+server_url = "https://memory.djalmajr.dev"
+client_id  = "ai-memory-cli"
+agents     = ["grok", "claude-code"]
