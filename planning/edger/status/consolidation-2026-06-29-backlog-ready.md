@@ -1,13 +1,13 @@
-# Status: Backlog edger — Fase 2 entregue
+# Status: Backlog edger — Fases 1–5 entregues
 
 **Source:** `planning/edger/roadmap.md`  
-**Mode:** Consolidation (updated 2026-06-29 post Epic 02)
+**Mode:** Consolidation (updated 2026-06-29 post Epic 05)
 
 ## Context
 - **Project/initiative:** edger
 - **Period:** 2026-06-28 — 2026-06-29
-- **Current objective:** Fase 5 próxima (Epic 04 entregue; Epic 05 Orquestrador)
-- **Related epic:** Epic 05; próximo `epics/05-orquestrador/00-overview.md`
+- **Current objective:** Fase 6 próxima (Epic 06 Extensibilidade)
+- **Related epic:** Epic 06; próximo `epics/06-extensibilidade/00-overview.md`
 
 ---
 
@@ -20,8 +20,10 @@
   - Per-story checkpoints: `status/checkpoint-2026-06-29-story-02-0{1..4}.md`
   - Per-story refinement: `status/evidence/refinement-story-02-0{1..4}.txt`
   - Epic 02 closure: `status/checkpoint-2026-06-29-epic-02-closure.md`
-- **Completed (new):** Epic 04 — stories 04.01–04.04 + epic closure (24 worker tests)
-- **Completed:** Epic 03 — stories 03.01–03.04 + epic closure
+- **Completed:** Epic 03 — stories 03.01–03.04 + epic closure (14 isolation tests)
+- **Completed:** Epic 04 — stories 04.01–04.04 + epic closure (24 worker tests)
+- **Completed:** Epic 05 — stories 05.01–05.05 + epic closure (48 orchestrator tests)
+- **Per-story checkpoints Epic 05:** `status/checkpoint-2026-06-29-story-05-0{1..5}.md`
 - **Deviations:** Epic 02 delivered in continuous cycle; per-story artifacts added retroactively per AC3
 
 ### Backlog summary
@@ -31,14 +33,14 @@
 | 1 Fundação | `epics/01-fundacao/` | 4 | complete | **delivered** |
 | 2 edger-core | `epics/02-edger-core/` | 4 | complete | **delivered** (17 tests) |
 | 3 Isolação | `epics/03-isolacao-execucao/` | 4 | **completed** | 14 isolation tests |
-| 4 Worker | `epics/04-worker-management/` | 4 | in progress | 04.01–04.03 delivered (17 tests) |
-| 5 Orquestrador | `epics/05-orquestrador/` | 5 | ready-for-development | not started |
+| 4 Worker | `epics/04-worker-management/` | 4 | **completed** | 24 worker tests |
+| 5 Orquestrador | `epics/05-orquestrador/` | 5 | **completed** | 48 orchestrator tests |
 | 6 Extensibilidade | `epics/06-extensibilidade/` | 3 | ready-for-development | not started |
 | 7 Avançado | `epics/07-avancado/` | 7 | ready-for-development | not started |
 
 ### Next steps
-- [ ] `/agile-story` em `planning/edger/epics/04-worker-management/04-pool-integration-tests.md`
-- [ ] Per-story checkpoint + refinement após cada story (Epic 04+)
+- [ ] `/agile-story` em `planning/edger/epics/06-extensibilidade/`
+- [ ] Per-story checkpoint + refinement após cada story (Epic 06+)
 
 ---
 
