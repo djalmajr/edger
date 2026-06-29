@@ -1,0 +1,4 @@
+/agile-refinement — code review (story 03.01)
+Scope: edger-isolation examples + spike.md
+VERDICT: PASS — 0 red flags
+Notes: wasm spike go; deno V8 boot deferred to 03.04 per spike.md

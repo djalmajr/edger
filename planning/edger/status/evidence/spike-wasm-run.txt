@@ -1,0 +1,2 @@
+cargo run -p edger-isolation --example embedding-spike-wasm
+spike_wasm compile_ms=10 invoke_ms=0 result=42

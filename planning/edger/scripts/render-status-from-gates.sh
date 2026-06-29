@@ -19,6 +19,7 @@ done
 
 GENERATED=$(python3 -c "import json; print(json.load(open('$SCRATCH/gates-summary.json'))['passed_at'])")
 
+NEXT_STEP="${NEXT_STEP:-/agile-story on planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md}"
 cat >"$EVIDENCE/agile-status.txt" <<STATUSEOF
 /agile-status — consolidation (planning gates)
 generated=$GENERATED
@@ -28,7 +29,7 @@ Oracle: refinement-lint.py — 0 RED (evidence/refinement-lint-oracle.txt)
 Path-preflight: 0 missing
 bun test: 0 fail
 
-Next: /agile-story on planning/edger/epics/02-edger-core/01-setup-core-crate.md
+Next: $NEXT_STEP
 STATUSEOF
 cp "$EVIDENCE/agile-status.txt" "$SCRATCH/agile-status.txt"
 
@@ -44,7 +45,7 @@ gates = (
     "- [x] /agile-refinement Mode 1 — 0 red flags (status/evidence/refinement-report.txt)\n"
     "- [x] refinement-lint.py oracle — 0 RED (status/evidence/refinement-lint-oracle.txt)\n"
     "- [x] Path-preflight — 0 missing (status/evidence/path-preflight.txt)\n"
-    "- [x] Fase 1 completed; Fases 2-7 ready-for-development\n"
+    "- [x] Fase 1-2 completed; Fases 3-7 ready-for-development\n"
     "- [x] bun test pass (status/evidence/bun-test.txt)\n"
 )
 evidence = (

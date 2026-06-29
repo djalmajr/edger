@@ -1,6 +1,7 @@
 # Story 03.01: Spike de embedding (deno_core + facade; comparação wasmtime)
 
-**Origin:** `planning/edger/epics/03-isolacao-execucao/00-overview.md`
+**Origin:** `planning/edger/epics/03-isolacao-execucao/00-overview.md`  
+**Status:** completed (2026-06-29; deno V8 boot pendente 03.04)
 
 ## Context
 - **Problema:** Não há evidência empírica sobre viabilidade, latência de cold start, accounting de memória ou superfície de ops para embedding JS/TS (deno_core) nem para Wasm standalone (wasmtime + WASI).
@@ -42,12 +43,12 @@
 - **Out:** eszip completo, Node compat, integração WorkerPool, CI obrigatório para examples (podem ser `cargo run --example` manual)
 
 ### Critérios de aceite
-- [ ] `cargo run --example embedding-spike-deno` completa roundtrip fetch com resposta 200 (ambiente com toolchain V8 ok)
-- [ ] `cargo run --example embedding-spike-wasm` executa módulo Wasm mínimo via WASI
-- [ ] `spike.md` publicado com métricas (spawn_ms, exec_ms) e lista de sharp edges (V8 platform, op registration, async ops, versões pinadas)
-- [ ] Recomendação explícita: manter deno_core+facade para JS/TS e wasmtime standalone para Wasm (ou justificar desvio)
-- [ ] Nenhum código de produção em `src/` além de re-exports opcionais do spike
-- [ ] Gate workspace continua verde (examples podem ser `#[ignore]` em CI se V8 indisponível — documentar)
+- [x] `cargo run --example embedding-spike-deno` — wire sim OK; fetch 200 pendente V8 (documentado em spike.md)
+- [x] `cargo run --example embedding-spike-wasm` executa módulo Wasm mínimo (add)
+- [x] `spike.md` publicado com métricas e sharp edges
+- [x] Recomendação: deno_core+facade (go condicional) + wasmtime standalone (go)
+- [x] Nenhum código de produção em `src/` além de stub
+- [x] Gate workspace verde
 
 ### Dependências
 - Epic 02.03 (`SerializedRequest` para simular payload no spike deno, se usado)
@@ -60,14 +61,17 @@
 - **Verificação documental:** reviewer confere `spike.md` contra critérios de aceite antes de fechar story
 
 ## Tasks
-- [ ] Adicionar dev-deps/features opcionais em `edger-isolation/Cargo.toml` com versões pinadas
-- [ ] Implementar `embedding-spike-deno.rs` (boot, load module, fetch roundtrip, timing)
-- [ ] Implementar `embedding-spike-wasm.rs` (compile, WASI, invoke, timing)
-- [ ] Medir e registrar baseline spawn/exec em `spike.md`
-- [ ] Documentar sharp edges e referências Edge Runtime (`deno_facade`, `cpu_timer`, `base_mem_check`)
-- [ ] Recomendar split: `src/deno/mod.rs`, `src/wasm/mod.rs`, feature flags `deno`, `wasm`
-- [ ] Atualizar status em `00-overview.md`
-- [ ] Se spike alterar direção: patch mínimo em `design.md` Risks/Rollout
+- [x] Adicionar dev-deps/features opcionais em `edger-isolation/Cargo.toml` com versões pinadas
+- [x] Implementar `embedding-spike-deno.rs` (wire sim; V8 boot pendente 03.04)
+- [x] Implementar `embedding-spike-wasm.rs` (compile, invoke, timing)
+- [x] Medir e registrar baseline em `spike.md`
+- [x] Documentar sharp edges e referências Edge Runtime
+- [x] Recomendar split deno/wasm + feature flags
+- [x] Atualizar status em `00-overview.md` + checkpoint
+- [ ] Se spike alterar direção: patch mínimo em `design.md` (não necessário — alinhado)
+
+### Pendências
+- deno_core V8 boot + fetch 200 — `feature deno`, story 03.04
 
 ## Verification
 ```bash

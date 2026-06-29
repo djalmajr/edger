@@ -74,9 +74,9 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 - [ ] Stakeholder-ready: mostra jornada completa com riscos e out-of-scope (update as Fases advance).
 
 ## Recommended next step
-- Backlog completo (7 epics, 31 stories). Ver `status/consolidation-2026-06-29-backlog-ready.md`.
-- **Próxima execução:** `/agile-story` em `epics/02-edger-core/01-setup-core-crate.md`.
-- Periodically: `/agile-refinement` + memory_lint on planning/edger/ + update status.
+- Fases 1–2 **delivered**. Ver `status/checkpoint-2026-06-29-epic-02-closure.md`.
+- **Próxima execução:** `/agile-story` em `epics/03-isolacao-execucao/02-isolate-trait-impl.md` (03.01 spike done).
+- Per-story: `/agile-status` checkpoint + `/agile-refinement` após cada story (evidence em `status/`).
 
 ---
 

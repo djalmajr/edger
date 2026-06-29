@@ -5,6 +5,26 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# abstração para isolates (Deno embedding / Wasm / JS/TS execution)
+edger-core = { path = "../edger-core" }
+serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
+wat.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+
+[[example]]
+name = "embedding-spike-wasm"
+path = "examples/embedding-spike-wasm.rs"
+
+[[example]]
+name = "embedding-spike-deno"
+path = "examples/embedding-spike-deno.rs"
+
+[features]
+default = []
+# deno_core spike deferred — see spike.md sharp edges (V8 toolchain)
+deno = []

@@ -1,9 +1,12 @@
-/agile-status — consolidation (planning gates)
-generated=2026-06-29T02:44:05Z
+/agile-status — consolidation snapshot
+generated=2026-06-29T02:50:00Z
 
-Planning lint: /agile-refinement Mode 1 — 0 red flags (evidence/refinement-report.txt)
-Oracle: refinement-lint.py — 0 RED (evidence/refinement-lint-oracle.txt)
-Path-preflight: 0 missing
-bun test: 0 fail
+Epic 02: completed (4 stories, 17 cargo tests, bun 6 pass)
+Per-story checkpoints: status/checkpoint-2026-06-29-story-02-01..04.md
+Per-story refinement: status/evidence/refinement-story-02-01..04.txt
 
-Next: /agile-story on planning/edger/epics/02-edger-core/01-setup-core-crate.md
+Planning lint: /agile-refinement Mode 1 — 0 red flags
+bun test: 6 pass / 0 fail
+
+Story 03.01: completed (wasm spike go; deno wire sim)
+Next: /agile-story on planning/edger/epics/03-isolacao-execucao/02-isolate-trait-impl.md

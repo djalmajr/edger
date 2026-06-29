@@ -1,0 +1,2 @@
+cargo run -p edger-isolation --example embedding-spike-deno
+spike_deno_wire_sim exec_ms=0 note=deno_core_boot_pending_V8_toolchain

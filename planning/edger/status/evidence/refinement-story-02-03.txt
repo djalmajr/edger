@@ -1,0 +1,4 @@
+/agile-refinement — code review (story 02.03)
+Scope: wire.rs + error.rs + roundtrip tests
+VERDICT: PASS — 0 red flags
+Notes: bytes serde feature required; header limit validation pure

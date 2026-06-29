@@ -1,0 +1,4 @@
+/agile-refinement — code review (story 02.02)
+Scope: manifest/config/principal models + mapping tests
+VERDICT: PASS — 0 red flags
+Notes: YAML fixture covers Buntime field normalization; RoutesTable inference pendency documented

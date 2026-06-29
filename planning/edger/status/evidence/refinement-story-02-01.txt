@@ -1,0 +1,4 @@
+/agile-refinement — code review (story 02.01)
+Scope: edger-core module setup
+VERDICT: PASS — 0 red flags
+Notes: crate leaf purity confirmed; no sibling path deps
