@@ -9,7 +9,8 @@ edger-core = { path = "../edger-core" }
 async-trait.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "sync"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+uuid.workspace = true
 lru.workspace = true
 thiserror.workspace = true
 bytes.workspace = true

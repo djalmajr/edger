@@ -61,16 +61,17 @@ impl Supervisor {
         instance.set_state(next);
 
         if next == WorkerState::Idle {
+            instance.cancel_ttl_timer();
+
+            if config.max_requests > 0 && count >= config.max_requests {
+                Self::retire_for_max_requests(&instance, pool).await?;
+                return Ok(());
+            }
+
             let isolate = instance.isolate();
             let mut guard = isolate.lock().await;
             let _ = guard.notify_idle().await;
             instance.record_idle_notification();
-            instance.cancel_ttl_timer();
-
-            if config.max_requests > 0 && count >= config.max_requests {
-                Self::begin_termination(&instance, pool, WorkerEvent::MaxRequestsReached).await?;
-                return Ok(());
-            }
 
             if ttl_ms > 0 {
                 Self::schedule_ttl_timer(instance, pool.clone(), ttl_ms);
@@ -102,6 +103,20 @@ impl Supervisor {
             return Ok(());
         }
         Self::begin_termination(instance, pool, WorkerEvent::TtlExpired).await
+    }
+
+    async fn retire_for_max_requests(
+        instance: &WorkerInstance,
+        pool: &WorkerPool,
+    ) -> Result<(), WorkerError> {
+        instance.set_state(WorkerState::Terminating);
+        let isolate = instance.isolate();
+        let mut guard = isolate.lock().await;
+        let _ = guard.terminate().await;
+        drop(guard);
+        instance.set_state(WorkerState::Terminated);
+        pool.remove_instance(instance);
+        Ok(())
     }
 
     async fn begin_termination(

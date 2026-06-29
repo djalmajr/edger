@@ -17,6 +17,10 @@ pub enum WorkerError {
         from: WorkerState,
         event: WorkerEvent,
     },
+    #[error("ephemeral queue full (concurrency limit reached)")]
+    EphemeralQueueFull,
+    #[error("worker retired (max_requests reached)")]
+    Retired,
     #[error("isolation error: {0}")]
     Isolation(#[from] edger_core::IsolationError),
 }

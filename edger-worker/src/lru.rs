@@ -4,8 +4,10 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 use lru::LruCache;
+use uuid::Uuid;
 
 use crate::instance::WorkerInstance;
+use crate::state::WorkerState;
 use crate::types::WorkerCacheKey;
 
 pub struct WorkerLru {
@@ -55,6 +57,22 @@ impl WorkerLru {
     pub fn remove(&self, key: &WorkerCacheKey) {
         let mut cache = self.inner.lock().expect("lru lock");
         cache.pop(key);
+    }
+
+    pub fn find_by_worker_id(&self, worker_id: Uuid) -> Option<Arc<WorkerInstance>> {
+        let cache = self.inner.lock().expect("lru lock");
+        cache
+            .iter()
+            .find(|(_, instance)| instance.worker_ref.id == worker_id)
+            .map(|(_, instance)| Arc::clone(instance))
+    }
+
+    pub fn count_idle(&self) -> usize {
+        let cache = self.inner.lock().expect("lru lock");
+        cache
+            .iter()
+            .filter(|(_, instance)| instance.state() == WorkerState::Idle)
+            .count()
     }
 
     pub fn clear(&self) {

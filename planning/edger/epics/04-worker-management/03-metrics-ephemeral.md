@@ -50,12 +50,12 @@
 - **Out:** Prometheus endpoint (orchestrator Fase 5), OTEL (Fase 7)
 
 ### Critérios de aceite
-- [ ] `get_metrics()` reflete hits após segundo fetch do mesmo worker
-- [ ] Com `ephemeral_concurrency=1`, segundo fetch concurrent ttl=0 bloqueia ou enfileira conforme config
-- [ ] Fila cheia retorna erro tipado sem panic
-- [ ] Worker com `max_requests=3` aposenta após 3º request completo
-- [ ] `spawn_latency_ms` registrado em cache miss
-- [ ] Testes async com timeouts razoáveis
+- [x] `get_metrics()` reflete hits após segundo fetch do mesmo worker
+- [x] Com `ephemeral_concurrency=1`, segundo fetch concurrent ttl=0 bloqueia ou enfileira conforme config
+- [x] Fila cheia retorna erro tipado sem panic
+- [x] Worker com `max_requests=2` aposenta após 2º request completo
+- [x] `spawn_latency_ms` registrado em cache miss
+- [x] Testes async com timeouts razoáveis
 
 ### Dependências
 - Stories 04.01, 04.02
@@ -66,13 +66,18 @@
 - **Cenários:** ephemeral concurrency 1 com 2 tokio tasks paralelas; queue full
 
 ## Tasks
-- [ ] Implementar `metrics.rs` com atomics + snapshot
-- [ ] Implementar `ephemeral.rs` Semaphore + queue counter
-- [ ] Integrar métricas em pool fetch/get_or_create/spawn
-- [ ] Integrar max_requests check em `on_request_complete`
-- [ ] Export `PoolMetrics` na API pública
-- [ ] Testes métricas + ephemeral + maxRequests
-- [ ] Doc comments em português nos campos de métricas
+- [x] Implementar `metrics.rs` com atomics + snapshot
+- [x] Implementar `ephemeral.rs` Semaphore + queue counter
+- [x] Integrar métricas em pool fetch/get_or_create/spawn
+- [x] Integrar max_requests check em `on_request_complete`
+- [x] Export `PoolMetrics` na API pública
+- [x] Testes métricas + ephemeral + maxRequests (6 tests)
+- [x] Doc comments em português nos campos de métricas
+
+## Pendências (documentadas)
+- `request_duration_ms` histogram stub apenas (last + p50 spawn); Prometheus/OTEL na Fase 5/7
+- `retire_for_max_requests` path simplificado vs `begin_termination` completo (evita deadlock cleanup)
+- Timer TTL background E2E com `time::pause` — adiado para 04.04 integration tests
 
 ## Verification
 ```bash

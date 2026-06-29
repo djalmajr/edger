@@ -1,0 +1,16 @@
+/agile-refinement Mode 2 — Story 04.03 code review
+generated=2026-06-29
+
+Scope: edger-worker metrics + ephemeral gate
+
+VERDICT: PASS
+
+Findings:
+- MetricsCollector uses atomics; snapshot is thread-safe read
+- EphemeralGate try_acquire + bounded queue matches Buntime semantics
+- max_requests retirement removes worker and increments terminated_total
+- spawn_latency recorded on cache miss
+- WorkerStats exposed via get_worker_stats
+- retire_for_max_requests avoids cleanup deadlock (documented pendency)
+
+No RED flags.

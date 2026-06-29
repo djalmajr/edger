@@ -4,18 +4,21 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use bytes::Bytes;
 use edger_core::{
     create_worker_ref, ExecutionKind, Isolate, SerializedRequest, SerializedResponse, WorkerConfig,
     WorkerManifest, WorkerRef,
 };
+use uuid::Uuid;
 
+use crate::ephemeral::EphemeralGate;
 use crate::error::WorkerError;
 use crate::factory::IsolateFactory;
 use crate::instance::WorkerInstance;
 use crate::lru::WorkerLru;
-use crate::metrics::PoolMetrics;
+use crate::metrics::{MetricsCollector, PoolMetrics, WorkerStats};
 use crate::state::WorkerState;
 use crate::supervisor::Supervisor;
 use crate::types::{PoolConfig, WorkerCacheKey};
@@ -25,7 +28,8 @@ struct WorkerPoolInner {
     config: PoolConfig,
     cache: WorkerLru,
     factory: Arc<dyn IsolateFactory>,
-    metrics: Mutex<PoolMetrics>,
+    metrics: Arc<MetricsCollector>,
+    ephemeral: EphemeralGate,
     evicted: Mutex<HashSet<WorkerCacheKey>>,
     shutdown: AtomicBool,
 }
@@ -54,12 +58,19 @@ impl WorkerPool {
     }
 
     pub fn with_factory(config: PoolConfig, factory: Arc<dyn IsolateFactory>) -> Self {
+        let metrics = Arc::new(MetricsCollector::default());
+        let ephemeral = EphemeralGate::new(
+            config.ephemeral_concurrency,
+            config.ephemeral_queue_limit,
+            Arc::clone(&metrics),
+        );
         Self {
             inner: Arc::new(WorkerPoolInner {
                 cache: WorkerLru::new(config.max_size),
                 config,
                 factory,
-                metrics: Mutex::new(PoolMetrics::default()),
+                metrics,
+                ephemeral,
                 evicted: Mutex::new(HashSet::new()),
                 shutdown: AtomicBool::new(false),
             }),
@@ -73,19 +84,11 @@ impl WorkerPool {
         Ok(())
     }
 
-    fn record_hit(&self) {
-        let mut m = self.inner.metrics.lock().expect("metrics lock");
-        m.cache_hits += 1;
-    }
-
-    fn record_miss(&self) {
-        let mut m = self.inner.metrics.lock().expect("metrics lock");
-        m.cache_misses += 1;
-    }
-
-    fn sync_active_count(&self) {
-        let mut m = self.inner.metrics.lock().expect("metrics lock");
-        m.active_workers = self.inner.cache.len();
+    fn sync_worker_counts(&self) {
+        let active = self.inner.cache.len();
+        let idle = self.inner.cache.count_idle();
+        self.inner.metrics.set_active_workers(active);
+        self.inner.metrics.set_idle_workers(idle);
     }
 
     /// Resolve or create a pooled worker instance (new entries start in `Creating`).
@@ -113,10 +116,14 @@ impl WorkerPool {
                     detail: "namespace mismatch for cache key".into(),
                 });
             }
-            self.record_hit();
+            if instance.state() == WorkerState::Terminated {
+                return Err(WorkerError::Retired);
+            }
+            self.inner.metrics.record_hit();
             return Ok(instance);
         }
 
+        let spawn_start = Instant::now();
         let isolate = self.inner.factory.create_isolate();
         let instance = Arc::new(WorkerInstance::new(worker_ref.clone(), isolate));
 
@@ -134,8 +141,10 @@ impl WorkerPool {
                 .insert(evicted_key);
         }
 
-        self.record_miss();
-        self.sync_active_count();
+        let elapsed_ms = spawn_start.elapsed().as_millis().max(1) as u64;
+        self.inner.metrics.record_miss();
+        self.inner.metrics.record_spawn_latency(elapsed_ms);
+        self.sync_worker_counts();
         Ok(instance)
     }
 
@@ -148,6 +157,13 @@ impl WorkerPool {
         kind_hint: Option<ExecutionKind>,
     ) -> Result<SerializedResponse, WorkerError> {
         self.ensure_active()?;
+        let started = Instant::now();
+
+        let _ephemeral_permit = if config.ttl_ms == 0 {
+            Some(self.inner.ephemeral.acquire().await?)
+        } else {
+            None
+        };
 
         let manifest = WorkerManifest {
             name: worker_dir
@@ -166,7 +182,11 @@ impl WorkerPool {
         let instance = self.get_or_create(&worker_ref).await?;
 
         if instance.state() == WorkerState::Creating {
+            let spawn_start = Instant::now();
             Supervisor::spawn(&instance).await?;
+            self.inner
+                .metrics
+                .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
         }
 
         Supervisor::on_request_start(&instance).await?;
@@ -184,6 +204,11 @@ impl WorkerPool {
         drop(isolate);
 
         Supervisor::on_request_complete(instance, config, self).await?;
+
+        self.inner
+            .metrics
+            .record_request_duration(started.elapsed().as_millis() as u64);
+        self.sync_worker_counts();
         Ok(res)
     }
 
@@ -191,18 +216,31 @@ impl WorkerPool {
     pub fn remove_instance(&self, instance: &WorkerInstance) {
         let key = WorkerCacheKey::from_worker_ref(&instance.worker_ref);
         self.inner.cache.remove(&key);
-        self.sync_active_count();
+        self.inner.metrics.record_terminated();
+        self.sync_worker_counts();
     }
 
     pub fn shutdown(&self) {
         self.inner.shutdown.store(true, Ordering::SeqCst);
         self.inner.cache.clear();
         self.inner.evicted.lock().expect("evicted lock").clear();
-        self.sync_active_count();
+        self.sync_worker_counts();
     }
 
     pub fn get_metrics(&self) -> PoolMetrics {
-        self.inner.metrics.lock().expect("metrics lock").clone()
+        self.inner.metrics.snapshot()
+    }
+
+    pub fn get_worker_stats(&self, worker_id: Uuid) -> Option<WorkerStats> {
+        self.inner
+            .cache
+            .find_by_worker_id(worker_id)
+            .map(|instance| WorkerStats {
+                worker_id: instance.worker_ref.id,
+                request_count: instance.request_count(),
+                state: instance.state(),
+                unhealthy: instance.is_unhealthy(),
+            })
     }
 
     pub fn len(&self) -> usize {
