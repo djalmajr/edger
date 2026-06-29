@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "memory-personal": {
+      "type": "http",
+      "url": "https://memory.djalmajr.dev/mcp"
+    }
+  }
+}

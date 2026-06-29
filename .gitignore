@@ -7,9 +7,6 @@ dist/
 out/
 *.tgz
 
-# MCP config (operator-local)
-.mcp.json
-
 # Backups from tooling
 *.bak-*
 
