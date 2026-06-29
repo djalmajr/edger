@@ -19,6 +19,11 @@ Establish the engineering baseline for edger using ai-memory patterns and buntim
 - Run memory_lint and refinement, fix.
 - Update roadmap status.
 
+### Acceptance criteria
+- [x] `planning/edger/AGENTS.md` exists with verification gate and ai-memory scope
+- [x] `memory_lint` scoped to `djalmajr/edger` reports no critical planning issues
+- [x] Roadmap and epic overview cross-refs updated
+
 ## Test-first plan
 - N/A (docs story); verify via memory_lint + refinement gates
 

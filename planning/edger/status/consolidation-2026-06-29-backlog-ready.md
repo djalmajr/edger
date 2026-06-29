@@ -27,8 +27,8 @@ Decomposição completa do roadmap Fases 1-7 em epics/stories/tasks via fluxo `/
 - [x] Cada fase do roadmap tem epic correspondente (`01`–`07`)
 - [x] Cada epic tem `00-overview.md` + >=1 story file
 - [x] Stories contêm tasks acionáveis e comandos de verificação (`cargo test`, `bun test`, launches)
-- [x] agile-refinement — 3 rodadas; v3 final 0 findings (paths `edger-*` flat, PT uniforme, refs design.md)
-- [x] memory_lint scoped `djalmajr/edger` — 0 findings
+- [x] agile-refinement — script formal `planning/edger/scripts/refinement-lint.py`; gates por epic 01–07 (v2) + full-tree v2: **0 RED** (830 OK lines); path-preflight: 22 refs, 0 missing
+- [ ] memory_lint scoped `djalmajr/edger` — **bloqueado** (servidor remoto 503 / MCP handshake); 5 tentativas em `scratch/memory-lint.txt`; re-executar quando `memory.djalmajr.dev` voltar
 - [x] Fase 1 permanece `completed`; Fases 2-7 `ready-for-development`
 - [x] Cross-refs roadmap ↔ epics alinhados
 
@@ -55,6 +55,8 @@ flowchart LR
 - Fase 1 ganhou stories 03-copy-examples e 04-closure-evidence (retrospectiva documentada).
 
 ## Evidence
-- `planning/edger/epics/` tree: 7 folders, 38 markdown files
-- Refinement report: scratch/refinement-report.txt
-- Tests: `bun test` pass; `cargo check --workspace` pass (skeleton)
+- `planning/edger/epics/` tree: 7 folders, 38 markdown files (+ 2 scripts em `planning/edger/scripts/`)
+- Refinement report: `scratch/refinement-report.txt` (2066 linhas — epic gates v2 + full-tree v2 + path-preflight)
+- Path preflight: `scratch/path-preflight-v2.txt` (22 refs únicos, 0 missing)
+- memory_lint: `scratch/memory-lint.txt` (5 tentativas; servidor indisponível)
+- Tests: `bun test` 6 pass; `cargo check --workspace` pass (skeleton)

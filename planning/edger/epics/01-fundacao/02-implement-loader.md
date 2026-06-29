@@ -18,6 +18,11 @@ Implement the adapter and cli so examples with correct index run and return expe
 - Cli entry if main
 - Support both Deno.serve capture and default export
 
+### Acceptance criteria
+- [x] `bun test` passes with 6+ example workers covered
+- [x] `bun edger.ts --dir workers/<name>` launches and returns expected bodies
+- [x] Loader supports `Deno.serve`, `export default { fetch }`, and default export function
+
 ## Test-first plan
 - Red: test expects certain body from hello, fails
 - Green: impl shim + import

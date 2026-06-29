@@ -96,4 +96,4 @@ flowchart LR
 `/agile-story` em `01-http-server-health.md` após Epic 02–04 atingirem critérios mínimos (core types + pool mock + isolate mock).
 
 ## Status
-ready-for-planning (stories definidas; implementação bloqueada por Epics 02–04)
+ready-for-development (planning complete; implementação bloqueada por Epics 02–04)
