@@ -87,4 +87,4 @@ flowchart LR
 `/agile-story` em `01-embedding-spike.md` assim que Epic 02 stories 02.03 e 02.04 estiverem estáveis (wire + trait signatures).
 
 ## Status
-ready-for-planning (arquivos de epic completos; implementação não iniciada)
+ready-for-development (planning complete; implementação bloqueada por Epic 02)

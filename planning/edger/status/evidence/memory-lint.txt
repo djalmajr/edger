@@ -1,9 +1,0 @@
-tool=ai-memory memory_lint (MCP tools/call)
-invocation_target=127.0.0.1:49472
-workspace=djalmajr
-project=edger
-remote_memory_djalmajr_dev=NOT_USED (local serve only)
-http_code=200
-generated=2026-06-29T01:10:32Z
---- mcp raw ---
-{"jsonrpc":"2.0","id":11,"result":{"content":[{"type":"text","text":"{\n  \"findings\": []\n}"}],"isError":false}}

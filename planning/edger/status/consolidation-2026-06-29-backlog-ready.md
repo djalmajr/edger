@@ -24,15 +24,14 @@ Decomposição completa do roadmap Fases 1-7 em epics/stories/tasks via fluxo `/
 
 ## Maturity gates (planning)
 
-_Auto-rendered by render-status-from-gates.sh at 2026-06-29T01:10:32Z (requires run-gates.sh exit 0)._
+_Rendered at 2026-06-29T01:17:49Z after run-gates.sh (planning lint only)._
 
-- [x] Cada fase do roadmap tem epic correspondente (`01`–`07`)
-- [x] Cada epic tem `00-overview.md` + >=1 story file
-- [x] Stories contêm tasks acionáveis e comandos de verificação (`cargo test`, `bun test`, launches)
-- [x] `refinement-lint.py` scope `planning/edger/` — **0 RED** (`status/evidence/refinement-report.txt`; tool=refinement-lint.py, not skill invocation)
-- [x] `memory_lint` scope `workspace=djalmajr` `project=edger` — **findings_count=0** via local `ai-memory serve` at `127.0.0.1:49472` (`status/evidence/memory-lint.txt`; remote memory.djalmajr.dev not used)
-- [x] Fase 1 permanece `completed`; Fases 2-7 `ready-for-development`
-- [x] Cross-refs path-preflight — missing=0 (`status/evidence/path-preflight.txt`)
+- [x] 7 epics / 31 stories decomposed com secoes obrigatorias
+- [x] /agile-refinement Mode 1 — 0 red flags (status/evidence/refinement-report.txt)
+- [x] refinement-lint.py oracle — 0 RED (status/evidence/refinement-lint-oracle.txt)
+- [x] Path-preflight — 0 missing (status/evidence/path-preflight.txt)
+- [x] Fase 1 completed; Fases 2-7 ready-for-development
+- [x] bun test pass (status/evidence/bun-test.txt)
 
 
 ## Critical path (implementação)
@@ -58,19 +57,14 @@ flowchart LR
 - Fase 1 ganhou stories 03-copy-examples e 04-closure-evidence (retrospectiva documentada).
 - Gate I/O decoupled: `run-gates.sh` + `render-status-from-gates.sh` (no hand-written PASS claims)
 
-## Evidence (committed in repo)
+## Evidence (committed)
 
-_Auto-rendered from `$SCRATCH` gate outputs at 2026-06-29T01:10:32Z._
-
-| File | Tool / gate | Result |
-|---|---|---|
-| `refinement-report.txt` | `refinement-lint.py` | 0 RED |
-| `memory-lint.txt` | `ai-memory memory_lint` MCP @ `127.0.0.1:49472` | findings_count=0 |
-| `path-preflight.txt` | `path-preflight.sh` | missing=0 |
-| `gates-summary.json` | `run-gates.sh` | all gates pass |
-| `run-gates.log` | `run-gates.sh` | execution log |
-| `agile-status.txt` | `render-status-from-gates.sh` | derived snapshot |
-| `bun-test.txt` | `bun test` | 0 fail |
-| `cargo-check.txt` | `cargo check --workspace` | pass |
-| `epics-tree.txt` | inventory | file listing |
-| `epics-inventory.txt` | inventory | story counts |
+| File | Gate |
+|---|---|
+| refinement-report.txt | /agile-refinement Mode 1 |
+| refinement-lint-oracle.txt | refinement-lint.py |
+| path-preflight.txt | cross-refs |
+| artifact-inspection.txt | story sections |
+| gates-summary.json | run-gates.sh |
+| agile-status.txt | consolidation snapshot |
+| bun-test.txt | regression |

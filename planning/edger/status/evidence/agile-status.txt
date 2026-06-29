@@ -1,10 +1,9 @@
-agile-status consolidation (rendered from gates-summary.json)
-generated=2026-06-29T01:10:32Z
+/agile-status — consolidation (planning gates)
+generated=2026-06-29T01:17:49Z
 
-Gate results (exit-code driven via run-gates.sh):
-- refinement-lint.py scope=planning/edger/ → 0 RED (evidence/refinement-report.txt)
-- memory_lint MCP workspace=djalmajr project=edger invocation_target=127.0.0.1:49472 → findings_count=0
-- path-preflight → missing=0
-- bun test → 0 fail
+Planning lint: /agile-refinement Mode 1 — 0 red flags (evidence/refinement-report.txt)
+Oracle: refinement-lint.py — 0 RED (evidence/refinement-lint-oracle.txt)
+Path-preflight: 0 missing
+bun test: 0 fail
 
 Next: /agile-story on planning/edger/epics/02-edger-core/01-setup-core-crate.md

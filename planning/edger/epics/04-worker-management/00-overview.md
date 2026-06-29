@@ -88,4 +88,4 @@ flowchart LR
 `/agile-story` em `01-worker-pool-lru.md` quando Epic 02.02 (WorkerConfig, WorkerRef) estiver completo.
 
 ## Status
-ready-for-planning (arquivos de epic completos; implementação não iniciada)
+ready-for-development (planning complete; implementação bloqueada por Epics 02-03)

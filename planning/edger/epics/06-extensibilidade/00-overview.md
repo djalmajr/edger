@@ -82,4 +82,4 @@ flowchart LR
 `/agile-story` em `01-static-registration.md` após conclusão do Epic 05 (registry funcional).
 
 ## Status
-ready-for-planning (stories definidas; implementação bloqueada por Epic 05)
+ready-for-development (planning complete; implementação bloqueada por Epic 05)

@@ -1,0 +1,3 @@
+epics: 7
+stories: 31
+PASS — all stories have required sections

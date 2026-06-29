@@ -1,16 +1,10 @@
 {
-  "passed_at": "2026-06-29T01:10:32Z",
-  "memory_lint": {
-    "tool": "ai-memory memory_lint (MCP)",
-    "invocation_target": "127.0.0.1:49472",
-    "workspace": "djalmajr",
-    "project": "edger",
-    "findings_count": 0
-  },
-  "refinement": {
-    "tool": "refinement-lint.py",
+  "passed_at": "2026-06-29T01:17:49Z",
+  "planning_lint": {
+    "tool": "/agile-refinement Mode 1",
     "scope": "planning/edger/",
-    "red_count": 0
+    "red_flags": 0,
+    "oracle": "refinement-lint.py"
   },
   "path_preflight": {
     "missing": 0

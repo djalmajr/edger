@@ -125,4 +125,4 @@ flowchart LR
 - Ao fechar o épico: `/agile-refinement` + atualizar `planning/edger/roadmap.md` (Fase 7 → done).
 
 ## Status
-ready-for-planning (aguarda épicos 05 e 06)
+ready-for-development (planning complete; implementação bloqueada por Epics 05-06)
