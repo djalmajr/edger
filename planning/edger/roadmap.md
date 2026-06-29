@@ -75,7 +75,7 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 
 ## Recommended next step
 - Fases 1–2 **delivered**. Ver `status/checkpoint-2026-06-29-epic-02-closure.md`.
-- **Próxima execução:** `/agile-story` em `epics/04-worker-management/02-supervisor-lifecycle.md` (Epic 03 done; 04.01 done).
+- **Próxima execução:** `/agile-story` em `epics/04-worker-management/03-metrics-ephemeral.md` (04.01–04.02 done).
 - Per-story: `/agile-status` checkpoint + `/agile-refinement` após cada story (evidence em `status/`).
 
 ---

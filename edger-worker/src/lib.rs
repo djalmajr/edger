@@ -8,6 +8,8 @@ pub mod instance;
 pub mod lru;
 pub mod metrics;
 pub mod pool;
+pub mod state;
+pub mod supervisor;
 pub mod types;
 
 pub use error::WorkerError;
@@ -15,4 +17,6 @@ pub use factory::IsolateFactory;
 pub use instance::WorkerInstance;
 pub use metrics::PoolMetrics;
 pub use pool::WorkerPool;
+pub use state::{transition, WorkerEvent, WorkerState};
+pub use supervisor::Supervisor;
 pub use types::{PoolConfig, WorkerCacheKey};

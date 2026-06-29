@@ -1,0 +1,16 @@
+/agile-refinement Mode 2 — Story 04.02 code review
+generated=2026-06-29
+
+Scope: edger-worker supervisor lifecycle
+
+VERDICT: PASS
+
+Findings:
+- State machine matches design.md diagram (Creating→Ready→Active→Idle→Terminating→Terminated, EphemeralTerm)
+- Illegal transitions return WorkerError::InvalidTransition
+- Ephemeral ttl=0 removes worker from pool after terminate
+- notify_idle invoked on Idle entry; counted on instance for tests
+- Critical error path marks unhealthy and terminates
+- TTL expiry tested via Supervisor::on_ttl_expired (timer E2E deferred to 04.04)
+
+No RED flags.

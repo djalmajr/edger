@@ -1,13 +1,13 @@
 /agile-status — consolidation snapshot
-generated=2026-06-29T03:05:00Z
+generated=2026-06-29T03:10:00Z
 
 Epic 02: completed (17 core tests)
-Epic 03: completed (14 isolation tests) — closure checkpoint-2026-06-29-epic-03-closure.md
-Epic 04: 04.01 completed (4 worker tests)
+Epic 03: completed (14 isolation tests)
+Epic 04: 04.01 + 04.02 completed (11 worker tests)
 
-Per-story checkpoints: 02-01..04, 03-01..04, 04-01
+Per-story checkpoints: 02-01..04, 03-01..04, 04-01, 04-02
 
 bun test: 6 pass / 0 fail
-cargo test --workspace: 35 Rust tests pass
+cargo test --workspace: 42 Rust tests pass
 
-Next: /agile-story on planning/edger/epics/04-worker-management/02-supervisor-lifecycle.md
+Next: /agile-story on planning/edger/epics/04-worker-management/03-metrics-ephemeral.md

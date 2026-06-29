@@ -105,20 +105,21 @@ async fn lru_evicts_oldest_when_full() {
     let w2 = make_worker_ref(PathBuf::from("/workers/b"), "worker-b");
     let w3 = make_worker_ref(PathBuf::from("/workers/c"), "worker-c");
 
-    pool.get_or_create(&w1).unwrap();
-    pool.get_or_create(&w2).unwrap();
-    pool.get_or_create(&w3).unwrap();
+    pool.get_or_create(&w1).await.unwrap();
+    pool.get_or_create(&w2).await.unwrap();
+    pool.get_or_create(&w3).await.unwrap();
 
-    assert!(pool.get_or_create(&w1).is_err());
-    assert!(pool.get_or_create(&w2).is_ok());
-    assert!(pool.get_or_create(&w3).is_ok());
+    assert!(pool.get_or_create(&w1).await.is_err());
+    assert!(pool.get_or_create(&w2).await.is_ok());
+    assert!(pool.get_or_create(&w3).await.is_ok());
 }
 
 #[tokio::test]
 async fn second_fetch_is_cache_hit() {
     let pool = pool(4);
     let dir = PathBuf::from("/workers/hit");
-    let config = make_worker_ref(dir.clone(), "hit").config;
+    let mut config = make_worker_ref(dir.clone(), "hit").config;
+    config.ttl_ms = 30_000;
 
     pool.fetch(
         &dir,
@@ -148,8 +149,8 @@ async fn namespaced_and_unscoped_are_distinct_keys() {
     let scoped = make_worker_ref(PathBuf::from("/ns/acme"), "@acme/app");
     let unscoped = make_worker_ref(PathBuf::from("/plain/app"), "app");
 
-    let a = pool.get_or_create(&scoped).unwrap();
-    let b = pool.get_or_create(&unscoped).unwrap();
+    let a = pool.get_or_create(&scoped).await.unwrap();
+    let b = pool.get_or_create(&unscoped).await.unwrap();
 
     assert_ne!(a.worker_ref.name, b.worker_ref.name);
     assert_eq!(pool.len(), 2);

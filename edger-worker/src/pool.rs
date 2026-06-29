@@ -1,4 +1,4 @@
-//! WorkerPool — LRU cache + fetch entry point.
+//! WorkerPool — LRU cache + fetch entry point with supervisor integration.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -16,9 +16,11 @@ use crate::factory::IsolateFactory;
 use crate::instance::WorkerInstance;
 use crate::lru::WorkerLru;
 use crate::metrics::PoolMetrics;
+use crate::state::WorkerState;
+use crate::supervisor::Supervisor;
 use crate::types::{PoolConfig, WorkerCacheKey};
 
-pub struct WorkerPool {
+struct WorkerPoolInner {
     #[allow(dead_code)]
     config: PoolConfig,
     cache: WorkerLru,
@@ -26,6 +28,12 @@ pub struct WorkerPool {
     metrics: Mutex<PoolMetrics>,
     evicted: Mutex<HashSet<WorkerCacheKey>>,
     shutdown: AtomicBool,
+}
+
+/// Shared worker pool — cheaply cloneable for TTL timer callbacks.
+#[derive(Clone)]
+pub struct WorkerPool {
+    inner: Arc<WorkerPoolInner>,
 }
 
 impl WorkerPool {
@@ -47,50 +55,58 @@ impl WorkerPool {
 
     pub fn with_factory(config: PoolConfig, factory: Arc<dyn IsolateFactory>) -> Self {
         Self {
-            cache: WorkerLru::new(config.max_size),
-            config,
-            factory,
-            metrics: Mutex::new(PoolMetrics::default()),
-            evicted: Mutex::new(HashSet::new()),
-            shutdown: AtomicBool::new(false),
+            inner: Arc::new(WorkerPoolInner {
+                cache: WorkerLru::new(config.max_size),
+                config,
+                factory,
+                metrics: Mutex::new(PoolMetrics::default()),
+                evicted: Mutex::new(HashSet::new()),
+                shutdown: AtomicBool::new(false),
+            }),
         }
     }
 
     fn ensure_active(&self) -> Result<(), WorkerError> {
-        if self.shutdown.load(Ordering::SeqCst) {
+        if self.inner.shutdown.load(Ordering::SeqCst) {
             return Err(WorkerError::Shutdown);
         }
         Ok(())
     }
 
     fn record_hit(&self) {
-        let mut m = self.metrics.lock().expect("metrics lock");
+        let mut m = self.inner.metrics.lock().expect("metrics lock");
         m.cache_hits += 1;
     }
 
     fn record_miss(&self) {
-        let mut m = self.metrics.lock().expect("metrics lock");
+        let mut m = self.inner.metrics.lock().expect("metrics lock");
         m.cache_misses += 1;
     }
 
     fn sync_active_count(&self) {
-        let mut m = self.metrics.lock().expect("metrics lock");
-        m.active_workers = self.cache.len();
+        let mut m = self.inner.metrics.lock().expect("metrics lock");
+        m.active_workers = self.inner.cache.len();
     }
 
-    /// Resolve or create a pooled worker instance.
-    pub fn get_or_create(
+    /// Resolve or create a pooled worker instance (new entries start in `Creating`).
+    pub async fn get_or_create(
         &self,
         worker_ref: &WorkerRef,
     ) -> Result<Arc<WorkerInstance>, WorkerError> {
         self.ensure_active()?;
         let key = WorkerCacheKey::from_worker_ref(worker_ref);
 
-        if self.evicted.lock().expect("evicted lock").contains(&key) {
+        if self
+            .inner
+            .evicted
+            .lock()
+            .expect("evicted lock")
+            .contains(&key)
+        {
             return Err(WorkerError::Evicted);
         }
 
-        if let Some(instance) = self.cache.get(&key) {
+        if let Some(instance) = self.inner.cache.get(&key) {
             if instance.worker_ref.namespace != worker_ref.namespace {
                 return Err(WorkerError::Collision {
                     key: format!("{key:?}"),
@@ -101,17 +117,18 @@ impl WorkerPool {
             return Ok(instance);
         }
 
-        let isolate = self.factory.create_isolate();
+        let isolate = self.inner.factory.create_isolate();
         let instance = Arc::new(WorkerInstance::new(worker_ref.clone(), isolate));
 
-        if let Some(evicted_key) = self.cache.insert(key.clone(), Arc::clone(&instance)) {
+        if let Some(evicted_key) = self.inner.cache.insert(key.clone(), Arc::clone(&instance)) {
             if evicted_key == key {
                 return Err(WorkerError::Collision {
                     key: format!("{key:?}"),
                     detail: "concurrent insert".into(),
                 });
             }
-            self.evicted
+            self.inner
+                .evicted
                 .lock()
                 .expect("evicted lock")
                 .insert(evicted_key);
@@ -146,7 +163,14 @@ impl WorkerPool {
             })?;
         worker_ref.config = config.clone();
 
-        let instance = self.get_or_create(&worker_ref)?;
+        let instance = self.get_or_create(&worker_ref).await?;
+
+        if instance.state() == WorkerState::Creating {
+            Supervisor::spawn(&instance).await?;
+        }
+
+        Supervisor::on_request_start(&instance).await?;
+
         let kind = kind_hint
             .or(Some(worker_ref.kind.clone()))
             .or(config.kind.clone())
@@ -157,26 +181,36 @@ impl WorkerPool {
         let res = dispatch_to_isolate(isolate.as_mut(), kind, req, config)
             .await
             .map_err(WorkerError::Isolation)?;
+        drop(isolate);
+
+        Supervisor::on_request_complete(instance, config, self).await?;
         Ok(res)
     }
 
+    /// Remove a terminated/ephemeral worker from the LRU cache.
+    pub fn remove_instance(&self, instance: &WorkerInstance) {
+        let key = WorkerCacheKey::from_worker_ref(&instance.worker_ref);
+        self.inner.cache.remove(&key);
+        self.sync_active_count();
+    }
+
     pub fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-        self.cache.clear();
-        self.evicted.lock().expect("evicted lock").clear();
+        self.inner.shutdown.store(true, Ordering::SeqCst);
+        self.inner.cache.clear();
+        self.inner.evicted.lock().expect("evicted lock").clear();
         self.sync_active_count();
     }
 
     pub fn get_metrics(&self) -> PoolMetrics {
-        self.metrics.lock().expect("metrics lock").clone()
+        self.inner.metrics.lock().expect("metrics lock").clone()
     }
 
     pub fn len(&self) -> usize {
-        self.cache.len()
+        self.inner.cache.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.cache.is_empty()
+        self.inner.cache.is_empty()
     }
 }
 

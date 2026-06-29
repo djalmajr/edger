@@ -52,6 +52,11 @@ impl WorkerLru {
         self.len() == 0
     }
 
+    pub fn remove(&self, key: &WorkerCacheKey) {
+        let mut cache = self.inner.lock().expect("lru lock");
+        cache.pop(key);
+    }
+
     pub fn clear(&self) {
         self.inner.lock().expect("lru lock").clear();
     }

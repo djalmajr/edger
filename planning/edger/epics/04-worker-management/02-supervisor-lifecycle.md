@@ -49,12 +49,12 @@
 - **Out:** multi-process supervisor, cron, real health probes HTTP
 
 ### Critérios de aceite
-- [ ] Transição ilegal (ex: `Terminated` → `Active`) retorna erro
-- [ ] Worker ttl>0 permanece em pool após request e volta a `Idle`
-- [ ] Worker ttl=0 vai para `EphemeralTerm` e é removido do pool após cleanup
-- [ ] TTL expirado em `Idle` dispara `Terminating` → remoção LRU
-- [ ] `notify_idle` chamado no isolate ao entrar Idle (se trait disponível)
-- [ ] Testes cobrem caminho feliz e erro crítico
+- [x] Transição ilegal (ex: `Terminated` → `Active`) retorna erro
+- [x] Worker ttl>0 permanece em pool após request e volta a `Idle`
+- [x] Worker ttl=0 vai para `EphemeralTerm` e é removido do pool após cleanup
+- [x] TTL expirado em `Idle` dispara `Terminating` → remoção LRU
+- [x] `notify_idle` chamado no isolate ao entrar Idle (se trait disponível)
+- [x] Testes cobrem caminho feliz e erro crítico
 
 ### Dependências
 - Story 04.01
@@ -66,13 +66,18 @@
 - **Cenários:** TTL expiry com advance time, ephemeral ttl=0, critical error
 
 ## Tasks
-- [ ] Criar `state.rs` com enum + `transition(from, event) -> Result<WorkerState>`
-- [ ] Implementar `Supervisor` com spawn e timers
-- [ ] Enriquecer `WorkerInstance` com state, request_count, unhealthy flag
-- [ ] Integrar supervisor em `pool.get_or_create` (spawn async)
-- [ ] Wire `on_request_complete` em `pool.fetch`
-- [ ] Testes de lifecycle + TTL + ephemeral
-- [ ] Documentar mapeamento Buntime ↔ estados Rust
+- [x] Criar `state.rs` com enum + `transition(from, event) -> Result<WorkerState>`
+- [x] Implementar `Supervisor` com spawn e timers
+- [x] Enriquecer `WorkerInstance` com state, request_count, unhealthy flag
+- [x] Integrar supervisor em `pool.fetch` (spawn on Creating)
+- [x] Wire `on_request_complete` em `pool.fetch`
+- [x] Testes de lifecycle + TTL + ephemeral (`supervisor_lifecycle.rs` — 7 tests)
+- [x] Documentar mapeamento Buntime ↔ estados Rust (state.rs + design.md diagram)
+
+## Pendências (documentadas)
+- Timer TTL em background com `tokio::time::pause` flaky em multi-thread runtime — `on_ttl_expired` testado diretamente; timer E2E adiado para 04.04
+- `get_or_create` permanece async; spawn explícito via `Supervisor::spawn` ou primeiro `fetch`
+- Health probes HTTP reais — fora de escopo (04.02)
 
 ## Verification
 ```bash

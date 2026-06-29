@@ -1,25 +1,86 @@
-//! Worker instance skeleton (supervisor states in story 04.02).
+//! Worker instance with supervisor-managed lifecycle state.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use edger_core::{Isolate, WorkerRef};
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as AsyncMutex;
 
-/// A pooled worker with an injected isolate backend.
+use crate::state::WorkerState;
+
+/// A pooled worker with an injected isolate backend and lifecycle state.
 pub struct WorkerInstance {
     pub worker_ref: WorkerRef,
-    isolate: Arc<Mutex<Box<dyn Isolate>>>,
+    isolate: Arc<AsyncMutex<Box<dyn Isolate>>>,
+    state: Mutex<WorkerState>,
+    request_count: Mutex<u32>,
+    unhealthy: AtomicBool,
+    idle_notifications: AtomicU32,
+    ttl_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl WorkerInstance {
     pub fn new(worker_ref: WorkerRef, isolate: Box<dyn Isolate>) -> Self {
         Self {
             worker_ref,
-            isolate: Arc::new(Mutex::new(isolate)),
+            isolate: Arc::new(AsyncMutex::new(isolate)),
+            state: Mutex::new(WorkerState::Creating),
+            request_count: Mutex::new(0),
+            unhealthy: AtomicBool::new(false),
+            idle_notifications: AtomicU32::new(0),
+            ttl_handle: Mutex::new(None),
         }
     }
 
-    pub fn isolate(&self) -> Arc<Mutex<Box<dyn Isolate>>> {
+    pub fn isolate(&self) -> Arc<AsyncMutex<Box<dyn Isolate>>> {
         Arc::clone(&self.isolate)
+    }
+
+    pub fn state(&self) -> WorkerState {
+        *self.state.lock().expect("state lock")
+    }
+
+    pub fn set_state(&self, state: WorkerState) {
+        *self.state.lock().expect("state lock") = state;
+    }
+
+    pub fn state_lock(&self) -> std::sync::MutexGuard<'_, WorkerState> {
+        self.state.lock().expect("state lock")
+    }
+
+    pub fn request_count(&self) -> u32 {
+        *self.request_count.lock().expect("request_count lock")
+    }
+
+    pub fn increment_request_count(&self) -> u32 {
+        let mut count = self.request_count.lock().expect("request_count lock");
+        *count += 1;
+        *count
+    }
+
+    pub fn is_unhealthy(&self) -> bool {
+        self.unhealthy.load(Ordering::SeqCst)
+    }
+
+    pub fn mark_unhealthy(&self) {
+        self.unhealthy.store(true, Ordering::SeqCst);
+    }
+
+    pub fn record_idle_notification(&self) {
+        self.idle_notifications.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn idle_notification_count(&self) -> u32 {
+        self.idle_notifications.load(Ordering::SeqCst)
+    }
+
+    pub fn set_ttl_handle(&self, handle: tokio::task::JoinHandle<()>) {
+        *self.ttl_handle.lock().expect("ttl_handle lock") = Some(handle);
+    }
+
+    pub fn cancel_ttl_timer(&self) {
+        if let Some(handle) = self.ttl_handle.lock().expect("ttl_handle lock").take() {
+            handle.abort();
+        }
     }
 }
