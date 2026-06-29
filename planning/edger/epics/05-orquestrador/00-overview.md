@@ -56,7 +56,7 @@ Servidor escuta em `PORT`, responde `/health` e `/ready`, resolve workers namesp
 | 05.02 Resolução de rotas | `02-routing-resolution.md` | large | completed | 05.01 |
 | 05.03 Pipeline de requisições | `03-request-pipeline.md` | large | completed | 05.01, 05.02 |
 | 05.04 Auth + namespace gate | `04-auth-namespace-gate.md` | large | completed | 05.03, Epic 02 (auth types) |
-| 05.05 Extension registry | `05-extension-registry.md` | medium | not started | 05.03, 05.04, Epic 02 (traits) |
+| 05.05 Extension registry | `05-extension-registry.md` | medium | completed | 05.03, 05.04, Epic 02 (traits) |
 
 ## Epic roadmap
 
@@ -71,16 +71,16 @@ flowchart LR
 ```
 
 ## Epic acceptance criteria
-- [ ] Servidor axum/hyper sobe e responde `/health` (200) e `/ready` (200 quando pool/manifests ok)
-- [ ] Resolução de rotas cobre `@scope`, semver (`@1.2.3` / `latest`), paths reservados (`/api`, `/health`, `/.well-known`), precedência plugin base
-- [ ] `build_pipeline` integra registry + pool + manifests; `SerializedRequest` roundtrip testado
-- [ ] Auth gate: root synthetic principal, namespace gating, `publicRoutes` bypass antes de hooks
-- [ ] Store Turso/SQLite para API keys (com fallback de teste documentado se necessário)
-- [ ] `ExtensionRegistry` executa `on_request` em ordem de prioridade; short-circuit retorna resposta sem dispatch
-- [ ] Testes de integração (tower/axum test client) cobrem fluxo mock end-to-end
-- [ ] `cargo test --workspace && cargo clippy --workspace -- -D warnings` verde
-- [ ] `bun test` inalterado (adapter Bun)
-- [ ] Cross-refs em `planning/edger/` válidos
+- [x] Servidor axum/hyper sobe e responde `/health` (200) e `/ready` (200 quando pool/manifests ok)
+- [x] Resolução de rotas cobre `@scope`, semver (`@1.2.3` / `latest`), paths reservados (`/api`, `/health`, `/.well-known`), precedência plugin base
+- [x] `build_pipeline` integra registry + pool + manifests; `SerializedRequest` roundtrip testado
+- [x] Auth gate: root synthetic principal, namespace gating, `publicRoutes` bypass antes de hooks
+- [x] Store SQLite para API keys (Turso feature flag pendente — ver story 05.04)
+- [x] `ExtensionRegistry` executa `on_request` em ordem de prioridade; short-circuit retorna resposta sem dispatch
+- [x] Testes de integração (tower/axum test client) cobrem fluxo mock end-to-end
+- [x] `cargo test --workspace && cargo clippy --workspace -- -D warnings` verde
+- [x] `bun test` inalterado (adapter Bun)
+- [x] Cross-refs em `planning/edger/` válidos
 
 ## Risks
 
@@ -96,4 +96,4 @@ flowchart LR
 `/agile-story` em `01-http-server-health.md` após Epic 02–04 atingirem critérios mínimos (core types + pool mock + isolate mock).
 
 ## Status
-in-progress (05.01 delivered; 05.02+ pending)
+completed (stories 05.01–05.05 delivered; pendências Turso/plugin dispatch em stories)

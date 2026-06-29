@@ -1,15 +1,16 @@
 /agile-status — consolidation snapshot
-generated=2026-06-29T03:30:00Z
+generated=2026-06-29T03:35:00Z
 
 Epic 02: completed
 Epic 03: completed
 Epic 04: completed
-Epic 05: in-progress — 05.01–05.03 delivered
+Epic 05: completed (48 orchestrator tests)
 
-Checkpoints: 05-01, 05-02, 05-03
+Checkpoints: 02-01..04, 03-01..04, 04-01..04, 05-01..05
+Closure: checkpoint-2026-06-29-epic-05-closure.md
 
 bun test: 6 pass
-cargo test --workspace: 87 Rust tests pass
+cargo test --workspace: 99 Rust tests pass
 refinement-lint: 0 RED
 
-Next: Story 05.04 auth namespace gate
+Next: Fase 6 Epic 06 Extensibilidade

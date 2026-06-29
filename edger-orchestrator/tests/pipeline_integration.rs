@@ -8,7 +8,7 @@ use axum::http::{Request, StatusCode};
 use edger_core::WorkerManifest;
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
-    build_pipeline, AuthGate, AuthGateConfig, HookRunner, ManifestIndex, OrchestratorState,
+    build_pipeline, AuthGate, AuthGateConfig, ExtensionRegistry, ManifestIndex, OrchestratorState,
     ServerState, SqliteApiKeyStore,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
@@ -43,7 +43,7 @@ fn orchestrator_with_worker() -> OrchestratorState {
         server,
         pool,
         index,
-        hooks: HookRunner,
+        registry: ExtensionRegistry::new(),
         auth: AuthGate::new(
             AuthGateConfig {
                 root_api_key: Some("test-root".into()),

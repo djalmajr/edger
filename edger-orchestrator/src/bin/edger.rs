@@ -1,4 +1,4 @@
-//! edger main binary — HTTP listener with health/readiness + pipeline (story 05.01–05.04).
+//! edger main binary — HTTP listener with health/readiness + pipeline (story 05.01–05.05).
 //!
 //! Environment:
 //! - `PORT` — listen port (default `3000`)
@@ -7,10 +7,12 @@
 
 use std::sync::Arc;
 
+use edger_core::ExtensionContext;
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
-    build_pipeline, port_from_env, serve, AuthGate, HookRunner, ManifestIndex, OrchestratorState,
-    ServerConfig, ServerState, SqliteApiKeyStore,
+    build_pipeline, port_from_env, run_on_init, run_on_server_start, run_on_shutdown, serve,
+    AuthGate, ExtensionRegistry, ManifestIndex, OrchestratorState, ServerConfig, ServerState,
+    SqliteApiKeyStore,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tracing_subscriber::EnvFilter;
@@ -44,19 +46,27 @@ async fn main() -> anyhow::Result<()> {
     let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(StubIsolateFactory));
     server.mark_ready(pool.clone());
 
+    let registry = ExtensionRegistry::new();
+    // Explicit extension registration — add edger-ext-* crates here (Epic 06).
+
     let auth_store = open_auth_store()?;
+    run_on_init(&registry, &mut ExtensionContext::default())?;
+    run_on_server_start(&registry, &edger_core::ServerHandle::default());
+
     let state = OrchestratorState {
         server: server.clone(),
         pool,
         index: ManifestIndex::new(),
-        hooks: HookRunner,
+        registry,
         auth: AuthGate::from_env(auth_store),
     };
 
+    let shutdown_registry = state.registry.clone();
     let shutdown_server = server.clone();
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             tracing::info!("shutdown signal received");
+            let _ = run_on_shutdown(&shutdown_registry);
             shutdown_server.shutdown_pool();
         }
     });

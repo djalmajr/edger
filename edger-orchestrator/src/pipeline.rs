@@ -6,31 +6,19 @@ use axum::http::{Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{any, get};
 use axum::{Json, Router};
-use edger_core::{CoreError, ExecutionKind, SerializedRequest, SerializedResponse, WorkerRef};
+use edger_core::{CoreError, ExecutionKind, WorkerRef};
 use edger_worker::{WorkerError, WorkerPool};
 use serde_json::json;
 use tower_http::trace::TraceLayer;
 
-use crate::auth::AuthGate;
+use crate::auth::{is_public_route, AuthGate};
 use crate::context::RequestContext;
+use crate::hooks::{run_on_request, run_on_response};
 use crate::manifest_index_stub::ManifestIndex;
+use crate::registry::ExtensionRegistry;
 use crate::router::{resolve_route, ReservedPath, ResolvedRoute};
 use crate::server::{request_id_from_headers, request_id_middleware, ServerState};
 use crate::wire::{axum_to_serialized, serialized_to_axum};
-
-/// Stub hook runner — registry wiring lands in story 05.05.
-#[derive(Clone, Debug, Default)]
-pub struct HookRunner;
-
-impl HookRunner {
-    pub fn run_on_request(
-        &self,
-        _req: &mut SerializedRequest,
-        _ctx: &RequestContext,
-    ) -> Option<SerializedResponse> {
-        None
-    }
-}
 
 /// Shared orchestrator state for health probes and worker dispatch.
 #[derive(Clone)]
@@ -38,7 +26,7 @@ pub struct OrchestratorState {
     pub server: ServerState,
     pub pool: WorkerPool,
     pub index: ManifestIndex,
-    pub hooks: HookRunner,
+    pub registry: ExtensionRegistry,
     pub auth: AuthGate,
 }
 
@@ -102,14 +90,18 @@ async fn handle_request(
                 worker.config.public_routes.as_ref(),
                 worker.namespace.as_deref(),
             )?;
+            let skip_hooks = should_skip_hooks(&path, &state.auth, worker.config.public_routes.as_ref());
             dispatch_worker(
                 state,
                 req,
-                request_id,
-                worker,
-                "/".into(),
-                None,
-                principal,
+                DispatchParams {
+                    request_id,
+                    worker,
+                    rewritten_path: "/".into(),
+                    kind_hint: None,
+                    principal,
+                    skip_hooks,
+                },
             )
             .await
         }
@@ -124,18 +116,31 @@ async fn handle_request(
                 worker.config.public_routes.as_ref(),
                 worker.namespace.as_deref(),
             )?;
+            let skip_hooks = should_skip_hooks(&path, &state.auth, worker.config.public_routes.as_ref());
             dispatch_worker(
                 state,
                 req,
-                request_id,
-                worker,
-                rewritten_path,
-                Some(kind_hint),
-                principal,
+                DispatchParams {
+                    request_id,
+                    worker,
+                    rewritten_path,
+                    kind_hint: Some(kind_hint),
+                    principal,
+                    skip_hooks,
+                },
             )
             .await
         }
     }
+}
+
+fn should_skip_hooks(
+    path: &str,
+    auth: &AuthGate,
+    worker_public_routes: Option<&edger_core::PublicRoutesConfig>,
+) -> bool {
+    is_public_route(path, &auth.config.global_public_routes)
+        || worker_public_routes.is_some_and(|routes| is_public_route(path, routes))
 }
 
 fn dispatch_plugin_stub(_principal: Option<edger_core::ApiKeyPrincipal>) -> Result<Response<Body>, CoreError> {
@@ -146,15 +151,29 @@ fn dispatch_plugin_stub(_principal: Option<edger_core::ApiKeyPrincipal>) -> Resu
     ))
 }
 
-async fn dispatch_worker(
-    state: &OrchestratorState,
-    req: Request<Body>,
+struct DispatchParams {
     request_id: String,
     worker: WorkerRef,
     rewritten_path: String,
     kind_hint: Option<ExecutionKind>,
     principal: Option<edger_core::ApiKeyPrincipal>,
+    skip_hooks: bool,
+}
+
+async fn dispatch_worker(
+    state: &OrchestratorState,
+    req: Request<Body>,
+    params: DispatchParams,
 ) -> Result<Response<Body>, CoreError> {
+    let DispatchParams {
+        request_id,
+        worker,
+        rewritten_path,
+        kind_hint,
+        principal,
+        skip_hooks,
+    } = params;
+
     let mut serialized = axum_to_serialized(req, request_id.clone()).await?;
     serialized.uri = rewritten_path;
     serialized.base_href = Some(format!("/{}/", worker.name.trim_start_matches('@')));
@@ -163,15 +182,23 @@ async fn dispatch_worker(
     ctx.principal = principal;
     ctx.worker = Some(worker.clone());
 
-    if let Some(short_circuit) = state.hooks.run_on_request(&mut serialized, &ctx) {
-        return serialized_to_axum(short_circuit);
+    if !skip_hooks {
+        let short_circuit = run_on_request(&state.registry, &mut serialized, &ctx)
+            .map_err(|e| CoreError::new("HOOK_ERROR", e.to_string()))?;
+        if let Some(response) = short_circuit {
+            return serialized_to_axum(response);
+        }
     }
 
-    let response = state
+    let mut response = state
         .pool
         .fetch(&worker.dir, &worker.config, serialized, kind_hint)
         .await
         .map_err(worker_error_to_core)?;
+
+    if !skip_hooks {
+        run_on_response(&state.registry, &mut response, &ctx);
+    }
 
     serialized_to_axum(response)
 }
@@ -259,7 +286,7 @@ mod tests {
             server,
             pool,
             index,
-            hooks: HookRunner,
+            registry: ExtensionRegistry::new(),
             auth: AuthGate::new(
                 AuthGateConfig {
                     root_api_key: Some("test-root".into()),

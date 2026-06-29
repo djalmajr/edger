@@ -48,11 +48,15 @@
 - **Out:** padrão inventory/linkme e docs "choose ONE" (Epic 06.01); crate `edger-ext-auth` real (Epic 06.02)
 
 ### Critérios de aceite
-- [ ] Dois middlewares: primeiro retorna `Some(418)` → pool não chamado
-- [ ] Prioridade `-10` executa antes de `0`
-- [ ] `on_init` chamado na subida; `on_shutdown` no ctrl_c
-- [ ] Extensão duplicada por `name()` → erro no register
-- [ ] `publicRoutes` bypassa `on_request` de auth (coordenar com 05.04)
+- [x] Dois middlewares: primeiro retorna `Some(418)` → pool não chamado
+- [x] Prioridade `-10` executa antes de `0`
+- [x] `on_init` chamado na subida; `on_shutdown` no ctrl_c
+- [x] Extensão duplicada por `name()` → erro no register
+- [x] `publicRoutes` bypassa `on_request` (coordenado com 05.04 via `skip_hooks`)
+
+## Pendências
+- Padrão inventory/linkme documentado no Epic 06.01.
+- `edger-ext-auth` real permanece Epic 06.02.
 
 ### Dependências
 - Story 05.03 (pipeline), Story 05.04 (bypass público)
@@ -69,15 +73,15 @@
 **Nível:** unit + integração (`registry_hooks.rs`)
 
 ## Tasks
-- [ ] Implementar `ExtensionRegistry` com storage `Vec<Arc<dyn Middleware>>` + metadata
-- [ ] Implementar sort estável por priority
-- [ ] Implementar `run_on_request` / `run_on_response`
-- [ ] Implementar lifecycle runners
-- [ ] Substituir stub no `pipeline.rs`
-- [ ] Criar mock `TestMiddleware` em tests
-- [ ] Registrar mock no bin ou apenas em testes
-- [ ] Documentar contrato short-circuit no module doc
-- [ ] Verificar bypass publicRoutes com auth middleware ausente
+- [x] Implementar `ExtensionRegistry` com storage `Vec<Arc<dyn Middleware>>` + metadata
+- [x] Implementar sort estável por priority
+- [x] Implementar `run_on_request` / `run_on_response` (`hooks.rs`)
+- [x] Implementar lifecycle runners
+- [x] Substituir stub no `pipeline.rs`
+- [x] Criar mock `TestMiddleware` em `tests/registry_hooks.rs`
+- [x] Registro explícito no bin (placeholder para Epic 06)
+- [x] Documentar contrato short-circuit em `hooks.rs`
+- [x] Verificar bypass publicRoutes com `skip_hooks`
 
 ## Verification
 ```bash
