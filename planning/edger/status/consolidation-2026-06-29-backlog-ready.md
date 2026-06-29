@@ -20,6 +20,8 @@ Decomposição completa do roadmap Fases 1-7 em epics/stories/tasks via fluxo `/
 
 **Total:** 7 epics, 31 stories, todas com Context/Traceability/Files/Detail/Tasks/Verification.
 
+**Artefatos de planejamento (skeletons):** `epics/03-isolacao-execucao/spike.md`, `docs/{extensions,compat-matrix,performance-baselines,shell-protocol,wasm-abi}.md` — existem como templates; conteúdo operacional preenchido nas stories indicadas.
+
 ## Maturity gates (planning)
 
 - [x] Cada fase do roadmap tem epic correspondente (`01`–`07`)

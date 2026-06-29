@@ -66,7 +66,7 @@ flowchart LR
 ```
 
 ## Epic acceptance criteria
-- [ ] `planning/edger/epics/03-isolacao-execucao/spike.md` publicado com conclusões e riscos
+- [ ] `planning/edger/epics/03-isolacao-execucao/spike.md` com Go/no-go e métricas preenchidos (skeleton existe no backlog)
 - [ ] `edger-isolation` depende somente de `edger-core`
 - [ ] Mock `Isolate` passa testes para todos os variantes de `ExecutionKind`
 - [ ] Stubs `ResourceLimits` + transport prep documentados para multi-processo

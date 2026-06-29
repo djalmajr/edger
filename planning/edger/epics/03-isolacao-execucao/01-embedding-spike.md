@@ -20,7 +20,7 @@
 | `edger-isolation/Cargo.toml` | alterar | `[dev-dependencies]` ou features opcionais: `deno_core`, `deno_runtime` (mínimo), `wasmtime`, `wasmtime-wasi` |
 | `edger-isolation/examples/embedding-spike-deno.rs` | criar | Boot V8, módulo fetch trivial, roundtrip request |
 | `edger-isolation/examples/embedding-spike-wasm.rs` | criar | Load Wasm mínimo + WASI smoke |
-| `planning/edger/epics/03-isolacao-execucao/spike.md` | criar | Resultados, métricas, sharp edges, recomendação de módulos |
+| `planning/edger/epics/03-isolacao-execucao/spike.md` | preencher | Skeleton existe; story preenche métricas, sharp edges, Go/no-go |
 | `planning/edger/design.md` | alterar (se necessário) | Atualizar riscos/rollout se spike mudar direção |
 | `planning/edger/epics/03-isolacao-execucao/00-overview.md` | alterar | Status story 03.01 |
 
