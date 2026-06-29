@@ -17,6 +17,21 @@
 - `edger-isolation/src/wire.rs`, `limits.rs`, `transport.rs`
 - `edger-isolation/tests/wire_limits.rs`, `limits_timeout.rs`
 
+## Detail
+
+### AS-IS
+- Wire types existem em `edger-core` sem validação na camada isolation
+- Sem framing IPC nem timeout wrapper
+
+### TO-BE
+- `validate_request` + postcard length-prefixed frames
+- `execute_with_limits` com wall-clock timeout via tokio
+- `InProcessTransport` default; `UdsTransport` stub para multiproc futuro
+
+### Escopo
+- **In:** validation, framing, limits stub, transport prep
+- **Out:** UDS real, cpu_timer real, bincode multiproc
+
 ## Critérios de aceite
 - [x] Request com 101 headers falha validação
 - [x] Body acima de `max_body_size_bytes` rejeitado
