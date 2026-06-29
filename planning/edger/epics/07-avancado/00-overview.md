@@ -64,7 +64,7 @@ Consolidar o runtime para uso real e migração Buntime: execução production-p
 | 07.02 Shell routing | `02-shell-routing.md` | medium | not started | 07.01 |
 | 07.03 Cron nativo | `03-native-cron.md` | medium | not started | 07.01, Epic 05 |
 | 07.04 Execução JS real | `04-real-js-execution.md` | large | not started | Epic 03 (spike), Epic 04, Epic 05 |
-| 07.05 Execução Wasm | `05-wasm-execution.md` | large | not started | Epic 03 (spike), Epic 04, Epic 05 |
+| 07.05 Execução Wasm | `05-wasm-execution.md` | large | **in progress** (v1 ABI) | Epic 03 (spike), Epic 04, Epic 05 |
 | 07.06 Observabilidade OTEL | `06-observability-otel.md` | medium | not started | 07.01, 07.04, 07.05 |
 | 07.07 Hardening + matriz compat | `07-hardening-compat-matrix.md` | large | not started | 07.02, 07.03, 07.06 |
 
@@ -125,4 +125,4 @@ flowchart LR
 - Ao fechar o épico: `/agile-refinement` + atualizar `planning/edger/roadmap.md` (Fase 7 → done).
 
 ## Status
-ready-for-development (planning complete; implementação bloqueada por Epics 05-06)
+**in-progress** (2026-06-29) — Epic 06 done; 07.05 v1 slice delivered; 07.04 bloqueado V8 boot. Pendências: `docs/pendencies-epic-07.md`

@@ -14,6 +14,9 @@ thiserror.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
+wasmtime = { workspace = true, optional = true }
+wasmtime-wasi = { workspace = true, optional = true }
+wat = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
@@ -33,5 +36,5 @@ path = "examples/embedding-spike-deno.rs"
 default = []
 # Skeleton backends — no V8/wasmtime engine link in default CI build.
 deno = []
-wasm = []
+wasm = ["dep:wasmtime", "dep:wasmtime-wasi", "dep:wat"]
 multiproc = []

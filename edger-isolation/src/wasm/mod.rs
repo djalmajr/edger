@@ -3,8 +3,10 @@
 //! Standalone Wasm path (not co-located in V8 isolate). Enable with:
 //! `cargo check -p edger-isolation --features wasm`
 
+mod handler;
 mod wasi;
 
+pub use handler::WasmHttpHandler;
 pub use wasi::WasiConfig;
 
 use async_trait::async_trait;
@@ -18,14 +20,25 @@ fn not_impl(method: &str) -> IsolationError {
     )
 }
 
-/// Wasm isolate skeleton — all methods stubbed until wasmtime engine wires in.
+/// Wasm isolate — `execute_wasm` uses wasmtime; other kinds remain stubbed (07.04).
 pub struct WasmIsolate {
     wasi: WasiConfig,
+    handler: WasmHttpHandler,
+    wasm_bytes: Option<Vec<u8>>,
 }
 
 impl WasmIsolate {
     pub fn new(wasi: WasiConfig) -> Self {
-        Self { wasi }
+        Self {
+            wasi,
+            handler: WasmHttpHandler::new(),
+            wasm_bytes: None,
+        }
+    }
+
+    pub fn with_wasm_bytes(mut self, bytes: Vec<u8>) -> Self {
+        self.wasm_bytes = Some(bytes);
+        self
     }
 
     pub fn wasi_config(&self) -> &WasiConfig {
@@ -62,10 +75,17 @@ impl Isolate for WasmIsolate {
 
     async fn execute_wasm(
         &mut self,
-        _req: SerializedRequest,
-        _config: &WorkerConfig,
+        req: SerializedRequest,
+        config: &WorkerConfig,
     ) -> Result<SerializedResponse, IsolationError> {
-        Err(not_impl("execute_wasm"))
+        let _ = (&req, config);
+        let bytes = self.wasm_bytes.as_ref().ok_or_else(|| {
+            IsolationError::new(
+                "WASM_NOT_LOADED",
+                "no wasm module bytes configured on WasmIsolate",
+            )
+        })?;
+        self.handler.execute_module(bytes)
     }
 
     async fn notify_idle(&mut self) -> Result<(), IsolationError> {

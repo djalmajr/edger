@@ -47,6 +47,7 @@
 - **Out:** Wasm dentro do deno isolate; component model avançado; hot reload de módulos.
 
 ### Acceptance criteria
+- [x] Módulo WAT mínimo responde via `WasmIsolate::execute_wasm` (ABI v1: `http_status` + `http_body_len`)
 - [ ] Worker `workers/wasm-hello/` com kind `wasm` responde GET via pool com body determinístico.
 - [ ] Módulo malformado ou path fora do dir falha com `IsolationError` claro.
 - [ ] WASI não concede acesso a filesystem fora do worker dir (teste negativo).
@@ -67,7 +68,8 @@
 ## Tasks
 
 ### Fase 1 — Engine + load
-- [ ] `wasm.rs`: Engine/Store/Module load from worker dir entrypoint.
+- [x] `wasm/handler.rs`: Engine/Store/Module load from bytes (WAT→wasm)
+- [ ] Load from worker dir entrypoint via manifest
 - [ ] Validação: tamanho máximo módulo, magic bytes, reject unknown imports per policy.
 
 ### Fase 2 — WASI sandbox

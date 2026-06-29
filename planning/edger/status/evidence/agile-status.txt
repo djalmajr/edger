@@ -1,16 +1,20 @@
-/agile-status — consolidation snapshot
-generated=2026-06-29T03:35:00Z
+Epic 06 Extensibilidade — COMPLETED 2026-06-29
+  06.01 static registration (explicit bin list)
+  06.02 edger-ext-auth (AuthProvider + SQLite store)
+  06.03 edger-ext-gateway template
+  Commit: 7e20a33
+  Closure: status/checkpoint-2026-06-29-epic-06-closure.md
 
-Epic 02: completed
-Epic 03: completed
-Epic 04: completed
-Epic 05: completed (48 orchestrator tests)
+Epic 07 Avançado — IN PROGRESS
+  07.05 Wasm v1 slice (WasmHttpHandler ABI + tests) — WIP
+  07.04 Real JS — BLOCKED (deno_core V8 boot, see spike.md)
+  Pendências: planning/edger/docs/pendencies-epic-07.md
 
-Checkpoints: 02-01..04, 03-01..04, 04-01..04, 05-01..05
-Closure: checkpoint-2026-06-29-epic-05-closure.md
+Gates (last run):
+  cargo test --workspace — PASS
+  cargo test -p edger-isolation --features wasm — PASS
+  cargo clippy --workspace -D warnings — PASS
+  bun test — 6 pass
+  run-gates.sh — ALL PLANNING GATES PASS
 
-bun test: 6 pass
-cargo test --workspace: 99 Rust tests pass
-refinement-lint: 0 RED
-
-Next: Fase 6 Epic 06 Extensibilidade
+Next: 07.05 pool wiring + wasm-hello fixture OR 07.04 deno_core boot spike

@@ -32,7 +32,7 @@ pub use wire::{decode_frame, encode_frame, validate_request};
 pub use deno::DenoIsolate;
 
 #[cfg(feature = "wasm")]
-pub use wasm::WasmIsolate;
+pub use wasm::{WasmHttpHandler, WasmIsolate, WasiConfig};
 
 // Re-export core types for convenience.
 pub use edger_core::{ExecutionKind, IsolationError, SerializedRequest, SerializedResponse};
