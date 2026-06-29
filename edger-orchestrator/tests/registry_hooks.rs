@@ -14,9 +14,8 @@ use edger_core::{
 };
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
-    build_pipeline, run_on_init, run_on_request, run_on_shutdown, AuthGate,
-    AuthGateConfig, ExtensionRegistry, ManifestIndex, OrchestratorState, ServerState,
-    SqliteApiKeyStore,
+    build_pipeline, run_on_init, run_on_request, run_on_shutdown, AuthGate, AuthGateConfig,
+    ExtensionRegistry, ManifestIndex, OrchestratorState, ServerState, SqliteApiKeyStore,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -166,7 +165,8 @@ async fn short_circuit_skips_pool_fetch() {
     let mut registry = ExtensionRegistry::new();
     registry
         .register(Arc::new(
-            TestMiddleware::new("teapot", 0, Arc::new(Mutex::new(Vec::new()))).with_short_circuit(418),
+            TestMiddleware::new("teapot", 0, Arc::new(Mutex::new(Vec::new())))
+                .with_short_circuit(418),
         ))
         .unwrap();
 

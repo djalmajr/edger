@@ -105,10 +105,8 @@ impl ApiKeyStore for SqliteApiKeyStore {
         };
         let (id, name, key_prefix, role, permissions_json, namespaces_json, expires_at) =
             row.map_err(db_err)?;
-        let permissions: Vec<String> =
-            serde_json::from_str(&permissions_json).map_err(json_err)?;
-        let namespaces: Vec<String> =
-            serde_json::from_str(&namespaces_json).map_err(json_err)?;
+        let permissions: Vec<String> = serde_json::from_str(&permissions_json).map_err(json_err)?;
+        let namespaces: Vec<String> = serde_json::from_str(&namespaces_json).map_err(json_err)?;
 
         if let Some(exp) = expires_at {
             let now = std::time::SystemTime::now()

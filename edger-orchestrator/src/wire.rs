@@ -39,16 +39,19 @@ pub async fn axum_to_serialized(
 /// Convert isolate wire response into an HTTP response.
 pub fn serialized_to_axum(res: SerializedResponse) -> Result<Response<Body>, CoreError> {
     validate_headers(&res.headers)?;
-    let mut builder = Response::builder().status(StatusCode::from_u16(res.status).map_err(
-        |_| CoreError::validation("status", format!("invalid status {}", res.status)),
-    )?);
+    let mut builder =
+        Response::builder().status(StatusCode::from_u16(res.status).map_err(|_| {
+            CoreError::validation("status", format!("invalid status {}", res.status))
+        })?);
     if let Some(headers) = builder.headers_mut() {
         for (name, value) in &res.headers {
             headers.append(
-                name.parse::<axum::http::HeaderName>()
-                    .map_err(|_| CoreError::validation("headers", format!("invalid name {name}")))?,
-                HeaderValue::from_str(value)
-                    .map_err(|_| CoreError::validation("headers", format!("invalid value for {name}")))?,
+                name.parse::<axum::http::HeaderName>().map_err(|_| {
+                    CoreError::validation("headers", format!("invalid name {name}"))
+                })?,
+                HeaderValue::from_str(value).map_err(|_| {
+                    CoreError::validation("headers", format!("invalid value for {name}"))
+                })?,
             );
         }
     }
@@ -91,7 +94,10 @@ mod tests {
         let serialized = axum_to_serialized(req, "req-1".into()).await.unwrap();
         assert_eq!(serialized.method, "POST");
         assert_eq!(serialized.uri, "/foo/bar");
-        assert_eq!(serialized.body.as_ref().map(|b| b.as_ref()), Some(b"payload".as_ref()));
+        assert_eq!(
+            serialized.body.as_ref().map(|b| b.as_ref()),
+            Some(b"payload".as_ref())
+        );
         assert!(serialized
             .headers
             .iter()

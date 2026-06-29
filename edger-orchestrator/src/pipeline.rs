@@ -60,8 +60,8 @@ async fn pipeline_handler(
     State(state): State<OrchestratorState>,
     req: Request<Body>,
 ) -> Response<Body> {
-    let request_id = request_id_from_headers(req.headers())
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let request_id =
+        request_id_from_headers(req.headers()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     match handle_request(&state, req, request_id).await {
         Ok(res) => res,
@@ -90,7 +90,8 @@ async fn handle_request(
                 worker.config.public_routes.as_ref(),
                 worker.namespace.as_deref(),
             )?;
-            let skip_hooks = should_skip_hooks(&path, &state.auth, worker.config.public_routes.as_ref());
+            let skip_hooks =
+                should_skip_hooks(&path, &state.auth, worker.config.public_routes.as_ref());
             dispatch_worker(
                 state,
                 req,
@@ -116,7 +117,8 @@ async fn handle_request(
                 worker.config.public_routes.as_ref(),
                 worker.namespace.as_deref(),
             )?;
-            let skip_hooks = should_skip_hooks(&path, &state.auth, worker.config.public_routes.as_ref());
+            let skip_hooks =
+                should_skip_hooks(&path, &state.auth, worker.config.public_routes.as_ref());
             dispatch_worker(
                 state,
                 req,
@@ -143,7 +145,9 @@ fn should_skip_hooks(
         || worker_public_routes.is_some_and(|routes| is_public_route(path, routes))
 }
 
-fn dispatch_plugin_stub(_principal: Option<edger_core::ApiKeyPrincipal>) -> Result<Response<Body>, CoreError> {
+fn dispatch_plugin_stub(
+    _principal: Option<edger_core::ApiKeyPrincipal>,
+) -> Result<Response<Body>, CoreError> {
     Ok(json_error(
         StatusCode::NOT_IMPLEMENTED,
         "PLUGIN_BASE",

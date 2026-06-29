@@ -38,10 +38,7 @@ impl ManifestIndex {
         let key = worker.name.clone();
         let bucket = self.entries.entry(key).or_default();
 
-        if bucket
-            .iter()
-            .any(|e| e.worker.version == worker.version)
-        {
+        if bucket.iter().any(|e| e.worker.version == worker.version) {
             return Err(CoreError::new(
                 "COLLISION",
                 format!("duplicate worker {}@{}", worker.name, worker.version),
@@ -56,8 +53,7 @@ impl ManifestIndex {
                 dir: worker.dir.clone(),
                 manifest: manifest.clone(),
             });
-            self.plugins
-                .sort_by(|a, b| b.base.len().cmp(&a.base.len()));
+            self.plugins.sort_by(|a, b| b.base.len().cmp(&a.base.len()));
         }
 
         bucket.push(ManifestEntry {
@@ -78,10 +74,7 @@ impl ManifestIndex {
             .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
 
         let resolved_version = resolve_semver(
-            bucket
-                .iter()
-                .map(|e| e.worker.version.as_str())
-                .collect(),
+            bucket.iter().map(|e| e.worker.version.as_str()).collect(),
             version,
         )?;
 
@@ -149,9 +142,8 @@ fn pick_highest(available: Vec<&str>) -> Result<String, CoreError> {
         if v == "latest" {
             continue;
         }
-        let parsed = semver::Version::parse(v).map_err(|_| {
-            CoreError::new("PARSE_ERROR", format!("invalid semver: {v}"))
-        })?;
+        let parsed = semver::Version::parse(v)
+            .map_err(|_| CoreError::new("PARSE_ERROR", format!("invalid semver: {v}")))?;
         if best.as_ref().is_none_or(|b| parsed > *b) {
             best = Some(parsed);
             best_raw = v.to_string();
@@ -191,16 +183,10 @@ mod tests {
     fn latest_picks_highest_semver() {
         let mut index = ManifestIndex::new();
         index
-            .insert(
-                PathBuf::from("/w/a"),
-                manifest("@acme/api", "1.0.0"),
-            )
+            .insert(PathBuf::from("/w/a"), manifest("@acme/api", "1.0.0"))
             .unwrap();
         index
-            .insert(
-                PathBuf::from("/w/b"),
-                manifest("@acme/api", "2.0.0"),
-            )
+            .insert(PathBuf::from("/w/b"), manifest("@acme/api", "2.0.0"))
             .unwrap();
         let worker = index.resolve_worker("@acme/api", None).unwrap();
         assert_eq!(worker.version, "2.0.0");

@@ -46,7 +46,7 @@ Bin `edger` registra extensões via padrão escolhido; `edger-ext-auth` implemen
 
 | Story | Arquivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|
-| 06.01 Registro estático | `01-static-registration.md` | medium | not started | Epic 05 (05.05) |
+| 06.01 Registro estático | `01-static-registration.md` | medium | completed | Epic 05 (05.05) |
 | 06.02 edger-ext-auth | `02-edger-ext-auth.md` | large | not started | 06.01, Epic 05 (05.04) |
 | 06.03 Template extensão | `03-extension-template.md` | medium | not started | 06.01, 06.02 |
 
@@ -60,8 +60,8 @@ flowchart LR
 ```
 
 ## Epic acceptance criteria
-- [ ] Padrão de registro estático escolhido e documentado (inventory/linkme/explicit — uma opção)
-- [ ] Regra "choose ONE" documentada: uma crate não registra dois modos conflitantes sem features
+- [x] Padrão de registro estático escolhido e documentado (**lista explícita no bin**)
+- [x] Regra "choose ONE" documentada: uma crate não registra dois modos conflitantes sem features
 - [ ] `edger-ext-auth` compila, implementa `AuthProvider`, testes unitários passam
 - [ ] Auth extension registrada no bin `edger` e participa do pipeline (substitui ou delega gate 05.04)
 - [ ] `edger-ext-gateway` (template) compila como exemplo Middleware com registro
@@ -82,4 +82,4 @@ flowchart LR
 `/agile-story` em `01-static-registration.md` após conclusão do Epic 05 (registry funcional).
 
 ## Status
-ready-for-development (planning complete; implementação bloqueada por Epic 05)
+in-progress (06.01 delivered; 06.02+ pending)

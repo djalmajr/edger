@@ -57,7 +57,8 @@ impl ServerState {
     }
 
     pub fn is_ready(&self) -> bool {
-        self.inner.ready.load(Ordering::SeqCst) && self.inner.pool.read().expect("pool lock").is_some()
+        self.inner.ready.load(Ordering::SeqCst)
+            && self.inner.pool.read().expect("pool lock").is_some()
     }
 
     pub fn shutdown_pool(&self) {

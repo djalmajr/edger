@@ -73,8 +73,7 @@ impl AuthGate {
         worker_namespace: Option<&str>,
     ) -> Result<Option<ApiKeyPrincipal>, CoreError> {
         if is_public_route(path, &self.config.global_public_routes)
-            || worker_public_routes
-                .is_some_and(|routes| is_public_route(path, routes))
+            || worker_public_routes.is_some_and(|routes| is_public_route(path, routes))
         {
             return Ok(None);
         }

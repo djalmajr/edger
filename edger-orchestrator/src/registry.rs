@@ -42,6 +42,28 @@ impl ExtensionRegistry {
     pub fn middlewares(&self) -> &[Arc<dyn Middleware>] {
         &self.middlewares
     }
+
+    /// Build a registry from an explicit extension list (story 06.01 — chosen pattern).
+    ///
+    /// The `edger` binary is the composition root: each `edger-ext-*` crate exports a
+    /// constructor; the bin calls `collect_extensions()` and passes the result here.
+    pub fn from_explicit<I>(middlewares: I) -> Result<Self, CoreError>
+    where
+        I: IntoIterator<Item = Arc<dyn Middleware>>,
+    {
+        let mut registry = Self::new();
+        for middleware in middlewares {
+            registry.register(middleware)?;
+        }
+        Ok(registry)
+    }
+}
+
+/// Composition helper — explicit static registration (no inventory/linkme in v1).
+pub fn collect_extensions(
+    middlewares: Vec<Arc<dyn Middleware>>,
+) -> Result<ExtensionRegistry, CoreError> {
+    ExtensionRegistry::from_explicit(middlewares)
 }
 
 #[cfg(test)]

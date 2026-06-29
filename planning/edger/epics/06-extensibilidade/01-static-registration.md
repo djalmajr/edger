@@ -52,10 +52,10 @@ Recomendação de planning: começar com **lista explícita no bin** se inventor
 - **Out:** crates ext reais (06.02–06.03)
 
 ### Critérios de aceite
-- [ ] `planning/edger/docs/extensions.md` existe em português com padrão escolhido
-- [ ] Teste prova que extensão registrada via padrão aparece no registry
-- [ ] AGENTS menciona: ext depende só de `edger-core`; nunca publicar manualmente crates.io
-- [ ] Regra choose ONE com exemplo anti-padrão (crate que faz auth + gateway — proibido)
+- [x] `planning/edger/docs/extensions.md` existe em português com padrão escolhido
+- [x] Teste prova que extensão registrada via padrão aparece no registry
+- [x] AGENTS menciona: ext depende só de `edger-core`; nunca publicar manualmente crates.io
+- [x] Regra choose ONE com exemplo anti-padrão (crate que faz auth + gateway — proibido)
 
 ### Dependências
 - Story 05.05
@@ -69,12 +69,15 @@ Recomendação de planning: começar com **lista explícita no bin** se inventor
 **Nível:** integração (`static_registration.rs`)
 
 ## Tasks
-- [ ] Spike 1–2h: inventory vs linkme vs explicit — registrar decisão em `planning/edger/docs/extensions.md`
-- [ ] Implementar mecanismo escolhido
-- [ ] Escrever `planning/edger/docs/extensions.md` (choose ONE, deps, registro, testes)
-- [ ] Atualizar `AGENTS.md` com regras de extensão
-- [ ] Teste com mock extension crate em `tests/fixtures/ext-mock/`
-- [ ] Atualizar overview epic 06 com decisão tomada
+- [x] Spike: inventory vs linkme vs explicit — decisão **lista explícita no bin** em `docs/extensions.md`
+- [x] Implementar `collect_extensions` + `ExtensionRegistry::from_explicit`
+- [x] Escrever `planning/edger/docs/extensions.md` (choose ONE, deps, registro, testes)
+- [x] Atualizar `AGENTS.md` com regras de extensão
+- [x] Teste mock em `tests/static_registration.rs` (3 cenários)
+- [x] Atualizar overview epic 06 com decisão tomada
+
+## Pendências
+- Migrar para `inventory`/`linkme` quando 3+ extensões estáveis (não bloqueante v1).
 
 ## Verification
 ```bash

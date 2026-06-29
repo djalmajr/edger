@@ -3,9 +3,7 @@
 use std::path::PathBuf;
 
 use edger_core::WorkerManifest;
-use edger_orchestrator::{
-    resolve_route, ManifestIndex, ReservedPath, ResolvedRoute,
-};
+use edger_orchestrator::{resolve_route, ManifestIndex, ReservedPath, ResolvedRoute};
 
 fn manifest(name: &str, version: &str) -> WorkerManifest {
     WorkerManifest {
@@ -45,10 +43,7 @@ fn build_index() -> ManifestIndex {
         )
         .unwrap();
     index
-        .insert(
-            PathBuf::from("/workers/home"),
-            manifest("home", "1.0.0"),
-        )
+        .insert(PathBuf::from("/workers/home"), manifest("home", "1.0.0"))
         .unwrap();
 
     let home = index.resolve_worker("home", None).unwrap();
@@ -67,24 +62,40 @@ fn plugin_manifest(name: &str, base: &str) -> WorkerManifest {
 #[test]
 fn reserved_health() {
     let route = resolve_route("/health", None, &ManifestIndex::new()).unwrap();
-    assert_eq!(route, ResolvedRoute::Reserved { kind: ReservedPath::Health });
+    assert_eq!(
+        route,
+        ResolvedRoute::Reserved {
+            kind: ReservedPath::Health
+        }
+    );
 }
 
 #[test]
 fn reserved_ready() {
     let route = resolve_route("/ready", None, &ManifestIndex::new()).unwrap();
-    assert_eq!(route, ResolvedRoute::Reserved { kind: ReservedPath::Ready });
+    assert_eq!(
+        route,
+        ResolvedRoute::Reserved {
+            kind: ReservedPath::Ready
+        }
+    );
 }
 
 #[test]
 fn reserved_api_prefix() {
     let route = resolve_route("/api/v1/keys", None, &ManifestIndex::new()).unwrap();
-    assert_eq!(route, ResolvedRoute::Reserved { kind: ReservedPath::Api });
+    assert_eq!(
+        route,
+        ResolvedRoute::Reserved {
+            kind: ReservedPath::Api
+        }
+    );
 }
 
 #[test]
 fn reserved_well_known() {
-    let route = resolve_route("/.well-known/acme-challenge/x", None, &ManifestIndex::new()).unwrap();
+    let route =
+        resolve_route("/.well-known/acme-challenge/x", None, &ManifestIndex::new()).unwrap();
     assert_eq!(
         route,
         ResolvedRoute::Reserved {
@@ -135,7 +146,11 @@ fn namespaced_exact_semver() {
     let index = build_index();
     let route = resolve_route("/@acme/app@1.0.0", None, &index).unwrap();
     match route {
-        ResolvedRoute::Worker { worker, rewritten_path, .. } => {
+        ResolvedRoute::Worker {
+            worker,
+            rewritten_path,
+            ..
+        } => {
             assert_eq!(worker.version, "1.0.0");
             assert_eq!(rewritten_path, "/");
         }
@@ -261,10 +276,7 @@ fn unknown_worker_returns_not_found() {
 fn unscoped_versioned_path() {
     let mut index = ManifestIndex::new();
     index
-        .insert(
-            PathBuf::from("/w/h"),
-            manifest("svc", "3.1.0"),
-        )
+        .insert(PathBuf::from("/w/h"), manifest("svc", "3.1.0"))
         .unwrap();
     let route = resolve_route("/svc@3.1.0/ping", None, &index).unwrap();
     match route {

@@ -10,8 +10,8 @@ use std::sync::Arc;
 use edger_core::ExtensionContext;
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
-    build_pipeline, port_from_env, run_on_init, run_on_server_start, run_on_shutdown, serve,
-    AuthGate, ExtensionRegistry, ManifestIndex, OrchestratorState, ServerConfig, ServerState,
+    build_pipeline, collect_extensions, port_from_env, run_on_init, run_on_server_start,
+    run_on_shutdown, serve, AuthGate, ManifestIndex, OrchestratorState, ServerConfig, ServerState,
     SqliteApiKeyStore,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
@@ -37,7 +37,9 @@ fn open_auth_store() -> anyhow::Result<Arc<SqliteApiKeyStore>> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("edger_orchestrator=info".parse()?))
+        .with_env_filter(
+            EnvFilter::from_default_env().add_directive("edger_orchestrator=info".parse()?),
+        )
         .init();
 
     let port = port_from_env();
@@ -46,8 +48,8 @@ async fn main() -> anyhow::Result<()> {
     let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(StubIsolateFactory));
     server.mark_ready(pool.clone());
 
-    let registry = ExtensionRegistry::new();
-    // Explicit extension registration — add edger-ext-* crates here (Epic 06).
+    // Explicit extension registration (story 06.01) — add edger-ext-* exports here.
+    let registry = collect_extensions(vec![])?;
 
     let auth_store = open_auth_store()?;
     run_on_init(&registry, &mut ExtensionContext::default())?;

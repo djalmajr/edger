@@ -12,6 +12,12 @@
 - Use explicit memory scopes (workspace: "djalmajr", project: "edger") for ai-memory.
 - For buntime cross-ref use zommehq/buntime scope explicitly.
 
+## Extensions (edger-ext-*)
+- Crates `edger-ext-*` depend only on `edger-core` — never on `edger-orchestrator`.
+- **choose ONE** mode per crate: Middleware, AuthProvider, or WorkerHandler (not mixed without exclusive Cargo features).
+- v1 registration: explicit list in bin `edger` via `collect_extensions(vec![...])` (see `planning/edger/docs/extensions.md`).
+- Do not publish extension crates to crates.io manually.
+
 ## Launch / Workers
 - edger entry: `bun edger.ts --dir <worker-dir> [--port N]`
 - Worker dir **must** have `index.{ts,js,mjs}` compatible with:
