@@ -53,7 +53,7 @@ Validar embedding via spike time-boxed (deno_core + facade primário; wasmtime p
 | 03.01 Embedding spike | `01-embedding-spike.md` | large | **completed** | Epic 02 (parcial: wire types) |
 | 03.02 Isolate trait impl | `02-isolate-trait-impl.md` | large | **completed** | 03.01, Epic 02.04 |
 | 03.03 Wire + limites | `03-wire-limits.md` | medium | **completed** | 03.02, Epic 02.03 |
-| 03.04 Dual-backend prep | `04-dual-backend-prep.md` | medium | not started | 03.01, 03.02, 03.03 |
+| 03.04 Dual-backend prep | `04-dual-backend-prep.md` | medium | **completed** | 03.01, 03.02, 03.03 |
 
 ## Epic roadmap
 
@@ -66,13 +66,13 @@ flowchart LR
 ```
 
 ## Epic acceptance criteria
-- [ ] `planning/edger/epics/03-isolacao-execucao/spike.md` com Go/no-go e métricas preenchidos (skeleton existe no backlog)
-- [ ] `edger-isolation` depende somente de `edger-core`
-- [ ] Mock `Isolate` passa testes para todos os variantes de `ExecutionKind`
-- [ ] Stubs `ResourceLimits` + transport prep documentados para multi-processo
-- [ ] Módulos `deno` (facade skeleton) e `wasm` (wasmtime WASI skeleton) compilam sob feature flags
-- [ ] `cargo test -p edger-isolation` e gate workspace verdes
-- [ ] `bun test` continua passando
+- [x] `planning/edger/epics/03-isolacao-execucao/spike.md` com Go/no-go e métricas preenchidos
+- [x] `edger-isolation` depende somente de `edger-core`
+- [x] Mock `Isolate` passa testes para todos os variantes de `ExecutionKind`
+- [x] Stubs `ResourceLimits` + transport prep documentados para multi-processo
+- [x] Módulos `deno` (facade skeleton) e `wasm` (wasmtime WASI skeleton) compilam sob feature flags
+- [x] `cargo test -p edger-isolation` e gate workspace verdes (14 isolation + 17 core = 31 Rust tests)
+- [x] `bun test` continua passando (6 pass)
 
 ## Risks
 
@@ -87,4 +87,4 @@ flowchart LR
 `/agile-story` em `01-embedding-spike.md` assim que Epic 02 stories 02.03 e 02.04 estiverem estáveis (wire + trait signatures).
 
 ## Status
-ready-for-development (planning complete; implementação bloqueada por Epic 02)
+**completed** (2026-06-29) — ver `status/checkpoint-2026-06-29-epic-03-closure.md`

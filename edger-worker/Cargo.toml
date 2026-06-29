@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# worker management, pool, supervisor patterns (inspirado em Edge Runtime)
+edger-core = { path = "../edger-core" }
+async-trait.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "sync"] }
+lru.workspace = true
+thiserror.workspace = true
+bytes.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

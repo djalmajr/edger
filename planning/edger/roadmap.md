@@ -31,8 +31,8 @@
 |---|---|---|---|---|
 | Fase 1: Fundação | [`epics/01-fundacao/`](epics/01-fundacao/00-overview.md) | 4 | **completed** (Bun loader delivered) | -- |
 | Fase 2: edger-core | [`epics/02-edger-core/`](epics/02-edger-core/00-overview.md) | 4 | **completed** | Fase 1 |
-| Fase 3: Isolação + Spike | [`epics/03-isolacao-execucao/`](epics/03-isolacao-execucao/00-overview.md) | 4 | ready-for-development | Fase 2 |
-| Fase 4: Worker Management | [`epics/04-worker-management/`](epics/04-worker-management/00-overview.md) | 4 | ready-for-development | Fase 2, Fase 3 (parcial) |
+| Fase 3: Isolação + Spike | [`epics/03-isolacao-execucao/`](epics/03-isolacao-execucao/00-overview.md) | 4 | **completed** | Fase 2 |
+| Fase 4: Worker Management | [`epics/04-worker-management/`](epics/04-worker-management/00-overview.md) | 4 | in progress | Fase 2, Fase 3 |
 | Fase 5: Orquestrador | [`epics/05-orquestrador/`](epics/05-orquestrador/00-overview.md) | 5 | ready-for-development | Fase 1-4 |
 | Fase 6: Extensibilidade | [`epics/06-extensibilidade/`](epics/06-extensibilidade/00-overview.md) | 3 | ready-for-development | Fase 5 |
 | Fase 7: Avançado | [`epics/07-avancado/`](epics/07-avancado/00-overview.md) | 7 | ready-for-development | Fase 5-6 |
@@ -75,7 +75,7 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 
 ## Recommended next step
 - Fases 1–2 **delivered**. Ver `status/checkpoint-2026-06-29-epic-02-closure.md`.
-- **Próxima execução:** `/agile-story` em `epics/03-isolacao-execucao/03-wire-limits.md` (03.01–03.02 done).
+- **Próxima execução:** `/agile-story` em `epics/04-worker-management/02-supervisor-lifecycle.md` (Epic 03 done; 04.01 done).
 - Per-story: `/agile-status` checkpoint + `/agile-refinement` após cada story (evidence em `status/`).
 
 ---

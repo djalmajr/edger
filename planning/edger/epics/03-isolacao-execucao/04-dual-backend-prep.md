@@ -46,13 +46,13 @@
 - **Out:** execução V8/Wasm real, registro completo de ops Deno, eszip parser real
 
 ### Critérios de aceite
-- [ ] `cargo test -p edger-isolation` passa sem features (mock only)
-- [ ] `cargo check -p edger-isolation --features deno` compila (pode ignorar link V8 em CI com cfg)
-- [ ] `cargo check -p edger-isolation --features wasm` compila
-- [ ] `DenoIsolate` e `WasmIsolate` existem e implementam trait `Isolate` (stubs NotImplemented)
-- [ ] `ModuleBundler` trait documentado com path para eszip/precomp (PR 10)
-- [ ] Factory test: `IsolationBackend::Mock` retorna isolate funcional
-- [ ] Layout alinhado com seção "Recomendação de módulos" em `spike.md`
+- [x] `cargo test -p edger-isolation` passa sem features (mock only)
+- [x] `cargo check -p edger-isolation --features deno` compila (pode ignorar link V8 em CI com cfg)
+- [x] `cargo check -p edger-isolation --features wasm` compila
+- [x] `DenoIsolate` e `WasmIsolate` existem e implementam trait `Isolate` (stubs NotImplemented)
+- [x] `ModuleBundler` trait documentado com path para eszip/precomp (PR 10)
+- [x] Factory test: `IsolationBackend::Mock` retorna isolate funcional
+- [x] Layout alinhado com seção "Recomendação de módulos" em `spike.md`
 
 ### Dependências
 - Story 03.01 (`spike.md` publicado)
@@ -65,14 +65,19 @@
 - **Evitar:** Exigir V8 no CI default; usar `cfg` guards
 
 ## Tasks
-- [ ] Ler `spike.md` e alinhar nomes de módulos
-- [ ] Adicionar features `deno` / `wasm` no Cargo.toml com deps opcionais pinadas
-- [ ] Criar `deno/mod.rs`, `facade.rs`, `bundle.rs` (stubs)
-- [ ] Criar `wasm/mod.rs`, `wasi.rs` (stubs)
-- [ ] Criar `backend.rs` factory + enum `IsolationBackend`
-- [ ] Impl `Isolate` stub para `DenoIsolate` e `WasmIsolate`
-- [ ] Testes factory + compile tests por feature
-- [ ] Atualizar `00-overview.md` status epic → ready-for-development quando todas stories planejadas
+- [x] Ler `spike.md` e alinhar nomes de módulos
+- [x] Adicionar features `deno` / `wasm` no Cargo.toml com deps opcionais pinadas
+- [x] Criar `deno/mod.rs`, `facade.rs`, `bundle.rs` (stubs)
+- [x] Criar `wasm/mod.rs`, `wasi.rs` (stubs)
+- [x] Criar `backend.rs` factory + enum `IsolationBackend`
+- [x] Impl `Isolate` stub para `DenoIsolate` e `WasmIsolate`
+- [x] Testes factory + compile tests por feature
+- [x] Atualizar `00-overview.md` status epic quando todas stories entregues
+
+## Pendências (documentadas)
+- `deno_core` pin + V8 platform singleton boot — PR 10 / story futura
+- `StubBundler` eszip/precomp parser real — PR 10
+- `postcard` feature `alloc` exigida em `edger-isolation/Cargo.toml` (fix gate `cargo check`)
 
 ## Verification
 ```bash

@@ -51,6 +51,12 @@ impl LimitGuard {
 /// `CpuTimer` stub — see Edge Runtime cpu_timer for future port.
 pub struct CpuTimer;
 
+impl Default for CpuTimer {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl CpuTimer {
     pub fn new() -> Self {
         Self

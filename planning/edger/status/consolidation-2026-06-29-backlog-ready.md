@@ -6,8 +6,8 @@
 ## Context
 - **Project/initiative:** edger
 - **Period:** 2026-06-28 — 2026-06-29
-- **Current objective:** Fase 3 em progresso (03.01 done; 03.02 em execução)
-- **Related epic:** Epic 03; próximo `epics/03-isolacao-execucao/02-isolate-trait-impl.md`
+- **Current objective:** Fase 4 em progresso (04.01 done; 04.02 próximo)
+- **Related epic:** Epic 04; próximo `epics/04-worker-management/02-supervisor-lifecycle.md`
 
 ---
 
@@ -20,7 +20,8 @@
   - Per-story checkpoints: `status/checkpoint-2026-06-29-story-02-0{1..4}.md`
   - Per-story refinement: `status/evidence/refinement-story-02-0{1..4}.txt`
   - Epic 02 closure: `status/checkpoint-2026-06-29-epic-02-closure.md`
-- **In progress:** Epic 03 — 03.01 + 03.02 done; 03.03 next
+- **In progress:** Epic 04 — 04.01 done; 04.02 supervisor next
+- **Completed (new):** Epic 03 — stories 03.01–03.04 + epic closure
 - **Deviations:** Epic 02 delivered in continuous cycle; per-story artifacts added retroactively per AC3
 
 ### Backlog summary
@@ -29,15 +30,15 @@
 |---|---|---|---|---|
 | 1 Fundação | `epics/01-fundacao/` | 4 | complete | **delivered** |
 | 2 edger-core | `epics/02-edger-core/` | 4 | complete | **delivered** (17 tests) |
-| 3 Isolação | `epics/03-isolacao-execucao/` | 4 | in progress | 03.01–03.02 delivered |
-| 4 Worker | `epics/04-worker-management/` | 4 | ready-for-development | not started |
+| 3 Isolação | `epics/03-isolacao-execucao/` | 4 | **completed** | 14 isolation tests |
+| 4 Worker | `epics/04-worker-management/` | 4 | in progress | 04.01 delivered |
 | 5 Orquestrador | `epics/05-orquestrador/` | 5 | ready-for-development | not started |
 | 6 Extensibilidade | `epics/06-extensibilidade/` | 3 | ready-for-development | not started |
 | 7 Avançado | `epics/07-avancado/` | 7 | ready-for-development | not started |
 
 ### Next steps
-- [ ] `/agile-story` em `planning/edger/epics/03-isolacao-execucao/03-wire-limits.md`
-- [ ] Per-story checkpoint + refinement após cada story (Epic 03+)
+- [ ] `/agile-story` em `planning/edger/epics/04-worker-management/02-supervisor-lifecycle.md`
+- [ ] Per-story checkpoint + refinement após cada story (Epic 04+)
 
 ---
 

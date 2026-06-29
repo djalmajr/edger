@@ -44,12 +44,12 @@
 - **Out:** supervisor state machine completo (04.02), métricas avançadas (04.03)
 
 ### Critérios de aceite
-- [ ] LRU evicta entrada menos recente quando `max_size` excedido
-- [ ] Segundo `fetch` para mesmo worker é cache hit (métrica hit++)
-- [ ] `get_or_create` com keys distintas para `@acme/app` vs `app` unscoped
-- [ ] `shutdown` esvazia pool e impede novos fetch (erro ou graceful)
-- [ ] `cargo test -p edger-worker --test pool_lru` verde
-- [ ] Assinatura `fetch` compatível com design.md
+- [x] LRU evicta entrada menos recente quando `max_size` excedido
+- [x] Segundo `fetch` para mesmo worker é cache hit (métrica hit++)
+- [x] `get_or_create` com keys distintas para `@acme/app` vs `app` unscoped
+- [x] `shutdown` esvazia pool e impede novos fetch (erro ou graceful)
+- [x] `cargo test -p edger-worker --test pool_lru` verde
+- [x] Assinatura `fetch` compatível com design.md
 
 ### Dependências
 - Epic 02.02, 02.03
@@ -61,13 +61,18 @@
 - **Evitar:** Dependência runtime em edger-isolation no código de produção
 
 ## Tasks
-- [ ] Configurar `Cargo.toml` com workspace deps
-- [ ] Definir `WorkerCacheKey` + `PoolConfig` + `WorkerError`
-- [ ] Implementar LRU wrapper thread-safe (`Mutex<LruCache<...>>`)
-- [ ] Implementar `WorkerPool::new`, `get_or_create`, `fetch` (delega mock)
-- [ ] Implementar `shutdown`
-- [ ] Testes hit/miss/eviction/collision
-- [ ] Documentar injeção de isolate factory
+- [x] Configurar `Cargo.toml` com workspace deps
+- [x] Definir `WorkerCacheKey` + `PoolConfig` + `WorkerError`
+- [x] Implementar LRU wrapper thread-safe (`Mutex<LruCache<...>>`)
+- [x] Implementar `WorkerPool::new`, `get_or_create`, `fetch` (delega mock)
+- [x] Implementar `shutdown`
+- [x] Testes hit/miss/eviction/collision
+- [x] Documentar injeção de isolate factory
+
+## Pendências (documentadas)
+- `dispatch_to_isolate` duplicado de `edger-isolation/kinds.rs` — candidato a mover para `edger-core` (evitar drift)
+- Supervisor lifecycle (04.02) ainda não integrado em `WorkerInstance`
+- `fetch` deriva nome do worker de `dir.file_name()` — orquestrador passará `WorkerRef` explícito na 04.04
 
 ## Verification
 ```bash

@@ -1,0 +1,15 @@
+/agile-refinement Mode 2 — Story 04.01 code review
+generated=2026-06-29
+
+Scope: edger-worker WorkerPool + LRU
+
+VERDICT: PASS
+
+Findings:
+- Production deps limited to edger-core + lru (AC met)
+- IsolateFactory injection pattern correct for Epic 05 orchestrator
+- LRU eviction tracked; evicted keys return WorkerError::Evicted
+- fetch signature matches design.md (dir, config, req, kind_hint)
+- dispatch_to_isolate duplicated from isolation/kinds — documented pendency
+
+No RED flags.

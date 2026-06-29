@@ -50,7 +50,7 @@ Implementar `edger-worker` com `WorkerPool` skeleton, LRU `get_or_create`, super
 
 | Story | Arquivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|
-| 04.01 WorkerPool + LRU | `01-worker-pool-lru.md` | large | not started | Epic 02 |
+| 04.01 WorkerPool + LRU | `01-worker-pool-lru.md` | large | **completed** | Epic 02 |
 | 04.02 Supervisor lifecycle | `02-supervisor-lifecycle.md` | large | not started | 04.01, Epic 03.02 (parcial) |
 | 04.03 Métricas + ephemeral | `03-metrics-ephemeral.md` | medium | not started | 04.01, 04.02 |
 | 04.04 Testes integração | `04-pool-integration-tests.md` | large | not started | 04.01, 04.02, 04.03, Epic 03.02 |

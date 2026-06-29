@@ -1,0 +1,16 @@
+/agile-refinement Mode 2 — Story 03.04 code review
+generated=2026-06-29
+
+Scope: edger-isolation dual-backend prep (deno/wasm features, backend factory)
+
+VERDICT: PASS
+
+Findings:
+- Layout matches spike.md recommendation (deno/, wasm/, mock.rs, backend.rs)
+- Feature flags default off — CI safe, no V8 link
+- Isolate stubs return NOT_IMPLEMENTED consistently
+- ModuleBundler trait documents PR 10 path
+- Factory test covers Mock backend execute_fetch 200
+- postcard alloc feature fix unblocks cargo check (pre-existing gap)
+
+No RED flags. No scope creep into production embedding.
