@@ -1,18 +1,20 @@
-//! edger main binary — HTTP listener with health/readiness + pipeline (story 05.01–05.05).
+//! edger main binary — HTTP listener with health/readiness + pipeline (story 05.01–06.02).
 //!
 //! Environment:
 //! - `PORT` — listen port (default `3000`)
-//! - `ROOT_API_KEY` — synthetic root principal (optional)
+//! - `ROOT_API_KEY` — synthetic root principal (optional; handled by edger-ext-auth)
 //! - `EDGER_AUTH_DB` — SQLite path for API keys (default in-memory if unset)
 
 use std::sync::Arc;
 
 use edger_core::ExtensionContext;
+use edger_ext_auth::AuthExtension;
+use edger_ext_gateway::GatewayExtension;
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
     build_pipeline, collect_extensions, port_from_env, run_on_init, run_on_server_start,
-    run_on_shutdown, serve, AuthGate, ManifestIndex, OrchestratorState, ServerConfig, ServerState,
-    SqliteApiKeyStore,
+    run_on_shutdown, serve, AuthGate, AuthGateConfig, ManifestIndex, OrchestratorState,
+    ServerConfig, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tracing_subscriber::EnvFilter;
@@ -23,15 +25,6 @@ impl IsolateFactory for StubIsolateFactory {
     fn create_isolate(&self) -> Box<dyn edger_core::Isolate> {
         Box::new(MockIsolate::new())
     }
-}
-
-fn open_auth_store() -> anyhow::Result<Arc<SqliteApiKeyStore>> {
-    if let Ok(path) = std::env::var("EDGER_AUTH_DB") {
-        if !path.is_empty() {
-            return Ok(Arc::new(SqliteApiKeyStore::open(path)?));
-        }
-    }
-    Ok(Arc::new(SqliteApiKeyStore::in_memory()?))
 }
 
 #[tokio::main]
@@ -48,10 +41,9 @@ async fn main() -> anyhow::Result<()> {
     let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(StubIsolateFactory));
     server.mark_ready(pool.clone());
 
-    // Explicit extension registration (story 06.01) — add edger-ext-* exports here.
-    let registry = collect_extensions(vec![])?;
-
-    let auth_store = open_auth_store()?;
+    let auth_ext = AuthExtension::from_env()?.into_arc();
+    let mut registry = collect_extensions(vec![GatewayExtension::middleware()])?;
+    registry.register_auth_provider(auth_ext.clone())?;
     run_on_init(&registry, &mut ExtensionContext::default())?;
     run_on_server_start(&registry, &edger_core::ServerHandle::default());
 
@@ -60,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
         pool,
         index: ManifestIndex::new(),
         registry,
-        auth: AuthGate::from_env(auth_store),
+        auth: AuthGate::new(AuthGateConfig::default(), auth_ext),
     };
 
     let shutdown_registry = state.registry.clone();

@@ -47,8 +47,8 @@ Bin `edger` registra extensões via padrão escolhido; `edger-ext-auth` implemen
 | Story | Arquivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|
 | 06.01 Registro estático | `01-static-registration.md` | medium | completed | Epic 05 (05.05) |
-| 06.02 edger-ext-auth | `02-edger-ext-auth.md` | large | not started | 06.01, Epic 05 (05.04) |
-| 06.03 Template extensão | `03-extension-template.md` | medium | not started | 06.01, 06.02 |
+| 06.02 edger-ext-auth | `02-edger-ext-auth.md` | large | **completed** | 06.01, Epic 05 (05.04) |
+| 06.03 Template extensão | `03-extension-template.md` | medium | **completed** | 06.01, 06.02 |
 
 ## Epic roadmap
 
@@ -62,12 +62,12 @@ flowchart LR
 ## Epic acceptance criteria
 - [x] Padrão de registro estático escolhido e documentado (**lista explícita no bin**)
 - [x] Regra "choose ONE" documentada: uma crate não registra dois modos conflitantes sem features
-- [ ] `edger-ext-auth` compila, implementa `AuthProvider`, testes unitários passam
-- [ ] Auth extension registrada no bin `edger` e participa do pipeline (substitui ou delega gate 05.04)
-- [ ] `edger-ext-gateway` (template) compila como exemplo Middleware com registro
-- [ ] README ou `planning/edger/docs/extensions.md` com passo-a-passo para nova extensão
-- [ ] `cargo test --workspace && cargo clippy --workspace -- -D warnings` verde
-- [ ] Nenhuma extensão depende de `edger-orchestrator` (apenas core)
+- [x] `edger-ext-auth` compila, implementa `AuthProvider`, testes unitários passam
+- [x] Auth extension registrada no bin `edger` e participa do pipeline (substitui ou delega gate 05.04)
+- [x] `edger-ext-gateway` (template) compila como exemplo Middleware com registro
+- [x] README ou `planning/edger/docs/extensions.md` com passo-a-passo para nova extensão
+- [x] `cargo test --workspace && cargo clippy --workspace -- -D warnings` verde
+- [x] Nenhuma extensão depende de `edger-orchestrator` (apenas core)
 
 ## Risks
 
@@ -82,4 +82,4 @@ flowchart LR
 `/agile-story` em `01-static-registration.md` após conclusão do Epic 05 (registry funcional).
 
 ## Status
-in-progress (06.01 delivered; 06.02+ pending)
+**completed** (2026-06-29) — ver `status/checkpoint-2026-06-29-epic-06-closure.md`

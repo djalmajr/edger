@@ -1,28 +1,12 @@
-//! API key persistence — SQLite primary store (story 05.04).
+//! SQLite API key store (story 06.02).
 
 use std::path::Path;
 use std::sync::Mutex;
 
-use edger_core::{ApiKeyPrincipal, CoreError};
+use edger_core::{ApiKeyPrincipal, ApiKeyStore, CoreError};
 use rusqlite::{params, Connection};
-use serde_json;
 use sha2::{Digest, Sha256};
 
-/// Store contract for API key lookup and provisioning (mockable in tests).
-pub trait ApiKeyStore: Send + Sync {
-    fn lookup_by_key(&self, raw_key: &str) -> Result<Option<ApiKeyPrincipal>, CoreError>;
-    fn insert_key(
-        &self,
-        raw_key: &str,
-        name: &str,
-        role: &str,
-        permissions: &[String],
-        namespaces: &[String],
-        expires_at: Option<u64>,
-    ) -> Result<u64, CoreError>;
-}
-
-/// SQLite-backed API key store (`EDGER_AUTH_DB` path in production).
 pub struct SqliteApiKeyStore {
     conn: Mutex<Connection>,
 }
@@ -172,39 +156,4 @@ fn json_err(err: serde_json::Error) -> CoreError {
 
 fn lock_err() -> CoreError {
     CoreError::new("STORE_ERROR", "sqlite connection lock poisoned")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn insert_and_lookup_roundtrip() {
-        let store = SqliteApiKeyStore::in_memory().unwrap();
-        store
-            .insert_key(
-                "btk_test_secret_key",
-                "acme-editor",
-                "editor",
-                &["read".into()],
-                &["@acme".into()],
-                None,
-            )
-            .unwrap();
-        let principal = store
-            .lookup_by_key("btk_test_secret_key")
-            .unwrap()
-            .expect("principal");
-        assert_eq!(principal.name, "acme-editor");
-        assert_eq!(principal.namespaces, vec!["@acme"]);
-    }
-
-    #[test]
-    fn wrong_key_returns_none() {
-        let store = SqliteApiKeyStore::in_memory().unwrap();
-        store
-            .insert_key("real-key", "n", "editor", &[], &["*".into()], None)
-            .unwrap();
-        assert!(store.lookup_by_key("wrong-key").unwrap().is_none());
-    }
 }

@@ -3,6 +3,7 @@
 //! Leaf crate — manifests, configs, wire formats, traits, errors.
 //! Higher crates (`edger-worker`, `edger-isolation`, `edger-orchestrator`) depend on this.
 
+pub mod api_key_store;
 pub mod auth;
 pub mod config;
 pub mod context;
@@ -15,7 +16,8 @@ pub mod principal;
 pub mod wire;
 pub mod worker_ref;
 
-pub use auth::{AuthProvider, HeaderPairs};
+pub use api_key_store::ApiKeyStore;
+pub use auth::{extract_api_key_from_pairs, AuthProvider, HeaderPairs};
 pub use config::{
     infer_execution_kind, parse_duration_string_to_ms, parse_duration_to_ms, parse_size_to_bytes,
     parse_worker_config, WorkerConfig,

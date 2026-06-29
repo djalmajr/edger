@@ -1,0 +1,11 @@
+[package]
+name = "edger-ext-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Template Middleware extension for edger (copy to create new edger-ext-*)"
+
+[dependencies]
+edger-core = { path = "../edger-core" }
+anyhow.workspace = true
+tracing.workspace = true

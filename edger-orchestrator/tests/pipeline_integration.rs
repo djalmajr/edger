@@ -1,4 +1,4 @@
-//! End-to-end pipeline tests (story 05.03).
+//! End-to-end pipeline tests (story 05.03 / 06.02).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -6,10 +6,11 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use edger_core::WorkerManifest;
+use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
     build_pipeline, AuthGate, AuthGateConfig, ExtensionRegistry, ManifestIndex, OrchestratorState,
-    ServerState, SqliteApiKeyStore,
+    ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -45,11 +46,11 @@ fn orchestrator_with_worker() -> OrchestratorState {
         index,
         registry: ExtensionRegistry::new(),
         auth: AuthGate::new(
-            AuthGateConfig {
-                root_api_key: Some("test-root".into()),
-                ..Default::default()
-            },
-            Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
+            AuthGateConfig::default(),
+            Arc::new(AuthExtension::new(
+                Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
+                Some("test-root".into()),
+            )),
         ),
     }
 }

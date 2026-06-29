@@ -51,11 +51,11 @@ Gate auth inline em `edger-orchestrator/src/auth.rs`; sem crate ext.
 - **Out:** Rotação de keys UI, CSRF, OAuth (Fase 7)
 
 ### Critérios de aceite
-- [ ] `cargo test -p edger-ext-auth` verde
-- [ ] `edger-ext-auth` não depende de `edger-orchestrator` nem `edger-worker`
-- [ ] Bin registra auth e pipeline autentica requests protegidos
-- [ ] Paridade de testes com story 05.04 (root, namespace, public bypass)
-- [ ] Documentado em `extensions.md` como primeira extensão de referência
+- [x] `cargo test -p edger-ext-auth` verde
+- [x] `edger-ext-auth` não depende de `edger-orchestrator` nem `edger-worker`
+- [x] Bin registra auth e pipeline autentica requests protegidos
+- [x] Paridade de testes com story 05.04 (root, namespace, public bypass)
+- [x] Documentado em `extensions.md` como primeira extensão de referência
 
 ### Dependências
 - Stories 06.01, 05.04
@@ -72,14 +72,25 @@ Gate auth inline em `edger-orchestrator/src/auth.rs`; sem crate ext.
 **Nível:** unit (`auth_provider.rs`) + integração orchestrator
 
 ## Tasks
-- [ ] Scaffold `edger-ext-auth` no workspace
-- [ ] Extrair/mover `ApiKeyStore` trait para local compartilhado (core ou ext-auth)
-- [ ] Implementar `AuthExtension` + `AuthProvider`
-- [ ] Implementar registro estático (06.01)
-- [ ] Refatorar orchestrator `auth.rs` para delegar ao registry
-- [ ] Portar testes 05.04 para ext-auth onde aplicável
-- [ ] Atualizar `planning/edger/docs/extensions.md` com walkthrough edger-ext-auth
-- [ ] Verificar choose ONE: crate só auth, sem gateway
+- [x] Scaffold `edger-ext-auth` no workspace
+- [x] Extrair/mover `ApiKeyStore` trait para local compartilhado (core ou ext-auth)
+- [x] Implementar `AuthExtension` + `AuthProvider`
+- [x] Implementar registro estático (06.01)
+- [x] Refatorar orchestrator `auth.rs` para delegar ao registry
+- [x] Portar testes 05.04 para ext-auth onde aplicável
+- [x] Atualizar `planning/edger/docs/extensions.md` com walkthrough edger-ext-auth
+- [x] Verificar choose ONE: crate só auth, sem gateway
+
+## Pendências (não bloqueantes)
+
+| Item | Destino |
+|---|---|
+| Turso/libsql backend | Epic 07.07 ou ext dedicada |
+| Argon2 para key hash | Epic 07.07 hardening |
+| OAuth / CSRF | Fase 7 |
+
+## Status
+**completed** (2026-06-29) — checkpoint `status/checkpoint-2026-06-29-story-06-02.md`
 
 ## Verification
 ```bash

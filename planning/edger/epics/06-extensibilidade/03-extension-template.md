@@ -57,11 +57,11 @@ Apenas `edger-ext-auth` (após 06.02); sem template reutilizável.
 - **Out:** Proxy reverso real, rate limiting, TLS termination
 
 ### Critérios de aceite
-- [ ] `cargo test -p edger-ext-gateway` verde
-- [ ] README permite criar nova ext em <30 min seguindo passos
-- [ ] Gateway registrado e `on_request` invocado (trace log verificável em teste)
-- [ ] Crate não implementa `AuthProvider` (choose ONE demonstrado)
-- [ ] `extensions.md` referencia template como ponto de partida
+- [x] `cargo test -p edger-ext-gateway` verde
+- [x] README permite criar nova ext em <30 min seguindo passos
+- [x] Gateway registrado e `on_request` invocado (trace log verificável em teste)
+- [x] Crate não implementa `AuthProvider` (choose ONE demonstrado)
+- [x] `extensions.md` referencia template como ponto de partida
 
 ### Dependências
 - Stories 06.01, 06.02
@@ -76,13 +76,16 @@ Apenas `edger-ext-auth` (após 06.02); sem template reutilizável.
 **Nível:** unit + integração leve
 
 ## Tasks
-- [ ] Scaffold `edger-ext-gateway` copiando estrutura de `edger-ext-auth` (sem lógica auth)
-- [ ] Implementar `Middleware` pass-through mínimo
-- [ ] Escrever README template (português)
-- [ ] Testes unitários + integração registry
-- [ ] Registrar no bin com priority > auth
-- [ ] Atualizar `planning/edger/docs/extensions.md` com diagrama de wiring
-- [ ] Opcional: `cargo generate` ou script `scripts/new-extension.sh` (fora de escopo se atrasar — README basta)
+- [x] Scaffold `edger-ext-gateway` copiando estrutura de `edger-ext-auth` (sem lógica auth)
+- [x] Implementar `Middleware` pass-through mínimo
+- [x] Escrever README template (português)
+- [x] Testes unitários + integração registry
+- [x] Registrar no bin com priority > auth
+- [x] Atualizar `planning/edger/docs/extensions.md` com diagrama de wiring
+- [ ] Opcional: `cargo generate` ou script `scripts/new-extension.sh` (fora de escopo — README basta)
+
+## Status
+**completed** (2026-06-29) — checkpoint `status/checkpoint-2026-06-29-story-06-03.md`
 
 ## Verification
 ```bash

@@ -570,6 +570,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "edger-ext-auth"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "edger-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
+name = "edger-ext-gateway"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "edger-core",
+ "tracing",
+]
+
+[[package]]
 name = "edger-isolation"
 version = "0.1.0"
 dependencies = [
@@ -595,15 +617,15 @@ dependencies = [
  "axum",
  "bytes",
  "edger-core",
+ "edger-ext-auth",
+ "edger-ext-gateway",
  "edger-isolation",
  "edger-worker",
  "http",
  "hyper",
- "rusqlite",
  "semver",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "tokio",
  "tower",

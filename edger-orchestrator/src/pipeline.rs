@@ -262,7 +262,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::auth::{AuthGate, AuthGateConfig};
-    use crate::store::SqliteApiKeyStore;
+    use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
 
     struct StubFactory;
     impl IsolateFactory for StubFactory {
@@ -292,11 +292,11 @@ mod tests {
             index,
             registry: ExtensionRegistry::new(),
             auth: AuthGate::new(
-                AuthGateConfig {
-                    root_api_key: Some("test-root".into()),
-                    ..Default::default()
-                },
-                Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
+                AuthGateConfig::default(),
+                Arc::new(AuthExtension::new(
+                    Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
+                    Some("test-root".into()),
+                )),
             ),
         }
     }

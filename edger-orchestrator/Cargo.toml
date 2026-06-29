@@ -10,6 +10,8 @@ path = "src/bin/edger.rs"
 
 [dependencies]
 edger-core = { path = "../edger-core" }
+edger-ext-auth = { path = "../edger-ext-auth" }
+edger-ext-gateway = { path = "../edger-ext-gateway" }
 edger-worker = { path = "../edger-worker" }
 edger-isolation = { path = "../edger-isolation" }
 anyhow.workspace = true
@@ -26,11 +28,10 @@ http.workspace = true
 hyper.workspace = true
 uuid.workspace = true
 semver.workspace = true
-rusqlite.workspace = true
-sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
+edger-ext-auth = { path = "../edger-ext-auth" }
 edger-isolation = { path = "../edger-isolation" }
 serde_json.workspace = true
 tokio.workspace = true

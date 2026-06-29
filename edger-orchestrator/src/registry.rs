@@ -2,12 +2,13 @@
 
 use std::sync::Arc;
 
-use edger_core::{CoreError, Middleware};
+use edger_core::{AuthProvider, CoreError, Middleware};
 
 /// Registry of middleware extensions sorted by `priority()` (lower runs first).
 #[derive(Clone, Default)]
 pub struct ExtensionRegistry {
     middlewares: Arc<Vec<Arc<dyn Middleware>>>,
+    auth_provider: Arc<Option<Arc<dyn AuthProvider>>>,
 }
 
 impl ExtensionRegistry {
@@ -41,6 +42,25 @@ impl ExtensionRegistry {
 
     pub fn middlewares(&self) -> &[Arc<dyn Middleware>] {
         &self.middlewares
+    }
+
+    pub fn register_auth_provider(
+        &mut self,
+        provider: Arc<dyn AuthProvider>,
+    ) -> Result<(), CoreError> {
+        let slot = Arc::make_mut(&mut self.auth_provider);
+        if slot.is_some() {
+            return Err(CoreError::new(
+                "COLLISION",
+                "auth provider already registered".to_string(),
+            ));
+        }
+        *slot = Some(provider);
+        Ok(())
+    }
+
+    pub fn auth_provider(&self) -> Option<Arc<dyn AuthProvider>> {
+        (*self.auth_provider).clone()
     }
 
     /// Build a registry from an explicit extension list (story 06.01 — chosen pattern).

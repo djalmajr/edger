@@ -34,8 +34,8 @@
 | Fase 3: Isolação + Spike | [`epics/03-isolacao-execucao/`](epics/03-isolacao-execucao/00-overview.md) | 4 | **completed** | Fase 2 |
 | Fase 4: Worker Management | [`epics/04-worker-management/`](epics/04-worker-management/00-overview.md) | 4 | **completed** | Fase 2, Fase 3 |
 | Fase 5: Orquestrador | [`epics/05-orquestrador/`](epics/05-orquestrador/00-overview.md) | 5 | **completed** | Fase 1-4 |
-| Fase 6: Extensibilidade | [`epics/06-extensibilidade/`](epics/06-extensibilidade/00-overview.md) | 3 | ready-for-development | Fase 5 |
-| Fase 7: Avançado | [`epics/07-avancado/`](epics/07-avancado/00-overview.md) | 7 | ready-for-development | Fase 5-6 |
+| Fase 6: Extensibilidade | [`epics/06-extensibilidade/`](epics/06-extensibilidade/00-overview.md) | 3 | **completed** | Fase 5 |
+| Fase 7: Avançado | [`epics/07-avancado/`](epics/07-avancado/00-overview.md) | 7 | in-progress | Fase 5-6 |
 
 ## Suggested sequence
 1. Fase 1 (Fundação) -- Alinha o skeleton real e estabelece cultura (AGENTS, testes, gate). Alta prioridade porque desbloqueia tudo e evita dívida técnica.
@@ -74,8 +74,8 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 - [ ] Stakeholder-ready: mostra jornada completa com riscos e out-of-scope (update as Fases advance).
 
 ## Recommended next step
-- Fases 1–5 **delivered**. Ver `status/checkpoint-2026-06-29-epic-05-closure.md`.
-- **Próxima execução:** `/agile-story` em `epics/06-extensibilidade/` (Fase 6 Extensibilidade).
+- Fases 1–6 **delivered**. Ver `status/checkpoint-2026-06-29-epic-06-closure.md`.
+- **Próxima execução:** Epic 07 — stories `04-real-js-execution.md` + `05-wasm-execution.md` (caminho crítico PR 10).
 - Per-story: `/agile-status` checkpoint + `/agile-refinement` após cada story (evidence em `status/`).
 
 ---

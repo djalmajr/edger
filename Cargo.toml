@@ -5,9 +5,8 @@ members = [
   "edger-worker",
   "edger-isolation",
   "edger-orchestrator",
-  # extensões futuras:
-  # "edger-ext-gateway",
-  # "edger-ext-auth",
+  "edger-ext-auth",
+  "edger-ext-gateway",
 ]
 
 [workspace.package]

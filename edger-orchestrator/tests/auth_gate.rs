@@ -1,15 +1,16 @@
-//! Auth gate integration tests (story 05.04).
+//! Auth gate integration tests (story 05.04 / 06.02).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use edger_core::{PublicRoutesConfig, WorkerManifest};
+use edger_core::{ApiKeyStore, PublicRoutesConfig, WorkerManifest};
+use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
-    build_pipeline, ApiKeyStore, AuthGate, AuthGateConfig, ExtensionRegistry, ManifestIndex,
-    OrchestratorState, ServerState, SqliteApiKeyStore,
+    build_pipeline, AuthGate, AuthGateConfig, ExtensionRegistry, ManifestIndex, OrchestratorState,
+    ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -22,8 +23,15 @@ impl IsolateFactory for StubFactory {
     }
 }
 
-fn orchestrator(
+fn auth_provider(
     store: Arc<SqliteApiKeyStore>,
+    root_api_key: Option<String>,
+) -> Arc<AuthExtension> {
+    Arc::new(AuthExtension::new(store, root_api_key))
+}
+
+fn orchestrator(
+    provider: Arc<AuthExtension>,
     auth_config: AuthGateConfig,
     workers: Vec<(PathBuf, WorkerManifest)>,
 ) -> OrchestratorState {
@@ -39,7 +47,7 @@ fn orchestrator(
         pool,
         index,
         registry: ExtensionRegistry::new(),
-        auth: AuthGate::new(auth_config, store),
+        auth: AuthGate::new(auth_config, provider),
     }
 }
 
@@ -47,7 +55,7 @@ fn orchestrator(
 async fn protected_route_without_key_returns_401() {
     let store = Arc::new(SqliteApiKeyStore::in_memory().unwrap());
     let state = orchestrator(
-        store,
+        auth_provider(store, None),
         AuthGateConfig::default(),
         vec![(
             PathBuf::from("/workers/hello"),
@@ -75,11 +83,8 @@ async fn protected_route_without_key_returns_401() {
 async fn root_key_accesses_any_namespace() {
     let store = Arc::new(SqliteApiKeyStore::in_memory().unwrap());
     let state = orchestrator(
-        store,
-        AuthGateConfig {
-            root_api_key: Some("root-secret".into()),
-            ..Default::default()
-        },
+        auth_provider(store, Some("root-secret".into())),
+        AuthGateConfig::default(),
         vec![(
             PathBuf::from("/workers/acme"),
             WorkerManifest {
@@ -136,7 +141,11 @@ async fn namespaced_key_allowed_and_denied() {
         ),
     ];
 
-    let state = orchestrator(store.clone(), AuthGateConfig::default(), workers);
+    let state = orchestrator(
+        auth_provider(store.clone(), None),
+        AuthGateConfig::default(),
+        workers,
+    );
     let app = build_pipeline(state);
 
     let ok = app
@@ -169,7 +178,7 @@ async fn namespaced_key_allowed_and_denied() {
 async fn public_route_bypasses_auth() {
     let store = Arc::new(SqliteApiKeyStore::in_memory().unwrap());
     let state = orchestrator(
-        store,
+        auth_provider(store, None),
         AuthGateConfig {
             global_public_routes: PublicRoutesConfig {
                 routes: vec!["/login".into()],
@@ -203,7 +212,7 @@ async fn public_route_bypasses_auth() {
 async fn invalid_key_returns_401() {
     let store = Arc::new(SqliteApiKeyStore::in_memory().unwrap());
     let state = orchestrator(
-        store,
+        auth_provider(store, None),
         AuthGateConfig::default(),
         vec![(
             PathBuf::from("/workers/hello"),
