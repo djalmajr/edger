@@ -26,7 +26,8 @@
 - Planning maturity: `/agile-refinement` Mode 1 on `planning/edger/` + `refinement-lint.py` (see `planning/edger/scripts/run-gates.sh`). Only the orchestrator agent calls ai-memory tools; subagents must not.
 - `memory_lint` (workspace `djalmajr`, project `edger`): orchestrator only, when the remote server is stable — excluded from planning gates if unstable.
 - Fix all warnings even in untouched files.
-- Rust: cargo test / clippy / fmt when src added.
+- Rust gate: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`.
+- `edger-core` is pure vocabulary (no I/O); `Isolate`/`WorkerHandler` use `async-trait` workspace dep.
 - No emojis in code/comments/commits.
 - Naming: kebab for files, Pascal types, camel funcs.
 

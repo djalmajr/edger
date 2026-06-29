@@ -42,10 +42,10 @@ Establish `edger-core` as pure leaf crate: manifests, configs, wire formats, tra
 
 | Story | File | Size | Status | Depends on |
 |---|---|---|---|---|
-| 02.01 Setup crate | `01-setup-core-crate.md` | small | not started | Epic 01 |
-| 02.02 Core models | `02-core-models.md` | large | not started | 02.01 |
-| 02.03 Errors + wire | `03-errors-wire.md` | medium | not started | 02.01 |
-| 02.04 Core traits | `04-core-traits.md` | large | not started | 02.02, 02.03 |
+| 02.01 Setup crate | `01-setup-core-crate.md` | small | **completed** | Epic 01 |
+| 02.02 Core models | `02-core-models.md` | large | **completed** | 02.01 |
+| 02.03 Errors + wire | `03-errors-wire.md` | medium | **completed** | 02.01 |
+| 02.04 Core traits | `04-core-traits.md` | large | **completed** | 02.02, 02.03 |
 
 ## Epic roadmap
 
@@ -58,12 +58,12 @@ flowchart LR
 ```
 
 ## Epic acceptance criteria
-- [ ] `edger-core/Cargo.toml` has no sibling crate deps; only serde/bytes/etc.
-- [ ] `src/` modules: manifest, config, wire, error, extension, auth, execution
-- [ ] `cargo test -p edger-core` passes with mapping + roundtrip tests
-- [ ] `cargo clippy -p edger-core -- -D warnings` clean
-- [ ] `bun test` still passes (unchanged)
-- [ ] planning/edger/ cross-refs valid; refinement clean
+- [x] `edger-core/Cargo.toml` has no sibling crate deps; only serde/bytes/etc.
+- [x] `src/` modules: manifest, config, wire, error, extension, auth, execution, isolate, context, worker_ref, principal
+- [x] `cargo test -p edger-core` passes with mapping + roundtrip tests (17 tests)
+- [x] `cargo clippy -p edger-core -- -D warnings` clean
+- [x] `bun test` still passes (6 pass, unchanged)
+- [x] planning/edger/ cross-refs valid; refinement clean
 
 ## Risks
 
@@ -74,7 +74,7 @@ flowchart LR
 | Serde version skew | Pin in workspace.dependencies |
 
 ## Recommended next step
-`/agile-story` on `01-setup-core-crate.md` to finish crate module layout, then 02.02.
+`/agile-story` on `planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md` (Epic 03).
 
 ## Status
-ready-for-development (planning complete; implementation not started)
+**completed** (2026-06-29) — Fase 2 delivered; pendências documentadas nas stories 02.02–02.04.

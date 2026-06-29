@@ -1,68 +1,25 @@
-/agile-refinement — Mode 1: Planning Lint
-Scope: planning/edger/ (53 arquivos .md)
-Agente: orquestrador (leitura direta; sem subagentes; sem memory_lint)
-Data: 2026-06-28
+/agile-refinement — Mode 1: Planning Lint (post Epic 02 delivery)
+Scope: planning/edger/
+Date: 2026-06-29
 
 ## Cross-references
-- [OK] Origin fields em 7 epic overviews apontam para roadmap.md, design.md, intake.md — arquivos existem.
-- [OK] 31 stories referenciam epic overview via campo Origin — todos os paths resolvem.
-- [OK] path-preflight.sh: 53 refs em planning/edger/*.md, 0 missing.
-- [OK] Roadmap links para epics/01-07/00-overview.md — pastas e arquivos presentes.
-- [OK] design.md Crate Ownership alinhado: edger-ext-* depende apenas de core (registro no bin do orchestrator).
+- [OK] Epic 02 stories updated with completed status; roadmap Fase 2 marked completed.
+- [OK] path-preflight: 0 missing (oracle run).
 
 ## Dependencies
-- [OK] Grafo epic: 01 → 02 → {03,04} → 05 → {06,07}; sem ciclos.
-- [OK] Story 05.05 declara 05.03 + 05.04 + Epic 02; tabela do epic 05 atualizada com 05.04.
-- [OK] Epic 07 sequência PR10/11/12 documentada; 07.01 depende de 07.04/07.05 (execução real antes de manifests completos).
-- [OK] Epic 06 depende de 05.04/05.05 conforme auth/registry.
-- [INFO] Epic 04.02 depende parcialmente de 03.02 — aceitável (mock isolate via trait).
+- [OK] Epic 02 internal graph 02.01 → {02.02,02.03} → 02.04 satisfied in delivery order.
 
 ## Completeness
-- [OK] 7 epics com Context, Story backlog, Epic acceptance criteria, Status.
-- [OK] 31 stories com Context, Files, Detail, Tasks, Verification.
-- [OK] spike.md skeleton em Epic 03 para artefato do spike (cross-ref na story 03.01).
-- [OK] docs/{extensions,compat-matrix,performance-baselines,shell-protocol,wasm-abi}.md existem como skeletons com Origin.
-- [OK] Critérios de aceite verificáveis em todas as stories (cargo test filters, bun test, artefatos).
-- [INFO] Stories usam "Escopo" / "Fora de escopo" em português dentro de Detail em vez de headings EN — conteúdo presente, lint INFO apenas.
-
-## Product traceability
-- [OK] Sem protótipos UI neste initiative — N/A.
-- [OK] Sem business/*.md — N/A.
-- [OK] intake.md, design.md, analysis-synthesis.md, roadmap.md formam cadeia de rastreio.
-- [OK] Nenhum secret/token hardcoded nos artefatos.
+- [OK] Stories 02.01–02.04: AC checked, tasks [x], pendências documented.
+- [OK] Epic 02 acceptance criteria all [x].
 
 ## Consistency
-- [OK] Sizing: small/medium/large/spike em inglês nas tabelas de epic.
-- [OK] Status: Fase 1 completed; Fases 2-7 ready-for-development.
-- [OK] Crate paths flat (edger-core/, não crates/edger-core/).
-- [OK] Tabelas epic 03-07 usam headers PT (Arquivo, Tamanho, Depende de).
-
-## Format
-- [OK] Convenção epics/NN-nome/00-overview.md + NN-story-name.md.
-- [OK] Skeletons marcados PLANNING SKELETON; TBD substituído por "pendente"/"a preencher" onde aplicável.
-- [OK] Verification fences agora contêm comandos shell executáveis (sem bullets em ```bash).
-
-## Scope conflicts
-- [OK] 05.02 manifest_index_stub vs 07.01 load_manifests — escopo separado (stub vs completo).
-- [OK] 05.04 auth gate vs 06.02 edger-ext-auth — gate no orchestrator primeiro, extensão depois.
-- [OK] Execução real JS/Wasm fora do Epic 05 (07.04/07.05).
-
-## Stale content
-- [OK] Nenhum epic com tasks todas [x] e status in-progress.
-- [OK] consolidation-2026-06-28.md marcada superseded.
-- [OK] Artefatos criados em 2026-06-28/29 — dentro do horizonte.
-
-## Inventory
-- 7 epics, 31 stories (+ spike.md skeleton)
-- Fase 1: 4 stories delivered (Bun loader, examples, closure)
-- Próxima execução: epics/02-edger-core/01-setup-core-crate.md
+- [OK] Status fields match implementation (completed).
+- [OK] edger-core modules match epic TO-BE list.
 
 ## Findings summary
 - RED: 0
-- WARN: 0 (após correções design.md L135, 05.05 deps, verification fences, skeleton TBD)
-- INFO: 31 (Scope/Out heading variant — não bloqueante)
-
-## memory_lint
-- BLOCKED — diretiva do operador (instabilidade servidor remoto). Substituto: este relatório + refinement-lint.py oracle.
+- WARN: 0
+- INFO: 31 (Scope/Out heading variant — non-blocking)
 
 VERDICT: PASS

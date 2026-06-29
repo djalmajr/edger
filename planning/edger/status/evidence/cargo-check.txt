@@ -1,1 +1,5 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
+    Checking edger-isolation v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-isolation)
+    Checking edger-worker v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-worker)
+    Checking edger-core v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-core)
+    Checking edger-orchestrator v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-orchestrator)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.28s

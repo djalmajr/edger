@@ -60,7 +60,7 @@
 
 ## Maturity gates (planning)
 
-_Rendered at 2026-06-29T01:32:13Z after run-gates.sh. memory_lint excluded (server stability)._
+_Rendered at 2026-06-29T02:44:05Z after run-gates.sh. memory_lint excluded (server stability)._
 
 - [x] 7 epics / 31 stories decomposed com secoes obrigatorias
 - [x] /agile-refinement Mode 1 — 0 red flags (status/evidence/refinement-report.txt)

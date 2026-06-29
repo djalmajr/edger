@@ -1,45 +1,52 @@
-//! edger-core: pure vocabulary (types, errors, traits, manifests).
-//! No I/O. Leaf crate. All higher crates depend on this.
+//! edger-core: pure vocabulary. No I/O.
+//!
+//! Leaf crate — manifests, configs, wire formats, traits, errors.
+//! Higher crates (`edger-worker`, `edger-isolation`, `edger-orchestrator`) depend on this.
 
-use serde::{Deserialize, Serialize};
+pub mod auth;
+pub mod config;
+pub mod context;
+pub mod error;
+pub mod execution;
+pub mod extension;
+pub mod isolate;
+pub mod manifest;
+pub mod principal;
+pub mod wire;
+pub mod worker_ref;
 
-/// Execution kind for a worker (from design).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ExecutionKind {
-    FetchHandler,
-    RoutesTable,
-    StaticSpa { inject_base: bool },
-    WasmModule { entry: Option<String> },
-    Fullstack { adapter: String },
-}
+pub use auth::{AuthProvider, HeaderPairs};
+pub use config::{
+    infer_execution_kind, parse_duration_string_to_ms, parse_duration_to_ms, parse_size_to_bytes,
+    parse_worker_config, WorkerConfig,
+};
+pub use context::{ExtensionContext, RequestContext, ServerHandle};
+pub use error::{CoreError, IsolationError};
+pub use execution::ExecutionKind;
+pub use extension::{Extension, Middleware, WorkerHandler};
+pub use isolate::Isolate;
+pub use manifest::{CronJob, PublicRoutesConfig, WorkerManifest};
+pub use principal::{principal_can_access_namespace, root_principal, ApiKeyPrincipal};
+pub use wire::{
+    validate_headers, SerializedRequest, SerializedResponse, MAX_HEADERS, MAX_HEADER_BYTES,
+    MAX_HEADER_VALUE_BYTES,
+};
+pub use worker_ref::{create_worker_ref, parse_namespaced_name, WorkerRef};
 
-/// Basic error type for core (pure, no I/O).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CoreError {
-    pub code: String,
-    pub message: String,
-}
-
-impl CoreError {
-    pub fn new(code: &str, message: &str) -> Self {
-        Self {
-            code: code.to_string(),
-            message: message.to_string(),
-        }
-    }
-}
-
-/// Minimal worker manifest subset (pure data).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WorkerManifest {
-    pub name: String,
-    pub entrypoint: Option<String>,
-    pub ttl: u64, // 0 = ephemeral
-}
+/// Crate identity marker for module layout tests.
+pub const CRATE_PURE_VOCABULARY: &str = "edger-core";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modules_declared_and_reexported() {
+        assert_eq!(CRATE_PURE_VOCABULARY, "edger-core");
+        let _ = std::any::type_name::<WorkerManifest>();
+        let _ = std::any::type_name::<SerializedRequest>();
+        let _ = std::any::type_name::<ApiKeyPrincipal>();
+    }
 
     #[test]
     fn execution_kind_roundtrips() {
@@ -47,18 +54,5 @@ mod tests {
         let json = serde_json::to_string(&kind).unwrap();
         let back: ExecutionKind = serde_json::from_str(&json).unwrap();
         assert_eq!(kind, back);
-    }
-
-    #[test]
-    fn core_error_and_manifest_are_pure() {
-        let err = CoreError::new("TEST", "pure error");
-        assert_eq!(err.code, "TEST");
-
-        let m = WorkerManifest {
-            name: "hello".into(),
-            entrypoint: Some("index.ts".into()),
-            ttl: 0,
-        };
-        assert_eq!(m.name, "hello");
     }
 }

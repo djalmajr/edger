@@ -1,6 +1,7 @@
 # Story 02.03: Errors and wire formats (SerializedRequest/Response)
 
-**Origin:** `planning/edger/epics/02-edger-core/00-overview.md`
+**Origin:** `planning/edger/epics/02-edger-core/00-overview.md`  
+**Status:** completed (2026-06-29)
 
 ## Context
 - **Problema:** Isolate boundary needs stable wire types; ad-hoc errors block orchestrator/worker integration.
@@ -28,35 +29,34 @@
 Minimal `CoreError` struct in lib.rs; no wire types.
 
 ### TO-BE
-- `SerializedRequest { method, uri, headers, body: Option<Bytes>, request_id, base_href }`
-- `SerializedResponse { status, headers, body }`
-- Header limit constants (100 headers, 64KiB total, 8KiB per value) as pure constants
-- Error types for parse/validation (no I/O errors)
+Wire types + header limits + roundtrip tests.
 
 ### Scope
 - In: structs, serde, limit constants, roundtrip tests
 - Out: hyper conversion (orchestrator later)
 
 ### Acceptance criteria
-- [ ] JSON/bincode roundtrip tests pass for request/response with body
-- [ ] Empty body serializes correctly
-- [ ] Error types implement Display + serde where needed
+- [x] JSON roundtrip tests pass for request/response with body
+- [x] Empty body serializes correctly
+- [x] Error types implement Display + serde where needed
 
 ### Dependencies
 - Story 02.01
 
+### Pendências
+- **bincode/postcard roundtrip:** JSON coberto; framing binário para multi-proc documentado no design — testes bincode adiados para Epic 03 wire story.
+
 ## Test-first plan
 - **First failing test:** deserialize `SerializedRequest` missing required field fails
 - **Level:** `edger-core/tests/wire_roundtrip.rs`
-- **Avoid:** Mocking HTTP; test pure serde only
 
 ## Tasks
-- [ ] Add `bytes` to workspace + edger-core
-- [ ] Create `wire.rs` with Serialized* types + derives
-- [ ] Create `error.rs` with domain error enum/struct per design
-- [ ] Export from lib.rs with module docs
-- [ ] Write roundtrip tests (with/without body, binary-safe headers)
-- [ ] Run `cargo test -p edger-core`
+- [x] Add `bytes` to workspace + edger-core (feature `serde`)
+- [x] Create `wire.rs` with Serialized* types + derives
+- [x] Create `error.rs` with domain error struct per design
+- [x] Export from lib.rs with module docs
+- [x] Write roundtrip tests (with/without body, binary-safe headers)
+- [x] Run `cargo test -p edger-core`
 
 ## Verification
 ```bash

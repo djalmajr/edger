@@ -1,0 +1,25 @@
+name: "@acme/checkout"
+version: "1.2.3"
+enabled: true
+entrypoint: index.ts
+ttl: 300
+timeout: 30s
+idleTimeout: 2m
+maxRequests: 1000
+maxBodySize: 10mb
+lowMemory: true
+autoInstall: false
+injectBase: true
+visibility: protected
+publicRoutes:
+  routes:
+    - /health
+    - /api/public
+  exact: false
+cron:
+  - schedule: "0 * * * *"
+    path: /cron-tick
+    method: GET
+kind: serverless
+env:
+  NODE_ENV: production

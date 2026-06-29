@@ -1,6 +1,7 @@
 # Story 02.01: Setup edger-core crate structure
 
-**Origin:** `planning/edger/epics/02-edger-core/00-overview.md`
+**Origin:** `planning/edger/epics/02-edger-core/00-overview.md`  
+**Status:** completed (2026-06-29)
 
 ## Context
 - **Problema:** edger-core carece de estrutura modular; apenas `lib.rs` parcial.
@@ -35,9 +36,9 @@
 - **Out:** modelos completos (story 02.02)
 
 ### Acceptance criteria
-- [ ] edger-core sem path deps em crates irmãos
-- [ ] `cargo test -p edger-core` passa
-- [ ] Stubs: manifest, config, wire, error, extension declarados em lib.rs
+- [x] edger-core sem path deps em crates irmãos
+- [x] `cargo test -p edger-core` passa
+- [x] Stubs: manifest, config, wire, error, extension declarados em lib.rs
 
 ### Dependencies
 - Epic 01 complete
@@ -47,22 +48,24 @@
 - Herdar `[workspace.package]`; deps apenas serde/bytes/tracing conforme design
 - Documentar gate em `AGENTS.md`
 
+### Pendências / desvios
+- AS-IS tinha tipos inline em `lib.rs`; refatorados para módulos nas stories 02.02–02.04 (comportamento preservado + expandido).
+
 ## Test-first plan
 - **Red:** `cargo test -p edger-core` falha sem módulos
 - **Green:** lib.rs + stubs + teste mínimo
 - **Refactor:** separar stubs em arquivos dedicados
 
 ## Tasks
-- [ ] Editar `edger-core/Cargo.toml` (pureza + inherit)
-- [ ] Criar stubs `manifest.rs`, `error.rs`, `extension.rs` e declarar em `lib.rs`
-- [ ] Adicionar teste unitário mínimo
-- [ ] `cargo test -p edger-core` verde
-- [ ] Atualizar cross-refs no epic overview
+- [x] Editar `edger-core/Cargo.toml` (pureza + inherit)
+- [x] Criar stubs `manifest.rs`, `error.rs`, `extension.rs` e declarar em `lib.rs`
+- [x] Adicionar teste unitário mínimo
+- [x] `cargo test -p edger-core` verde
+- [x] Atualizar cross-refs no epic overview
 
 ## Verification
 ```bash
 cargo check -p edger-core
 cargo test -p edger-core
 bun test
-# memory_lint workspace=djalmajr project=edger
 ```

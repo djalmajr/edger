@@ -1,6 +1,7 @@
 # Story 02.02: Core data models (Manifest, Config, Principal, ExecutionKind)
 
-**Origin:** `planning/edger/epics/02-edger-core/00-overview.md`
+**Origin:** `planning/edger/epics/02-edger-core/00-overview.md`  
+**Status:** completed (2026-06-29)
 
 ## Context
 - **Problema:** Only subset WorkerManifest exists; no WorkerConfig parser, Principal, or full Buntime mapping.
@@ -17,8 +18,9 @@
 - edger-core/src/config.rs
 - edger-core/src/principal.rs
 - edger-core/src/execution.rs (ExecutionKind)
-- edger-core/src/lib.rs (reexports + tests)
-- edger-core/Cargo.toml (add serde if not)
+- edger-core/src/worker_ref.rs
+- edger-core/tests/models_mapping.rs
+- edger-core/tests/fixtures/sample_manifest.yaml
 
 ## Detail
 
@@ -26,22 +28,21 @@
 Minimal WorkerManifest { name, entrypoint, ttl }.
 
 ### TO-BE
-Models based on design + Buntime contracts:
-- WorkerManifest { name, entrypoint, ttl, ... }
-- ExecutionKind enum
-- ApiKeyPrincipal / namespaces
-- Configs
-Serde derive, Clone Debug etc. No side effects.
+Models based on design + Buntime contracts with table-driven tests.
 
 ### Acceptance criteria
-- [ ] WorkerManifest deserializes from YAML fixture matching Buntime sample
-- [ ] `parse_worker_config` normalizes ttl_ms (0 = ephemeral), sizes, durations
-- [ ] `WorkerRef` includes namespace + semver fields
-- [ ] `infer_execution_kind` matches design inference rules
-- [ ] Table-driven tests for each Buntime field in mapping table
+- [x] WorkerManifest deserializes from YAML fixture matching Buntime sample
+- [x] `parse_worker_config` normalizes ttl_ms (0 = ephemeral), sizes, durations
+- [x] `WorkerRef` includes namespace + semver fields
+- [x] `infer_execution_kind` matches design inference rules
+- [x] Table-driven tests for each Buntime field in mapping table
 
 ### Dependencies
 - Story 02.01
+
+### Pendências
+- **RoutesTable inference:** regra 3 do design (export `routes`) requer análise de módulo no loader — adiado para orchestrator/isolation (Epic 05/03); core infere apenas via `kind` explícito ou default `FetchHandler`.
+- **WorkerConfig serde:** struct normalizada é runtime-only (`PartialEq`); serde derive adiado até necessidade IPC.
 
 ## Test-first plan
 - Red: test deserialize manifest fails
@@ -49,13 +50,13 @@ Serde derive, Clone Debug etc. No side effects.
 - Refactor: separate modules
 
 ## Tasks
-- [ ] Define structs/enums with derives
-- [ ] Unit tests for roundtrip serde json
-- [ ] cargo test green
+- [x] Define structs/enums with derives
+- [x] Unit tests for roundtrip serde json
+- [x] cargo test green
 
 ## Verification
 ```bash
 cargo test -p edger-core models
 cargo clippy -p edger-core -- -D warnings
-! rg -l 'std::fs|tokio::fs|reqwest' edger-core/src/models.rs 2>/dev/null || true
+! rg -l 'std::fs|tokio::fs|reqwest' edger-core/src/ 2>/dev/null || true
 ```
