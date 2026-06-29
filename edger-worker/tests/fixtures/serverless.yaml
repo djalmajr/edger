@@ -1,0 +1,5 @@
+name: serverless-worker
+version: latest
+ttl: 0
+maxRequests: 0
+entrypoint: handler.ts

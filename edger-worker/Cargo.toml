@@ -16,6 +16,7 @@ thiserror.workspace = true
 bytes.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
+tokio = { workspace = true, features = ["rt", "macros", "test-util", "time"] }
 edger-isolation = { path = "../edger-isolation" }
 serde_yaml.workspace = true
+tempfile = "3"

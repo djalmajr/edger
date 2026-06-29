@@ -1,0 +1,14 @@
+/agile-refinement Mode 2 — Story 04.04 code review
+generated=2026-06-29
+
+Scope: edger-worker integration_pool tests
+
+VERDICT: PASS
+
+Findings:
+- 7 scenarios cover persistent, ephemeral, SPA, max_requests, concurrency, collision, shutdown
+- tempfile RAII for worker dirs; fixtures parse via edger-core
+- MockIsolateFactory in test helpers only (no production dep on edger-isolation)
+- Module docs explain Buntime manifest mapping
+
+No RED flags.

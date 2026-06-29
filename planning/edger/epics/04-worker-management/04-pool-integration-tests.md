@@ -49,11 +49,11 @@
 - **Out:** testes com deno real, orquestrador HTTP
 
 ### Critérios de aceite
-- [ ] `cargo test -p edger-worker --test integration_pool` — 7+ cenários passando
-- [ ] Fixtures manifest parseiam via `edger-core::parse_worker_config`
-- [ ] Dev-dep `edger-isolation` apenas em tests/factory (não em lib de produção se evitar acoplamento — factory trait object em worker, impl mock em test)
-- [ ] Nenhum arquivo deixado em /tmp (tempfile RAII)
-- [ ] Documentação no test module explica mapeamento Buntime
+- [x] `cargo test -p edger-worker --test integration_pool` — 7 cenários passando
+- [x] Fixtures manifest parseiam via `edger-core::parse_worker_config`
+- [x] Dev-dep `edger-isolation` apenas em tests/helpers (factory trait em lib; impl mock em test)
+- [x] Nenhum arquivo deixado em /tmp (tempfile RAII)
+- [x] Documentação no test module explica mapeamento Buntime
 
 ### Dependências
 - Stories 04.01–04.03
@@ -66,14 +66,14 @@
 - **Evitar:** Sleep real longo; usar `tokio::time::pause` para TTL
 
 ## Tasks
-- [ ] Adicionar dev-deps ao Cargo.toml
-- [ ] Criar fixtures YAML (serverless, persistent, spa)
-- [ ] Criar `tests/helpers/mod.rs`
-- [ ] Criar `factory.rs` com trait `IsolateFactory` + impl test
-- [ ] Implementar cenários de integração 1–7
-- [ ] Garantir pool usa factory injetada nos testes
-- [ ] Atualizar `00-overview.md` epic status quando verde
-- [ ] Rodar gate workspace completo
+- [x] Adicionar dev-deps ao Cargo.toml (`tempfile`, `edger-isolation`)
+- [x] Criar fixtures YAML (serverless, persistent, spa)
+- [x] Criar `tests/helpers/mod.rs`
+- [x] `MockIsolateFactory` em helpers (trait `IsolateFactory` já em lib)
+- [x] Implementar cenários de integração 1–7
+- [x] Garantir pool usa factory injetada nos testes
+- [x] Atualizar `00-overview.md` epic status quando verde
+- [x] Rodar gate workspace completo
 
 ## Verification
 ```bash

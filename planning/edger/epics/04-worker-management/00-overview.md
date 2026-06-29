@@ -53,7 +53,7 @@ Implementar `edger-worker` com `WorkerPool` skeleton, LRU `get_or_create`, super
 | 04.01 WorkerPool + LRU | `01-worker-pool-lru.md` | large | **completed** | Epic 02 |
 | 04.02 Supervisor lifecycle | `02-supervisor-lifecycle.md` | large | **completed** | 04.01, Epic 03.02 (parcial) |
 | 04.03 Métricas + ephemeral | `03-metrics-ephemeral.md` | medium | **completed** | 04.01, 04.02 |
-| 04.04 Testes integração | `04-pool-integration-tests.md` | large | not started | 04.01, 04.02, 04.03, Epic 03.02 |
+| 04.04 Testes integração | `04-pool-integration-tests.md` | large | **completed** | 04.01, 04.02, 04.03, Epic 03.02 |
 
 ## Epic roadmap
 
@@ -67,13 +67,13 @@ flowchart LR
 ```
 
 ## Epic acceptance criteria
-- [ ] `WorkerPool::new` + `fetch` + `shutdown` + `get_metrics` implementados
-- [ ] LRU eviction e `get_or_create` com collision detection básica (mesmo dir+name)
-- [ ] Supervisor implementa diagrama de estados do design
-- [ ] ttl=0 ephemeral: terminate após response; concurrency limit + queue
-- [ ] maxRequests força Terminating após N dispatches
-- [ ] `edger-worker/tests/` com mock isolate + tempfile worker dirs
-- [ ] `cargo test -p edger-worker` verde; gate workspace verde; `bun test` passa
+- [x] `WorkerPool::new` + `fetch` + `shutdown` + `get_metrics` implementados
+- [x] LRU eviction e `get_or_create` com collision detection básica (mesmo dir+name)
+- [x] Supervisor implementa diagrama de estados do design
+- [x] ttl=0 ephemeral: terminate após response; concurrency limit + queue
+- [x] maxRequests força Terminating após N dispatches
+- [x] `edger-worker/tests/` com mock isolate + tempfile worker dirs (24 worker tests)
+- [x] `cargo test -p edger-worker` verde; gate workspace verde (55 Rust); `bun test` passa
 
 ## Risks
 
@@ -85,7 +85,7 @@ flowchart LR
 | Epic 03 atrasado bloqueia testes | Média | Mock local mínimo em worker até 03.02; substituir por edger-isolation dev-dep |
 
 ## Próximo passo recomendado
-`/agile-story` em `01-worker-pool-lru.md` quando Epic 02.02 (WorkerConfig, WorkerRef) estiver completo.
+Epic 05 Orquestrador — `/agile-story` em `epics/05-orquestrador/01-orchestrator-skeleton.md` (ou primeira story do epic).
 
 ## Status
-ready-for-development (planning complete; implementação bloqueada por Epics 02-03)
+**completed** (2026-06-29) — ver `status/checkpoint-2026-06-29-epic-04-closure.md`

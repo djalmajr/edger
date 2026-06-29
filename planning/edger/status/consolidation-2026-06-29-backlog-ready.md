@@ -6,8 +6,8 @@
 ## Context
 - **Project/initiative:** edger
 - **Period:** 2026-06-28 — 2026-06-29
-- **Current objective:** Fase 4 em progresso (04.01–04.03 done; 04.04 próximo)
-- **Related epic:** Epic 04; próximo `epics/04-worker-management/04-pool-integration-tests.md`
+- **Current objective:** Fase 5 próxima (Epic 04 entregue; Epic 05 Orquestrador)
+- **Related epic:** Epic 05; próximo `epics/05-orquestrador/00-overview.md`
 
 ---
 
@@ -20,8 +20,8 @@
   - Per-story checkpoints: `status/checkpoint-2026-06-29-story-02-0{1..4}.md`
   - Per-story refinement: `status/evidence/refinement-story-02-0{1..4}.txt`
   - Epic 02 closure: `status/checkpoint-2026-06-29-epic-02-closure.md`
-- **In progress:** Epic 04 — 04.01–04.03 done; 04.04 integration tests next
-- **Completed (new):** Epic 03 — stories 03.01–03.04 + epic closure
+- **Completed (new):** Epic 04 — stories 04.01–04.04 + epic closure (24 worker tests)
+- **Completed:** Epic 03 — stories 03.01–03.04 + epic closure
 - **Deviations:** Epic 02 delivered in continuous cycle; per-story artifacts added retroactively per AC3
 
 ### Backlog summary

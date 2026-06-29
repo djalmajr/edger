@@ -1,0 +1,5 @@
+name: persistent-worker
+version: "1.0.0"
+ttl: 30
+maxRequests: 0
+entrypoint: index.ts

@@ -1,0 +1,5 @@
+name: spa-worker
+version: "1.0.0"
+ttl: 60
+entrypoint: index.html
+injectBase: true
