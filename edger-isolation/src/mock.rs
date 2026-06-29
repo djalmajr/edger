@@ -11,6 +11,7 @@ pub struct MockIsolate {
     terminate_calls: u32,
     idle_calls: u32,
     fail_on_terminate: bool,
+    slow_fetch_ms: u64,
 }
 
 impl MockIsolate {
@@ -20,7 +21,13 @@ impl MockIsolate {
             terminate_calls: 0,
             idle_calls: 0,
             fail_on_terminate: false,
+            slow_fetch_ms: 0,
         }
+    }
+
+    pub fn with_slow_fetch_ms(mut self, ms: u64) -> Self {
+        self.slow_fetch_ms = ms;
+        self
     }
 
     pub fn with_spa_html(mut self, html: impl Into<String>) -> Self {
@@ -71,6 +78,9 @@ impl Isolate for MockIsolate {
         req: SerializedRequest,
         _config: &WorkerConfig,
     ) -> Result<SerializedResponse, IsolationError> {
+        if self.slow_fetch_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(self.slow_fetch_ms)).await;
+        }
         Ok(Self::echo_response("fetch", &req, 200))
     }
 

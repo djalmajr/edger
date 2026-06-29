@@ -12,6 +12,8 @@ tracing.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
+postcard.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
@@ -30,3 +32,4 @@ path = "examples/embedding-spike-deno.rs"
 [features]
 default = []
 deno = []
+multiproc = []

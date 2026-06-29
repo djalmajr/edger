@@ -29,6 +29,7 @@ bytes = { version = "1", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
 thiserror = "2"
+postcard = "1"
 wasmtime = "29"
 wasmtime-wasi = "29"
 wat = "1.252"

@@ -52,7 +52,7 @@ Validar embedding via spike time-boxed (deno_core + facade primário; wasmtime p
 |---|---|---|---|---|
 | 03.01 Embedding spike | `01-embedding-spike.md` | large | **completed** | Epic 02 (parcial: wire types) |
 | 03.02 Isolate trait impl | `02-isolate-trait-impl.md` | large | **completed** | 03.01, Epic 02.04 |
-| 03.03 Wire + limites | `03-wire-limits.md` | medium | not started | 03.02, Epic 02.03 |
+| 03.03 Wire + limites | `03-wire-limits.md` | medium | **completed** | 03.02, Epic 02.03 |
 | 03.04 Dual-backend prep | `04-dual-backend-prep.md` | medium | not started | 03.01, 03.02, 03.03 |
 
 ## Epic roadmap
