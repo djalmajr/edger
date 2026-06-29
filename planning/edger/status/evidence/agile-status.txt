@@ -1,42 +1,10 @@
-/agile-status — Consolidation mode
-Initiative: edger
-Date: 2026-06-29
-Scope: planning backlog Fases 1-7
+agile-status consolidation (rendered from gates-summary.json)
+generated=2026-06-29T01:10:32Z
 
-## Completed
-- Fase 1 (Epic 01-fundacao): delivered — Bun loader, 6 tests pass
-- Planning decomposition: 7 epics, 31 stories (+ spike.md skeleton in Epic 03)
-- Formal gates captured under planning/edger/status/evidence/
+Gate results (exit-code driven via run-gates.sh):
+- refinement-lint.py scope=planning/edger/ → 0 RED (evidence/refinement-report.txt)
+- memory_lint MCP workspace=djalmajr project=edger invocation_target=127.0.0.1:49472 → findings_count=0
+- path-preflight → missing=0
+- bun test → 0 fail
 
-## In progress
-- (none — planning phase complete)
-
-## Ready for development
-- Fase 2: planning/edger/epics/02-edger-core/01-setup-core-crate.md
-- Fases 3-7: stories decomposed with tasks + verification commands
-
-## Blockers
-- Remote ai-memory (memory.djalmajr.dev) returned 503 during session; memory_lint executed against local ai-memory serve (127.0.0.1:19474) with explicit workspace=djalmajr project=edger — findings: []
-
-## Deviations
-- memory_lint used local fallback server (remote unavailable); raw MCP+CLI output in evidence/memory-lint.txt
-
-## Risks
-- Epic 03 embedding spike is go/no-go gate for real JS execution (Fase 7)
-- Epics 05-07 depend on 02-04 implementation order
-
-## Decisions needed
-- None for planning closure; proceed to story 02.01 implementation
-
-## Verification summary
-| Gate | Artifact | Result |
-|---|---|---|
-| /agile-refinement Mode 1 | evidence/refinement-report.txt | PASS (0 RED) |
-| Epic-scoped refinement | evidence/refinement-epic-*.txt (7 files) | PASS each |
-| Path preflight | evidence/path-preflight.txt | 22 refs, 0 missing |
-| memory_lint (djalmajr/edger) | evidence/memory-lint.txt | findings: [] |
-| bun test | evidence/bun-test.txt | 6 pass |
-| cargo check | evidence/cargo-check.txt | pass (skeleton) |
-
-## Next step
-/agile-story on planning/edger/epics/02-edger-core/01-setup-core-crate.md
+Next: /agile-story on planning/edger/epics/02-edger-core/01-setup-core-crate.md

@@ -1,6 +1,6 @@
 01-fundacao: 4 stories
 02-edger-core: 4 stories
-03-isolacao-execucao: 5 stories
+03-isolacao-execucao: 3 stories
 04-worker-management: 4 stories
 05-orquestrador: 5 stories
 06-extensibilidade: 3 stories

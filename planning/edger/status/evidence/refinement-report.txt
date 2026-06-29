@@ -1,17 +1,12 @@
-/agile-refinement — Mode 1: Planning Lint
-Skill: ~/.agents/skills/agile-refinement/SKILL.md
-Scope: planning/edger/ (entire tree)
-Process:
-  1. Scope: entire planning/edger/ tree (54 markdown files)
-  2. Read all artifacts in scope
-  3. Run each check category from SKILL.md Mode 1
-  4. Produce inline report grouped by category (below)
-Generated: 2026-06-29T01:05:39Z
+tool=refinement-lint.py
+scope=planning/edger/
+checklist_source=agile-refinement/SKILL.md Mode 1 (implemented by script, not skill invocation)
+generated=2026-06-29T01:10:32Z
 ========================================================================
 ========================================================================
 AGILE REFINEMENT LINT — planning/edger
-Round: agile-refinement-mode1-full-tree
-Generated: 2026-06-29T01:05:40Z
+Round: run-gates
+Generated: 2026-06-29T01:10:32Z
 Files in scope: 53
 ========================================================================
 
@@ -29,34 +24,34 @@ Files in scope: 53
   [OK] [Cross-references] planning/edger/docs/wasm-abi.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — Origin → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — ref → planning/edger/design.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — ref → planning/edger/status/closure-2026-06-28-edger-func.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — ref → planning/edger/intake.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — ref → planning/edger/status/closure-2026-06-28-edger-func.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — ref → planning/edger/analysis-synthesis.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — Origin → planning/edger/epics/01-fundacao/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — ref → planning/edger/AGENTS.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — ref → planning/edger/intake.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — ref → planning/edger/analysis-synthesis.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — ref → planning/edger/epics/01-fundacao/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — ref → planning/edger/analysis-synthesis.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/02-implement-loader.md — Origin → planning/edger/epics/01-fundacao/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/02-implement-loader.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/02-implement-loader.md — ref → planning/edger/epics/01-fundacao/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/02-implement-loader.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/03-copy-examples.md — Origin → planning/edger/epics/01-fundacao/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/03-copy-examples.md — ref → planning/edger/status/closure-2026-06-28-edger-func.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/03-copy-examples.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/03-copy-examples.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/03-copy-examples.md — ref → planning/edger/status/closure-2026-06-28-edger-func.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/03-copy-examples.md — ref → planning/edger/epics/01-fundacao/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/03-copy-examples.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/04-closure-evidence.md — Origin → planning/edger/epics/01-fundacao/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/04-closure-evidence.md — ref → planning/edger/status/consolidation-2026-06-28.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/04-closure-evidence.md — ref → planning/edger/status/closure-2026-06-28-edger-func.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/04-closure-evidence.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/04-closure-evidence.md — ref → planning/edger/status/consolidation-2026-06-28.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/04-closure-evidence.md — ref → planning/edger/epics/01-fundacao/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/04-closure-evidence.md — ref → planning/edger/status/closure-2026-06-28-edger-func.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — Origin → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/analysis-synthesis.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/analysis-synthesis.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/epics/01-fundacao/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/01-setup-core-crate.md — Origin → planning/edger/epics/02-edger-core/00-overview.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/01-setup-core-crate.md — ref → planning/edger/analysis-synthesis.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/01-setup-core-crate.md — ref → planning/edger/epics/02-edger-core/00-overview.md
@@ -71,16 +66,16 @@ Files in scope: 53
   [OK] [Cross-references] planning/edger/epics/02-edger-core/04-core-traits.md — ref → planning/edger/epics/02-edger-core/00-overview.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/04-core-traits.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — Origin → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — ref → planning/edger/epics/03-isolacao-execucao/spike.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — ref → planning/edger/epics/02-edger-core/00-overview.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — ref → planning/edger/analysis-synthesis.md
+  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — ref → planning/edger/epics/03-isolacao-execucao/spike.md
+  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md — Origin → planning/edger/epics/03-isolacao-execucao/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md — ref → planning/edger/epics/03-isolacao-execucao/spike.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md — ref → planning/edger/epics/03-isolacao-execucao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md — ref → planning/edger/epics/03-isolacao-execucao/spike.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/02-isolate-trait-impl.md — Origin → planning/edger/epics/03-isolacao-execucao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/02-isolate-trait-impl.md — ref → planning/edger/epics/03-isolacao-execucao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/02-isolate-trait-impl.md — ref → planning/edger/design.md
@@ -88,38 +83,38 @@ Files in scope: 53
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/03-wire-limits.md — ref → planning/edger/epics/03-isolacao-execucao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/03-wire-limits.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/04-dual-backend-prep.md — Origin → planning/edger/epics/03-isolacao-execucao/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/04-dual-backend-prep.md — ref → planning/edger/epics/03-isolacao-execucao/spike.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/04-dual-backend-prep.md — ref → planning/edger/epics/03-isolacao-execucao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/04-dual-backend-prep.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/04-dual-backend-prep.md — ref → planning/edger/epics/03-isolacao-execucao/spike.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/spike.md — Origin → planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/spike.md — ref → planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/spike.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — Origin → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — ref → planning/edger/epics/03-isolacao-execucao/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — ref → planning/edger/epics/02-edger-core/00-overview.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — ref → planning/edger/analysis-synthesis.md
+  [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — ref → planning/edger/epics/03-isolacao-execucao/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/01-worker-pool-lru.md — Origin → planning/edger/epics/04-worker-management/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/04-worker-management/01-worker-pool-lru.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/01-worker-pool-lru.md — ref → planning/edger/epics/04-worker-management/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/04-worker-management/01-worker-pool-lru.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/02-supervisor-lifecycle.md — Origin → planning/edger/epics/04-worker-management/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/04-worker-management/02-supervisor-lifecycle.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/02-supervisor-lifecycle.md — ref → planning/edger/epics/04-worker-management/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/04-worker-management/02-supervisor-lifecycle.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/03-metrics-ephemeral.md — Origin → planning/edger/epics/04-worker-management/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/04-worker-management/03-metrics-ephemeral.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/03-metrics-ephemeral.md — ref → planning/edger/epics/04-worker-management/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/04-worker-management/03-metrics-ephemeral.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/04-pool-integration-tests.md — Origin → planning/edger/epics/04-worker-management/00-overview.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/04-pool-integration-tests.md — ref → planning/edger/analysis-synthesis.md
-  [OK] [Cross-references] planning/edger/epics/04-worker-management/04-pool-integration-tests.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/04-pool-integration-tests.md — ref → planning/edger/epics/04-worker-management/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/04-worker-management/04-pool-integration-tests.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — Origin → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/intake.md
+  [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/epics/04-worker-management/00-overview.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/epics/03-isolacao-execucao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/design.md
-  [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/epics/02-edger-core/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/intake.md
-  [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/epics/04-worker-management/00-overview.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/01-http-server-health.md — Origin → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/01-http-server-health.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/01-http-server-health.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
@@ -136,10 +131,10 @@ Files in scope: 53
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/05-extension-registry.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/05-extension-registry.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/00-overview.md — Origin → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/06-extensibilidade/00-overview.md — ref → planning/edger/docs/extensions.md
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/00-overview.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/06-extensibilidade/00-overview.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/00-overview.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/06-extensibilidade/00-overview.md — ref → planning/edger/docs/extensions.md
+  [OK] [Cross-references] planning/edger/epics/06-extensibilidade/00-overview.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/01-static-registration.md — Origin → planning/edger/epics/06-extensibilidade/00-overview.md
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/01-static-registration.md — ref → planning/edger/epics/06-extensibilidade/00-overview.md
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/01-static-registration.md — ref → planning/edger/docs/extensions.md
@@ -153,47 +148,45 @@ Files in scope: 53
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/03-extension-template.md — ref → planning/edger/docs/extensions.md
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/03-extension-template.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — Origin → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/epics/06-extensibilidade/00-overview.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/epics/06-extensibilidade/00-overview.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/design.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/analysis-synthesis.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/01-full-manifests-kinds.md — Origin → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/01-full-manifests-kinds.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/01-full-manifests-kinds.md — ref → planning/edger/epics/07-avancado/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/01-full-manifests-kinds.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/02-shell-routing.md — Origin → planning/edger/epics/07-avancado/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/02-shell-routing.md — ref → planning/edger/epics/07-avancado/00-overview.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/02-shell-routing.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/02-shell-routing.md — ref → planning/edger/docs/shell-protocol.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/02-shell-routing.md — ref → planning/edger/epics/07-avancado/00-overview.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/03-native-cron.md — Origin → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/03-native-cron.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/03-native-cron.md — ref → planning/edger/epics/07-avancado/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/03-native-cron.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/04-real-js-execution.md — Origin → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/04-real-js-execution.md — ref → planning/edger/epics/03-isolacao-execucao/spike.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/04-real-js-execution.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/04-real-js-execution.md — ref → planning/edger/epics/07-avancado/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/04-real-js-execution.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/04-real-js-execution.md — ref → planning/edger/epics/03-isolacao-execucao/spike.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/05-wasm-execution.md — Origin → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/05-wasm-execution.md — ref → planning/edger/design.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/05-wasm-execution.md — ref → planning/edger/docs/wasm-abi.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/05-wasm-execution.md — ref → planning/edger/epics/07-avancado/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/05-wasm-execution.md — ref → planning/edger/docs/wasm-abi.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/05-wasm-execution.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/06-observability-otel.md — Origin → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/06-observability-otel.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/06-observability-otel.md — ref → planning/edger/epics/07-avancado/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/06-observability-otel.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — Origin → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — ref → planning/edger/docs/performance-baselines.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — ref → planning/edger/epics/07-avancado/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — ref → planning/edger/docs/compat-matrix.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — ref → planning/edger/docs/performance-baselines.md
   [OK] [Cross-references] planning/edger/intake.md — ref → planning/edger/intake.md
   [OK] [Cross-references] planning/edger/roadmap.md — Origin → planning/edger/intake.md
-  [OK] [Cross-references] planning/edger/roadmap.md — ref → planning/edger/analysis-synthesis.md
-  [OK] [Cross-references] planning/edger/roadmap.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/roadmap.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/roadmap.md — ref → planning/edger/intake.md
-  [OK] [Cross-references] planning/edger/status/consolidation-2026-06-29-backlog-ready.md — ref → planning/edger/scripts
+  [OK] [Cross-references] planning/edger/roadmap.md — ref → planning/edger/analysis-synthesis.md
+  [OK] [Cross-references] planning/edger/roadmap.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/status/consolidation-2026-06-29-backlog-ready.md — ref → planning/edger/status/evidence
   [OK] [Cross-references] planning/edger/status/consolidation-2026-06-29-backlog-ready.md — ref → planning/edger/epics/02-edger-core/01-setup-core-crate.md
-  [OK] [Cross-references] planning/edger/status/consolidation-2026-06-29-backlog-ready.md — ref → planning/edger/epics
-  [OK] [Cross-references] planning/edger/status/consolidation-2026-06-29-backlog-ready.md — ref → planning/edger/scripts/refinement-lint.py
 
 ## Dependencies
   [OK] [Dependencies] planning/edger/epics/02-edger-core/00-overview.md — epic depends on epic:01
@@ -912,6 +905,6 @@ Files in scope: 53
   07-avancado: 7 stories
 
 ## Summary
-  RED: 0  WARN: 15  INFO: 31  OK lines: 832
+  RED: 0  WARN: 15  INFO: 31  OK lines: 830
 VERDICT: PASS — 0 RED findings (warnings may remain)
 

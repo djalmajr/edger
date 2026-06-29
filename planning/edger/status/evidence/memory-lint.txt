@@ -1,16 +1,9 @@
-memory_lint workspace=djalmajr project=edger
-Generated: 2026-06-29T01:05:40Z
-
-=== Remote attempt (https://memory.djalmajr.dev) ===
-Error: 503 Service Unavailable: no available server
-
-=== Local fallback (ai-memory serve --bind 127.0.0.1:19474) ===
-MCP tools/call memory_lint:
-{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"{\n  \"findings\": []\n}"}],"isError":false}}
-CLI ai-memory lint --config /tmp/ai-memory-local.toml:
-2026-06-29T01:05:28.532983Z  INFO ai_memory: ai-memory starting version="1.4.1" data_dir=/Users/djalmajr/Library/Application Support/ai-memory bind=127.0.0.1:49374
-{
-  "findings": []
-}
-
-RESULT: findings: [] — PASS
+tool=ai-memory memory_lint (MCP tools/call)
+invocation_target=127.0.0.1:49472
+workspace=djalmajr
+project=edger
+remote_memory_djalmajr_dev=NOT_USED (local serve only)
+http_code=200
+generated=2026-06-29T01:10:32Z
+--- mcp raw ---
+{"jsonrpc":"2.0","id":11,"result":{"content":[{"type":"text","text":"{\n  \"findings\": []\n}"}],"isError":false}}
