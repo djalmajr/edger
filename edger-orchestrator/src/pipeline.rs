@@ -11,6 +11,7 @@ use edger_worker::{WorkerError, WorkerPool};
 use serde_json::json;
 use tower_http::trace::TraceLayer;
 
+use crate::auth::AuthGate;
 use crate::context::RequestContext;
 use crate::manifest_index_stub::ManifestIndex;
 use crate::router::{resolve_route, ReservedPath, ResolvedRoute};
@@ -38,6 +39,7 @@ pub struct OrchestratorState {
     pub pool: WorkerPool,
     pub index: ManifestIndex,
     pub hooks: HookRunner,
+    pub auth: AuthGate,
 }
 
 /// Build the full axum application (health + readiness + pipeline fallback).
@@ -89,19 +91,39 @@ async fn handle_request(
 
     match route {
         ResolvedRoute::Reserved { kind } => handle_reserved(kind),
-        ResolvedRoute::PluginBase { .. } => Ok(json_error(
-            StatusCode::NOT_IMPLEMENTED,
-            "PLUGIN_BASE",
-            "plugin dispatch not implemented in story 05.03",
-        )),
+        ResolvedRoute::PluginBase { .. } => {
+            let principal = state.auth.authorize(&path, req.headers(), None, None)?;
+            dispatch_plugin_stub(principal)
+        }
         ResolvedRoute::HomepageFallback { worker } => {
-            dispatch_worker(state, req, request_id, worker, "/".into(), None).await
+            let principal = state.auth.authorize(
+                &path,
+                req.headers(),
+                worker.config.public_routes.as_ref(),
+                worker.namespace.as_deref(),
+            )?;
+            dispatch_worker(
+                state,
+                req,
+                request_id,
+                worker,
+                "/".into(),
+                None,
+                principal,
+            )
+            .await
         }
         ResolvedRoute::Worker {
             worker,
             rewritten_path,
             kind_hint,
         } => {
+            let principal = state.auth.authorize(
+                &path,
+                req.headers(),
+                worker.config.public_routes.as_ref(),
+                worker.namespace.as_deref(),
+            )?;
             dispatch_worker(
                 state,
                 req,
@@ -109,10 +131,19 @@ async fn handle_request(
                 worker,
                 rewritten_path,
                 Some(kind_hint),
+                principal,
             )
             .await
         }
     }
+}
+
+fn dispatch_plugin_stub(_principal: Option<edger_core::ApiKeyPrincipal>) -> Result<Response<Body>, CoreError> {
+    Ok(json_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "PLUGIN_BASE",
+        "plugin dispatch not implemented in story 05.03",
+    ))
 }
 
 async fn dispatch_worker(
@@ -122,12 +153,14 @@ async fn dispatch_worker(
     worker: WorkerRef,
     rewritten_path: String,
     kind_hint: Option<ExecutionKind>,
+    principal: Option<edger_core::ApiKeyPrincipal>,
 ) -> Result<Response<Body>, CoreError> {
     let mut serialized = axum_to_serialized(req, request_id.clone()).await?;
     serialized.uri = rewritten_path;
     serialized.base_href = Some(format!("/{}/", worker.name.trim_start_matches('@')));
 
     let mut ctx = RequestContext::new(request_id);
+    ctx.principal = principal;
     ctx.worker = Some(worker.clone());
 
     if let Some(short_circuit) = state.hooks.run_on_request(&mut serialized, &ctx) {
@@ -162,6 +195,8 @@ fn handle_reserved(kind: ReservedPath) -> Result<Response<Body>, CoreError> {
 
 fn map_error_status(err: &CoreError) -> StatusCode {
     match err.code.as_str() {
+        "UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
+        "FORBIDDEN" => StatusCode::FORBIDDEN,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
         "COLLISION" => StatusCode::CONFLICT,
         "VALIDATION_ERROR" | "PARSE_ERROR" | "BODY_ERROR" => StatusCode::BAD_REQUEST,
@@ -195,6 +230,9 @@ mod tests {
     use edger_worker::{IsolateFactory, PoolConfig};
     use tower::ServiceExt;
 
+    use crate::auth::{AuthGate, AuthGateConfig};
+    use crate::store::SqliteApiKeyStore;
+
     struct StubFactory;
     impl IsolateFactory for StubFactory {
         fn create_isolate(&self) -> Box<dyn edger_core::Isolate> {
@@ -222,7 +260,18 @@ mod tests {
             pool,
             index,
             hooks: HookRunner,
+            auth: AuthGate::new(
+                AuthGateConfig {
+                    root_api_key: Some("test-root".into()),
+                    ..Default::default()
+                },
+                Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
+            ),
         }
+    }
+
+    fn auth_header() -> (&'static str, &'static str) {
+        ("authorization", "Bearer test-root")
     }
 
     #[tokio::test]
@@ -249,6 +298,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/hello")
+                    .header(auth_header().0, auth_header().1)
                     .body(Body::empty())
                     .unwrap(),
             )

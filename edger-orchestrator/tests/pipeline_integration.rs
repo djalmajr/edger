@@ -8,7 +8,8 @@ use axum::http::{Request, StatusCode};
 use edger_core::WorkerManifest;
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
-    build_pipeline, HookRunner, ManifestIndex, OrchestratorState, ServerState,
+    build_pipeline, AuthGate, AuthGateConfig, HookRunner, ManifestIndex, OrchestratorState,
+    ServerState, SqliteApiKeyStore,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -43,6 +44,13 @@ fn orchestrator_with_worker() -> OrchestratorState {
         pool,
         index,
         hooks: HookRunner,
+        auth: AuthGate::new(
+            AuthGateConfig {
+                root_api_key: Some("test-root".into()),
+                ..Default::default()
+            },
+            Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
+        ),
     }
 }
 
@@ -53,6 +61,7 @@ async fn pipeline_worker_fetch_returns_mock_body() {
         .oneshot(
             Request::builder()
                 .uri("/demo")
+                .header("authorization", "Bearer test-root")
                 .body(Body::empty())
                 .unwrap(),
         )

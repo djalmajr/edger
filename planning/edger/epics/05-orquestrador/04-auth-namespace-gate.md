@@ -48,12 +48,17 @@
 - **Out:** implementação `AuthProvider` como extension crate (Epic 06 — `edger-ext-auth`); CSRF completo (Fase 7)
 
 ### Critérios de aceite
-- [ ] Root key acessa qualquer namespace
-- [ ] Key com `["@acme"]` acessa `/@acme/foo`, negado em `/@other/foo`
-- [ ] `publicRoutes: ["/health", "/login"]` bypassa gate (401 nunca)
-- [ ] Key inválida → 401; namespace negado → 403
-- [ ] Store persiste entre restarts (SQLite file test)
-- [ ] Testes não dependem de Turso cloud (SQLite local); Turso testado opcionalmente via feature flag
+- [x] Root key acessa qualquer namespace
+- [x] Key com `["@acme"]` acessa `/@acme/foo`, negado em `/@other/foo`
+- [x] `publicRoutes: ["/health", "/login"]` bypassa gate (401 nunca)
+- [x] Key inválida → 401; namespace negado → 403
+- [x] Store persiste entre restarts (SQLite file test)
+- [x] Testes não dependem de Turso cloud (SQLite local); Turso testado opcionalmente via feature flag
+
+## Pendências
+- Turso/libSQL atrás de feature `turso` não implementado (SQLite é primário em CI).
+- Hashing SHA-256 com pepper fixo; migrar para argon2 quando portar schema Buntime completo.
+- `edger-ext-auth` crate real permanece no Epic 06.
 
 ### Dependências
 - Story 05.03 (pipeline)
@@ -71,15 +76,15 @@
 **Nível:** integração (`auth_gate.rs`) + unit store
 
 ## Tasks
-- [ ] Definir trait `ApiKeyStore` + impl SQLite
-- [ ] Impl Turso/libSQL atrás de feature `turso` (opcional CI)
-- [ ] Portar schema e hashing de keys (argon2 ou equivalente Buntime)
-- [ ] Implementar `authenticate(headers) -> Option<ApiKeyPrincipal>`
-- [ ] Implementar `is_public_route(path, config) -> bool`
-- [ ] Integrar gate em `pipeline.rs` antes de `HookRunner`
-- [ ] Root principal synthetic via env
-- [ ] Suite de testes: root, namespaced, public, invalid, expired (se aplicável)
-- [ ] Documentar env vars em AGENTS/planning
+- [x] Definir trait `ApiKeyStore` + impl SQLite
+- [ ] Impl Turso/libSQL atrás de feature `turso` (opcional CI) — pendência
+- [x] Portar schema e hashing de keys (SHA-256 + pepper; argon2 pendente)
+- [x] Implementar `authenticate(headers) -> Option<ApiKeyPrincipal>`
+- [x] Implementar `is_public_route(path, config) -> bool`
+- [x] Integrar gate em `pipeline.rs` antes de `HookRunner`
+- [x] Root principal synthetic via env (`ROOT_API_KEY`)
+- [x] Suite de testes: root, namespaced, public, invalid (6 testes)
+- [x] Documentar env vars (`ROOT_API_KEY`, `EDGER_AUTH_DB`) no bin
 
 ## Verification
 ```bash
