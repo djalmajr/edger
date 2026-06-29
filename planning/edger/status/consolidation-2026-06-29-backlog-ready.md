@@ -25,7 +25,7 @@ Decomposição completa do roadmap Fases 1-7 em epics/stories/tasks via fluxo `/
 - [x] Cada fase do roadmap tem epic correspondente (`01`–`07`)
 - [x] Cada epic tem `00-overview.md` + >=1 story file
 - [x] Stories contêm tasks acionáveis e comandos de verificação (`cargo test`, `bun test`, launches)
-- [x] agile-refinement (script) — 0 findings em `planning/edger/epics/`
+- [x] agile-refinement — 3 rodadas; v3 final 0 findings (paths `edger-*` flat, PT uniforme, refs design.md)
 - [x] memory_lint scoped `djalmajr/edger` — 0 findings
 - [x] Fase 1 permanece `completed`; Fases 2-7 `ready-for-development`
 - [x] Cross-refs roadmap ↔ epics alinhados

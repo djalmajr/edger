@@ -10,18 +10,18 @@
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (PoolMetrics, WorkerConfig max_requests, Observability), Buntime worker-pool metrics
-- **Depends on:** Stories 04.01, 04.02; Epic 02.02 (`max_requests`, `ttl_ms`)
+- **Depende de:** Stories 04.01, 04.02; Epic 02.02 (`max_requests`, `ttl_ms`)
 
 ## Files
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `crates/edger-worker/src/metrics.rs` | criar | `PoolMetrics`, `WorkerStats`, histogram stub |
-| `crates/edger-worker/src/ephemeral.rs` | criar | semáforo + fila para ttl=0 |
-| `crates/edger-worker/src/pool.rs` | alterar | integrar métricas + ephemeral gate |
-| `crates/edger-worker/src/instance.rs` | alterar | increment request_count, check max_requests |
-| `crates/edger-worker/tests/metrics_ephemeral.rs` | criar | métricas + limites |
-| `crates/edger-worker/src/lib.rs` | alterar | export `PoolMetrics` |
+| `edger-worker/src/metrics.rs` | criar | `PoolMetrics`, `WorkerStats`, histogram stub |
+| `edger-worker/src/ephemeral.rs` | criar | semáforo + fila para ttl=0 |
+| `edger-worker/src/pool.rs` | alterar | integrar métricas + ephemeral gate |
+| `edger-worker/src/instance.rs` | alterar | increment request_count, check max_requests |
+| `edger-worker/tests/metrics_ephemeral.rs` | criar | métricas + limites |
+| `edger-worker/src/lib.rs` | alterar | export `PoolMetrics` |
 
 ## Detail
 

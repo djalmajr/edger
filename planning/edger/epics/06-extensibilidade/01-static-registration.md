@@ -11,7 +11,7 @@
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (Key Decision #7, PR 8, Risks — choose ONE API mode)
 - **Design PR:** PR 8 (static registration)
-- **Depends on:** Epic 05 Story 05.05 (`ExtensionRegistry`)
+- **Depende de:** Epic 05 Story 05.05 (`ExtensionRegistry`)
 
 ## Files
 
@@ -45,14 +45,14 @@ Recomendação de planning: começar com **lista explícita no bin** se inventor
   - Crate de auth → só `AuthProvider` / `Middleware` de auth
   - Crate gateway → só `Middleware` de roteamento
   - Não misturar `WorkerHandler` + `Middleware` na mesma crate sem `Cargo.toml` features mutuamente exclusivas
-- Checklist para nova extensão em `docs/extensions.md`
+- Checklist para nova extensão em `planning/edger/docs/extensions.md`
 
 ### Escopo
 - **In:** decisão, impl mínima, docs, teste de collect
 - **Out:** crates ext reais (06.02–06.03)
 
 ### Critérios de aceite
-- [ ] `docs/extensions.md` existe em português com padrão escolhido
+- [ ] `planning/edger/docs/extensions.md` existe em português com padrão escolhido
 - [ ] Teste prova que extensão registrada via padrão aparece no registry
 - [ ] AGENTS menciona: ext depende só de `edger-core`; nunca publicar manualmente crates.io
 - [ ] Regra choose ONE com exemplo anti-padrão (crate que faz auth + gateway — proibido)
@@ -69,9 +69,9 @@ Recomendação de planning: começar com **lista explícita no bin** se inventor
 **Nível:** integração (`static_registration.rs`)
 
 ## Tasks
-- [ ] Spike 1–2h: inventory vs linkme vs explicit — registrar decisão em `docs/extensions.md`
+- [ ] Spike 1–2h: inventory vs linkme vs explicit — registrar decisão em `planning/edger/docs/extensions.md`
 - [ ] Implementar mecanismo escolhido
-- [ ] Escrever `docs/extensions.md` (choose ONE, deps, registro, testes)
+- [ ] Escrever `planning/edger/docs/extensions.md` (choose ONE, deps, registro, testes)
 - [ ] Atualizar `AGENTS.md` com regras de extensão
 - [ ] Teste com mock extension crate em `tests/fixtures/ext-mock/`
 - [ ] Atualizar overview epic 06 com decisão tomada

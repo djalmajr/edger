@@ -3,16 +3,16 @@
 **Origin:** `planning/edger/epics/07-avancado/00-overview.md`
 
 ## Context
-- **Problem:** Workers SPA e micro-frontends Buntime dependem de `<base href>` injetado e rotas shell dedicadas; o orquestrador atual não distingue shell vs API worker nem documenta evolução de protocolo além de MessageChannel/z-frame.
-- **Objective:** Implementar decisão de shell routing no orchestrator com `inject_base`, preservando compat Buntime e registrando notas para protocolo evoluído (WebTransport etc.).
-- **Value:** UIs embeddáveis funcionam sob paths namespaced sem quebrar assets relativos; caminho de migração para shell moderno fica explícito.
-- **Constraints:** Base injection também ocorre no isolate (`serve_static_spa`); shell routing é camada orchestrator; não implementar WebTransport completo em v1 — documentar contrato futuro.
+- **Problema:** Workers SPA e micro-frontends Buntime dependem de `<base href>` injetado e rotas shell dedicadas; o orquestrador atual não distingue shell vs API worker nem documenta evolução de protocolo além de MessageChannel/z-frame.
+- **Objetivo:** Implementar decisão de shell routing no orchestrator com `inject_base`, preservando compat Buntime e registrando notas para protocolo evoluído (WebTransport etc.).
+- **Valor:** UIs embeddáveis funcionam sob paths namespaced sem quebrar assets relativos; caminho de migração para shell moderno fica explícito.
+- **Restrições:** Base injection também ocorre no isolate (`serve_static_spa`); shell routing é camada orchestrator; não implementar WebTransport completo em v1 — documentar contrato futuro.
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (PR 11, Shell/Micro-frontends, Resolved Decisions)
 - **Design PR:** PR 11
-- **Buntime refs:** `wiki/apps/micro-frontend.md` (z-frame, base injection), `injectBase` em manifests
-- **Depends on:** `01-full-manifests-kinds.md` (WorkerRef + StaticSpa kind)
+- **Buntime refs:** `planning/edger/design.md (shell; ai-memory zommehq/buntime)` (z-frame, base injection), `injectBase` em manifests
+- **Depende de:** `01-full-manifests-kinds.md` (WorkerRef + StaticSpa kind)
 
 ## Files
 
@@ -25,7 +25,7 @@
 | `edger-core/src/wire.rs` | edit | Campo `base_href` em `SerializedRequest` preenchido pelo orchestrator |
 | `edger-orchestrator/tests/shell_routing_test.rs` | create | SPA sob `/@scope/app`, assets relativos, base correto |
 | `workers/shell-spa/` | create | Fixture HTML + manifest `inject_base: true` |
-| `planning/edger/design.md` ou `docs/shell-protocol.md` | edit/create | Notas de protocolo evoluído (WebTransport, preservação z-frame compat) |
+| `planning/edger/design.md` ou `planning/edger/docs/shell-protocol.md` | edit/create | Notas de protocolo evoluído (WebTransport, preservação z-frame compat) |
 
 ## Detail
 
@@ -50,7 +50,7 @@
 - [ ] Asset relativo referenciado no HTML é servível via mesma worker route (teste integração).
 - [ ] Shell não captura `/api/*` nem health endpoints.
 - [ ] `base_href` propagado em `SerializedRequest` para handlers que precisam gerar URLs absolutas.
-- [ ] Documento `docs/shell-protocol.md` (ou seção design) descreve compat atual + evolução planejada.
+- [ ] Documento `planning/edger/docs/shell-protocol.md` (ou seção design) descreve compat atual + evolução planejada.
 - [ ] Com `inject_base: false`, HTML servido sem modificação de `<base>`.
 
 ### Dependencies
@@ -76,7 +76,7 @@
 
 ### Fase 3 — Integração e documentação
 - [ ] Fixture `workers/shell-spa/` + teste E2E.
-- [ ] Escrever `docs/shell-protocol.md`: z-frame compat, MessageChannel legado, roadmap WebTransport.
+- [ ] Escrever `planning/edger/docs/shell-protocol.md`: z-frame compat, MessageChannel legado, roadmap WebTransport.
 - [ ] Cross-ref em `00-overview.md` epic status.
 
 ### Fase 4 — Verificação

@@ -3,65 +3,66 @@
 **Origin:** `planning/edger/epics/02-edger-core/00-overview.md`
 
 ## Context
-- **Problem:** edger-core lacks module structure; partial lib.rs only.
-- **Objective:** Pure leaf crate layout per design + ai-memory patterns.
-- **Value:** Foundation for all models/traits without cycles.
-- **Constraints:** No sibling deps; no I/O crates.
+- **Problema:** edger-core carece de estrutura modular; apenas `lib.rs` parcial.
+- **Objetivo:** Layout de crate leaf puro conforme design + padrões ai-memory.
+- **Valor:** Base para modelos/traits sem ciclos de dependência.
+- **Restrições:** Sem deps em crates irmãos; sem I/O.
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (Crate Ownership), `planning/edger/analysis-synthesis.md`
-- **Depends on:** Epic 01 (completed)
+- **Depende de:** Epic 01 (completed)
 
 ## Files
-- edger-core/Cargo.toml (edit)
-- edger-core/src/lib.rs (create)
-- edger-core/src/mod.rs or submods if needed (manifest.rs, error.rs, traits.rs stubs)
-- Update root Cargo if resolver needed
-- planning/edger/epics/02-edger-core/00-overview.md (status)
+| Path | Action | Reason |
+|---|---|---|
+| `edger-core/Cargo.toml` | alterar | pureza + workspace inherit |
+| `edger-core/src/lib.rs` | alterar | módulos + re-exports |
+| `edger-core/src/manifest.rs` | criar | stub |
+| `edger-core/src/error.rs` | criar | stub |
+| `edger-core/src/extension.rs` | criar | stub traits |
+| `planning/edger/epics/02-edger-core/00-overview.md` | alterar | status |
 
 ## Detail
 
 ### AS-IS
-Partial `lib.rs` with ExecutionKind, CoreError, minimal WorkerManifest; tests pass.
+`lib.rs` parcial com `ExecutionKind`, `CoreError`, `WorkerManifest` mínimo; testes passam.
 
 ### TO-BE
-Modular `src/` with stub modules, workspace purity enforced, AGENTS Rust gate documented.
+Árvore de módulos via `mod` em `lib.rs` (sem `mod.rs` separado na raiz); pureza documentada; gate Rust no AGENTS.
 
 ### Scope
-- In: Cargo.toml purity, lib.rs module tree, basic test
-- Out: full models (02.02)
+- **In:** Cargo.toml, lib.rs + stubs de módulo, teste básico
+- **Out:** modelos completos (story 02.02)
 
 ### Acceptance criteria
-- [ ] edger-core has zero path deps on sibling crates
-- [ ] `cargo test -p edger-core` passes
-- [ ] Module stubs exist for manifest, config, wire, error, extension
+- [ ] edger-core sem path deps em crates irmãos
+- [ ] `cargo test -p edger-core` passa
+- [ ] Stubs: manifest, config, wire, error, extension declarados em lib.rs
 
 ### Dependencies
 - Epic 01 complete
 
-## Detail (implementation notes)
-- Ensure no deps on worker/isolation/orchestrator.
-- Add workspace.package inherit.
-- lib.rs: //! edger-core: pure vocabulary (types, traits, errors, manifests). No I/O.
-- Stubs for re-exports.
-- Cargo test skeleton passes.
-- Document in AGENTS.
+### Notas de implementação
+- `lib.rs`: `//! edger-core: pure vocabulary. No I/O.`
+- Herdar `[workspace.package]`; deps apenas serde/bytes/tracing conforme design
+- Documentar gate em `AGENTS.md`
 
 ## Test-first plan
-- Red: cargo test fails (no lib)
-- Green: minimal lib.rs + Cargo with [[test]] or lib test
-- Refactor: clean modules
+- **Red:** `cargo test -p edger-core` falha sem módulos
+- **Green:** lib.rs + stubs + teste mínimo
+- **Refactor:** separar stubs em arquivos dedicados
 
 ## Tasks
-- [ ] Edit edger-core/Cargo.toml for purity + inherit
-- [ ] Create src/lib.rs with pure marker + pub use
-- [ ] Add basic unit test in lib or tests/
-- [ ] cargo test -p edger-core green
-- [ ] Update docs cross ref
+- [ ] Editar `edger-core/Cargo.toml` (pureza + inherit)
+- [ ] Criar stubs `manifest.rs`, `error.rs`, `extension.rs` e declarar em `lib.rs`
+- [ ] Adicionar teste unitário mínimo
+- [ ] `cargo test -p edger-core` verde
+- [ ] Atualizar cross-refs no epic overview
 
 ## Verification
-- cargo check -p edger-core
-- cargo test -p edger-core
-- memory_lint (djalmajr/edger)
-- bun test (unchanged)
-- refinement on new epic
+```bash
+cargo check -p edger-core
+cargo test -p edger-core
+bun test
+# memory_lint workspace=djalmajr project=edger
+```

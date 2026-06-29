@@ -3,14 +3,14 @@
 **Origin:** `planning/edger/epics/02-edger-core/00-overview.md`
 
 ## Context
-- **Problem:** Extensions and isolation backends need shared trait contracts in the leaf crate.
-- **Objective:** Define traits from design.md with minimal async signatures (or sync where pure); mock-friendly.
-- **Value:** Unblocks edger-isolation, edger-orchestrator, edger-ext-* without circular deps.
-- **Constraints:** Trait definitions only — no impls beyond test mocks in core.
+- **Problema:** Extensions and isolation backends need shared trait contracts in the leaf crate.
+- **Objetivo:** Define traits from design.md with minimal async signatures (or sync where pure); mock-friendly.
+- **Valor:** Unblocks edger-isolation, edger-orchestrator, edger-ext-* without circular deps.
+- **Restrições:** Trait definitions only — no impls beyond test mocks in core.
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (API/Interface Changes, Isolate trait)
-- **Depends on:** Stories 02.02, 02.03
+- **Depende de:** Stories 02.02, 02.03
 
 ## Files
 | Path | Action | Reason |

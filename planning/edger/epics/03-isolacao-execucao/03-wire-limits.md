@@ -10,19 +10,19 @@
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (Serialized Request/Response, Supervisor notes, Multi-process decision, Risks), PR 5
-- **Depends on:** Story 03.02; Epic 02.03 (wire types); Epic 02.02 (WorkerConfig timeout_ms, max_body_size)
+- **Depende de:** Story 03.02; Epic 02.03 (wire types); Epic 02.02 (WorkerConfig timeout_ms, max_body_size)
 
 ## Files
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `crates/edger-isolation/src/wire.rs` | criar | validate/normalize Serialized*; encode/decode IPC frame |
-| `crates/edger-isolation/src/limits.rs` | criar | `ResourceLimits`, `LimitGuard`, stubs mem/cpu |
-| `crates/edger-isolation/src/transport.rs` | criar | trait `IsolateTransport`, `InProcessTransport`, `UdsTransport` stub |
-| `crates/edger-isolation/Cargo.toml` | alterar | `postcard` ou `bincode`, `tokio` |
-| `crates/edger-isolation/tests/wire_limits.rs` | criar | validação headers/body + roundtrip frame |
-| `crates/edger-isolation/tests/limits_timeout.rs` | criar | timeout guard cancela execução mock lenta |
-| `crates/edger-isolation/src/lib.rs` | alterar | exports |
+| `edger-isolation/src/wire.rs` | criar | validate/normalize Serialized*; encode/decode IPC frame |
+| `edger-isolation/src/limits.rs` | criar | `ResourceLimits`, `LimitGuard`, stubs mem/cpu |
+| `edger-isolation/src/transport.rs` | criar | trait `IsolateTransport`, `InProcessTransport`, `UdsTransport` stub |
+| `edger-isolation/Cargo.toml` | alterar | `postcard` ou `bincode`, `tokio` |
+| `edger-isolation/tests/wire_limits.rs` | criar | validação headers/body + roundtrip frame |
+| `edger-isolation/tests/limits_timeout.rs` | criar | timeout guard cancela execução mock lenta |
+| `edger-isolation/src/lib.rs` | alterar | exports |
 
 ## Detail
 

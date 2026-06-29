@@ -3,16 +3,16 @@
 **Origin:** `planning/edger/epics/07-avancado/00-overview.md`
 
 ## Context
-- **Problem:** Após o spike (Fase 3), o isolate ainda usa mock; não há caminho production para `fetch`, `routes` e SPA estática via deno_core + facade como no Edge Runtime.
-- **Objective:** Implementar backend real em `edger-isolation` usando deno_core + facade para `ExecutionKind` JS (FetchHandler, RoutesTable, StaticSpa), integrado ao WorkerPool com limites básicos e suporte eszip/precomp onde aplicável.
-- **Value:** Workers JS/TS Buntime-compat rodam no runtime Rust; desbloqueia PR 11 e testes E2E reais.
-- **Constraints:** Bloqueado até spike go/no-go; feature flag `deno` no crate isolation; partial Node compat documentado; multi-process prep via `Serialized*` wire types.
+- **Problema:** Após o spike (Fase 3), o isolate ainda usa mock; não há caminho production para `fetch`, `routes` e SPA estática via deno_core + facade como no Edge Runtime.
+- **Objetivo:** Implementar backend real em `edger-isolation` usando deno_core + facade para `ExecutionKind` JS (FetchHandler, RoutesTable, StaticSpa), integrado ao WorkerPool com limites básicos e suporte eszip/precomp onde aplicável.
+- **Valor:** Workers JS/TS Buntime-compat rodam no runtime Rust; desbloqueia PR 11 e testes E2E reais.
+- **Restrições:** Bloqueado até spike go/no-go; feature flag `deno` no crate isolation; partial Node compat documentado; multi-process prep via `Serialized*` wire types.
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (PR 10, Embedding Spike, Execution Isolation Layer, eszip/precomp)
 - **Design PR:** PR 10 (parte JS/TS)
 - **Edge Runtime refs:** `deno_facade`, `base_rt` patterns
-- **Depends on:** Epic 03 (spike), Epic 04 (WorkerPool), Epic 05 (orchestrator dispatch)
+- **Depende de:** Epic 03 (spike), Epic 04 (WorkerPool), Epic 05 (orchestrator dispatch)
 
 ## Files
 

@@ -11,7 +11,7 @@
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (Observability — Health/Readiness, PR 6)
 - **Design PR:** PR 6 — `feat(orchestrator): basic HTTP server, routing, request pipeline + main composition`
-- **Depends on:** Epic 02 (tipos mínimos), Epic 04 (WorkerPool mock para readiness), Story 05.02+ (roteamento completo)
+- **Depende de:** Epic 02 (tipos mínimos), Epic 04 (WorkerPool mock para readiness), Story 05.02+ (roteamento completo)
 
 ## Files
 

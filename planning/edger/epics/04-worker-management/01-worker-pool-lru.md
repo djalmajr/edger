@@ -10,19 +10,19 @@
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (WorkerPool API, PR 4), Buntime wiki worker-pool (LRU, namespaces)
-- **Depends on:** Epic 02.02 (WorkerRef, WorkerConfig); Epic 02.03 (SerializedRequest/Response para assinatura fetch)
+- **Depende de:** Epic 02.02 (WorkerRef, WorkerConfig); Epic 02.03 (SerializedRequest/Response para assinatura fetch)
 
 ## Files
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `crates/edger-worker/Cargo.toml` | alterar | deps: `edger-core`, `tokio`, `lru`, `uuid`, `tracing` |
-| `crates/edger-worker/src/lib.rs` | criar/alterar | exports |
-| `crates/edger-worker/src/pool.rs` | criar | `WorkerPool`, `fetch`, `get_or_create` |
-| `crates/edger-worker/src/lru.rs` | criar | wrapper LRU + key `WorkerCacheKey` |
-| `crates/edger-worker/src/types.rs` | criar | `WorkerCacheKey`, `PoolConfig` |
-| `crates/edger-worker/src/instance.rs` | criar | `WorkerInstance` skeleton (sem supervisor completo) |
-| `crates/edger-worker/tests/pool_lru.rs` | criar | LRU hit/miss/eviction |
+| `edger-worker/Cargo.toml` | alterar | deps: `edger-core`, `tokio`, `lru`, `uuid`, `tracing` |
+| `edger-worker/src/lib.rs` | criar/alterar | exports |
+| `edger-worker/src/pool.rs` | criar | `WorkerPool`, `fetch`, `get_or_create` |
+| `edger-worker/src/lru.rs` | criar | wrapper LRU + key `WorkerCacheKey` |
+| `edger-worker/src/types.rs` | criar | `WorkerCacheKey`, `PoolConfig` |
+| `edger-worker/src/instance.rs` | criar | `WorkerInstance` skeleton (sem supervisor completo) |
+| `edger-worker/tests/pool_lru.rs` | criar | LRU hit/miss/eviction |
 
 ## Detail
 

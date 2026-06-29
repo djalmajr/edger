@@ -5,13 +5,13 @@
 ## Context
 - **Problema:** Requisições chegam ao pipeline sem autenticação nem verificação de namespace; contrato Buntime de principals não é aplicado.
 - **Objetivo:** Gate early de auth com `ApiKeyPrincipal`, store Turso/SQLite e bypass de `publicRoutes`.
-- **Valor:** Multi-tenancy seguro antes do dispatch; paridade com `wiki/ops/security.md` e `api-keys.ts`.
+- **Valor:** Multi-tenancy seguro antes do dispatch; paridade com `planning/edger/design.md (auth/security; ai-memory zommehq/buntime)` e `planning/edger/design.md (ApiKeyPrincipal)`.
 - **Restrições:** Persistência Turso/SQLite desde o início (decisão do usuário); root synthetic principal; gate antes de hooks e worker.
 
 ## Traceability
-- **Source docs:** `planning/edger/design.md` (Auth, PR 7, Resolved Decisions — Turso imediato), Buntime `packages/shared/src/utils/api-keys.ts`
+- **Source docs:** `planning/edger/design.md` (Auth, PR 7, Resolved Decisions — Turso imediato), Buntime `planning/edger/design.md (ApiKeyPrincipal)`
 - **Design PR:** PR 7 — `feat(auth): principal resolution, namespace gating, root key, public route bypass`
-- **Depends on:** Story 05.03, Epic 02 (`ApiKeyPrincipal`, `AuthProvider` trait)
+- **Depende de:** Story 05.03, Epic 02 (`ApiKeyPrincipal`, `AuthProvider` trait)
 
 ## Files
 

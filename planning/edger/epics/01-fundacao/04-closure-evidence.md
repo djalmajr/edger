@@ -3,10 +3,10 @@
 **Origin:** `planning/edger/epics/01-fundacao/00-overview.md`
 
 ## Context
-- **Problem:** Fase 1 deliverables need formal closure with gates and handoff to Fase 2.
-- **Objective:** Produce closure + consolidation status artifacts with verification evidence.
-- **Value:** Auditable completion; clean handoff to edger-core epic.
-- **Constraints:** Run memory_lint (edger scope), agile-refinement on planning/edger/
+- **Problema:** Fase 1 deliverables need formal closure with gates and handoff to Fase 2.
+- **Objetivo:** Produce closure + consolidation status artifacts with verification evidence.
+- **Valor:** Auditable completion; clean handoff to edger-core epic.
+- **Restrições:** Run memory_lint (edger scope), agile-refinement on planning/edger/
 
 ## Traceability
 - **Source docs:** `planning/edger/roadmap.md`, `AGENTS.md` verification gate

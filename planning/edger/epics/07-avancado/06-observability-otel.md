@@ -3,16 +3,16 @@
 **Origin:** `planning/edger/epics/07-avancado/00-overview.md`
 
 ## Context
-- **Problem:** Runtime sem visibilidade operacional: logs ad-hoc, sem correlação `request_id`, sem export Prometheus/OTEL, métricas de pool/isolate ausentes para produção.
-- **Objective:** Instrumentar orchestrator, worker e isolation com `tracing`, export OpenTelemetry configurável, endpoint `/metrics` Prometheus, e propagação de `X-Request-Id` em todo o pipeline.
-- **Value:** Debug de isolates, SLOs, integração com dashboards (padrão Buntime `plugin-metrics` → futuro `edger-ext-metrics`).
-- **Constraints:** Sem vazar secrets em spans; sampling via env; overhead controlado no hot path.
+- **Problema:** Runtime sem visibilidade operacional: logs ad-hoc, sem correlação `request_id`, sem export Prometheus/OTEL, métricas de pool/isolate ausentes para produção.
+- **Objetivo:** Instrumentar orchestrator, worker e isolation com `tracing`, export OpenTelemetry configurável, endpoint `/metrics` Prometheus, e propagação de `X-Request-Id` em todo o pipeline.
+- **Valor:** Debug de isolates, SLOs, integração com dashboards (padrão Buntime `plugin-metrics` → futuro `edger-ext-metrics`).
+- **Restrições:** Sem vazar secrets em spans; sampling via env; overhead controlado no hot path.
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (PR 12, Observability section)
 - **Design PR:** PR 12 (parcial — observabilidade)
 - **Buntime refs:** `X-Request-Id`, pool metrics, worker lifecycle events
-- **Depends on:** 07.01, 07.04, 07.05 (spans úteis em execução real)
+- **Depende de:** 07.01, 07.04, 07.05 (spans úteis em execução real)
 
 ## Files
 

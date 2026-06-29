@@ -10,17 +10,17 @@
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (PR 4, Migration notes TTL/ephemeral), `planning/edger/analysis-synthesis.md` (testes integração)
-- **Depends on:** Stories 04.01, 04.02, 04.03; Epic 03.02 (`MockIsolate`); Epic 02.02 (manifest parse)
+- **Depende de:** Stories 04.01, 04.02, 04.03; Epic 03.02 (`MockIsolate`); Epic 02.02 (manifest parse)
 
 ## Files
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `crates/edger-worker/Cargo.toml` | alterar | `[dev-dependencies] edger-isolation`, `tempfile`, `serde_yaml` |
-| `crates/edger-worker/tests/integration_pool.rs` | criar | E2E pool + mock isolate |
-| `crates/edger-worker/tests/fixtures/` | criar | manifest.yaml samples (serverless, persistent, spa) |
-| `crates/edger-worker/tests/helpers/mod.rs` | criar | `setup_worker_dir`, `sample_request` |
-| `crates/edger-worker/src/factory.rs` | criar | `IsolateFactory` usando MockIsolate de edger-isolation |
+| `edger-worker/Cargo.toml` | alterar | `[dev-dependencies] edger-isolation`, `tempfile`, `serde_yaml` |
+| `edger-worker/tests/integration_pool.rs` | criar | E2E pool + mock isolate |
+| `edger-worker/tests/fixtures/` | criar | manifest.yaml samples (serverless, persistent, spa) |
+| `edger-worker/tests/helpers/mod.rs` | criar | `setup_worker_dir`, `sample_request` |
+| `edger-worker/src/factory.rs` | criar | `IsolateFactory` usando MockIsolate de edger-isolation |
 
 ## Detail
 

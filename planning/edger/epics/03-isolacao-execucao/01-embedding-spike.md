@@ -4,22 +4,22 @@
 
 ## Context
 - **Problema:** Não há evidência empírica sobre viabilidade, latência de cold start, accounting de memória ou superfície de ops para embedding JS/TS (deno_core) nem para Wasm standalone (wasmtime + WASI).
-- **Objetivo:** Spike time-boxed que valida hello-world fetch, timeout básico, medição de spawn/exec e comparação breve wasmtime; produzir documento `spike.md` com go/no-go.
+- **Objetivo:** Spike time-boxed que valida hello-world fetch, timeout básico, medição de spawn/exec e comparação breve wasmtime; produzir `planning/edger/epics/03-isolacao-execucao/spike.md` com go/no-go.
 - **Valor:** Mitiga risco #1 do design (embedding maintenance); desbloqueia decisão de split de módulos (`deno` facade vs `wasm`) para stories 03.04 e PR 10 futuro.
 - **Restrições:** Time-box (sugestão: 2–3 dias); código de spike em `examples/` ou módulo temporário; **não** mergear embedding de produção nesta story.
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (Embedding Spike Recommendation, PR 2, Resolved Decisions JS/TS + Wasm), `planning/edger/roadmap.md` (Fase 3)
 - **Design PRs:** PR 2 (spike), informa PR 5 e PR 10
-- **Depends on:** Epic 02 story 02.03 (wire types mínimos para roundtrip de request simulado); Epic 01 (skeleton alinhado)
+- **Depende de:** Epic 02 story 02.03 (wire types mínimos para roundtrip de request simulado); Epic 01 (skeleton alinhado)
 
 ## Files
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `crates/edger-isolation/Cargo.toml` | alterar | `[dev-dependencies]` ou features opcionais: `deno_core`, `deno_runtime` (mínimo), `wasmtime`, `wasmtime-wasi` |
-| `crates/edger-isolation/examples/embedding-spike-deno.rs` | criar | Boot V8, módulo fetch trivial, roundtrip request |
-| `crates/edger-isolation/examples/embedding-spike-wasm.rs` | criar | Load Wasm mínimo + WASI smoke |
+| `edger-isolation/Cargo.toml` | alterar | `[dev-dependencies]` ou features opcionais: `deno_core`, `deno_runtime` (mínimo), `wasmtime`, `wasmtime-wasi` |
+| `edger-isolation/examples/embedding-spike-deno.rs` | criar | Boot V8, módulo fetch trivial, roundtrip request |
+| `edger-isolation/examples/embedding-spike-wasm.rs` | criar | Load Wasm mínimo + WASI smoke |
 | `planning/edger/epics/03-isolacao-execucao/spike.md` | criar | Resultados, métricas, sharp edges, recomendação de módulos |
 | `planning/edger/design.md` | alterar (se necessário) | Atualizar riscos/rollout se spike mudar direção |
 | `planning/edger/epics/03-isolacao-execucao/00-overview.md` | alterar | Status story 03.01 |
@@ -35,7 +35,7 @@
 - Exemplo deno: inicializa platform singleton, registra ops mínimos, carrega string/module `export default { fetch(req) { return new Response("ok") } }`, serializa request simples, mede tempo spawn + exec
 - Exemplo wasmtime: compila módulo Wasm trivial (add ou echo), WASI preview1/p2 conforme versão pinada, mede compile + invoke
 - Instrumentação: `std::time::Instant` para spawn/exec; log de heap aproximado se API disponível; guard de timeout (tokio::time::timeout)
-- `spike.md` em português com seções: Resumo executivo, Metodologia, Resultados deno_core, Resultados wasmtime, Sharp edges, Go/no-go, Recomendação de layout de crates/módulos, Impacto em Epic 04/PR 10
+- `planning/edger/epics/03-isolacao-execucao/spike.md` em português com seções: Resumo executivo, Metodologia, Resultados deno_core, Resultados wasmtime, Sharp edges, Go/no-go, Recomendação de layout de módulos, Impacto em Epic 04/PR 10
 
 ### Escopo
 - **In:** spike deno_core + facade patterns (referência Edge Runtime `deno_facade`); comparação wasmtime só para path Wasm; timeout e memória básica; documentação

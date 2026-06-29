@@ -3,14 +3,14 @@
 **Origin:** `planning/edger/epics/02-edger-core/00-overview.md`
 
 ## Context
-- **Problem:** Only subset WorkerManifest exists; no WorkerConfig parser, Principal, or full Buntime mapping.
-- **Objective:** Full serde models + `parse_worker_config` + namespace helpers.
-- **Value:** Single source of truth for manifest-driven behavior.
-- **Constraints:** Pure functions only; duration/size parsing per Buntime semantics.
+- **Problema:** Only subset WorkerManifest exists; no WorkerConfig parser, Principal, or full Buntime mapping.
+- **Objetivo:** Full serde models + `parse_worker_config` + namespace helpers.
+- **Valor:** Single source of truth for manifest-driven behavior.
+- **Restrições:** Pure functions only; duration/size parsing per Buntime semantics.
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (WorkerManifest mapping table)
-- **Depends on:** Story 02.01
+- **Depende de:** Story 02.01
 
 ## Files
 - edger-core/src/manifest.rs

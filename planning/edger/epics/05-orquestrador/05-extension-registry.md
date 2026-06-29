@@ -9,9 +9,9 @@
 - **Restrições:** Registro compile-time via lista explícita no bin (inventory/linkme detalhado no Epic 06); sem dlopen.
 
 ## Traceability
-- **Source docs:** `planning/edger/design.md` (Extension traits, PR 8), `wiki/apps/plugin-system.md`
+- **Source docs:** `planning/edger/design.md` (Extension traits, PR 8), `planning/edger/design.md (hooks/extensions; ai-memory zommehq/buntime)`
 - **Design PR:** PR 8 — `feat(core + orchestrator): extension traits, registry, static registration + hook execution`
-- **Depends on:** Story 05.03, Epic 02 (`Extension`, `Middleware` traits)
+- **Depende de:** Story 05.03, Epic 02 (`Extension`, `Middleware` traits)
 
 ## Files
 

@@ -11,7 +11,7 @@
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (Main Binary sketch — `edger_ext_gateway::GatewayExtension`, PR 9 pattern)
 - **Design PR:** PR 9 (extension pattern); complementa PR 8 registry
-- **Depends on:** Stories 06.01, 06.02
+- **Depende de:** Stories 06.01, 06.02
 
 ## Files
 
@@ -23,7 +23,7 @@
 | `edger-ext-gateway/tests/gateway_middleware.rs` | criar | on_request pass-through |
 | `Cargo.toml` (workspace) | alterar | member (opcional feature `examples`) |
 | `edger-orchestrator/src/bin/edger.rs` | alterar | register gateway (feature ou always) |
-| `planning/edger/docs/extensions.md` | alterar | seção template |
+| `planning/edger/docs/extensions.md` | criar/atualizar (nesta story) | seção template |
 
 ## Detail
 
@@ -81,7 +81,7 @@ Apenas `edger-ext-auth` (após 06.02); sem template reutilizável.
 - [ ] Escrever README template (português)
 - [ ] Testes unitários + integração registry
 - [ ] Registrar no bin com priority > auth
-- [ ] Atualizar `docs/extensions.md` com diagrama de wiring
+- [ ] Atualizar `planning/edger/docs/extensions.md` com diagrama de wiring
 - [ ] Opcional: `cargo generate` ou script `scripts/new-extension.sh` (fora de escopo se atrasar — README basta)
 
 ## Verification

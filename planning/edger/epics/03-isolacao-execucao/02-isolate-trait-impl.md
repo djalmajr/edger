@@ -10,20 +10,20 @@
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (Execution Isolation Layer, Isolate trait, ExecutionKind), PR 5
-- **Depends on:** Story 03.01 (spike informa shape de erros/limites); Epic 02.04 (trait signatures); Epic 02.02 (WorkerConfig, ExecutionKind)
+- **Depende de:** Story 03.01 (spike informa shape de erros/limites); Epic 02.04 (trait signatures); Epic 02.02 (WorkerConfig, ExecutionKind)
 
 ## Files
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `crates/edger-isolation/Cargo.toml` | alterar | deps: `edger-core`, `async-trait`, `tokio`, `bytes`, `thiserror` |
-| `crates/edger-isolation/src/lib.rs` | criar/alterar | crate root, re-exports |
-| `crates/edger-isolation/src/isolate.rs` | criar | trait alias/re-export + tipos auxiliares |
-| `crates/edger-isolation/src/mock.rs` | criar | `MockIsolate` impl completa |
-| `crates/edger-isolation/src/error.rs` | criar | `IsolationError` mapeando de `CoreError` |
-| `crates/edger-isolation/src/kinds.rs` | criar | dispatch por `ExecutionKind` |
-| `crates/edger-isolation/tests/mock_isolate.rs` | criar | testes por kind + lifecycle |
-| `crates/edger-isolation/src/lib.rs` | alterar | `pub mod mock` feature `testing` ou always-on para dev |
+| `edger-isolation/Cargo.toml` | alterar | deps: `edger-core`, `async-trait`, `tokio`, `bytes`, `thiserror` |
+| `edger-isolation/src/lib.rs` | criar/alterar | crate root, re-exports |
+| `edger-isolation/src/isolate.rs` | criar | trait alias/re-export + tipos auxiliares |
+| `edger-isolation/src/mock.rs` | criar | `MockIsolate` impl completa |
+| `edger-isolation/src/error.rs` | criar | `IsolationError` mapeando de `CoreError` |
+| `edger-isolation/src/kinds.rs` | criar | dispatch por `ExecutionKind` |
+| `edger-isolation/tests/mock_isolate.rs` | criar | testes por kind + lifecycle |
+| `edger-isolation/src/lib.rs` | alterar | `pub mod mock` feature `testing` ou always-on para dev |
 
 ## Detail
 
@@ -60,7 +60,7 @@
 
 ## Test-first plan
 - **Primeiro teste falhando:** `mock_isolate_execute_fetch_returns_200` — compila `MockIsolate` e chama `execute_fetch` esperando status 200
-- **Nível:** `crates/edger-isolation/tests/mock_isolate.rs` (integration) + unit tests em `mock.rs`
+- **Nível:** `edger-isolation/tests/mock_isolate.rs` (integration) + unit tests em `mock.rs`
 - **Cenários:** falha injetada (`MockIsolate::with_fail_on_terminate`), SPA com base href, wasm kind
 - **Evitar:** Mockar tokio runtime inteiro; usar `#[tokio::test]`
 

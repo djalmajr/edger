@@ -65,7 +65,7 @@ flowchart LR
 - [ ] `edger-ext-auth` compila, implementa `AuthProvider`, testes unitários passam
 - [ ] Auth extension registrada no bin `edger` e participa do pipeline (substitui ou delega gate 05.04)
 - [ ] `edger-ext-gateway` (template) compila como exemplo Middleware com registro
-- [ ] README ou `docs/extensions.md` com passo-a-passo para nova extensão
+- [ ] README ou `planning/edger/docs/extensions.md` com passo-a-passo para nova extensão
 - [ ] `cargo test --workspace && cargo clippy --workspace -- -D warnings` verde
 - [ ] Nenhuma extensão depende de `edger-orchestrator` (apenas core)
 

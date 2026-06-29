@@ -3,10 +3,10 @@
 **Origin:** `planning/edger/epics/01-fundacao/00-overview.md`
 
 ## Context
-- **Problem:** No worker examples in repo structure; cannot demonstrate edger loader on real edge-runtime patterns.
-- **Objective:** Copy 5+ (target 11+) examples verbatim into `workers/` with compatible `index.{ts,js,mjs}` and verify responses.
-- **Value:** Repeatable evidence that Bun adapter matches edge-runtime entrypoint contracts.
-- **Constraints:** Preserve verbatim indexes; prefer pure fetch/stream examples; document remote/deno.* deps where needed.
+- **Problema:** No worker examples in repo structure; cannot demonstrate edger loader on real edge-runtime patterns.
+- **Objetivo:** Copy 5+ (target 11+) examples verbatim into `workers/` with compatible `index.{ts,js,mjs}` and verify responses.
+- **Valor:** Repeatable evidence that Bun adapter matches edge-runtime entrypoint contracts.
+- **Restrições:** Preserve verbatim indexes; prefer pure fetch/stream examples; document remote/deno.* deps where needed.
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (Buntime fetch contract), `planning/edger/roadmap.md` Fase 1

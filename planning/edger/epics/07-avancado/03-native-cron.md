@@ -3,16 +3,16 @@
 **Origin:** `planning/edger/epics/07-avancado/00-overview.md`
 
 ## Context
-- **Problem:** Manifests Buntime suportam `cron[]` com schedules que disparam requisições internas; edger ainda não tem scheduler Rust nativo — apenas stub ou ausência.
-- **Objective:** Implementar `CronScheduler` com tokio-cron (ou crate equivalente) no orchestrator que dispara HTTP interno para workers conforme manifest, com auth interna e lifecycle no shutdown.
-- **Value:** Jobs agendados rodam sem depender de worker long-lived ou cron externo; alinha decisão do usuário (scheduler nativo Rust, core-driven).
-- **Constraints:** Credencial interna para bypass de hooks públicos onde aplicável; cron jobs respeitam `enabled` e namespace; graceful shutdown cancela tasks.
+- **Problema:** Manifests Buntime suportam `cron[]` com schedules que disparam requisições internas; edger ainda não tem scheduler Rust nativo — apenas stub ou ausência.
+- **Objetivo:** Implementar `CronScheduler` com tokio-cron (ou crate equivalente) no orchestrator que dispara HTTP interno para workers conforme manifest, com auth interna e lifecycle no shutdown.
+- **Valor:** Jobs agendados rodam sem depender de worker long-lived ou cron externo; alinha decisão do usuário (scheduler nativo Rust, core-driven).
+- **Restrições:** Credencial interna para bypass de hooks públicos onde aplicável; cron jobs respeitam `enabled` e namespace; graceful shutdown cancela tasks.
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (PR 11, CronJob, Resolved Decisions — native Rust scheduler)
 - **Design PR:** PR 11
-- **Buntime refs:** `wiki/apps/runtime.md` (cron internal requests), `WorkerManifest.cron`
-- **Depends on:** `01-full-manifests-kinds.md`, Epic 05 (HTTP client interno / pipeline)
+- **Buntime refs:** `planning/edger/design.md (contratos runtime; ai-memory zommehq/buntime)` (cron internal requests), `WorkerManifest.cron`
+- **Depende de:** `01-full-manifests-kinds.md`, Epic 05 (HTTP client interno / pipeline)
 
 ## Files
 

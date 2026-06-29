@@ -3,16 +3,16 @@
 **Origin:** `planning/edger/epics/07-avancado/00-overview.md`
 
 ## Context
-- **Problem:** O orquestrador resolve apenas subset de workers; carregamento multi-dir e inferência completa de `ExecutionKind` não cobrem o contrato Buntime (serverless, SPA, routes, Wasm, fullstack adapter).
-- **Objective:** Implementar descoberta de manifests em diretórios e dispatch unificado de todos os `ExecutionKind` do `edger-core` até o pool/isolamento.
-- **Value:** Workers deployáveis como no Buntime — um manifest define comportamento; o runtime infere ou honra `kind` explicitamente.
-- **Constraints:** Depende de backends reais (stories 07.04/07.05) para validação E2E; parsing permanece em `edger-core` (sem I/O).
+- **Problema:** O orquestrador resolve apenas subset de workers; carregamento multi-dir e inferência completa de `ExecutionKind` não cobrem o contrato Buntime (serverless, SPA, routes, Wasm, fullstack adapter).
+- **Objetivo:** Implementar descoberta de manifests em diretórios e dispatch unificado de todos os `ExecutionKind` do `edger-core` até o pool/isolamento.
+- **Valor:** Workers deployáveis como no Buntime — um manifest define comportamento; o runtime infere ou honra `kind` explicitamente.
+- **Restrições:** Depende de backends reais (stories 07.04/07.05) para validação E2E; parsing permanece em `edger-core` (sem I/O).
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (PR 11, Data Model, App/Worker Types, inference rules)
 - **Design PR:** PR 11 (parcial — manifests + kinds; shell e cron em stories separadas)
-- **Buntime refs:** `wiki/apps/runtime.md` (manifests, inference), `packages/shared/src/utils/worker-config.ts`
-- **Depends on:** `04-real-js-execution.md`, `05-wasm-execution.md`, Epic 05 (pipeline + router)
+- **Buntime refs:** `planning/edger/design.md (contratos runtime; ai-memory zommehq/buntime)` (manifests, inference), `planning/edger/design.md (mapping table)`
+- **Depende de:** `04-real-js-execution.md`, `05-wasm-execution.md`, Epic 05 (pipeline + router)
 
 ## Files
 

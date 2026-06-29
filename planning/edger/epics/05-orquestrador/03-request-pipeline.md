@@ -9,9 +9,9 @@
 - **Restrições:** Hook chain pode ser stub vazio nesta story; registry completo na 05.05; auth na 05.04.
 
 ## Traceability
-- **Source docs:** `planning/edger/design.md` (Main Binary & Composition, API hooks), `wiki/apps/runtime.md`
+- **Source docs:** `planning/edger/design.md` (Main Binary & Composition, API hooks), `planning/edger/design.md (contratos runtime; ai-memory zommehq/buntime)`
 - **Design PR:** PR 6 (pipeline + composition sketch)
-- **Depends on:** Stories 05.01, 05.02, Epic 02 (`SerializedRequest`/`SerializedResponse`), Epic 04 (`WorkerPool::fetch`)
+- **Depende de:** Stories 05.01, 05.02, Epic 02 (`SerializedRequest`/`SerializedResponse`), Epic 04 (`WorkerPool::fetch`)
 
 ## Files
 

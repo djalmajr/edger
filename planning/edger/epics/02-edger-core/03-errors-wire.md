@@ -3,14 +3,14 @@
 **Origin:** `planning/edger/epics/02-edger-core/00-overview.md`
 
 ## Context
-- **Problem:** Isolate boundary needs stable wire types; ad-hoc errors block orchestrator/worker integration.
-- **Objective:** Implement `SerializedRequest`, `SerializedResponse`, typed `CoreError` domain, header/body limits constants.
-- **Value:** Enables in-process and future multi-process IPC with same types.
-- **Constraints:** Pure serde + bytes; no HTTP stack in core.
+- **Problema:** Isolate boundary needs stable wire types; ad-hoc errors block orchestrator/worker integration.
+- **Objetivo:** Implement `SerializedRequest`, `SerializedResponse`, typed `CoreError` domain, header/body limits constants.
+- **Valor:** Enables in-process and future multi-process IPC with same types.
+- **Restrições:** Pure serde + bytes; no HTTP stack in core.
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (Data Model & Wire Formats)
-- **Depends on:** Story 02.01
+- **Depende de:** Story 02.01
 
 ## Files
 | Path | Action | Reason |

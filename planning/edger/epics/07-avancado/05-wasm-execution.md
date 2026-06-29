@@ -3,15 +3,15 @@
 **Origin:** `planning/edger/epics/07-avancado/00-overview.md`
 
 ## Context
-- **Problem:** `ExecutionKind::WasmModule` só existe no mock; decisão do usuário exige wasmtime + WASI standalone, separado do isolate JS deno_core.
-- **Objective:** Implementar `WasmIsolate` (ou módulo `wasm.rs`) com wasmtime que carrega `.wasm` do worker dir, expõe handler HTTP via convenção WASI/http ou export nomeado, integrado ao pool.
-- **Value:** Workers Wasm deployáveis com isolamento capability-based; completude do surface de app types do Buntime.
-- **Constraints:** Não co-localizar Wasm no V8 isolate; validação rigorosa de módulo; WASI capabilities deny-by-default; prep multi-process via wire types.
+- **Problema:** `ExecutionKind::WasmModule` só existe no mock; decisão do usuário exige wasmtime + WASI standalone, separado do isolate JS deno_core.
+- **Objetivo:** Implementar `WasmIsolate` (ou módulo `wasm.rs`) com wasmtime que carrega `.wasm` do worker dir, expõe handler HTTP via convenção WASI/http ou export nomeado, integrado ao pool.
+- **Valor:** Workers Wasm deployáveis com isolamento capability-based; completude do surface de app types do Buntime.
+- **Restrições:** Não co-localizar Wasm no V8 isolate; validação rigorosa de módulo; WASI capabilities deny-by-default; prep multi-process via wire types.
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (PR 10 Wasm path, Security Wasm, Resolved Decisions)
 - **Design PR:** PR 10 (parte Wasm)
-- **Depends on:** Epic 03 (spike wasmtime prep), Epic 04 (pool), Epic 05 (dispatch)
+- **Depende de:** Epic 03 (spike wasmtime prep), Epic 04 (pool), Epic 05 (dispatch)
 
 ## Files
 
@@ -76,7 +76,7 @@
 
 ### Fase 3 — Request ABI
 - [ ] `handler.rs`: serialize request para linear memory; invoke export; deserialize response.
-- [ ] Documentar ABI em `docs/wasm-abi.md` (curto, versionado).
+- [ ] Documentar ABI em `planning/edger/docs/wasm-abi.md` (curto, versionado).
 
 ### Fase 4 — Integração
 - [ ] Wire `WasmIsolate` no worker instance selection.

@@ -9,9 +9,9 @@
 - **Restrições:** Depende apenas de `edger-core` (+ store deps); delega persistência portada da story 05.04.
 
 ## Traceability
-- **Source docs:** `planning/edger/design.md` (AuthProvider trait, PR 9), Buntime `api-keys.ts`, `wiki/ops/security.md`
+- **Source docs:** `planning/edger/design.md` (AuthProvider trait, PR 9), Buntime `planning/edger/design.md (ApiKeyPrincipal)`, `planning/edger/design.md (auth/security; ai-memory zommehq/buntime)`
 - **Design PR:** PR 9 — `feat: add edger-ext-auth as first extension`
-- **Depends on:** Story 06.01, Epic 05 Story 05.04 (store/gate semantics), Epic 02 (`AuthProvider`, `ApiKeyPrincipal`)
+- **Depende de:** Story 06.01, Epic 05 Story 05.04 (store/gate semantics), Epic 02 (`AuthProvider`, `ApiKeyPrincipal`)
 
 ## Files
 
@@ -24,7 +24,7 @@
 | `Cargo.toml` (workspace) | alterar | add member |
 | `edger-orchestrator/src/bin/edger.rs` | alterar | register `AuthExtension` |
 | `edger-orchestrator/src/auth.rs` | alterar | delegar ao AuthProvider do registry |
-| `planning/edger/docs/extensions.md` | alterar | exemplo auth |
+| `planning/edger/docs/extensions.md` | criar (nesta story) | exemplo auth |
 
 ## Detail
 
@@ -78,7 +78,7 @@ Gate auth inline em `edger-orchestrator/src/auth.rs`; sem crate ext.
 - [ ] Implementar registro estático (06.01)
 - [ ] Refatorar orchestrator `auth.rs` para delegar ao registry
 - [ ] Portar testes 05.04 para ext-auth onde aplicável
-- [ ] Atualizar `docs/extensions.md` com walkthrough edger-ext-auth
+- [ ] Atualizar `planning/edger/docs/extensions.md` com walkthrough edger-ext-auth
 - [ ] Verificar choose ONE: crate só auth, sem gateway
 
 ## Verification

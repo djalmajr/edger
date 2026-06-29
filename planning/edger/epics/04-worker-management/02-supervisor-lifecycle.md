@@ -10,18 +10,18 @@
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (Worker Lifecycle & Supervisor stateDiagram), PR 4
-- **Depends on:** Story 04.01; Epic 03.02 (mock Isolate para spawn/ready); Epic 02.02 (WorkerConfig ttl_ms, idle_timeout)
+- **Depende de:** Story 04.01; Epic 03.02 (mock Isolate para spawn/ready); Epic 02.02 (WorkerConfig ttl_ms, idle_timeout)
 
 ## Files
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `crates/edger-worker/src/supervisor.rs` | criar | `Supervisor`, transições, timers TTL |
-| `crates/edger-worker/src/instance.rs` | alterar | estado + dispatch + request count |
-| `crates/edger-worker/src/state.rs` | criar | `WorkerState` enum + `transition()` |
-| `crates/edger-worker/src/pool.rs` | alterar | integrar supervisor no get_or_create |
-| `crates/edger-worker/tests/supervisor_lifecycle.rs` | criar | transições válidas/inválidas |
-| `crates/edger-worker/Cargo.toml` | alterar | `tokio::time` para TTL timers |
+| `edger-worker/src/supervisor.rs` | criar | `Supervisor`, transições, timers TTL |
+| `edger-worker/src/instance.rs` | alterar | estado + dispatch + request count |
+| `edger-worker/src/state.rs` | criar | `WorkerState` enum + `transition()` |
+| `edger-worker/src/pool.rs` | alterar | integrar supervisor no get_or_create |
+| `edger-worker/tests/supervisor_lifecycle.rs` | criar | transições válidas/inválidas |
+| `edger-worker/Cargo.toml` | alterar | `tokio::time` para TTL timers |
 
 ## Detail
 

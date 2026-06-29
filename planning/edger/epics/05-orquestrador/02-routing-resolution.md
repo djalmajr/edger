@@ -9,9 +9,9 @@
 - **Restrições:** Usar `WorkerManifest` / helpers do core; sem dispatch real nesta story (apenas `ResolvedRoute`).
 
 ## Traceability
-- **Source docs:** `planning/edger/design.md` (Multi-Tenancy/Routing, Data Model), Buntime `worker-config.ts`, `wiki/apps/worker-pool.md`
+- **Source docs:** `planning/edger/design.md` (Multi-Tenancy/Routing, Data Model), Buntime `planning/edger/design.md (mapping table)`, `planning/edger/design.md (WorkerPool; ai-memory zommehq/buntime)`
 - **Design PR:** PR 6 (routing dentro do orchestrator básico)
-- **Depends on:** Story 05.01, Epic 02 (`WorkerRef`, namespace helpers, semver)
+- **Depende de:** Story 05.01, Epic 02 (`WorkerRef`, namespace helpers, semver)
 
 ## Files
 

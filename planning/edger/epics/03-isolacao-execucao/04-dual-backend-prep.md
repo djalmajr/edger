@@ -10,20 +10,20 @@
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (Resolved Decisions embedding, PR 5/10, eszip_trait), `planning/edger/epics/03-isolacao-execucao/spike.md` (output 03.01)
-- **Depends on:** Stories 03.01, 03.02, 03.03
+- **Depende de:** Stories 03.01, 03.02, 03.03
 
 ## Files
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `crates/edger-isolation/Cargo.toml` | alterar | features: `deno`, `wasm`, `default = []` |
-| `crates/edger-isolation/src/deno/mod.rs` | criar | `DenoIsolate` skeleton, `DenoFacade` config |
-| `crates/edger-isolation/src/deno/facade.rs` | criar | registro ops stub, module loader trait |
-| `crates/edger-isolation/src/deno/bundle.rs` | criar | traits `ModuleBundler`, stub eszip/precomp hooks |
-| `crates/edger-isolation/src/wasm/mod.rs` | criar | `WasmIsolate` skeleton |
-| `crates/edger-isolation/src/wasm/wasi.rs` | criar | config WASI capabilities stub |
-| `crates/edger-isolation/src/backend.rs` | criar | enum `IsolationBackend { Mock, Deno, Wasm }` factory |
-| `crates/edger-isolation/tests/backend_factory.rs` | criar | factory retorna Mock por default |
+| `edger-isolation/Cargo.toml` | alterar | features: `deno`, `wasm`, `default = []` |
+| `edger-isolation/src/deno/mod.rs` | criar | `DenoIsolate` skeleton, `DenoFacade` config |
+| `edger-isolation/src/deno/facade.rs` | criar | registro ops stub, module loader trait |
+| `edger-isolation/src/deno/bundle.rs` | criar | traits `ModuleBundler`, stub eszip/precomp hooks |
+| `edger-isolation/src/wasm/mod.rs` | criar | `WasmIsolate` skeleton |
+| `edger-isolation/src/wasm/wasi.rs` | criar | config WASI capabilities stub |
+| `edger-isolation/src/backend.rs` | criar | enum `IsolationBackend { Mock, Deno, Wasm }` factory |
+| `edger-isolation/tests/backend_factory.rs` | criar | factory retorna Mock por default |
 | `planning/edger/epics/03-isolacao-execucao/spike.md` | referenciar | layout deve espelhar recomendação do spike |
 
 ## Detail
