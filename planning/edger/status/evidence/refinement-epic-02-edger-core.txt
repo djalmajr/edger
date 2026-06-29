@@ -1,0 +1,146 @@
+========================================================================
+AGILE REFINEMENT LINT — planning/edger/epics/02-edger-core
+Round: agile-refinement-epic-02-edger-core
+Generated: 2026-06-29T01:05:40Z
+Files in scope: 5
+========================================================================
+
+## Cross-references
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — Origin → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/epics/01-fundacao/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/analysis-synthesis.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/01-setup-core-crate.md — Origin → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/01-setup-core-crate.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/01-setup-core-crate.md — ref → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/01-setup-core-crate.md — ref → planning/edger/analysis-synthesis.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/02-core-models.md — Origin → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/02-core-models.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/02-core-models.md — ref → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/03-errors-wire.md — Origin → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/03-errors-wire.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/03-errors-wire.md — ref → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/04-core-traits.md — Origin → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/04-core-traits.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/04-core-traits.md — ref → planning/edger/epics/02-edger-core/00-overview.md
+
+## Dependencies
+  [OK] [Dependencies] planning/edger/epics/02-edger-core/00-overview.md — epic depends on epic:01
+  [OK] [Dependencies] planning/edger/epics/02-edger-core/01-setup-core-crate.md — story depends on epic:01
+  [OK] [Dependencies] planning/edger/epics/02-edger-core/02-core-models.md — story depends on 02.01
+  [OK] [Dependencies] planning/edger/epics/02-edger-core/03-errors-wire.md — story depends on 02.01
+  [OK] [Dependencies] planning/edger/epics/02-edger-core/04-core-traits.md — story depends on 02.02
+  [OK] [Dependencies] planning/edger/epics/02-edger-core/04-core-traits.md — story depends on 02.03
+  [OK] [Dependencies] planning/edger/epics/ — no circular dependencies
+
+## Completeness
+  [OK] [Completeness] planning/edger/epics/02-edger-core/00-overview.md — section ## Context
+  [OK] [Completeness] planning/edger/epics/02-edger-core/00-overview.md — section ## Story backlog
+  [OK] [Completeness] planning/edger/epics/02-edger-core/00-overview.md — section ## Epic acceptance criteria
+  [OK] [Completeness] planning/edger/epics/02-edger-core/00-overview.md — section ## Status
+  [OK] [Completeness] planning/edger/epics/02-edger-core/01-setup-core-crate.md — section ## Context
+  [OK] [Completeness] planning/edger/epics/02-edger-core/01-setup-core-crate.md — section ## Files
+  [OK] [Completeness] planning/edger/epics/02-edger-core/01-setup-core-crate.md — section ## Detail
+  [OK] [Completeness] planning/edger/epics/02-edger-core/01-setup-core-crate.md — section ## Tasks
+  [OK] [Completeness] planning/edger/epics/02-edger-core/01-setup-core-crate.md — section ## Verification
+  [OK] [Completeness] planning/edger/epics/02-edger-core/01-setup-core-crate.md — acceptance criteria present
+  [OK] [Completeness] planning/edger/epics/02-edger-core/01-setup-core-crate.md — 8 actionable tasks
+  [OK] [Completeness] planning/edger/epics/02-edger-core/01-setup-core-crate.md — verification commands
+  [OK] [Completeness] planning/edger/epics/02-edger-core/02-core-models.md — section ## Context
+  [OK] [Completeness] planning/edger/epics/02-edger-core/02-core-models.md — section ## Files
+  [OK] [Completeness] planning/edger/epics/02-edger-core/02-core-models.md — section ## Detail
+  [OK] [Completeness] planning/edger/epics/02-edger-core/02-core-models.md — section ## Tasks
+  [OK] [Completeness] planning/edger/epics/02-edger-core/02-core-models.md — section ## Verification
+  [OK] [Completeness] planning/edger/epics/02-edger-core/02-core-models.md — acceptance criteria present
+  [OK] [Completeness] planning/edger/epics/02-edger-core/02-core-models.md — 8 actionable tasks
+  [OK] [Completeness] planning/edger/epics/02-edger-core/03-errors-wire.md — section ## Context
+  [OK] [Completeness] planning/edger/epics/02-edger-core/03-errors-wire.md — section ## Files
+  [OK] [Completeness] planning/edger/epics/02-edger-core/03-errors-wire.md — section ## Detail
+  [OK] [Completeness] planning/edger/epics/02-edger-core/03-errors-wire.md — section ## Tasks
+  [OK] [Completeness] planning/edger/epics/02-edger-core/03-errors-wire.md — section ## Verification
+  [OK] [Completeness] planning/edger/epics/02-edger-core/03-errors-wire.md — acceptance criteria present
+  [OK] [Completeness] planning/edger/epics/02-edger-core/03-errors-wire.md — 9 actionable tasks
+  [OK] [Completeness] planning/edger/epics/02-edger-core/03-errors-wire.md — verification commands
+  [OK] [Completeness] planning/edger/epics/02-edger-core/04-core-traits.md — section ## Context
+  [OK] [Completeness] planning/edger/epics/02-edger-core/04-core-traits.md — section ## Files
+  [OK] [Completeness] planning/edger/epics/02-edger-core/04-core-traits.md — section ## Detail
+  [OK] [Completeness] planning/edger/epics/02-edger-core/04-core-traits.md — section ## Tasks
+  [OK] [Completeness] planning/edger/epics/02-edger-core/04-core-traits.md — section ## Verification
+  [OK] [Completeness] planning/edger/epics/02-edger-core/04-core-traits.md — acceptance criteria present
+  [OK] [Completeness] planning/edger/epics/02-edger-core/04-core-traits.md — 9 actionable tasks
+  [OK] [Completeness] planning/edger/epics/02-edger-core/04-core-traits.md — verification commands
+  [WARN] planning/edger/epics/02-edger-core/02-core-models.md: No fenced verification commands
+
+## Product traceability
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/00-overview.md — no secret patterns
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/00-overview.md — business traceability N/A or present
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/00-overview.md — no prototypes dir — skip screen refs
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/01-setup-core-crate.md — no secret patterns
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/01-setup-core-crate.md — business traceability N/A or present
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/01-setup-core-crate.md — no prototypes dir — skip screen refs
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/02-core-models.md — no secret patterns
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/02-core-models.md — business traceability N/A or present
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/02-core-models.md — no prototypes dir — skip screen refs
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/03-errors-wire.md — no secret patterns
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/03-errors-wire.md — business traceability N/A or present
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/03-errors-wire.md — no prototypes dir — skip screen refs
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/04-core-traits.md — no secret patterns
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/04-core-traits.md — business traceability N/A or present
+  [OK] [Product traceability] planning/edger/epics/02-edger-core/04-core-traits.md — no prototypes dir — skip screen refs
+
+## Consistency
+  [OK] [Consistency] planning/edger/epics/02-edger-core/00-overview.md — status: ready-for-development (planning complete; implementation not
+  [OK] [Consistency] planning/edger/epics/02-edger-core/00-overview.md — sizes: small, large, medium, large
+
+## Format
+  [OK] [Format] planning/edger/epics/01-fundacao — epic folder naming
+  [OK] [Format] planning/edger/epics/01-fundacao/00-overview.md — 00-overview.md present
+  [OK] [Format] planning/edger/epics/02-edger-core — epic folder naming
+  [OK] [Format] planning/edger/epics/02-edger-core/00-overview.md — 00-overview.md present
+  [OK] [Format] planning/edger/epics/03-isolacao-execucao — epic folder naming
+  [OK] [Format] planning/edger/epics/03-isolacao-execucao/00-overview.md — 00-overview.md present
+  [OK] [Format] planning/edger/epics/04-worker-management — epic folder naming
+  [OK] [Format] planning/edger/epics/04-worker-management/00-overview.md — 00-overview.md present
+  [OK] [Format] planning/edger/epics/05-orquestrador — epic folder naming
+  [OK] [Format] planning/edger/epics/05-orquestrador/00-overview.md — 00-overview.md present
+  [OK] [Format] planning/edger/epics/06-extensibilidade — epic folder naming
+  [OK] [Format] planning/edger/epics/06-extensibilidade/00-overview.md — 00-overview.md present
+  [OK] [Format] planning/edger/epics/07-avancado — epic folder naming
+  [OK] [Format] planning/edger/epics/07-avancado/00-overview.md — 00-overview.md present
+  [OK] [Format] planning/edger/epics/02-edger-core/00-overview.md — no placeholder tokens
+  [OK] [Format] planning/edger/epics/02-edger-core/01-setup-core-crate.md — story file naming
+  [OK] [Format] planning/edger/epics/02-edger-core/01-setup-core-crate.md — no placeholder tokens
+  [OK] [Format] planning/edger/epics/02-edger-core/02-core-models.md — story file naming
+  [OK] [Format] planning/edger/epics/02-edger-core/02-core-models.md — no placeholder tokens
+  [OK] [Format] planning/edger/epics/02-edger-core/03-errors-wire.md — story file naming
+  [OK] [Format] planning/edger/epics/02-edger-core/03-errors-wire.md — no placeholder tokens
+  [OK] [Format] planning/edger/epics/02-edger-core/04-core-traits.md — story file naming
+  [OK] [Format] planning/edger/epics/02-edger-core/04-core-traits.md — no placeholder tokens
+
+## Scope conflicts
+  [OK] [Scope conflicts] planning/edger/epics/02-edger-core/01-setup-core-crate.md — unique title in epic
+  [OK] [Scope conflicts] planning/edger/epics/02-edger-core/02-core-models.md — unique title in epic
+  [OK] [Scope conflicts] planning/edger/epics/02-edger-core/03-errors-wire.md — unique title in epic
+  [OK] [Scope conflicts] planning/edger/epics/02-edger-core/04-core-traits.md — unique title in epic
+  [INFO] planning/edger/epics/02-edger-core/01-setup-core-crate.md: Scope/Out sections incomplete
+  [INFO] planning/edger/epics/02-edger-core/02-core-models.md: Scope/Out sections incomplete
+  [INFO] planning/edger/epics/02-edger-core/03-errors-wire.md: Scope/Out sections incomplete
+  [INFO] planning/edger/epics/02-edger-core/04-core-traits.md: Scope/Out sections incomplete
+
+## Stale content
+  [OK] [Stale content] planning/edger/epics/02-edger-core/00-overview.md — in-progress with open tasks
+  [OK] [Stale content] planning/edger/epics/02-edger-core/00-overview.md — age 0d
+  [OK] [Stale content] planning/edger/epics/02-edger-core/01-setup-core-crate.md — status not stale-in-progress
+  [OK] [Stale content] planning/edger/epics/02-edger-core/01-setup-core-crate.md — age 0d
+  [OK] [Stale content] planning/edger/epics/02-edger-core/02-core-models.md — status not stale-in-progress
+  [OK] [Stale content] planning/edger/epics/02-edger-core/02-core-models.md — age 0d
+  [OK] [Stale content] planning/edger/epics/02-edger-core/03-errors-wire.md — status not stale-in-progress
+  [OK] [Stale content] planning/edger/epics/02-edger-core/03-errors-wire.md — age 0d
+  [OK] [Stale content] planning/edger/epics/02-edger-core/04-core-traits.md — status not stale-in-progress
+  [OK] [Stale content] planning/edger/epics/02-edger-core/04-core-traits.md — age 0d
+
+## Summary
+  RED: 0  WARN: 1  INFO: 4  OK lines: 114
+VERDICT: PASS — 0 RED findings (warnings may remain)
+
