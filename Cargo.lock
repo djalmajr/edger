@@ -492,8 +492,11 @@ name = "edger-isolation"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "bytes",
  "edger-core",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "wasmtime",

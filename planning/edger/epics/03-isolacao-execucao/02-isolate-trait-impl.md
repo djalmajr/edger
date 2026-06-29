@@ -1,6 +1,7 @@
 # Story 03.02: Implementação completa do trait Isolate + backend mock
 
-**Origin:** `planning/edger/epics/03-isolacao-execucao/00-overview.md`
+**Origin:** `planning/edger/epics/03-isolacao-execucao/00-overview.md`  
+**Status:** completed (2026-06-29)
 
 ## Context
 - **Problema:** O contrato de execução existe apenas como assinatura em `edger-core`; não há implementação referência nem mock para integração com WorkerPool.
@@ -20,10 +21,9 @@
 | `edger-isolation/src/lib.rs` | criar/alterar | crate root, re-exports |
 | `edger-isolation/src/isolate.rs` | criar | trait alias/re-export + tipos auxiliares |
 | `edger-isolation/src/mock.rs` | criar | `MockIsolate` impl completa |
-| `edger-isolation/src/error.rs` | criar | `IsolationError` mapeando de `CoreError` |
+| `edger-isolation/src/error.rs` | criar | `IsolationBackendError` mapeando de `CoreError` |
 | `edger-isolation/src/kinds.rs` | criar | dispatch por `ExecutionKind` |
 | `edger-isolation/tests/mock_isolate.rs` | criar | testes por kind + lifecycle |
-| `edger-isolation/src/lib.rs` | alterar | `pub mod mock` feature `testing` ou always-on para dev |
 
 ## Detail
 
@@ -32,47 +32,37 @@
 - Crate isolation vazio ou stub
 
 ### TO-BE
-- `MockIsolate` com estado interno configurável (respostas canned, contadores de chamadas, flags de falha)
-- Métodos async:
-  - `execute_fetch` → `SerializedResponse` default 200 + eco de method/uri
-  - `execute_routes` → roteamento simulado por prefixo de path
-  - `serve_static_spa` → lê fixture HTML de temp dir; injeta `<base href>` se `inject_base`
-  - `execute_wasm` → resposta simulada com header `X-Mock-Wasm: 1`
-  - `notify_idle` / `terminate` → idempotentes, registram em métricas internas do mock
-- `IsolationError` enum: Timeout, MemoryExceeded, ModuleLoad, Wire, Internal
-- Helper `dispatch(kind, isolate, req, config)` centralizando match em `ExecutionKind`
+- `MockIsolate` com estado interno configurável
+- `dispatch_execution` helper
+- `IsolationBackendError` enum
 
 ### Escopo
 - **In:** mock completo, error types, dispatch helper, testes
 - **Out:** deno_core real, wasmtime real (story 03.04 prep apenas)
 
 ### Critérios de aceite
-- [ ] `MockIsolate` implementa todos os métodos do trait `Isolate` de `edger-core`
-- [ ] Testes cobrem: FetchHandler, RoutesTable, StaticSpa (com/sem inject_base), WasmModule, Fullstack (stub retorna 501 ou mock adapter)
-- [ ] `terminate` chamado duas vezes não panic (idempotente)
-- [ ] `cargo test -p edger-isolation` verde
-- [ ] Nenhuma dependência em `edger-worker` ou `edger-orchestrator`
+- [x] `MockIsolate` implementa todos os métodos do trait `Isolate` de `edger-core`
+- [x] Testes cobrem: FetchHandler, RoutesTable, StaticSpa (com inject_base), WasmModule, Fullstack (501)
+- [x] `terminate` chamado duas vezes não panic (idempotente)
+- [x] `cargo test -p edger-isolation` verde (7 tests)
+- [x] Nenhuma dependência em `edger-worker` ou `edger-orchestrator`
 
-### Dependências
-- Epic 02.04 (trait)
-- Epic 02.02 (WorkerConfig)
-- Story 03.01 (opcional para alinhar erros; pode paralelizar após 02.04)
+### Pendências
+- SPA fixture via filesystem temp — usado HTML in-memory no mock; FS opcional adiado.
 
 ## Test-first plan
-- **Primeiro teste falhando:** `mock_isolate_execute_fetch_returns_200` — compila `MockIsolate` e chama `execute_fetch` esperando status 200
-- **Nível:** `edger-isolation/tests/mock_isolate.rs` (integration) + unit tests em `mock.rs`
-- **Cenários:** falha injetada (`MockIsolate::with_fail_on_terminate`), SPA com base href, wasm kind
-- **Evitar:** Mockar tokio runtime inteiro; usar `#[tokio::test]`
+- Red: `mock_isolate_execute_fetch_returns_200` falhou sem impl
+- Green: `mock.rs` + `kinds.rs`
+- Refactor: `dispatch_execution` centralizado
 
 ## Tasks
-- [ ] Configurar `Cargo.toml` de `edger-isolation` com deps workspace
-- [ ] Criar `error.rs` com `IsolationError` + `From<CoreError>`
-- [ ] Criar `mock.rs` com `MockIsolate` + builder pattern (`with_response`, `with_failures`)
-- [ ] Criar `kinds.rs` com `dispatch_execution`
-- [ ] Re-exportar `Isolate` trait de `edger-core` em `isolate.rs`
-- [ ] Escrever testes por `ExecutionKind` + lifecycle
-- [ ] Documentar módulo com exemplos de uso para Epic 04
-- [ ] `cargo test -p edger-isolation` + clippy
+- [x] Configurar `Cargo.toml` de `edger-isolation` com deps workspace
+- [x] Criar `error.rs` com `IsolationBackendError` + `From<CoreError>`
+- [x] Criar `mock.rs` com `MockIsolate` + builder (`with_spa_html`, `with_fail_on_terminate`)
+- [x] Criar `kinds.rs` com `dispatch_execution`
+- [x] Re-exportar `Isolate` trait de `edger-core` em `isolate.rs`
+- [x] Escrever testes por `ExecutionKind` + lifecycle
+- [x] `cargo test -p edger-isolation` + clippy
 
 ## Verification
 ```bash

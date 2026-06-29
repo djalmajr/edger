@@ -75,7 +75,7 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 
 ## Recommended next step
 - Fases 1–2 **delivered**. Ver `status/checkpoint-2026-06-29-epic-02-closure.md`.
-- **Próxima execução:** `/agile-story` em `epics/03-isolacao-execucao/02-isolate-trait-impl.md` (03.01 spike done).
+- **Próxima execução:** `/agile-story` em `epics/03-isolacao-execucao/03-wire-limits.md` (03.01–03.02 done).
 - Per-story: `/agile-status` checkpoint + `/agile-refinement` após cada story (evidence em `status/`).
 
 ---

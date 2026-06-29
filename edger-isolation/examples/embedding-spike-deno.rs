@@ -23,8 +23,6 @@ fn main() -> anyhow::Result<()> {
     let back: SerializedRequest = serde_json::from_str(&json)?;
     let exec_ms = start.elapsed().as_millis();
     assert_eq!(back.uri, "/hello");
-    println!(
-        "spike_deno_wire_sim exec_ms={exec_ms} note=deno_core_boot_pending_V8_toolchain"
-    );
+    println!("spike_deno_wire_sim exec_ms={exec_ms} note=deno_core_boot_pending_V8_toolchain");
     Ok(())
 }

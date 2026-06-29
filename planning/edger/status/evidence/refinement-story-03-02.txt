@@ -1,0 +1,4 @@
+/agile-refinement — code review (story 03.02)
+Scope: edger-isolation mock + dispatch
+VERDICT: PASS — 0 red flags
+Notes: 7 tests; no worker/orchestrator deps; SPA uses in-memory HTML
