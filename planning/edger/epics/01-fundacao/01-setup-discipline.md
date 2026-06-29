@@ -5,6 +5,10 @@
 ## Context
 Establish the engineering baseline for edger using ai-memory patterns and buntime rules.
 
+## Traceability
+- **Source docs:** `planning/edger/intake.md`, `planning/edger/analysis-synthesis.md`
+- **Output:** `AGENTS.md`, `planning/edger/AGENTS.md`
+
 ## Files
 - planning/edger/AGENTS.md (create)
 - planning/edger/epics/01-fundacao/00-overview.md (update status)
@@ -14,6 +18,9 @@ Establish the engineering baseline for edger using ai-memory patterns and buntim
 - Create minimal AGENTS.md with gate and rules.
 - Run memory_lint and refinement, fix.
 - Update roadmap status.
+
+## Test-first plan
+- N/A (docs story); verify via memory_lint + refinement gates
 
 ## Tasks
 - [x] Write AGENTS.md

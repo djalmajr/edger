@@ -5,6 +5,10 @@
 ## Context
 Implement the adapter and cli so examples with correct index run and return expected.
 
+## Traceability
+- **Source docs:** `planning/edger/design.md` (fetch contract), edge-runtime examples
+- **Output:** `edger.ts`, `edger.test.ts`
+
 ## Files
 - edger.ts
 - edger.test.ts

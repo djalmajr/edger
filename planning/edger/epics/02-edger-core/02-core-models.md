@@ -3,7 +3,14 @@
 **Origin:** `planning/edger/epics/02-edger-core/00-overview.md`
 
 ## Context
-Implement the pure serializable models that higher layers (and Bun adapter future port) will use.
+- **Problem:** Only subset WorkerManifest exists; no WorkerConfig parser, Principal, or full Buntime mapping.
+- **Objective:** Full serde models + `parse_worker_config` + namespace helpers.
+- **Value:** Single source of truth for manifest-driven behavior.
+- **Constraints:** Pure functions only; duration/size parsing per Buntime semantics.
+
+## Traceability
+- **Source docs:** `planning/edger/design.md` (WorkerManifest mapping table)
+- **Depends on:** Story 02.01
 
 ## Files
 - edger-core/src/manifest.rs
@@ -14,12 +21,27 @@ Implement the pure serializable models that higher layers (and Bun adapter futur
 - edger-core/Cargo.toml (add serde if not)
 
 ## Detail
+
+### AS-IS
+Minimal WorkerManifest { name, entrypoint, ttl }.
+
+### TO-BE
 Models based on design + Buntime contracts:
 - WorkerManifest { name, entrypoint, ttl, ... }
 - ExecutionKind enum
 - ApiKeyPrincipal / namespaces
 - Configs
 Serde derive, Clone Debug etc. No side effects.
+
+### Acceptance criteria
+- [ ] WorkerManifest deserializes from YAML fixture matching Buntime sample
+- [ ] `parse_worker_config` normalizes ttl_ms (0 = ephemeral), sizes, durations
+- [ ] `WorkerRef` includes namespace + semver fields
+- [ ] `infer_execution_kind` matches design inference rules
+- [ ] Table-driven tests for each Buntime field in mapping table
+
+### Dependencies
+- Story 02.01
 
 ## Test-first plan
 - Red: test deserialize manifest fails

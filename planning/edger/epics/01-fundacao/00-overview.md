@@ -2,6 +2,11 @@
 
 **Origin:** `planning/edger/roadmap.md`
 
+## Traceability
+- **Source docs:** `planning/edger/intake.md`, `planning/edger/design.md`, `planning/edger/analysis-synthesis.md`
+- **Roadmap phase:** Fase 1 (Fundação)
+- **Status artifact:** `planning/edger/status/closure-2026-06-28-edger-func.md`
+
 ## Context
 - Problem: Edger skeleton exists but no real loader/runtime, no AGENTS discipline, no tests, no support for edge-runtime examples with Deno.serve compatible index entrypoints.
 - Objective: Align skeleton, establish engineering gates from ai-memory + buntime, implement core loadWorkerHandler that supports the required index patterns, copy and run several examples.
@@ -9,10 +14,13 @@
 - Constraints: New project; use Bun for functional (Rust skeleton placeholder); preserve example verbatim indexes; explicit memory scopes for buntime project.
 
 ## Story backlog
-- 01.01: Setup AGENTS.md + doc lint gates + update roadmap/intake with current. (completed)
-- 01.02: Implement loadWorkerHandler + edger.ts cli with shim for Deno.serve and default fetch. (completed)
-- 01.03: Copy 5+ (delivered 11+) examples to workers/ with index.{ts,js,mjs} compat, verify launches/responses for chunked/sse/stream/hello/etc. (completed via loader + copies)
-- 01.04: Add status closure and final verification evidence. (completed)
+
+| Story | File | Size | Status | Depends on |
+|---|---|---|---|---|
+| 01.01 Setup discipline | `01-setup-discipline.md` | small | completed | -- |
+| 01.02 Implement loader | `02-implement-loader.md` | medium | completed | 01.01 |
+| 01.03 Copy examples | `03-copy-examples.md` | medium | completed | 01.02 |
+| 01.04 Closure evidence | `04-closure-evidence.md` | small | completed | 01.03 |
 
 ## Roadmap
 1. Docs and discipline (01.01)

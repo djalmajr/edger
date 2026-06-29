@@ -1,44 +1,80 @@
 # Epic 02: edger-core (Vocabulário Puro + Tipos)
 
-**Origin:** `planning/edger/roadmap.md`
-
-## Context
-- Problem: After Fase 1 functional Bun loader + examples, the Rust foundation (skeleton) has no core vocabulary. Higher crates need pure types/traits first.
-- Objective: Establish edger-core as pure leaf crate (no I/O, no sibling deps) owning models, errors, traits, wire formats, manifests per design + ai-memory patterns (core = vocab).
-- Value: Shared language for all later Fases; enables isolation, worker, orchestrator impls without cycles. Tests gate from day 1.
-- Constraints: Pure (no tokio/fs in core); follow design ownership table; small incremental; update planning docs; use explicit edger memory scope; keep Bun adapter working.
-
-## Story backlog
-- 02.01: Setup edger-core crate (fix Cargo, add src/lib.rs + mod structure, AGENTS gate for Rust).
-- 02.02: Core models: WorkerManifest, WorkerConfig, ExecutionKind, Principal, basic serde.
-- 02.03: Errors (typed from @buntime/shared inspiration + Rust), wire types (SerializedRequest/Response).
-- 02.04: Core traits (Isolate, Extension, Middleware, AuthProvider) + pure unit tests + cargo test gate.
-
-## Roadmap
-1. Crate skeleton + purity (02.01)
-2. Data models + serde (02.02)
-3. Errors + wire (02.03) parallel ok
-4. Traits + tests (02.04)
-(Reference design.md for details/ownership.)
-
-## Epic acceptance criteria
-- edger-core/Cargo.toml correct (no sibling deps, workspace ok).
-- src/lib.rs declares public API (Manifests, Errors, Traits, ExecutionKind) with docs.
-- `cargo test -p edger-core` (or workspace) passes with unit tests for models/traits (mocks).
-- No I/O, no external runtime crates in core (pure).
-- planning updated (roadmap points here, cross-refs ok).
-- memory_lint + refinement clean for new artifacts.
-- Bun side unchanged (still passes).
-
-## Risks
-- Over-defining traits too early (mitigate: minimal viable from design, evolve in later Fases).
-- Serde versions mismatch with higher (pin in workspace).
-- Drift from Buntime contracts (reference design + intake).
+**Origin:** `planning/edger/roadmap.md` (Fase 2)
 
 ## Traceability
-- Design: crate ownership, data models, traits.
-- Roadmap Fase 2.
-- Later: isolation will impl Isolate from core.
+- **Source docs:** `planning/edger/design.md` (Data Model, PR 3), `planning/edger/analysis-synthesis.md` (core purity)
+- **Roadmap phase:** Fase 2
+- **Depends on epic:** `planning/edger/epics/01-fundacao/00-overview.md` (completed)
+
+## Context
+
+### Macro problem
+After Fase 1 (Bun loader functional), the Rust workspace has minimal stubs. Higher crates cannot share types without cycles or I/O leakage.
+
+### Initiative objective
+Establish `edger-core` as pure leaf crate: manifests, configs, wire formats, traits, errors — no I/O, no sibling deps.
+
+### Expected outcome
+`cargo test -p edger-core` green with Buntime mapping tests; public API documented; Bun adapter unchanged.
+
+### Constraints
+- Pure vocabulary only (no tokio/fs/network in core)
+- Small incremental PRs aligned to design.md PR 3
+- Preserve Bun `bun test` pass throughout
+
+### AS-IS
+- `edger-core/src/lib.rs` has minimal `ExecutionKind`, `CoreError`, subset `WorkerManifest`
+- Other crates are empty stubs
+- No module split, no full traits
+
+### TO-BE
+- Full data models + parsers per design.md mapping table
+- `SerializedRequest`/`SerializedResponse` wire types
+- Traits: `Extension`, `Middleware`, `WorkerHandler`, `AuthProvider`, `Isolate` signatures
+- Unit tests for serde roundtrips and Buntime field mapping
+
+### Out of scope
+- WorkerPool, HTTP server, embedding, Turso store (later epics)
+- Dynamic extension loading
+
+## Story backlog
+
+| Story | File | Size | Status | Depends on |
+|---|---|---|---|---|
+| 02.01 Setup crate | `01-setup-core-crate.md` | small | in-progress | Epic 01 |
+| 02.02 Core models | `02-core-models.md` | large | not started | 02.01 |
+| 02.03 Errors + wire | `03-errors-wire.md` | medium | not started | 02.01 |
+| 02.04 Core traits | `04-core-traits.md` | large | not started | 02.02, 02.03 |
+
+## Epic roadmap
+
+```mermaid
+flowchart LR
+    S01[02.01 Setup] --> S02[02.02 Models]
+    S01 --> S03[02.03 Wire]
+    S02 --> S04[02.04 Traits]
+    S03 --> S04
+```
+
+## Epic acceptance criteria
+- [ ] `edger-core/Cargo.toml` has no sibling crate deps; only serde/bytes/etc.
+- [ ] `src/` modules: manifest, config, wire, error, extension, auth, execution
+- [ ] `cargo test -p edger-core` passes with mapping + roundtrip tests
+- [ ] `cargo clippy -p edger-core -- -D warnings` clean
+- [ ] `bun test` still passes (unchanged)
+- [ ] planning/edger/ cross-refs valid; refinement clean
+
+## Risks
+
+| Risk | Mitigation |
+|---|---|
+| Over-defining traits early | Minimal viable from design; evolve in Fase 3+ |
+| Buntime contract drift | Mapping table tests in 02.02 |
+| Serde version skew | Pin in workspace.dependencies |
+
+## Recommended next step
+`/agile-story` on `01-setup-core-crate.md` to finish crate module layout, then 02.02.
 
 ## Status
-in-progress
+ready-for-development (planning complete; implementation not started)

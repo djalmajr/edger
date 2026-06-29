@@ -27,15 +27,15 @@
 - Objetivo 6: Features avançadas (manifests completos, shell, Wasm, observabilidade) + preparação para migração e uso real.
 
 ## Initiatives / Epics
-| Initiative | Expected outcome | Status | Dependency |
-|---|---|---|---|
-| Fase 1: Fundação e Alinhamento de Estrutura + Engenharia | Skeleton corrigido (planning), AGENTS.md + gate, loader implemented in Bun (portable adapter), 4+ examples with index compat running, tests pass, evidence captured. | done (Bun loader for functional; Rust skeleton aligned in planning) | -- |
-| Fase 2: edger-core (Vocabulário Puro + Tipos) | Tipos, manifests, configs, wire formats, traits (Extension, Middleware, Isolate, etc.), parsing, mapeamento Buntime completo, unit tests. Core sem I/O. | not started | Fase 1 |
-| Fase 3: Camada de Isolação e Execução (Spike + Básico) | Spike de embedding concluído (deno_core+facade + wasmtime), Isolate trait implementado com mocks + primeiros backends, suporte básico JS/TS/Wasm. | not started | Fase 2 |
-| Fase 4: Worker Management (Pool + Supervisor) | WorkerPool, Supervisor, lifecycle, métricas, ephemeral/TTL, health, collision detection. Testes de integração fortes. | not started | Fase 2, Fase 3 (parcial) |
-| Fase 5: Orquestrador Principal (Routing, Auth, Hooks, Servidor) | Pipeline de requisições em Rust, auth com namespaces/principals, registry de extensões + hooks, servidor HTTP básico, shell support inicial. Contratos Buntime preservados. | not started | Fase 1-4 |
-| Fase 6: Extensibilidade via Crates + Exemplos | Mecanismo de registro de extensões (estático), primeiras crates (ex: edger-ext-auth, edger-ext-gateway), "choose ONE" principle em Rust. | not started | Fase 5 |
-| Fase 7: Features Avançadas, Observabilidade e Preparação | Manifests full + kinds, cron nativo, shell completo, observabilidade (tracing/OTEL), hardening, measurement/perf, docs completos, matriz de compatibilidade Buntime. | not started | Fase 5-6 |
+| Initiative | Epic | Stories | Status | Dependency |
+|---|---|---|---|---|
+| Fase 1: Fundação | [`epics/01-fundacao/`](epics/01-fundacao/00-overview.md) | 4 | **completed** (Bun loader delivered) | -- |
+| Fase 2: edger-core | [`epics/02-edger-core/`](epics/02-edger-core/00-overview.md) | 4 | ready-for-development | Fase 1 |
+| Fase 3: Isolação + Spike | [`epics/03-isolacao-execucao/`](epics/03-isolacao-execucao/00-overview.md) | 4 | ready-for-development | Fase 2 |
+| Fase 4: Worker Management | [`epics/04-worker-management/`](epics/04-worker-management/00-overview.md) | 4 | ready-for-development | Fase 2, Fase 3 (parcial) |
+| Fase 5: Orquestrador | [`epics/05-orquestrador/`](epics/05-orquestrador/00-overview.md) | 5 | ready-for-development | Fase 1-4 |
+| Fase 6: Extensibilidade | [`epics/06-extensibilidade/`](epics/06-extensibilidade/00-overview.md) | 3 | ready-for-development | Fase 5 |
+| Fase 7: Avançado | [`epics/07-avancado/`](epics/07-avancado/00-overview.md) | 7 | ready-for-development | Fase 5-6 |
 
 ## Suggested sequence
 1. Fase 1 (Fundação) -- Alinha o skeleton real e estabelece cultura (AGENTS, testes, gate). Alta prioridade porque desbloqueia tudo e evita dívida técnica.
@@ -74,7 +74,8 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 - [ ] Stakeholder-ready: mostra jornada completa com riscos e out-of-scope (update as Fases advance).
 
 ## Recommended next step
-- Fase 1 complete (loader + examples + discipline). Run `/agile-epic` for Fase 2: edger-core (Vocabulário Puro + Tipos) to continue toward Rust functional runtime.
+- Backlog completo (7 epics, 31 stories). Ver `status/consolidation-2026-06-29-backlog-ready.md`.
+- **Próxima execução:** `/agile-story` em `epics/02-edger-core/01-setup-core-crate.md`.
 - Periodically: `/agile-refinement` + memory_lint on planning/edger/ + update status.
 
 ---

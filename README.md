@@ -17,7 +17,8 @@ Edge runtime (Rust vision + Buntime contracts) with Bun adapter for immediate fu
 - 11+ examples copied and several running:
   - hello-world, serve-declarative-style, empty-response, read-body, chunked-text, sse, stream, ...
 - `bun test` passes (core compat).
-- Planning: intake/roadmap/design/analysis + epics/01-fundacao (completed) + status/ + AGENTS.md .
+- Planning: intake/roadmap/design/analysis + **7 epics / 31 stories** (`planning/edger/epics/`) + status/ + AGENTS.md.
+- Fase 1 complete; Fases 2-7 **ready-for-development** (ver `status/consolidation-2026-06-29-backlog-ready.md`).
 - Rust skeleton (workspace crates) ready for Fase 2+ (core pure vocab first).
 
 ## Como rodar (Bun adapter)
@@ -32,9 +33,11 @@ Worker dirs must follow the deno.server pattern (index compat).
 
 ## Status
 
-Fase 1 complete (loader + examples + discipline + docs). Ver `planning/edger/roadmap.md`, `planning/edger/status/closure-2026-06-28-edger-func.md`, `planning/edger/epics/01-fundacao/`.
+Fase 1 complete (loader + examples + discipline + docs). Backlog maduro: 7 epics, 31 stories.
 
-Next: `/agile-epic` for Fase 2 (edger-core).
+Ver `planning/edger/roadmap.md`, `planning/edger/status/consolidation-2026-06-29-backlog-ready.md`.
+
+Next: `/agile-story` em `planning/edger/epics/02-edger-core/01-setup-core-crate.md`.
 
 ## Rust (future)
 
