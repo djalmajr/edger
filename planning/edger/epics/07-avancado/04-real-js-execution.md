@@ -32,7 +32,7 @@
 | `edger-isolation/tests/js_routes_integration.rs` | create | Routes table handler |
 | `edger-isolation/tests/js_spa_integration.rs` | create | HTML estático servido |
 | `workers/js-fetch/`, `workers/js-routes/`, `workers/js-spa/` | create | Fixtures mínimas |
-| `planning/edger/spike-results.md` | read | Go/no-go e sharp edges do spike |
+| `planning/edger/epics/03-isolacao-execucao/spike.md` | read | Go/no-go e sharp edges do spike |
 
 ## Detail
 

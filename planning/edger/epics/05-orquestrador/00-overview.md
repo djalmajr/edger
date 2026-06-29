@@ -7,8 +7,8 @@
 - **Roadmap phase:** Fase 5 — Orquestrador Principal (Routing, Auth, Hooks, Servidor)
 - **Depends on epics:**
   - `planning/edger/epics/02-edger-core/00-overview.md` (tipos, wire, traits)
-  - `planning/edger/epics/03-edger-isolation/00-overview.md` (mock Isolate + Serialized*)
-  - `planning/edger/epics/04-edger-worker/00-overview.md` (WorkerPool + fetch mock)
+  - `planning/edger/epics/03-isolacao-execucao/00-overview.md` (mock Isolate + Serialized*)
+  - `planning/edger/epics/04-worker-management/00-overview.md` (WorkerPool + fetch mock)
 
 ## Context
 
