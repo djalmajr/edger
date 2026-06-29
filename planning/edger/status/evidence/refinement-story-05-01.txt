@@ -1,0 +1,6 @@
+refinement-lint planning/edger — 2026-06-29 story 05.01 closure
+RED: 0  WARN: 2 (pre-existing spike.md)
+cargo test -p edger-orchestrator: 6 pass
+cargo test --workspace: 61 pass
+cargo clippy -p edger-orchestrator -D warnings: pass
+bun test: 6 pass

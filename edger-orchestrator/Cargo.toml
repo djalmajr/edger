@@ -4,13 +4,30 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "edger"
+path = "src/bin/edger.rs"
+
 [dependencies]
 edger-core = { path = "../edger-core" }
 edger-worker = { path = "../edger-worker" }
 edger-isolation = { path = "../edger-isolation" }
-# lógica principal de orquestração (routing, auth, extensões, resolução de workers)
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+http.workspace = true
+hyper.workspace = true
+uuid.workspace = true
+semver.workspace = true
+
+[dev-dependencies]
+edger-isolation = { path = "../edger-isolation" }
+serde_json.workspace = true
+tokio.workspace = true
+tower.workspace = true

@@ -47,11 +47,17 @@ Sem parser de URL; manifests não carregados no orchestrator.
 - **Out:** `load_manifests_from_dirs` completo (owned por story 07.01), rewrite de body/headers, shell injection, auth gate (05.04)
 
 ### Critérios de aceite
-- [ ] Tabela de casos Buntime coberta por testes (mín. 15 cenários)
-- [ ] `/@acme/app@1.0.0/foo` resolve worker correto com path reescrito `/foo`
-- [ ] `/health` → `Reserved`, não worker
-- [ ] Plugin com `base: /gateway` ganha precedência sobre worker homônimo
-- [ ] Colisão de nome retorna erro tipado (não panic)
+- [x] Tabela de casos Buntime coberta por testes (mín. 15 cenários) — 17 testes
+- [x] `/@acme/app@1.0.0/foo` resolve worker correto com path reescrito `/foo`
+- [x] `/health` → `Reserved`, não worker
+- [x] Plugin com `base: /gateway` ganha precedência sobre worker homônimo
+- [x] Colisão de nome retorna erro tipado (não panic)
+
+## Pendências
+- `PluginRef` reutiliza `WorkerManifest` (sem `PluginManifest` dedicado — Epic 07).
+- `base_href` ignorado nesta story; pipeline 05.03 aplica rewrite completo.
+- Paths desconhecidos retornam `NOT_FOUND` (homepage só para `/`).
+- `load_manifests_from_dirs` real fica em 07.01; stub `ManifestIndex` cobre testes.
 
 ### Dependências
 - Story 05.01 (servidor pode registrar router stub)
@@ -68,14 +74,14 @@ Sem parser de URL; manifests não carregados no orchestrator.
 **Nível:** unitário (`tests/routing_resolution.rs` + `mod tests` em router)
 
 ## Tasks
-- [ ] Definir `ResolvedRoute`, `ReservedPath`, `ManifestIndex`
-- [ ] Implementar `manifest_index_stub.rs` (índice mínimo em memória para testes de routing)
-- [ ] Implementar parse de namespace + semver (`semver` crate)
-- [ ] Implementar reserved paths e homepage fallback
-- [ ] Implementar plugin base precedence
-- [ ] Integrar collision detection do core
-- [ ] Suite de testes com fixtures YAML em `tests/fixtures/manifests/`
-- [ ] Documentar tabela de mapeamento Buntime ↔ Rust no módulo
+- [x] Definir `ResolvedRoute`, `ReservedPath`, `ManifestIndex`
+- [x] Implementar `manifest_index_stub.rs` (índice mínimo em memória para testes de routing)
+- [x] Implementar parse de namespace + semver (`semver` crate)
+- [x] Implementar reserved paths e homepage fallback
+- [x] Implementar plugin base precedence
+- [x] Integrar collision detection (`COLLISION` em `ManifestIndex::insert`)
+- [x] Suite de testes com fixtures YAML em `tests/fixtures/manifests/`
+- [x] Documentar tabela de mapeamento Buntime ↔ Rust no módulo (`router.rs` header)
 
 ## Verification
 ```bash

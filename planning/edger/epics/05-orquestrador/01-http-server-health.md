@@ -43,10 +43,10 @@ Stub `orchestrator_stub()`; sem bin; sem listener.
 - **Out:** resolução de workers (05.02), pipeline completo (05.03), métricas `/metrics`
 
 ### Critérios de aceite
-- [ ] `cargo run -p edger-orchestrator --bin edger` escuta e responde `/health`
-- [ ] `/ready` retorna 503 antes de init completo e 200 após
-- [ ] Teste de integração sem rede externa (axum `TestClient` ou hyper client)
-- [ ] `cargo clippy -p edger-orchestrator -- -D warnings` limpo
+- [x] `cargo run -p edger-orchestrator --bin edger` escuta e responde `/health`
+- [x] `/ready` retorna 503 antes de init completo e 200 após
+- [x] Teste de integração sem rede externa (axum `TestClient` ou hyper client)
+- [x] `cargo clippy -p edger-orchestrator -- -D warnings` limpo
 
 ### Dependências
 - Epic 02: `CoreError` ou tipos de resposta mínimos
@@ -62,14 +62,18 @@ Stub `orchestrator_stub()`; sem bin; sem listener.
 **Nível:** integração (`tests/health_integration.rs`)
 
 ## Tasks
-- [ ] Adicionar deps axum/hyper/tower/http ao `Cargo.toml`
-- [ ] Criar `server.rs` com `Router` e handlers health/ready
-- [ ] Criar `ServerState` + construtor `new_unready()` / `mark_ready()`
-- [ ] Criar `src/bin/edger.rs` com `#[tokio::main]` e bind
-- [ ] Propagar ou gerar `X-Request-Id` (middleware tower)
-- [ ] Escrever testes de integração (health + ready 503/200)
-- [ ] Documentar env `PORT` em comentário do bin ou AGENTS
-- [ ] Atualizar status na overview do epic
+- [x] Adicionar deps axum/hyper/tower/http ao `Cargo.toml`
+- [x] Criar `server.rs` com `Router` e handlers health/ready
+- [x] Criar `ServerState` + construtor `new_unready()` / `mark_ready()`
+- [x] Criar `src/bin/edger.rs` com `#[tokio::main]` e bind
+- [x] Propagar ou gerar `X-Request-Id` (middleware tower)
+- [x] Escrever testes de integração (health + ready 503/200)
+- [x] Documentar env `PORT` em comentário do bin ou AGENTS
+- [x] Atualizar status na overview do epic
+
+## Pendências
+- Graceful shutdown chama `pool.shutdown()` mas não drena conexões HTTP (axum `serve` sem `with_graceful_shutdown`) — story 05.03+.
+- Readiness marca pool stub com `MockIsolate` no bin; carregamento real de manifests fica em 05.03/07.01.
 
 ## Verification
 ```bash

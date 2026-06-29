@@ -52,8 +52,8 @@ Servidor escuta em `PORT`, responde `/health` e `/ready`, resolve workers namesp
 
 | Story | Arquivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|
-| 05.01 Servidor HTTP + health | `01-http-server-health.md` | medium | not started | Epic 02 (parcial), Epic 04 (mock pool) |
-| 05.02 Resolução de rotas | `02-routing-resolution.md` | large | not started | 05.01 |
+| 05.01 Servidor HTTP + health | `01-http-server-health.md` | medium | completed | Epic 02 (parcial), Epic 04 (mock pool) |
+| 05.02 Resolução de rotas | `02-routing-resolution.md` | large | completed | 05.01 |
 | 05.03 Pipeline de requisições | `03-request-pipeline.md` | large | not started | 05.01, 05.02 |
 | 05.04 Auth + namespace gate | `04-auth-namespace-gate.md` | large | not started | 05.03, Epic 02 (auth types) |
 | 05.05 Extension registry | `05-extension-registry.md` | medium | not started | 05.03, 05.04, Epic 02 (traits) |
@@ -96,4 +96,4 @@ flowchart LR
 `/agile-story` em `01-http-server-health.md` após Epic 02–04 atingirem critérios mínimos (core types + pool mock + isolate mock).
 
 ## Status
-ready-for-development (planning complete; implementação bloqueada por Epics 02–04)
+in-progress (05.01 delivered; 05.02+ pending)
