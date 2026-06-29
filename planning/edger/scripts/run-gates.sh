@@ -14,7 +14,8 @@ rm -f "$SCRATCH/gates.ok"
 : >"$SCRATCH/run-gates.log"
 log() { echo "[run-gates] $*" | tee -a "$SCRATCH/run-gates.log"; }
 
-log "repo=$REPO_ROOT (planning lint gates — NOT memory_lint)"
+# memory_lint intentionally excluded — remote server instability (operator directive 2026-06-29)
+log "repo=$REPO_ROOT (planning lint gates only: /agile-refinement + refinement-lint.py)"
 
 # --- /agile-refinement Mode 1 report (agent-produced; must exist before this script) ---
 if [[ ! -f "$SCRATCH/refinement-report.txt" ]]; then
@@ -121,7 +122,8 @@ print(json.dumps({
     "oracle": "refinement-lint.py"
   },
   "path_preflight": {"missing": 0},
-  "bun_test": {"fail": 0}
+  "bun_test": {"fail": 0},
+  "memory_lint": {"excluded": True, "reason": "server stability — operator directive 2026-06-29"}
 }, indent=2))
 PY
 

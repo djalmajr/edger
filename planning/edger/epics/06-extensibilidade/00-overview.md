@@ -46,9 +46,9 @@ Bin `edger` registra extensões via padrão escolhido; `edger-ext-auth` implemen
 
 | Story | Arquivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|
-| 06.01 Registro estático | `01-static-registration.md` | médio | not started | Epic 05 (05.05) |
-| 06.02 edger-ext-auth | `02-edger-ext-auth.md` | grande | not started | 06.01, Epic 05 (05.04) |
-| 06.03 Template extensão | `03-extension-template.md` | médio | not started | 06.01, 06.02 |
+| 06.01 Registro estático | `01-static-registration.md` | medium | not started | Epic 05 (05.05) |
+| 06.02 edger-ext-auth | `02-edger-ext-auth.md` | large | not started | 06.01, Epic 05 (05.04) |
+| 06.03 Template extensão | `03-extension-template.md` | medium | not started | 06.01, 06.02 |
 
 ## Epic roadmap
 

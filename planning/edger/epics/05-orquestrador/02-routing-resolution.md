@@ -18,7 +18,7 @@
 | Path | Ação | Motivo |
 |---|---|---|
 | `edger-orchestrator/src/router.rs` | criar | parse path, semver, reserved |
-| `edger-orchestrator/src/manifests.rs` | criar | `load_manifests_from_dirs`, índice por nome/namespace |
+| `edger-orchestrator/src/manifest_index_stub.rs` | criar | índice mínimo em memória para testes de routing (sem multi-dir) |
 | `edger-orchestrator/src/lib.rs` | alterar | re-exports |
 | `edger-orchestrator/tests/routing_resolution.rs` | criar | casos Buntime |
 | `edger-core/src/manifest.rs` | alterar (se necessário) | helpers namespace/semver |
@@ -44,7 +44,7 @@ Sem parser de URL; manifests não carregados no orchestrator.
 
 ### Escopo
 - **In:** parsing, semver, reserved, plugin precedence, testes unitários extensivos
-- **Out:** rewrite de body/headers, shell injection, auth gate (05.04)
+- **Out:** `load_manifests_from_dirs` completo (owned por story 07.01), rewrite de body/headers, shell injection, auth gate (05.04)
 
 ### Critérios de aceite
 - [ ] Tabela de casos Buntime coberta por testes (mín. 15 cenários)
@@ -69,7 +69,7 @@ Sem parser de URL; manifests não carregados no orchestrator.
 
 ## Tasks
 - [ ] Definir `ResolvedRoute`, `ReservedPath`, `ManifestIndex`
-- [ ] Implementar `load_manifests_from_dirs` (serde_yaml + package.json fallback via core)
+- [ ] Implementar `manifest_index_stub.rs` (índice mínimo em memória para testes de routing)
 - [ ] Implementar parse de namespace + semver (`semver` crate)
 - [ ] Implementar reserved paths e homepage fallback
 - [ ] Implementar plugin base precedence

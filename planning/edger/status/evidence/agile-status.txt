@@ -1,5 +1,5 @@
 /agile-status — consolidation (planning gates)
-generated=2026-06-29T01:17:49Z
+generated=2026-06-29T01:27:19Z
 
 Planning lint: /agile-refinement Mode 1 — 0 red flags (evidence/refinement-report.txt)
 Oracle: refinement-lint.py — 0 RED (evidence/refinement-lint-oracle.txt)

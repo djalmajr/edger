@@ -1,5 +1,7 @@
 # Status Consolidation: edger Fase 1 complete + examples running
 
+> **Superseded by** `consolidation-2026-06-29-backlog-ready.md`
+
 **Date:** 2026-06-28
 **Mode:** consolidation (post Fase 1 closure)
 

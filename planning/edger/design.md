@@ -1,8 +1,8 @@
 # Edger: Modern Edge Runtime Design Document
 
-**Author:** (TBD / Architect)  
+**Author:** edger team  
 **Date:** 2026-06-28  
-**Status:** Draft  
+**Status:** Foundation-locked (planning complete)
 **Project Location:** `/Users/djalmajr/Developer/djalmajr/edger`  
 **Version:** 0.1 (Foundation Architecture)
 
@@ -113,9 +113,9 @@ graph TD
         edger-ext-wasm["edger-ext-wasm\n(Wasm-specific handlers)"]
     end
 
-    edger-ext-auth --> edger-orchestrator
-    edger-ext-gateway --> edger-orchestrator
-    edger-ext-wasm --> edger-isolation
+    edger-ext-auth --> edger-core
+    edger-ext-gateway --> edger-core
+    edger-ext-wasm --> edger-core
 ```
 
 **Correct dependency direction (to be enforced in first alignment PR)**:

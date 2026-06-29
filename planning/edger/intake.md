@@ -44,18 +44,19 @@
   - Buntime atual: Hono para orquestração, Bun Workers, plugin loader com manifest.yaml + onRequest hooks, WorkerPool com TTL/ephemeral.
   - Objetivo de extensibilidade via crates para seguir Open/Closed.
 
-## Open questions
-- [ ] Breakdown exato dos crates iniciais (edger-core vs edger-orchestrator vs edger-worker etc.) e quais traits definir para extensões.
-- [ ] Como embutir o runtime JS/TS (usar crates do Deno/edge-runtime? rusty_v8 puro?)? Como suportar Wasm de forma nativa e integrada com orquestrador Rust?
-- [ ] Modelo de "plugins/extensões" em crates: dinâmico em runtime ou principalmente compile-time + registro? Como mapear manifests atuais?
-- [ ] Suporte a diferentes "tipos de aplicação": serverless (fetch), full backend, SSR/fullstack, SPAs, Wasm modules — como diferenciar no core (diferentes worker kinds, configs de supervisor)?
-- [ ] Estratégia de compat Node.js (parcial via ext/node ou similar) e limitações aceitas para SSR/fullstack.
-- [ ] Migração gradual: como o novo edger coexistirá ou substituirá o Buntime atual? Manter workers em JS/TS com mesmos contratos de fetch/routes?
-- [ ] Ferramentas de build, testes, lint para o projeto Rust (aplicar regras do Buntime onde possível?).
-- [ ] Como lidar com cold-starts, eszip-like ou bundling para apps JS/Wasm.
+## Open questions (resolved — see design.md)
+
+- [x] Breakdown dos crates — `planning/edger/design.md` Crate Ownership + roadmap Fases 1–7
+- [x] Embedding JS/TS + Wasm — `design.md` Resolved Decisions + Epic 03 spike + Epic 07
+- [x] Modelo de extensões — compile-time + registro estático (Epic 06); traits em core
+- [x] Tipos de aplicação — `ExecutionKind` em `design.md` Data Model + Epic 07.01
+- [x] Compat Node.js — fora de escopo Fase 1; spike documenta sharp edges (Epic 03)
+- [x] Migração Buntime — `design.md` Migration notes + mapping table; Bun adapter Fase 1 entregue
+- [x] Build/test/lint Rust — `AGENTS.md` gates + stories com `cargo test`/`clippy`
+- [x] Cold-starts/bundling — Epic 07.04/07.05 + `design.md` PR 10/11
 
 ## Recommended next step
-`/agile-roadmap` (trajetória multi-fase: estrutura de crates, core de orquestração em Rust, camada de execução/isolamento, mecanismo de extensões, suporte inicial a JS/TS/Wasm + workers. Várias decisões de arquitetura hoje afetam o futuro.)
+`/agile-story` em `planning/edger/epics/02-edger-core/01-setup-core-crate.md` (backlog maduro; roadmap completo).
 
 ## Verification
 - [x] The problem is clear enough for the next step

@@ -1,5 +1,5 @@
 {
-  "passed_at": "2026-06-29T01:17:49Z",
+  "passed_at": "2026-06-29T01:27:19Z",
   "planning_lint": {
     "tool": "/agile-refinement Mode 1",
     "scope": "planning/edger/",
@@ -11,5 +11,9 @@
   },
   "bun_test": {
     "fail": 0
+  },
+  "memory_lint": {
+    "excluded": true,
+    "reason": "server stability \u2014 operator directive 2026-06-29"
   }
 }

@@ -39,7 +39,7 @@ g = sys.argv[2]
 text = p.read_text(encoding="utf-8")
 gates = (
     "## Maturity gates (planning)\n\n"
-    f"_Rendered at {g} after run-gates.sh (planning lint only)._\n\n"
+    f"_Rendered at {g} after run-gates.sh. memory_lint excluded (server stability)._\n\n"
     "- [x] 7 epics / 31 stories decomposed com secoes obrigatorias\n"
     "- [x] /agile-refinement Mode 1 — 0 red flags (status/evidence/refinement-report.txt)\n"
     "- [x] refinement-lint.py oracle — 0 RED (status/evidence/refinement-lint-oracle.txt)\n"

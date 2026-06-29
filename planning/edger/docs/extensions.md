@@ -20,7 +20,7 @@ Nunca duplicar ambos modos na mesma crate.
 
 ## Checklist nova extensão
 
-- [ ] Crate `edger-ext-<nome>` depende apenas de `edger-core` (+ orchestrator traits se necessário)
+- [ ] Crate `edger-ext-<nome>` depende apenas de `edger-core` (traits definidos em core)
 - [ ] Implementa trait documentado em `edger-core`
 - [ ] Registro estático no bin `edger`
 - [ ] `cargo test -p edger-ext-<nome>` verde

@@ -42,7 +42,7 @@ Establish `edger-core` as pure leaf crate: manifests, configs, wire formats, tra
 
 | Story | File | Size | Status | Depends on |
 |---|---|---|---|---|
-| 02.01 Setup crate | `01-setup-core-crate.md` | small | in-progress | Epic 01 |
+| 02.01 Setup crate | `01-setup-core-crate.md` | small | not started | Epic 01 |
 | 02.02 Core models | `02-core-models.md` | large | not started | 02.01 |
 | 02.03 Errors + wire | `03-errors-wire.md` | medium | not started | 02.01 |
 | 02.04 Core traits | `04-core-traits.md` | large | not started | 02.02, 02.03 |

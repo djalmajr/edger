@@ -24,7 +24,7 @@ Decomposição completa do roadmap Fases 1-7 em epics/stories/tasks via fluxo `/
 
 ## Maturity gates (planning)
 
-_Rendered at 2026-06-29T01:17:49Z after run-gates.sh (planning lint only)._
+_Rendered at 2026-06-29T01:27:19Z after run-gates.sh. memory_lint excluded (server stability)._
 
 - [x] 7 epics / 31 stories decomposed com secoes obrigatorias
 - [x] /agile-refinement Mode 1 — 0 red flags (status/evidence/refinement-report.txt)
@@ -56,6 +56,7 @@ flowchart LR
 - Backlog expandido de 2 epics parciais para 7 epics completos (31 stories).
 - Fase 1 ganhou stories 03-copy-examples e 04-closure-evidence (retrospectiva documentada).
 - Gate I/O decoupled: `run-gates.sh` + `render-status-from-gates.sh` (no hand-written PASS claims)
+- **`memory_lint` excluído dos gates de planejamento** — operador reportou instabilidade no servidor remoto; maturidade validada via `/agile-refinement` Mode 1 apenas.
 
 ## Evidence (committed)
 
