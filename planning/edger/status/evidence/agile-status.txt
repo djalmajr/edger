@@ -1,24 +1,35 @@
-Epic 06 Extensibilidade — COMPLETED 2026-06-29
-  06.01 static registration (explicit bin list)
-  06.02 edger-ext-auth (AuthProvider + SQLite store)
-  06.03 edger-ext-gateway template
-  Commit: 7e20a33
-  Closure: status/checkpoint-2026-06-29-epic-06-closure.md
+# agile-status — edger (2026-06-29)
 
-Epic 02 edger-core — COMPLETED (checkpoints 02-01..04 + refinement-story-02-*.txt)
+## Epic 02 edger-core — COMPLETED
+Stories: 02.01–02.04 all completed
+Per-story checkpoints:
+  - status/checkpoint-2026-06-29-story-02-01.md
+  - status/checkpoint-2026-06-29-story-02-02.md
+  - status/checkpoint-2026-06-29-story-02-03.md
+  - status/checkpoint-2026-06-29-story-02-04.md
+Per-story refinement:
+  - status/evidence/refinement-story-02-01.txt
+  - status/evidence/refinement-story-02-02.txt
+  - status/evidence/refinement-story-02-03.txt
+  - status/evidence/refinement-story-02-04.txt
+Epic closure: status/checkpoint-2026-06-29-epic-02-closure.md
+Verification: status/evidence/verification-epic-02.txt (SCRATCH mirror)
 
-Epic 07 Avançado — IN PROGRESS
-  07.05 Wasm — pool E2E + load from worker dir (wasm_pool_integration)
-  07.04 Real JS — BLOCKED (deno_core V8 boot, see spike.md)
-  Pendências: planning/edger/docs/pendencies-epic-07.md
+## Epics 03–06 — COMPLETED
+Closures: epic-03/04/05/06 checkpoint files in status/
 
-Gates (last run):
-  cargo test --workspace — PASS
-  cargo test -p edger-worker pool_fetch_wasm — PASS
-  cargo test -p edger-isolation --features wasm — PASS
-  cargo clippy --workspace -D warnings — PASS
-  bun test — 6 pass
-  run-gates.sh — ALL PLANNING GATES PASS
-  Evidence: SCRATCH/cargo-*.txt, gates.ok
+## Epic 07 — IN PROGRESS
+07.05 Wasm pool E2E delivered; 07.04 deno_core blocked
+Pendências: planning/edger/docs/pendencies-epic-07.md
 
-Next: 07.05 WASI sandbox + 07.04 deno_core boot
+## Gates (last verification run)
+cargo test -p edger-core — PASS (17 tests)
+cargo test --workspace — PASS
+cargo clippy --workspace -D warnings — PASS
+cargo fmt --check — PASS
+bun test — 6 pass
+run-gates.sh — ALL PLANNING GATES PASS
+refinement-lint — VERDICT PASS (0 RED)
+
+## Next (objective: cada fase)
+Epic 07: 07.05 WASI sandbox, 07.04 deno_core boot
