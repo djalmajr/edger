@@ -1,0 +1,31 @@
+# Rust
+/target/
+
+# JS workers
+node_modules/
+dist/
+out/
+*.tgz
+
+# ai-memory routing (operator-local; see aim-init)
+.ai-memory.toml
+.mcp.json
+
+# Backups from tooling
+*.bak-*
+
+# Env / secrets
+.env
+.env.*
+
+# OS / IDE
+.DS_Store
+.idea/
+
+# Logs / coverage
+*.log
+coverage/
+*.lcov
+
+# Scratch / local binaries
+edger-bin

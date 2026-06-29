@@ -1,0 +1,10 @@
+[package]
+name = "edger-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# worker management, pool, supervisor patterns (inspirado em Edge Runtime)
+anyhow.workspace = true
+tracing.workspace = true

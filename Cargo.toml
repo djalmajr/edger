@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+  "edger-core",
+  "edger-worker",
+  "edger-isolation",
+  "edger-orchestrator",
+  # extensões futuras:
+  # "edger-ext-gateway",
+  # "edger-ext-auth",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/djalmajr/edger"
+rust-version = "1.80"
+
+[workspace.dependencies]
+# dependências comuns (ex: hyper, tokio, etc. serão adicionadas conforme necessário)
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"

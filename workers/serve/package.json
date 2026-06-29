@@ -1,0 +1,15 @@
+{
+  "name": "serve",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@supabase/functions-js": "^2.108.2"
+  }
+}

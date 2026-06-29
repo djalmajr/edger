@@ -1,0 +1,10 @@
+[package]
+name = "edger-isolation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# abstração para isolates (Deno embedding / Wasm / JS/TS execution)
+anyhow.workspace = true
+tracing.workspace = true
