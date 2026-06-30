@@ -7,3 +7,7 @@
 07-avancado: 8 stories
 08-valor-buntime: 30 stories
 09-providers-duraveis-externos: 6 stories
+10-operacao-extensoes-plugins: 5 stories
+11-gateway-operacional-avancado: 5 stories
+12-frontends-modulares-cpanel: 5 stories
+13-mcp-authoring-ai-native: 6 stories

@@ -85,6 +85,27 @@ OK planning/edger/epics/09-providers-duraveis-externos/02-provider-local-sqlite.
 OK planning/edger/epics/09-providers-duraveis-externos/03-provider-turso-remoto-sync.md
 OK planning/edger/epics/09-providers-duraveis-externos/04-wiring-provider-configuravel.md
 OK planning/edger/epics/09-providers-duraveis-externos/05-provas-consumidores-duraveis.md
+OK planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
+OK planning/edger/epics/10-operacao-extensoes-plugins/01-inventario-operacional-de-modulos.md
+OK planning/edger/epics/10-operacao-extensoes-plugins/02-reconcile-reload-controlado.md
+OK planning/edger/epics/10-operacao-extensoes-plugins/03-manifesto-configuracao-modulo.md
+OK planning/edger/epics/10-operacao-extensoes-plugins/04-validacao-local-extensoes.md
+OK planning/edger/epics/11-gateway-operacional-avancado/00-overview.md
+OK planning/edger/epics/11-gateway-operacional-avancado/01-proxy-forwarding-local.md
+OK planning/edger/epics/11-gateway-operacional-avancado/02-cache-rate-limit-persistente.md
+OK planning/edger/epics/11-gateway-operacional-avancado/03-historico-sse-operacional.md
+OK planning/edger/epics/11-gateway-operacional-avancado/04-vhosts-host-routing.md
+OK planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
+OK planning/edger/epics/12-frontends-modulares-cpanel/01-escopo-cpanel-admin-ui.md
+OK planning/edger/epics/12-frontends-modulares-cpanel/02-shell-catalogo-modulos.md
+OK planning/edger/epics/12-frontends-modulares-cpanel/03-packaging-frontends-workers.md
+OK planning/edger/epics/12-frontends-modulares-cpanel/04-validacao-browser-local.md
+OK planning/edger/epics/13-mcp-authoring-ai-native/00-overview.md
+OK planning/edger/epics/13-mcp-authoring-ai-native/01-contratos-machine-readable.md
+OK planning/edger/epics/13-mcp-authoring-ai-native/02-mcp-server-control-plane.md
+OK planning/edger/epics/13-mcp-authoring-ai-native/03-authoring-worker-local.md
+OK planning/edger/epics/13-mcp-authoring-ai-native/04-validacao-local-worker.md
+OK planning/edger/epics/13-mcp-authoring-ai-native/05-preparacao-commit-pr.md
 OK planning/edger/intake.md
 OK planning/edger/roadmap.md
 OK planning/edger/runtime-functional-plan.md
@@ -95,6 +116,7 @@ OK planning/edger/status/checkpoint-2026-06-29-epic-05-closure.md
 OK planning/edger/status/checkpoint-2026-06-29-epic-06-closure.md
 OK planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
 OK planning/edger/status/checkpoint-2026-06-29-epic-09-provider-reclassification.md
+OK planning/edger/status/checkpoint-2026-06-29-modular-ai-native-roadmap.md
 OK planning/edger/status/checkpoint-2026-06-29-remove-bun-adapter-plan.md
 OK planning/edger/status/checkpoint-2026-06-29-story-02-01.md
 OK planning/edger/status/checkpoint-2026-06-29-story-02-02.md
@@ -155,5 +177,5 @@ OK planning/edger/status/closure-2026-06-29-story-09-05-consumer-proofs.md
 OK planning/edger/status/consolidation-2026-06-28.md
 OK planning/edger/status/consolidation-2026-06-29-backlog-ready.md
 ---
-Total refs: 156
+Total refs: 178
 Missing: 0

@@ -17,6 +17,18 @@ O edger já está caminhando para um runtime Rust funcional, mas Buntime entrega
 ### Initiative objective
 Definir e executar uma trilha de paridade de valor: cada fluxo relevante do Buntime deve ter um contrato edger correspondente, uma evidência de uso e um status explícito em matriz. A Epic 08 não substitui a Epic 07; ela organiza os próximos passos depois da fundação técnica para provar que o produto resultante serve os mesmos casos reais.
 
+### Decisão de fechamento modular
+
+Em 2026-06-29, a Epic 08 foi fechada como consolidação de paridade observável e matriz de valor. As próximas capacidades não devem ser acumuladas aqui nem empurradas para o core. Cada fronteira com ciclo de vida próprio agora tem epic dono:
+
+- Epic 09 para providers duráveis externos, incluindo Turso remoto/sync opt-in.
+- Epic 10 para operação de extensões, plugins, manifesto operacional e reload/reconcile.
+- Epic 11 para gateway avançado, proxy externo, cache, vhosts, rate limit persistente e histórico/SSE.
+- Epic 12 para frontends modulares, cPanel/admin UI, shell e catálogo de módulos.
+- Epic 13 para MCP e authoring AI-native local funcional.
+
+Essa decisão preserva a regra de que `edger-core` continua sendo vocabulário puro, sem I/O, e que capacidades de produto entram por módulos, providers, extensões ou apps dedicados.
+
 ### Expected business/technical outcome
 - Operadores conseguem gerenciar workers, extensões, chaves e estado por API estável.
 - Aplicações migram por comportamento e contrato, não por cópia de código.
@@ -135,18 +147,18 @@ flowchart LR
 - 08.09+ reabre a fase apenas para reduzir gaps `must partial` explícitos da matriz, começando por API keys operacionais, env filtering JS/TS, controle runtime de workers e regras de gateway/rate limit.
 - Providers duráveis remotos/sync passam para o Epic 09 para evitar acoplar a paridade do Epic 08 a uma implementação específica de storage.
 
-## Epic acceptance criteria
-- [ ] `planning/edger/docs/value-parity-matrix.md` lista capacidades Buntime relevantes, valor entregue, status edger, evidência e decisão de escopo.
-- [ ] Cada capacidade must-have tem teste, runbook ou evidência manual versionada.
-- [ ] API operacional cobre listagem, inspeção e alteração controlada de workers/extensões/chaves sem depender de UI.
-- [ ] Segurança operacional cobre namespaces, chamadas internas, CSRF em mutações, request IDs, limites body/header e filtragem de env sensível.
-- [ ] Pelo menos um serviço de estado durável local e um serviço KV/queue têm contrato edger e prova de uso por worker; provider remoto/sync fica planejado como dependência substituível no Epic 09.
-- [ ] Shell/gateway entrega navegação composta e roteamento/proxy equivalentes em valor ao uso atual do Buntime.
-- [ ] Extensões expõem providers/hooks/bindings suficientes para os serviços priorizados sem misturar modos de crate.
-- [ ] Operação expõe saúde, métricas, logs correlacionados e documentação de deploy/backup para o escopo local.
-- [ ] Provas de migração cobrem `todos`, worker protegido, app com estado, app shell-hosted, gateway/proxy e job agendado quando cron estiver disponível.
-- [ ] Gate obrigatório verde: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`.
-- [ ] Gate de planejamento verde: `SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh`.
+## Epic acceptance criteria for consolidation closure
+- [x] `planning/edger/docs/value-parity-matrix.md` lista capacidades Buntime relevantes, valor entregue, status edger, evidência e decisão de escopo.
+- [x] Cada capacidade must-have já executável tem teste, runbook ou evidência manual versionada.
+- [x] API operacional cobre listagem, inspeção e alteração controlada de workers/extensões/chaves sem depender de UI.
+- [x] Segurança operacional cobre namespaces, chamadas internas, CSRF em mutações, request IDs, limites body/header e filtragem de env sensível para as superfícies implementadas.
+- [x] Pelo menos um serviço de estado durável local e um serviço KV/queue têm contrato edger e prova de uso por worker; provider remoto/sync fica planejado como dependência substituível no Epic 09.
+- [x] Shell/gateway entrega navegação composta, redirects, CORS, rate limit local e APIs read-only locais; proxy externo/cache/vhosts e operação avançada seguem no Epic 11.
+- [x] Extensões expõem providers/hooks/bindings suficientes para os serviços priorizados sem misturar modos de crate.
+- [x] Operação expõe saúde, métricas, logs correlacionados e documentação de deploy/backup para o escopo local.
+- [x] Provas de migração cobrem `todos`, worker protegido, app com estado, app shell-hosted e gateway local; cron nativo continua no Epic 07.03.
+- [x] Gate obrigatório permaneceu verde no checkpoint de fechamento do Epic 08.
+- [x] Gate de planejamento permanece obrigatório para mudanças futuras: `SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh`.
 
 ## Risks
 
@@ -160,4 +172,4 @@ flowchart LR
 | Matriz virar documento estático | Medium | 08.08 exige evidência por linha must-have antes de fechar o épico |
 
 ## Status
-in progress (2026-06-29) — Epic 08 fechou a prova executável inicial de paridade de valor sem copiar Buntime 1:1, mas a matriz ainda preserva gaps `must partial` que impedem declarar paridade literal. 08.01 concluiu a matriz inicial de valor, 08.02 entregou a API operacional v1, 08.03 fechou a segurança operacional v1, 08.04 entregou contratos locais de SQL/KV/queue, 08.05 entregou shell/gateway v1, 08.06 fechou providers/capabilities/binding lookup no registry, 08.07 entregou probes operacionais, `/metrics`, baseline local, Browser check e runbook, 08.08 entregou a suite `value_parity`, validação Browser de `/todos` e o guard contra `base: ""` aprendido do Buntime, 08.09 fechou criação/revogação de API keys pela Admin API, 08.10 fechou env filtering para workers JS/TS no Deno bridge, 08.11 fechou enable/disable runtime de workers pela Admin API com overlay em memória, 08.12 fechou stats JSON de pool + workers em `/metrics/stats`, 08.13 fechou enable/disable runtime de extensões com efeito real em hooks e providers, 08.14 fechou autodiscovery de `index.html` sem manifesto, 08.15 fechou redirect rules de gateway com suffix/query preservados, 08.16 fechou rate limit local em memória por cliente no gateway, 08.17 fechou diagnóstico local do gateway no inventário root de extensões, 08.18 fechou API admin read-only dedicada para stats, logs filtráveis e config segura do gateway, 08.19 fechou stats agregados dos logs recentes do gateway, 08.20 fechou duração real em logs/stats do gateway, 08.21 fechou métricas agregadas de rate limit local do gateway por endpoint dedicado, 08.22 fechou semver range routing para workers namespaced e unscoped, 08.23 fechou o store de API keys bootstrap-safe com prova file-backed independente de provider SQL durável, 08.24 fechou o contrato CSRF/internal de mutações admin atuais sem elevar keys não-root, 08.25 fechou a fronteira de orquestração runtime provando dispatch via WorkerPool/factory/isolate, 08.26 fechou persistência opcional de status enable/disable de extensões via status store JSON, 08.27 fechou o layout local de operação/deploy como contrato verificável no gate, 08.28 fechou hooks de lifecycle de worker ao redor do dispatch real pelo `WorkerPool`, e 08.29 fechou logs operacionais estruturados para erros de Admin API e pipeline sem vazar segredos. Providers duráveis externos, incluindo Turso remoto/sync, foram reclassificados para o Epic 09 como dependência substituível sobre `DurableSqlProvider`. Lacunas futuras permanecem explícitas na matriz: retry/DLQ profundo, proxy externo, cache, rate-limit persistente/distribuído, buckets/reset dinâmicos de gateway, SSE/histórico persistente, reload/rescan dinâmico de extensões, persistência de manifesto completo, harness de carga, cron nativo, deploy remoto/PVC/K8s, UI final e marketplace.
+completed as consolidation (2026-06-29) - Epic 08 fechou a prova executável inicial de paridade de valor sem copiar Buntime 1:1. A matriz continua preservando gaps `must partial` ou `should partial`, mas esses gaps agora têm owners modulares fora deste epic em vez de prolongar a Epic 08 indefinidamente. 08.01 concluiu a matriz inicial de valor, 08.02 entregou a API operacional v1, 08.03 fechou a segurança operacional v1, 08.04 entregou contratos locais de SQL/KV/queue, 08.05 entregou shell/gateway v1, 08.06 fechou providers/capabilities/binding lookup no registry, 08.07 entregou probes operacionais, `/metrics`, baseline local, Browser check e runbook, 08.08 entregou a suite `value_parity`, validação Browser de `/todos` e o guard contra `base: ""` aprendido do Buntime, 08.09 fechou criação/revogação de API keys pela Admin API, 08.10 fechou env filtering para workers JS/TS no Deno bridge, 08.11 fechou enable/disable runtime de workers pela Admin API com overlay em memória, 08.12 fechou stats JSON de pool + workers em `/metrics/stats`, 08.13 fechou enable/disable runtime de extensões com efeito real em hooks e providers, 08.14 fechou autodiscovery de `index.html` sem manifesto, 08.15 fechou redirect rules de gateway com suffix/query preservados, 08.16 fechou rate limit local em memória por cliente no gateway, 08.17 fechou diagnóstico local do gateway no inventário root de extensões, 08.18 fechou API admin read-only dedicada para stats, logs filtráveis e config segura do gateway, 08.19 fechou stats agregados dos logs recentes do gateway, 08.20 fechou duração real em logs/stats do gateway, 08.21 fechou métricas agregadas de rate limit local do gateway por endpoint dedicado, 08.22 fechou semver range routing para workers namespaced e unscoped, 08.23 fechou o store de API keys bootstrap-safe com prova file-backed independente de provider SQL durável, 08.24 fechou o contrato CSRF/internal de mutações admin atuais sem elevar keys não-root, 08.25 fechou a fronteira de orquestração runtime provando dispatch via WorkerPool/factory/isolate, 08.26 fechou persistência opcional de status enable/disable de extensões via status store JSON, 08.27 fechou o layout local de operação/deploy como contrato verificável no gate, 08.28 fechou hooks de lifecycle de worker ao redor do dispatch real pelo `WorkerPool`, e 08.29 fechou logs operacionais estruturados para erros de Admin API e pipeline sem vazar segredos. Providers duráveis externos, incluindo Turso remoto/sync, foram reclassificados para o Epic 09 como dependência substituível sobre `DurableSqlProvider`. Lacunas futuras permanecem explícitas na matriz e foram redistribuídas: retry/DLQ profundo segue no Epic 09 ou em epic futuro de async; proxy externo, cache, rate limit persistente/distribuído, buckets/reset dinâmicos de gateway, SSE/histórico persistente e vhosts seguem no Epic 11; reload/rescan dinâmico de extensões e persistência de manifesto completo seguem no Epic 10; UI final, cPanel, shell/catálogo e frontends modulares seguem no Epic 12; MCP e authoring AI-native local funcional seguem no Epic 13; cron nativo continua no Epic 07.03; deploy remoto/PVC/K8s fica fora desta fase.
