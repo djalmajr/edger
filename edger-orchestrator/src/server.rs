@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::http::{HeaderValue, Request, StatusCode};
+use axum::http::{header, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -15,6 +15,8 @@ use serde_json::json;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use uuid::Uuid;
+
+use crate::metrics::pool_metrics_prometheus;
 
 /// Listener configuration (addr from `PORT` env in the binary).
 #[derive(Debug, Clone)]
@@ -66,10 +68,23 @@ impl ServerState {
             pool.shutdown();
         }
     }
+
+    pub fn pool_metrics(&self) -> Option<edger_worker::PoolMetrics> {
+        self.inner
+            .pool
+            .read()
+            .expect("pool lock")
+            .as_ref()
+            .map(WorkerPool::get_metrics)
+    }
 }
 
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "status": "ok" })))
+}
+
+async fn live() -> impl IntoResponse {
+    (StatusCode::OK, Json(json!({ "status": "live" })))
 }
 
 async fn ready(State(state): State<ServerState>) -> impl IntoResponse {
@@ -81,6 +96,17 @@ async fn ready(State(state): State<ServerState>) -> impl IntoResponse {
             Json(json!({ "status": "not_ready" })),
         )
     }
+}
+
+async fn metrics(State(state): State<ServerState>) -> impl IntoResponse {
+    let metrics = state.pool_metrics().unwrap_or_default();
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        pool_metrics_prometheus(&metrics),
+    )
 }
 
 pub fn request_id_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
@@ -109,7 +135,11 @@ pub async fn request_id_middleware(req: Request<axum::body::Body>, next: Next) -
 pub fn router(state: ServerState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/healthz", get(health))
+        .route("/livez", get(live))
+        .route("/metrics", get(metrics))
         .route("/ready", get(ready))
+        .route("/readyz", get(ready))
         .layer(middleware::from_fn(request_id_middleware))
         .layer(TraceLayer::new_for_http())
         .with_state(state)

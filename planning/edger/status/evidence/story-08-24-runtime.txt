@@ -1,0 +1,23 @@
+# Evidence: Story 08.24 CSRF e chamadas internas
+
+Date: 2026-06-29
+
+## Commands
+
+```bash
+cargo test -p edger-orchestrator --test security_operational internal_header_does_not_elevate_non_root_keys
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+git diff --check
+```
+
+## Results
+
+- `cargo test -p edger-orchestrator --test security_operational internal_header_does_not_elevate_non_root_keys`: PASS.
+- `cargo test --workspace`: PASS.
+- `cargo clippy --workspace -- -D warnings`: PASS.
+- `cargo fmt -- --check`: PASS.
+- `SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh`: PASS.
+- `git diff --check`: PASS.

@@ -1,0 +1,35 @@
+Story 08.29 runtime evidence
+Date: 2026-06-29
+
+Scope:
+- Add structured operational error logs for Admin API and pipeline failures.
+- Keep logs useful without serializing headers, bodies, raw tokens or error messages.
+
+Test-first failure:
+- cargo test -p edger-orchestrator --test security_operational admin_errors_preserve_request_id -- --exact
+- Result: FAIL before implementation.
+- Evidence: captured tracing buffer was empty and did not include edger.operational.
+
+Commands run:
+
+1. cargo test -p edger-orchestrator --test security_operational
+   Result: PASS
+   Evidence: 9 tests passed, including admin_errors_preserve_request_id and ingress_limits_return_typed_errors_before_worker_dispatch with captured operational log assertions.
+
+2. cargo test --workspace
+   Result: PASS
+   Evidence: all workspace unit, integration and doc tests passed.
+
+3. cargo clippy --workspace -- -D warnings
+   Result: PASS
+
+4. cargo fmt -- --check
+   Result: PASS
+
+5. SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+   Result: PASS
+   Evidence: deploy layout check, reference lint, refinement lint, cargo check and planning gates passed.
+
+Conclusion:
+- Story 08.29 is closed.
+- The value-parity row "Logging e warnings acionáveis" is tested for the current local operational scope.

@@ -1,0 +1,32 @@
+Story 08.27 runtime evidence
+Date: 2026-06-29
+
+Scope:
+- Make the local operation/deploy layout runbook mechanically verifiable.
+- Keep remote deploy, PVC and Kubernetes outside the v1 scope.
+
+Commands run:
+
+1. python3 planning/edger/scripts/deploy-layout-check.py --repo .
+   Result: PASS
+   Evidence: validated runtime roots, local state/auth files, durable provider boundaries, probes, backup, Admin API, troubleshooting and required gates.
+
+2. SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+   Result: PASS
+   Evidence: deploy-layout-check is executed by the planning gate and writes planning/edger/status/evidence/deploy-layout-check.txt.
+
+3. cargo test --workspace
+   Result: PASS
+   Evidence: workspace unit, integration and doc tests passed.
+
+4. cargo clippy --workspace -- -D warnings
+   Result: PASS
+   Evidence: clippy completed with warnings denied.
+
+5. cargo fmt -- --check
+   Result: PASS
+   Evidence: formatting check completed with no diff.
+
+Conclusion:
+- Story 08.27 is closed for local/single-node operation/deploy layout verification.
+- Remote deploy, PVC and Kubernetes remain outside this story scope.

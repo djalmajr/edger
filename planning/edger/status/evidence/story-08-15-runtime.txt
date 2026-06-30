@@ -1,0 +1,83 @@
+# Story 08.15 runtime evidence — gateway redirect rules
+
+Date: 2026-06-29
+
+Scope:
+- `edger-ext-gateway` now supports ordered redirect rules by path prefix.
+- Redirect responses short-circuit with `Location`, status `308` by default,
+  and status limited through the public builder to `301`, `302`, `307` or `308`.
+- Redirect matching is segment-aware: `/api` matches `/api` and `/api/users`,
+  not `/apiary`.
+- Redirects preserve path suffix and query string.
+- CORS preflight remains a 204 response and wins over redirect rules.
+- `SerializedRequest.uri` now preserves `path?query`, and the orchestrator
+  pipeline preserves query after rewriting the worker-relative path.
+- No upstream HTTP proxy, regex rewrite, cache, rate-limit persistence,
+  dynamic admin API or durable redirect storage in this slice.
+
+Focused verification:
+
+```bash
+cargo test -p edger-ext-gateway --test gateway_middleware
+cargo test -p edger-orchestrator wire::tests::roundtrip_preserves_method_path_query_headers_body
+cargo test -p edger-orchestrator pipeline::tests::worker_request_preserves_query_after_path_rewrite
+```
+
+Result:
+- Initial TDD run failed before implementation:
+  - `GatewayRedirectRule` and `GatewayExtension::with_redirect_rules` did not exist.
+  - `axum_to_serialized` dropped query string.
+- Final focused runs passed:
+  - gateway middleware: 8 passed.
+  - wire query test: passed.
+  - pipeline query rewrite test: passed.
+
+Workspace gate:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+```
+
+Result:
+- `cargo test --workspace`: passed.
+- `cargo clippy --workspace -- -D warnings`: passed.
+- `cargo fmt -- --check`: passed after applying `cargo fmt` to the touched Rust files.
+
+Browser smoke check:
+
+```bash
+ROOT_API_KEY=test-root PORT=19084 RUNTIME_WORKER_DIRS=workers/value-parity/todos \
+  cargo run -p edger-orchestrator --bin edger
+```
+
+Browser plugin read-only validation against `http://127.0.0.1:19084/todos`:
+
+```json
+{
+  "baseHref": "/todos/",
+  "contentType": "text/html",
+  "heading": "Todos",
+  "links": ["./", "./filter/active", "./filter/completed"],
+  "rootExists": true,
+  "scripts": ["./app.js"],
+  "title": "edger value parity todos",
+  "url": "http://127.0.0.1:19084/todos"
+}
+```
+
+The `edger` process started for the Browser validation was stopped. Port `19084`
+was confirmed free afterwards.
+
+Planning gate:
+
+```bash
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
+Result:
+- Passed, including `/agile-refinement` Mode 1 with 0 red flags,
+  refinement-lint oracle, path-preflight with 0 missing refs, artifact
+  inspection with 8 epics / 46 stories, skipped Bun test because no root JS/TS
+  suite exists, and `cargo check --workspace`.

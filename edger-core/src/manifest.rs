@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::bindings::BindingManifest;
+
 /// Public route bypass configuration (Buntime `publicRoutes`).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +28,7 @@ pub struct CronJob {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerManifest {
+    #[serde(default)]
     pub name: String,
     pub version: Option<String>,
     pub enabled: Option<bool>,
@@ -47,4 +50,8 @@ pub struct WorkerManifest {
     pub kind: Option<String>,
     pub base: Option<String>,
     pub dependencies: Option<Vec<String>>,
+    #[serde(default)]
+    pub shell_excludes: Vec<String>,
+    #[serde(default)]
+    pub bindings: Vec<BindingManifest>,
 }

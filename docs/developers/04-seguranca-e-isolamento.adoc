@@ -1,0 +1,70 @@
+[#eng-seguranca-isolamento]
+=== Segurança e isolamento
+
+==== Fronteiras de autenticação
+
+O `AuthGate` roda antes do dispatch do worker:
+
+* `publicRoutes` globais ou do worker podem permitir bypass explícito.
+* Caso contrário, o runtime extrai API key de `Authorization: Bearer` ou
+  `X-API-Key`.
+* `ROOT_API_KEY` cria um principal root sintético, com `namespaces = ["*"]`.
+* API keys persistidas usam `edger-ext-auth` e `EDGER_AUTH_DB`.
+* O store SQLite guarda hash SHA-256 prefixado por `edger-auth-v1:` e nunca
+  precisa armazenar a key bruta.
+* Namespace é validado por `principal_can_access_namespace`.
+
+Pendências conhecidas: backend Turso/libsql, hash argon2 e hardening adicional
+de autenticação estão no escopo da Fase 7.
+
+==== Isolamento JS/TS
+
+A Deno CLI bridge v1 executa um processo Deno por request. Ela é funcional e
+útil para validar contratos, mas não é o alvo final de produção.
+
+Proteções atuais:
+
+* entrypoint precisa estar dentro de `worker_dir`;
+* qualquer entrypoint com `..` é recusado;
+* execução ocorre com `current_dir` no diretório do worker;
+* timeout mata o processo quando excede `WorkerConfig.timeout_ms`;
+* `deno.json` / `deno.jsonc` local é carregado para import maps e config do
+  worker.
+
+Pendências:
+
+* permissões Deno e política de rede/cache ainda precisam de hardening;
+* `deno_core` embutido ainda precisa substituir o processo por request;
+* passthrough de streaming real ainda não está implementado.
+
+==== Isolamento Wasm
+
+Wasm usa `wasmtime` standalone. O ABI v1 é deny-by-default:
+
+* valida magic bytes Wasm;
+* limita módulo a 4 MiB;
+* limita body a 64 KiB;
+* nega qualquer import de host;
+* nega imports WASI (`wasi_snapshot_preview1` e `wasi:*`) quando sandbox está
+  `deny_all`;
+* filtra env sensível em `WasiConfig::from_worker_config` para padrões como
+  `AWS_*`, `DB_*`, `*_KEY` e `*_SECRET`.
+
+Host WASI real com preopen restrito ao worker root ainda é pendência.
+
+==== Extensões
+
+Crates `edger-ext-*` precisam manter fronteiras rígidas:
+
+* dependem apenas de `edger-core`;
+* escolhem um modo por crate: `Middleware`, `AuthProvider` ou `WorkerHandler`;
+* são registradas explicitamente no bin `edger`;
+* não devem publicar crates internos manualmente em crates.io.
+
+==== Operação segura
+
+* Trate `ROOT_API_KEY` como segredo, mesmo em ambientes temporários.
+* Use `EDGER_AUTH_DB` fora de memória para ambientes persistentes.
+* Não injete segredos em manifests sem uma política de env allowlist.
+* Não exponha workers protegidos sem TLS em ambiente compartilhado.
+* Não use a Deno CLI bridge v1 como promessa de performance final.

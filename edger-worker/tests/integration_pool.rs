@@ -5,11 +5,12 @@
 
 mod helpers;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use edger_core::{create_worker_ref, ExecutionKind, WorkerManifest};
-use edger_worker::{PoolConfig, WorkerError, WorkerState};
+use edger_core::{create_worker_ref, ExecutionKind, WorkerManifest, WorkerRef};
+use edger_isolation::MockIsolate;
+use edger_worker::{IsolateFactory, PoolConfig, WorkerError, WorkerState};
 use helpers::{
     default_pool_config, execution_kind_from_manifest, pool_with_factory, serialized_get,
     temp_worker_dir, MockIsolateFactory,
@@ -18,6 +19,18 @@ use helpers::{
 const FIXTURE_PERSISTENT: &str = include_str!("fixtures/persistent.yaml");
 const FIXTURE_SERVERLESS: &str = include_str!("fixtures/serverless.yaml");
 const FIXTURE_SPA: &str = include_str!("fixtures/spa.yaml");
+
+#[derive(Default)]
+struct RecordingFactory {
+    created_refs: Arc<Mutex<Vec<WorkerRef>>>,
+}
+
+impl IsolateFactory for RecordingFactory {
+    fn create_isolate(&self, worker_ref: &WorkerRef) -> Box<dyn edger_core::Isolate> {
+        self.created_refs.lock().unwrap().push(worker_ref.clone());
+        Box::new(MockIsolate::new())
+    }
+}
 
 #[tokio::test]
 async fn integration_persistent_worker_cache_hit() {
@@ -87,6 +100,43 @@ async fn integration_ephemeral_serverless_terminates_after_response() {
     assert!(
         pool.get_metrics().cache_misses > misses_before,
         "second ephemeral fetch is a cache miss"
+    );
+}
+
+#[tokio::test]
+async fn integration_factory_receives_resolved_worker_ref_before_dispatch() {
+    let (dir, _config, manifest) = temp_worker_dir(
+        r#"name: "@ops/wasm-api"
+version: "2.0.0"
+ttl: 30
+entrypoint: index.wasm
+kind: wasm
+"#,
+    );
+    let worker_ref = create_worker_ref(dir.path().to_path_buf(), manifest).unwrap();
+    let factory = Arc::new(RecordingFactory::default());
+    let created_refs = factory.created_refs.clone();
+    let pool = pool_with_factory(factory, default_pool_config());
+
+    let res = pool
+        .fetch_worker(&worker_ref, serialized_get("/runtime-boundary"), None)
+        .await
+        .unwrap();
+
+    assert_eq!(res.status, 200);
+    assert!(String::from_utf8(res.body.unwrap().to_vec())
+        .unwrap()
+        .starts_with("wasm:GET /runtime-boundary"));
+    let created = created_refs.lock().unwrap();
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0].name, "@ops/wasm-api");
+    assert_eq!(created[0].namespace.as_deref(), Some("@ops"));
+    assert_eq!(created[0].version, "2.0.0");
+    assert_eq!(
+        created[0].kind,
+        ExecutionKind::WasmModule {
+            entry: Some("index.wasm".into())
+        }
     );
 }
 

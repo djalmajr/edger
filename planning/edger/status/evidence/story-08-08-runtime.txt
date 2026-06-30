@@ -1,0 +1,102 @@
+# Story 08.08 runtime evidence
+
+Date: 2026-06-29
+Scope: value parity migration proofs, Browser validation, Buntime-derived routing guard
+
+## Automated value parity suite
+
+```bash
+cargo test -p edger-orchestrator --test value_parity
+```
+
+Result:
+
+```text
+running 6 tests
+test gateway_cors_preflight_does_not_bypass_auth ... ok
+test todo_spa_fixture_serves_document_asset_and_fallback ... ok
+test shell_gateway_composes_document_iframe_and_admin_paths ... ok
+test empty_plugin_base_does_not_become_a_shell_or_shadow_workers ... ok
+test protected_worker_denies_without_auth_and_runs_with_root_key ... ok
+test stateful_app_receives_sql_kv_and_queue_bindings ... ok
+
+test result: ok. 6 passed; 0 failed
+```
+
+Covered flows:
+
+- SPA/TodoMVC-equivalent document, asset and deep-link fallback under `/todos`.
+- Protected worker denies without auth and runs with the root key.
+- Stateful app receives SQL, KV and queue binding descriptors.
+- Shell serves document navigation while iframe app bypasses to its worker.
+- Gateway CORS preflight is protected by auth and succeeds with auth.
+- `base: ""` does not become a shell or shadow worker document navigation.
+
+## Runtime launch for Browser and HTTP checks
+
+```bash
+ROOT_API_KEY=test-root PORT=19084 RUNTIME_WORKER_DIRS=workers/value-parity/todos \
+  cargo run -p edger-orchestrator --bin edger
+```
+
+Startup:
+
+```text
+edger listening config.addr=0.0.0.0:19084
+```
+
+HTTP checks:
+
+```bash
+for target in /todos /todos/app.js /todos/filter/active; do
+  curl -sS -o /dev/null -w "$target status=%{http_code} time=%{time_total}\n" \
+    "http://127.0.0.1:19084$target"
+done
+```
+
+Result:
+
+```text
+/todos status=200 time=0.001024
+/todos/app.js status=200 time=0.001677
+/todos/filter/active status=200 time=0.003415
+```
+
+Body spot checks:
+
+```text
+/todos -> injected <base href="/todos/" /> and root id edger-value-parity-todos
+/todos/app.js -> globalThis.valueParityTodosReady = true
+/todos/filter/active -> SPA fallback document
+```
+
+## Browser validation
+
+Browser plugin read-only validation against `http://127.0.0.1:19084/todos`:
+
+```json
+{
+  "baseHref": "/todos/",
+  "contentType": "text/html",
+  "heading": "Todos",
+  "links": ["./", "./filter/active", "./filter/completed"],
+  "ready": "true",
+  "rootExists": true,
+  "title": "edger value parity todos",
+  "url": "http://127.0.0.1:19084/todos"
+}
+```
+
+## Explicit gaps preserved
+
+- Native cron is not marked tested because the scheduler foundation is not yet
+  executable.
+- Gateway proxy/cache/rate-limit persistence remains partial; Story 08.08
+  proves shell routing and CORS/auth behavior only.
+- Turso remote/sync, retry/backoff/DLQ depth, persistent extension reload
+  and marketplace remain tracked as partial/deferred in the value matrix.
+
+## Cleanup
+
+The `edger` process started for this validation was stopped. Port `19084` was
+confirmed free afterwards.

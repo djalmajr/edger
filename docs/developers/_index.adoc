@@ -1,0 +1,29 @@
+[#_developers]
+== Developers
+
+A trilha de *Developers* descreve como o Edger é construído e operado:
+arquitetura, modelo de domínio, manifests, contratos HTTP/worker, segurança,
+ambiente local, testes e decisões arquiteturais.
+
+[TIP]
+.Ordem de leitura sugerida
+====
+`01 Arquitetura` -> `02 Modelo de domínio e manifests` ->
+`03 Contratos HTTP e workers` -> `04 Segurança e isolamento` ->
+`05 Ambiente local` -> `06 Operação e testes`.
+Os ADRs registram o porquê das decisões.
+====
+
+include::01-arquitetura.adoc[]
+
+include::02-modelo-de-dominio-e-manifests.adoc[]
+
+include::03-contratos-http-e-workers.adoc[]
+
+include::04-seguranca-e-isolamento.adoc[]
+
+include::05-ambiente-local.adoc[]
+
+include::06-operacao-e-testes.adoc[]
+
+include::07-decisoes-arquiteturais.adoc[]

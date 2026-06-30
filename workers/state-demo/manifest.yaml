@@ -1,0 +1,15 @@
+name: state-demo
+version: "1.0.0"
+entrypoint: index.ts
+kind: fetch
+bindings:
+  - kind: durableSql
+    name: db
+    namespace: state-demo
+    permissions:
+      - sql:read
+      - sql:write
+  - kind: keyValue
+    name: cache
+  - kind: queue
+    name: jobs

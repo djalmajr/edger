@@ -1,0 +1,23 @@
+# Evidence: Story 08.25 runtime orchestration boundary
+
+Date: 2026-06-29
+
+## Commands
+
+```bash
+cargo test -p edger-worker --test integration_pool integration_factory_receives_resolved_worker_ref_before_dispatch
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+git diff --check
+```
+
+## Results
+
+- `cargo test -p edger-worker --test integration_pool integration_factory_receives_resolved_worker_ref_before_dispatch`: PASS.
+- `cargo test --workspace`: PASS.
+- `cargo clippy --workspace -- -D warnings`: PASS.
+- `cargo fmt -- --check`: PASS.
+- `SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh`: PASS.
+- `git diff --check`: PASS.

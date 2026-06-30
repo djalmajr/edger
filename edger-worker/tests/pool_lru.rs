@@ -14,7 +14,7 @@ use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 struct EchoFactory;
 
 impl IsolateFactory for EchoFactory {
-    fn create_isolate(&self) -> Box<dyn Isolate> {
+    fn create_isolate(&self, _worker_ref: &edger_core::WorkerRef) -> Box<dyn Isolate> {
         Box::new(EchoIsolate)
     }
 }
@@ -65,6 +65,62 @@ impl Isolate for EchoIsolate {
     }
 }
 
+struct SlowEchoFactory;
+
+impl IsolateFactory for SlowEchoFactory {
+    fn create_isolate(&self, _worker_ref: &edger_core::WorkerRef) -> Box<dyn Isolate> {
+        Box::new(SlowEchoIsolate)
+    }
+}
+
+struct SlowEchoIsolate;
+
+#[async_trait]
+impl Isolate for SlowEchoIsolate {
+    async fn execute_fetch(
+        &mut self,
+        req: SerializedRequest,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        Ok(SerializedResponse {
+            status: 200,
+            headers: vec![],
+            body: Some(Bytes::from(format!("slow:{}", req.uri))),
+        })
+    }
+
+    async fn execute_routes(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+
+    async fn serve_static_spa(
+        &mut self,
+        path: &str,
+        _base_href: Option<&str>,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        Ok(SerializedResponse {
+            status: 200,
+            headers: vec![],
+            body: Some(Bytes::from(format!("slow-spa:{path}"))),
+        })
+    }
+
+    async fn execute_wasm(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+}
+
 fn sample_req(uri: &str) -> SerializedRequest {
     SerializedRequest {
         method: "GET".into(),
@@ -95,6 +151,17 @@ fn pool(max_size: usize) -> WorkerPool {
             ephemeral_queue_limit: 8,
         },
         Arc::new(EchoFactory),
+    )
+}
+
+fn slow_pool(max_size: usize) -> WorkerPool {
+    WorkerPool::with_factory(
+        PoolConfig {
+            max_size,
+            ephemeral_concurrency: 4,
+            ephemeral_queue_limit: 8,
+        },
+        Arc::new(SlowEchoFactory),
     )
 }
 
@@ -141,6 +208,39 @@ async fn second_fetch_is_cache_hit() {
 
     let metrics = pool.get_metrics();
     assert!(metrics.cache_hits >= 1, "expected cache hit");
+}
+
+#[tokio::test]
+async fn concurrent_fetches_for_same_worker_queue_instead_of_failing_active_state() {
+    let pool = slow_pool(4);
+    let dir = PathBuf::from("/workers/concurrent");
+    let mut config = make_worker_ref(dir.clone(), "concurrent").config;
+    config.ttl_ms = 30_000;
+
+    let first = pool.fetch(
+        &dir,
+        &config,
+        sample_req("/first"),
+        Some(ExecutionKind::FetchHandler),
+    );
+    let second = pool.fetch(
+        &dir,
+        &config,
+        sample_req("/second"),
+        Some(ExecutionKind::FetchHandler),
+    );
+
+    let (first, second) = tokio::join!(first, second);
+
+    assert_eq!(first.unwrap().status, 200);
+    assert_eq!(second.unwrap().status, 200);
+
+    let instance = pool
+        .get_or_create(&make_worker_ref(dir, "concurrent"))
+        .await
+        .unwrap();
+    assert_eq!(instance.state(), edger_worker::WorkerState::Idle);
+    assert_eq!(instance.request_count(), 2);
 }
 
 #[tokio::test]

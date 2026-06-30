@@ -1,5 +1,6 @@
 //! Load Wasm modules from worker directories (story 07.05).
 
+use std::borrow::Cow;
 use std::path::{Component, Path};
 
 use edger_core::IsolationError;
@@ -28,7 +29,14 @@ pub fn load_wasm_from_worker_dir(
             "entrypoint escapes worker directory",
         ));
     }
-    std::fs::read(&canonical_file).map_err(|e| IsolationError::new("WASM_READ", e.to_string()))
+    let bytes = std::fs::read(&canonical_file)
+        .map_err(|e| IsolationError::new("WASM_READ", e.to_string()))?;
+    if canonical_file.extension().and_then(|ext| ext.to_str()) == Some("wat") {
+        return wat::parse_bytes(&bytes)
+            .map(Cow::into_owned)
+            .map_err(|e| IsolationError::new("WAT_COMPILE", e.to_string()));
+    }
+    Ok(bytes)
 }
 
 fn has_parent_traversal(path: &Path) -> bool {
@@ -53,5 +61,13 @@ mod tests {
         fs::write(&wasm_path, b"\0asm\x01\0\0\0").unwrap();
         let bytes = load_wasm_from_worker_dir(dir.path(), "index.wasm").unwrap();
         assert_eq!(bytes.len(), 8);
+    }
+
+    #[test]
+    fn compiles_wat_file_inside_worker_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("index.wat"), "(module)").unwrap();
+        let bytes = load_wasm_from_worker_dir(dir.path(), "index.wat").unwrap();
+        assert_eq!(&bytes[..4], b"\0asm");
     }
 }

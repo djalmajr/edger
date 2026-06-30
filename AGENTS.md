@@ -4,8 +4,8 @@
 
 ## Core
 - Core (edger-core or lib) is pure vocabulary: no I/O.
-- Always run `bun test` + lints before claiming complete.
-- Use colocated .test.ts
+- Always run the Rust gate before claiming complete: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`.
+- Run `bun test` only if a root JS/TS test suite exists; the historical Bun adapter is removed.
 - Small behavior preserving changes.
 - Preserve worker/extension isolation.
 - Update this, roadmap, epics and status when state changes.
@@ -19,16 +19,15 @@
 - Do not publish extension crates to crates.io manually.
 
 ## Launch / Workers
-- edger entry: `bun edger.ts --dir <worker-dir> [--port N]`
+- edger entry: `ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers cargo run -p edger-orchestrator --bin edger`
 - Worker dir **must** have `index.{ts,js,mjs}` compatible with:
   - `Deno.serve(handlerOrOptions)`
   - or `export default { fetch(req) {} }`
   - or `export default fetchFn`
 - Copy examples verbatim from edge-runtime/examples into workers/<name>/ (preserve index).
-- Prefer pure fetch/stream examples for immediate run; document remote/deno.* deps.
+- JS/TS workers currently execute via the Deno CLI bridge (`deno` on PATH or `EDGER_DENO_BIN`). Embedded `deno_core` remains the production target; do not reintroduce a Bun adapter.
 
 ## Discipline
-- Run `bun test` before report complete. No exceptions.
 - Planning maturity: `/agile-refinement` Mode 1 on `planning/edger/` + `refinement-lint.py` (see `planning/edger/scripts/run-gates.sh`). Only the orchestrator agent calls ai-memory tools; subagents must not.
 - `memory_lint` (workspace `djalmajr`, project `edger`): orchestrator only, when the remote server is stable — excluded from planning gates if unstable.
 - Fix all warnings even in untouched files.
@@ -41,13 +40,13 @@
 - Follow agile flow: intake/roadmap/epic/story/tdd/status/refinement.
 - Update docs as progress; lint to prevent staleness.
 - Evidence for launches: capture bodies to scratch or logs.
-- Fallback to Bun adapter ok per plan risks for embedding; pure logic portable.
+- Do not use the removed Bun adapter as implementation fallback; unblock Rust isolation instead.
 
 ## Verification gate
-- bun test
+- Rust gate: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`
 - `/agile-refinement` Mode 1 report clean (`planning/edger/status/evidence/refinement-report.txt`)
 - memory_lint (edger scope; orchestrator only; optional when server stable)
-- multiple `bun edger.ts --dir workers/xxx` + curl responses match expected
+- Rust launch evidence through `cargo run -p edger-orchestrator --bin edger` + curl responses match expected
 - docs cross-refs current (no stale to non-existing epics/stories)
 
 <!-- ai-memory:start -->

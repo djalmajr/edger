@@ -1,0 +1,52 @@
+[#prod-escopo-roadmap]
+=== Escopo e roadmap
+
+==== Escopo atual
+
+O estado atual é uma foundation funcional em progresso:
+
+* Fases 1-6 entregues: core, isolamento inicial, worker management,
+  orquestrador, auth/gateway e registro estático de extensões.
+* Fase 7 em andamento: execução real JS/TS, Wasm, manifests completos, shell,
+  cron, observabilidade e hardening.
+* Runtime ativo é Rust-only. O adapter Bun histórico foi removido do caminho
+  funcional.
+* JS/TS já executa via Deno CLI bridge v1.
+* Wasm já executa via `wasmtime` com ABI HTTP mínima.
+* `stream` e `sse` têm fallback v1 de primeiro chunk; streaming passthrough real
+  ainda está pendente.
+
+==== Fora do escopo atual
+
+* Deploy Kubernetes/Helm, cpanel e marketplace.
+* Compatibilidade Node/Next.js completa sem adapters.
+* Carregamento dinâmico de crates Rust em runtime.
+* Substituição completa do Buntime em produção sem matriz de compatibilidade
+  verde.
+* `deno_core` embutido finalizado para produção.
+* WASI com preopen real e ABI Wasm request/response completa.
+
+==== Próximos incrementos recomendados
+
+[cols="1,3",options="header"]
+|===
+| Incremento | Resultado esperado
+
+| `deno_core` embutido
+| Tirar o JS/TS do modelo processo-por-request e aproximar o runtime do alvo de
+  produção.
+
+| StaticSpa e shell routing
+| Servir SPAs com `inject_base` e preparar micro-frontends compatíveis com a
+  visão Buntime.
+
+| Cron nativo
+| Executar `manifest.cron[]` via scheduler Rust e requests internas autenticadas.
+
+| Observabilidade
+| Publicar tracing estruturado, request id por pipeline e endpoint `/metrics`.
+
+| Hardening + compat matrix
+| Transformar `planning/edger/docs/compat-matrix.md` em suíte automatizada e
+  baseline de migração.
+|===

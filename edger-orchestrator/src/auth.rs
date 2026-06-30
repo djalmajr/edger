@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use axum::http::HeaderMap;
 use edger_core::{
-    principal_can_access_namespace, ApiKeyPrincipal, AuthProvider, CoreError, PublicRoutesConfig,
+    principal_can_access_namespace, AdminApiKeyInfo, AdminCreateApiKeyRequest, ApiKeyPrincipal,
+    AuthProvider, CoreError, PublicRoutesConfig,
 };
 
 /// Auth gate configuration (global `publicRoutes` only; keys resolved by `AuthProvider`).
@@ -32,6 +33,28 @@ impl AuthGate {
         let pairs = header_map_to_pairs(headers);
         self.provider
             .authenticate(&pairs)
+            .map_err(|e| CoreError::new("AUTH_ERROR", e.to_string()))
+    }
+
+    pub fn list_api_keys(&self) -> Result<Vec<AdminApiKeyInfo>, CoreError> {
+        self.provider
+            .list_api_keys()
+            .map_err(|e| CoreError::new("AUTH_ERROR", e.to_string()))
+    }
+
+    pub fn create_api_key(
+        &self,
+        raw_key: &str,
+        request: &AdminCreateApiKeyRequest,
+    ) -> Result<AdminApiKeyInfo, CoreError> {
+        self.provider
+            .create_api_key(raw_key, request)
+            .map_err(|e| CoreError::new("AUTH_ERROR", e.to_string()))
+    }
+
+    pub fn revoke_api_key(&self, id: u64) -> Result<bool, CoreError> {
+        self.provider
+            .revoke_api_key(id)
             .map_err(|e| CoreError::new("AUTH_ERROR", e.to_string()))
     }
 

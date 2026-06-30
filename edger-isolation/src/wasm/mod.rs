@@ -38,6 +38,10 @@ impl WasmIsolate {
         }
     }
 
+    pub fn from_worker_config(config: &WorkerConfig) -> Self {
+        Self::new(WasiConfig::from_worker_config(config))
+    }
+
     pub fn with_wasm_bytes(mut self, bytes: Vec<u8>) -> Self {
         self.wasm_bytes = Some(bytes);
         self
@@ -94,7 +98,7 @@ impl Isolate for WasmIsolate {
                 "no wasm module bytes configured on WasmIsolate",
             )
         })?;
-        self.handler.execute_module(bytes)
+        self.handler.execute_module_with_config(bytes, &self.wasi)
     }
 
     async fn notify_idle(&mut self) -> Result<(), IsolationError> {

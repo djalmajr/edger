@@ -1,0 +1,47 @@
+# Story 08.11 runtime evidence — worker enable/disable
+
+Date: 2026-06-29
+
+Scope:
+- Runtime-only worker enable/disable overlay in `ManifestIndex`.
+- Admin API `POST /api/admin/workers/{name}/disable` and `/enable`.
+- Percent-encoded namespaced worker names such as `%40acme%2Fapi`.
+- Inventory status `disabled`/`loaded`.
+- Disabled worker route resolution returns `NOT_FOUND`.
+- No manifest persistence, install/remove, file hot reload, or multi-process replication in this slice.
+
+Focused verification:
+
+```bash
+cargo test -p edger-orchestrator --test routing_resolution
+cargo test -p edger-orchestrator --test admin_workers_plugins
+cargo test -p edger-orchestrator --test security_operational
+```
+
+Result:
+- `routing_resolution`: 18 passed.
+- `admin_workers_plugins`: 9 passed.
+- `security_operational`: 8 passed.
+
+Workspace gate:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+```
+
+Result:
+- `cargo test --workspace`: passed.
+- `cargo clippy --workspace -- -D warnings`: passed.
+- `cargo fmt -- --check`: passed.
+
+Planning gate:
+
+```bash
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
+Result:
+- Initial run failed only because this evidence file did not exist yet.
+- Rerun after creating this file: passed, including refinement-lint oracle, path-preflight, artifact inspection, skipped Bun test because no root JS/TS suite exists, and `cargo check --workspace`.

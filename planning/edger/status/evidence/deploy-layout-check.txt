@@ -1,0 +1,9 @@
+OK runtime roots and launch command
+OK local state and auth files
+OK durable provider boundaries
+OK health and metrics probes
+OK local backup and restore
+OK admin and gateway operations
+OK operational troubleshooting
+OK required gates documented
+PASS deploy layout checks: 8

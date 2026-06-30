@@ -1,0 +1,34 @@
+Story 08.26 runtime evidence
+Date: 2026-06-29
+
+Scope:
+- Persist extension enable/disable status through an optional JSON status store.
+- Keep explicit v1 extension registration as the source of truth.
+
+Commands run:
+
+1. cargo test -p edger-orchestrator registry::tests::extension_status_store_survives_registry_rebuild --lib
+   Result: PASS
+   Evidence: registry disables gateway, writes extension-status.json and a rebuilt registry reloads disabled status.
+
+2. cargo test -p edger-orchestrator --test admin_workers_plugins extension_enable_disable_status_persists_for_rebuilt_registry -- --exact
+   Result: PASS
+   Evidence: Admin API disable writes the JSON status store and rebuilt inventory returns gateway as disabled.
+
+3. cargo test --workspace
+   Result: PASS
+   Evidence: full Rust workspace tests passed after the change.
+
+4. cargo clippy --workspace -- -D warnings
+   Result: PASS
+   Evidence: no clippy warnings.
+
+5. cargo fmt -- --check
+   Result: PASS
+   Evidence: Rust formatting check passed.
+
+Planning gate:
+- First run exposed missing planning evidence/required section headings for Story 08.26; those artifacts were corrected.
+- SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+  Result: PASS
+  Evidence: /agile-refinement Mode 1, refinement-lint.py oracle, path preflight, artifact inspection, cargo check all passed; bun test skipped because no root JS/TS test suite exists.

@@ -90,5 +90,4 @@ cargo test -p edger-isolation -- static_spa
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
-bun test
 ```

@@ -1,0 +1,42 @@
+# Story 08.12 runtime evidence — worker metrics stats
+
+Date: 2026-06-29
+
+Scope:
+- Read-only `/metrics/stats` JSON snapshot.
+- Pool counters plus cached worker rows.
+- Worker identity, state, request count, uptime and unhealthy flag.
+- No SSE, UI, memory RSS/heap, historical retention, Prometheus per-worker labels or cross-process aggregation in this slice.
+
+Focused verification:
+
+```bash
+cargo test -p edger-worker --test metrics_ephemeral
+cargo test -p edger-orchestrator --test metrics_endpoint
+```
+
+Result:
+- `metrics_ephemeral`: 7 passed.
+- `metrics_endpoint`: 5 passed.
+
+Workspace gate:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+```
+
+Result:
+- `cargo test --workspace`: passed.
+- `cargo clippy --workspace -- -D warnings`: passed.
+- `cargo fmt -- --check`: passed.
+
+Planning gate:
+
+```bash
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
+Result:
+- Passed, including refinement-lint oracle, path-preflight, artifact inspection, skipped Bun test because no root JS/TS suite exists, and `cargo check --workspace`.

@@ -124,7 +124,7 @@ impl WorkerPool {
         }
 
         let spawn_start = Instant::now();
-        let isolate = self.inner.factory.create_isolate();
+        let isolate = self.inner.factory.create_isolate(worker_ref);
         let instance = Arc::new(WorkerInstance::new(worker_ref.clone(), isolate));
 
         if let Some(evicted_key) = self.inner.cache.insert(key.clone(), Arc::clone(&instance)) {
@@ -148,7 +148,7 @@ impl WorkerPool {
         Ok(instance)
     }
 
-    /// Primary orchestrator entry — resolves worker from dir + config manifest name.
+    /// Legacy pool entry that derives identity from the worker directory.
     pub async fn fetch(
         &self,
         worker_dir: &Path,
@@ -156,17 +156,8 @@ impl WorkerPool {
         req: SerializedRequest,
         kind_hint: Option<ExecutionKind>,
     ) -> Result<SerializedResponse, WorkerError> {
-        self.ensure_active()?;
-        let started = Instant::now();
-
         let mut config = config.clone();
         config.worker_dir = Some(worker_dir.to_path_buf());
-
-        let _ephemeral_permit = if config.ttl_ms == 0 {
-            Some(self.inner.ephemeral.acquire().await?)
-        } else {
-            None
-        };
 
         let manifest = WorkerManifest {
             name: worker_dir
@@ -180,9 +171,37 @@ impl WorkerPool {
             create_worker_ref(worker_dir.to_path_buf(), manifest).map_err(|e| {
                 WorkerError::Isolation(edger_core::IsolationError::new(&e.code, e.message))
             })?;
+        if let Some(kind) = config.kind.clone() {
+            worker_ref.kind = kind;
+        }
+        worker_ref.config = config.clone();
+        self.fetch_worker(&worker_ref, req, kind_hint).await
+    }
+
+    /// Fetch using a resolved worker identity from the orchestrator manifest index.
+    pub async fn fetch_worker(
+        &self,
+        worker_ref: &WorkerRef,
+        req: SerializedRequest,
+        kind_hint: Option<ExecutionKind>,
+    ) -> Result<SerializedResponse, WorkerError> {
+        self.ensure_active()?;
+        let started = Instant::now();
+
+        let mut worker_ref = worker_ref.clone();
+        let mut config = worker_ref.config.clone();
+        config.worker_dir = Some(worker_ref.dir.clone());
+
+        let _ephemeral_permit = if config.ttl_ms == 0 {
+            Some(self.inner.ephemeral.acquire().await?)
+        } else {
+            None
+        };
         worker_ref.config = config.clone();
 
         let instance = self.get_or_create(&worker_ref).await?;
+        let dispatch_lock = instance.dispatch_lock();
+        let _dispatch_guard = dispatch_lock.lock().await;
 
         if instance.state() == WorkerState::Creating {
             let spawn_start = Instant::now();
@@ -195,8 +214,8 @@ impl WorkerPool {
         Supervisor::on_request_start(&instance).await?;
 
         let kind = kind_hint
-            .or(Some(worker_ref.kind.clone()))
             .or(config.kind.clone())
+            .or(Some(worker_ref.kind.clone()))
             .unwrap_or(ExecutionKind::FetchHandler);
 
         let isolate_arc = instance.isolate();
@@ -238,12 +257,23 @@ impl WorkerPool {
         self.inner
             .cache
             .find_by_worker_id(worker_id)
-            .map(|instance| WorkerStats {
-                worker_id: instance.worker_ref.id,
-                request_count: instance.request_count(),
-                state: instance.state(),
-                unhealthy: instance.is_unhealthy(),
-            })
+            .map(|instance| worker_stats_for_instance(instance.as_ref()))
+    }
+
+    pub fn worker_stats(&self) -> Vec<WorkerStats> {
+        let mut workers = self
+            .inner
+            .cache
+            .values_snapshot()
+            .iter()
+            .map(|instance| worker_stats_for_instance(instance.as_ref()))
+            .collect::<Vec<_>>();
+        workers.sort_by(|a, b| {
+            a.app
+                .cmp(&b.app)
+                .then_with(|| a.worker_id.cmp(&b.worker_id))
+        });
+        workers
     }
 
     pub fn len(&self) -> usize {
@@ -252,6 +282,23 @@ impl WorkerPool {
 
     pub fn is_empty(&self) -> bool {
         self.inner.cache.is_empty()
+    }
+}
+
+fn worker_stats_for_instance(instance: &WorkerInstance) -> WorkerStats {
+    WorkerStats {
+        app: format!(
+            "{}@{}",
+            instance.worker_ref.name, instance.worker_ref.version
+        ),
+        name: instance.worker_ref.name.clone(),
+        namespace: instance.worker_ref.namespace.clone(),
+        request_count: instance.request_count(),
+        state: instance.state(),
+        unhealthy: instance.is_unhealthy(),
+        uptime_seconds: instance.uptime_seconds(),
+        version: instance.worker_ref.version.clone(),
+        worker_id: instance.worker_ref.id,
     }
 }
 

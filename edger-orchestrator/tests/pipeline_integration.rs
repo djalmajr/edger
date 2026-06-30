@@ -18,7 +18,7 @@ use tower::ServiceExt;
 struct StubFactory;
 
 impl IsolateFactory for StubFactory {
-    fn create_isolate(&self) -> Box<dyn edger_core::Isolate> {
+    fn create_isolate(&self, _worker_ref: &edger_core::WorkerRef) -> Box<dyn edger_core::Isolate> {
         Box::new(MockIsolate::new())
     }
 }

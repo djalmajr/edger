@@ -1,0 +1,65 @@
+# Story 08.20 runtime evidence — gateway log duration
+
+Date: 2026-06-29
+
+Scope:
+- Gateway recent decisions include `durationMs` for short-circuits and for
+  requests completed through `on_response`.
+- Requests that continue to a worker are updated with final response status and
+  duration by matching `requestId`.
+- `GET /api/admin/gateway/logs/stats` computes `duration.tracked`,
+  `duration.samples`, and `duration.avgMs` from retained decisions.
+- Logs/stats still do not serialize request headers, response headers, bodies,
+  `Authorization`, `x-api-key`, raw secrets, or worker payloads.
+- No histogram, p95/p99, SSE, persisted history, log deletion, rate-limit reset,
+  config mutation, external proxy, cache, or distributed rate-limit in this
+  slice.
+
+Focused verification:
+
+```bash
+cargo test -p edger-ext-gateway --test gateway_middleware diagnostics_records_response_duration_without_sensitive_data -- --exact
+cargo test -p edger-orchestrator --test admin_workers_plugins gateway_admin_gateway_log_stats_api_aggregates_recent_decisions -- --exact
+cargo test -p edger-ext-gateway --test gateway_middleware
+cargo test -p edger-orchestrator --test admin_workers_plugins
+```
+
+Result:
+- Initial TDD runs failed before implementation:
+  - `continue` decisions kept `status: null` after `on_response`.
+  - `/api/admin/gateway/logs/stats` still returned `duration.tracked=false`.
+- Final focused gateway run: 1 passed.
+- Final focused Admin API run: 1 passed.
+- Final gateway middleware suite: 15 passed.
+- Final Admin API suite: 12 passed.
+
+Workspace gate:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+```
+
+Result:
+- Passed.
+- `cargo test --workspace`: all workspace unit, integration and doc tests passed.
+- `cargo clippy --workspace -- -D warnings`: passed with no warnings.
+- `cargo fmt -- --check`: passed.
+
+Planning gate:
+
+```bash
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
+Result:
+- Passed.
+- `/agile-refinement` Mode 1: 0 red flags.
+- `refinement-lint.py`: passed.
+- `path-preflight`: 126 refs, 0 missing.
+- Artifact inspection: 8 epics, 51 stories, all stories with required sections.
+- `bun test`: skipped because no root JS/TS test suite exists after Bun adapter
+  removal.
+- `cargo check`: passed.
+- Overall result: all planning gates passed.

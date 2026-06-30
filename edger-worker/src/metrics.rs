@@ -38,10 +38,15 @@ pub struct PoolMetrics {
 /// Per-worker stats for observability hooks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerStats {
-    pub worker_id: Uuid,
+    pub app: String,
+    pub name: String,
+    pub namespace: Option<String>,
     pub request_count: u32,
     pub state: WorkerState,
     pub unhealthy: bool,
+    pub uptime_seconds: u64,
+    pub version: String,
+    pub worker_id: Uuid,
 }
 
 /// Thread-safe metrics collector (atomics + small latency ring).

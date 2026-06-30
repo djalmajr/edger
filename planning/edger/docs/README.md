@@ -8,6 +8,8 @@ indicadas em cada arquivo.
 |---|---|
 | `extensions.md` | Epic 06 (06.01–06.03) |
 | `compat-matrix.md` | Epic 07 story 07.07 |
+| `value-parity-matrix.md` | Epic 08 |
+| `durable-provider-contract.md` | Epic 09 story 09.01 |
 | `performance-baselines.md` | Epic 07 story 07.07 |
 | `shell-protocol.md` | Epic 07 story 07.02 |
 | `wasm-abi.md` | Epic 07 story 07.05 |

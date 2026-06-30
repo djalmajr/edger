@@ -1,0 +1,44 @@
+# Story 08.14 runtime evidence — manifest-less index.html autodiscovery
+
+Date: 2026-06-29
+
+Scope:
+- Conventional entrypoint discovery now includes `index.html` first.
+- Manifest-less static SPA directories are recognized as worker dirs.
+- `index.html` takes precedence over `index.ts` when no manifest/package metadata overrides it.
+- No semver range expansion, upload/install/remove, watch mode or hot reload in this slice.
+
+Focused verification:
+
+```bash
+cargo test -p edger-orchestrator --test manifest_loader
+```
+
+Result:
+- Initial TDD run failed before implementation:
+  - `manifestless_index_html_is_discovered_as_static_spa_before_js` chose `index.ts`.
+  - `direct_worker_dir_with_only_index_html_is_discovered` did not discover the worker.
+- Final focused run: 7 passed.
+
+Workspace gate:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+```
+
+Result:
+- `cargo test --workspace`: passed.
+- `cargo clippy --workspace -- -D warnings`: passed.
+- `cargo fmt -- --check`: passed.
+
+Planning gate:
+
+```bash
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
+Result:
+- Passed, including refinement-lint oracle, path-preflight, artifact inspection,
+  skipped Bun test because no root JS/TS suite exists, and `cargo check --workspace`.

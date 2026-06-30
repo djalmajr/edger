@@ -1,0 +1,59 @@
+# Story 08.19 runtime evidence — gateway log stats API
+
+Date: 2026-06-29
+
+Scope:
+- `GET /api/admin/gateway/logs/stats` returns aggregated stats for retained
+  gateway decisions.
+- The endpoint requires root credentials.
+- Aggregates include `total`, `rateLimited`, `byStatus`, `byDecision`,
+  `withoutStatus`, and `duration.tracked=false`.
+- The endpoint does not serialize request headers, bodies, `Authorization`,
+  `x-api-key`, raw secrets, or raw log entries.
+- No real average duration, SSE, persisted history, log deletion, rate-limit
+  reset, config mutation, external proxy, cache, or distributed rate-limit in
+  this slice.
+
+Focused verification:
+
+```bash
+cargo test -p edger-orchestrator --test admin_workers_plugins gateway_admin_gateway_log_stats_api_aggregates_recent_decisions -- --exact
+cargo test -p edger-orchestrator --test admin_workers_plugins
+```
+
+Result:
+- Initial TDD run failed before implementation:
+  - `/api/admin/gateway/logs/stats` returned `404` instead of root-gated `401`.
+- Final focused Admin API run: 1 passed.
+- Final Admin API suite: 12 passed.
+
+Workspace gate:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+```
+
+Result:
+- Passed.
+- `cargo test --workspace`: all workspace unit, integration and doc tests passed.
+- `cargo clippy --workspace -- -D warnings`: passed with no warnings.
+- `cargo fmt -- --check`: passed.
+
+Planning gate:
+
+```bash
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
+Result:
+- Passed.
+- `/agile-refinement` Mode 1: 0 red flags.
+- `refinement-lint.py`: passed.
+- `path-preflight`: 124 refs, 0 missing.
+- Artifact inspection: 8 epics, 50 stories, all stories with required sections.
+- `bun test`: skipped because no root JS/TS test suite exists after Bun adapter
+  removal.
+- `cargo check`: passed.
+- Overall result: all planning gates passed.

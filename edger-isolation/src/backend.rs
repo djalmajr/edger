@@ -8,7 +8,7 @@ use crate::mock::MockIsolate;
 use crate::deno::{DenoFacade, DenoIsolate};
 
 #[cfg(feature = "wasm")]
-use crate::wasm::{WasiConfig, WasmIsolate};
+use crate::wasm::WasmIsolate;
 
 /// Selectable isolation backend (Epic 03 dual-backend prep).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,12 +21,15 @@ pub enum IsolationBackend {
 }
 
 /// Creates a boxed isolate for the requested backend.
-pub fn create_isolate(backend: IsolationBackend, _config: &WorkerConfig) -> Box<dyn Isolate> {
+pub fn create_isolate(backend: IsolationBackend, config: &WorkerConfig) -> Box<dyn Isolate> {
+    #[cfg(not(feature = "wasm"))]
+    let _ = config;
+
     match backend {
         IsolationBackend::Mock => Box::new(MockIsolate::new()),
         #[cfg(feature = "deno")]
         IsolationBackend::Deno => Box::new(DenoIsolate::new(DenoFacade::new())),
         #[cfg(feature = "wasm")]
-        IsolationBackend::Wasm => Box::new(WasmIsolate::new(WasiConfig::deny_all())),
+        IsolationBackend::Wasm => Box::new(WasmIsolate::from_worker_config(config)),
     }
 }

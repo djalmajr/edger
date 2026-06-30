@@ -1,0 +1,144 @@
+[#eng-arquitetura]
+=== Arquitetura
+
+O Edger é um workspace Rust que separa vocabulário puro, isolamento, lifecycle
+de workers, orquestração HTTP e extensões. O desenho favorece fronteiras fortes:
+`edger-core` não faz I/O, crates `edger-ext-*` dependem só de `edger-core`, e o
+binário `edger` compõe explicitamente o runtime.
+
+==== Visão de 30 segundos
+
+* `edger-core` contém tipos, manifests, principals, wire structs, erros e traits.
+* `edger-isolation` implementa backends de execução: Deno CLI bridge, Wasm e mock.
+* `edger-worker` contém `WorkerPool`, supervisor, LRU, TTL, workers efêmeros e
+  métricas internas.
+* `edger-orchestrator` contém axum server, roteamento, auth gate, pipeline,
+  manifest loader e registry de extensões.
+* `edger-ext-auth` implementa `AuthProvider` com root key e SQLite.
+* `edger-ext-gateway` é o template inicial de `Middleware`.
+* `workers/` contém fixtures e exemplos reais executados pelo pipeline Rust.
+* `planning/edger/` contém backlog, checkpoints e evidências; `/docs` contém a
+  documentação consolidada.
+
+[source]
+----
+edger/
+├── edger-core/              # vocabulário puro: tipos, traits, manifests, wire
+├── edger-isolation/         # Deno CLI bridge, Wasm, mock isolate
+├── edger-worker/            # pool, supervisor, lifecycle, LRU, métricas
+├── edger-orchestrator/      # axum server, auth, router, pipeline, loader
+├── edger-ext-auth/          # AuthProvider + SQLite API key store
+├── edger-ext-gateway/       # Middleware template
+├── workers/                 # exemplos JS/TS, CommonJS e Wasm
+├── docs/                    # esta documentação
+└── planning/edger/          # planejamento, epics, status e evidências
+----
+
+==== Arquitetura de crates
+
+[mermaid]
+----
+graph TD
+  orchestrator["edger-orchestrator<br>HTTP, auth, routing, hooks, manifests"]
+  worker["edger-worker<br>pool, supervisor, lifecycle"]
+  isolation["edger-isolation<br>Deno, Wasm, mock"]
+  core["edger-core<br>types, traits, manifests, wire"]
+  extauth["edger-ext-auth<br>AuthProvider"]
+  extgateway["edger-ext-gateway<br>Middleware"]
+
+  orchestrator --> core
+  orchestrator --> worker
+  orchestrator --> isolation
+  worker --> core
+  isolation --> core
+  extauth --> core
+  extgateway --> core
+----
+
+==== Fluxo de request
+
+[mermaid]
+----
+sequenceDiagram
+  participant C as Cliente
+  participant O as edger-orchestrator
+  participant A as AuthGate
+  participant R as Router
+  participant H as Hooks
+  participant P as WorkerPool
+  participant I as Isolate
+  participant W as Worker
+
+  C->>O: HTTP request
+  O->>R: resolve_route(path)
+  R-->>O: WorkerRef + rewritten_path
+  O->>A: authorize(headers, namespace, publicRoutes)
+  A-->>O: ApiKeyPrincipal ou bypass publico
+  O->>H: on_request
+  alt short-circuit
+    H-->>O: SerializedResponse
+  else dispatch
+    O->>P: fetch(worker_dir, config, request, kind)
+    P->>I: execute_fetch / execute_wasm / kind
+    I->>W: codigo do usuario
+    W-->>I: resposta
+    I-->>P: SerializedResponse
+    P-->>O: SerializedResponse
+    O->>H: on_response
+  end
+  O-->>C: HTTP response
+----
+
+==== Ownership por crate
+
+[cols="1,2,2,2",options="header"]
+|===
+| Crate | Responsabilidade | Depende de | Proibido
+
+| `edger-core`
+| Tipos, traits, manifests, configs, principals, wire formats, erros.
+| Nenhum crate sibling.
+| I/O, worker, isolation, orchestrator.
+
+| `edger-isolation`
+| Implementações de `Isolate`, Deno CLI bridge, Wasm e mocks.
+| `edger-core`.
+| `edger-orchestrator`, `edger-worker`.
+
+| `edger-worker`
+| Pool, supervisor, lifecycle, LRU, TTL, métricas.
+| `edger-core`.
+| `edger-orchestrator`.
+
+| `edger-orchestrator`
+| HTTP server, auth, routing, manifest loader, registry, pipeline.
+| `edger-core`, `edger-worker`, `edger-isolation`.
+| Delegar orquestração para main-service JS/TS.
+
+| `edger-ext-*`
+| Implementações concretas de traits do core.
+| `edger-core`.
+| Depender de `edger-orchestrator`, publicar manualmente em crates.io.
+|===
+
+==== Caminho de runtime atual
+
+O caminho ativo é:
+
+[mermaid]
+----
+flowchart LR
+  Client["Cliente HTTP"] --> Axum["axum<br>edger-orchestrator"]
+  Axum --> Auth["AuthGate<br>root key / API key"]
+  Auth --> Router["resolve_route"]
+  Router --> Pool["WorkerPool"]
+  Pool --> Factory["RuntimeIsolateFactory"]
+  Factory --> Deno["DenoIsolate<br>Deno CLI bridge v1"]
+  Factory --> Wasm["WasmIsolate<br>wasmtime"]
+  Deno --> Response["SerializedResponse"]
+  Wasm --> Response
+  Response --> Client
+----
+
+O adapter Bun histórico não é fallback permitido. Ele pode aparecer apenas em
+documentos antigos de status como referência histórica.

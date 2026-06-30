@@ -2,7 +2,7 @@
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{Request, Response, StatusCode};
+use axum::http::{header, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{any, get};
 use axum::{Json, Router};
@@ -11,13 +11,21 @@ use edger_worker::{WorkerError, WorkerPool};
 use serde_json::json;
 use tower_http::trace::TraceLayer;
 
+use crate::admin_api;
 use crate::auth::{is_public_route, AuthGate};
 use crate::context::RequestContext;
-use crate::hooks::{run_on_request, run_on_response};
+use crate::hooks::{
+    run_on_request, run_on_response, run_on_worker_complete, run_on_worker_dispatch,
+    run_on_worker_error,
+};
 use crate::manifest_index_stub::ManifestIndex;
+use crate::metrics::{metrics_stats_response, pool_metrics_prometheus};
+use crate::operational_log::log_operational_error;
 use crate::registry::ExtensionRegistry;
 use crate::router::{resolve_route, ReservedPath, ResolvedRoute};
 use crate::server::{request_id_from_headers, request_id_middleware, ServerState};
+use crate::service_bindings::{resolve_service_bindings, SERVICE_BINDINGS_HEADER};
+use crate::shell_gateway::resolve_shell_worker;
 use crate::wire::{axum_to_serialized, serialized_to_axum};
 
 /// Shared orchestrator state for health probes and worker dispatch.
@@ -34,7 +42,13 @@ pub struct OrchestratorState {
 pub fn build_pipeline(state: OrchestratorState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
+        .route("/healthz", get(health_handler))
+        .route("/livez", get(live_handler))
+        .route("/metrics", get(metrics_handler))
+        .route("/metrics/stats", get(metrics_stats_handler))
         .route("/ready", get(ready_handler))
+        .route("/readyz", get(ready_handler))
+        .merge(admin_api::router())
         .fallback(any(pipeline_handler))
         .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(TraceLayer::new_for_http())
@@ -43,6 +57,10 @@ pub fn build_pipeline(state: OrchestratorState) -> Router {
 
 async fn health_handler() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "status": "ok" })))
+}
+
+async fn live_handler() -> impl IntoResponse {
+    (StatusCode::OK, Json(json!({ "status": "live" })))
 }
 
 async fn ready_handler(State(state): State<OrchestratorState>) -> impl IntoResponse {
@@ -56,6 +74,23 @@ async fn ready_handler(State(state): State<OrchestratorState>) -> impl IntoRespo
     }
 }
 
+async fn metrics_handler(State(state): State<OrchestratorState>) -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        pool_metrics_prometheus(&state.pool.get_metrics()),
+    )
+}
+
+async fn metrics_stats_handler(State(state): State<OrchestratorState>) -> impl IntoResponse {
+    Json(metrics_stats_response(
+        &state.pool.get_metrics(),
+        &state.pool.worker_stats(),
+    ))
+}
+
 async fn pipeline_handler(
     State(state): State<OrchestratorState>,
     req: Request<Body>,
@@ -63,9 +98,13 @@ async fn pipeline_handler(
     let request_id =
         request_id_from_headers(req.headers()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    match handle_request(&state, req, request_id).await {
+    match handle_request(&state, req, request_id.clone()).await {
         Ok(res) => res,
-        Err(err) => error_response(map_error_status(&err), &err),
+        Err(err) => {
+            let status = map_error_status(&err);
+            log_operational_error("pipeline", Some(&request_id), status, &err);
+            error_response(status, &err)
+        }
     }
 }
 
@@ -75,6 +114,37 @@ async fn handle_request(
     request_id: String,
 ) -> Result<Response<Body>, CoreError> {
     let path = req.uri().path().to_string();
+    if let Some(shell) =
+        resolve_shell_worker(req.method().as_str(), &path, req.headers(), &state.index)
+    {
+        let public_worker = is_public_worker(&shell);
+        let principal = if public_worker {
+            None
+        } else {
+            state.auth.authorize(
+                &path,
+                req.headers(),
+                shell.config.public_routes.as_ref(),
+                shell.namespace.as_deref(),
+            )?
+        };
+        let skip_hooks = public_worker
+            || should_skip_hooks(&path, &state.auth, shell.config.public_routes.as_ref());
+        return dispatch_worker(
+            state,
+            req,
+            DispatchParams {
+                request_id,
+                rewritten_path: path,
+                kind_hint: Some(shell.kind.clone()),
+                principal,
+                skip_hooks,
+                worker: shell,
+            },
+        )
+        .await;
+    }
+
     let route = resolve_route(&path, None, &state.index)?;
 
     match route {
@@ -84,14 +154,19 @@ async fn handle_request(
             dispatch_plugin_stub(principal)
         }
         ResolvedRoute::HomepageFallback { worker } => {
-            let principal = state.auth.authorize(
-                &path,
-                req.headers(),
-                worker.config.public_routes.as_ref(),
-                worker.namespace.as_deref(),
-            )?;
-            let skip_hooks =
-                should_skip_hooks(&path, &state.auth, worker.config.public_routes.as_ref());
+            let public_worker = is_public_worker(&worker);
+            let principal = if public_worker {
+                None
+            } else {
+                state.auth.authorize(
+                    &path,
+                    req.headers(),
+                    worker.config.public_routes.as_ref(),
+                    worker.namespace.as_deref(),
+                )?
+            };
+            let skip_hooks = public_worker
+                || should_skip_hooks(&path, &state.auth, worker.config.public_routes.as_ref());
             dispatch_worker(
                 state,
                 req,
@@ -111,14 +186,19 @@ async fn handle_request(
             rewritten_path,
             kind_hint,
         } => {
-            let principal = state.auth.authorize(
-                &path,
-                req.headers(),
-                worker.config.public_routes.as_ref(),
-                worker.namespace.as_deref(),
-            )?;
-            let skip_hooks =
-                should_skip_hooks(&path, &state.auth, worker.config.public_routes.as_ref());
+            let public_worker = is_public_worker(&worker);
+            let principal = if public_worker {
+                None
+            } else {
+                state.auth.authorize(
+                    &path,
+                    req.headers(),
+                    worker.config.public_routes.as_ref(),
+                    worker.namespace.as_deref(),
+                )?
+            };
+            let skip_hooks = public_worker
+                || should_skip_hooks(&path, &state.auth, worker.config.public_routes.as_ref());
             dispatch_worker(
                 state,
                 req,
@@ -143,6 +223,10 @@ fn should_skip_hooks(
 ) -> bool {
     is_public_route(path, &auth.config.global_public_routes)
         || worker_public_routes.is_some_and(|routes| is_public_route(path, routes))
+}
+
+fn is_public_worker(worker: &WorkerRef) -> bool {
+    worker.config.visibility == "public"
 }
 
 fn dispatch_plugin_stub(
@@ -179,8 +263,18 @@ async fn dispatch_worker(
     } = params;
 
     let mut serialized = axum_to_serialized(req, request_id.clone()).await?;
-    serialized.uri = rewritten_path;
-    serialized.base_href = Some(format!("/{}/", worker.name.trim_start_matches('@')));
+    let (original_path, query) = split_path_query(&serialized.uri);
+    let base_path = worker_base_path(&worker, original_path);
+    serialized.uri = append_query(rewritten_path, query);
+    serialized.base_href = Some(base_href(&base_path));
+    set_header(&mut serialized.headers, "x-request-id", &request_id);
+    set_header(&mut serialized.headers, "x-base", &base_path);
+    if let Some(bindings) = resolve_service_bindings(&worker, principal.as_ref(), &state.registry)?
+    {
+        let bindings = serde_json::to_string(&bindings)
+            .map_err(|err| CoreError::new("SERIALIZE_ERROR", err.to_string()))?;
+        set_header(&mut serialized.headers, SERVICE_BINDINGS_HEADER, &bindings);
+    }
 
     let mut ctx = RequestContext::new(request_id);
     ctx.principal = principal;
@@ -192,15 +286,28 @@ async fn dispatch_worker(
         if let Some(response) = short_circuit {
             return serialized_to_axum(response);
         }
+        run_on_worker_dispatch(&state.registry, &ctx)
+            .map_err(|e| CoreError::new("HOOK_ERROR", e.to_string()))?;
     }
 
-    let mut response = state
+    let mut response = match state
         .pool
-        .fetch(&worker.dir, &worker.config, serialized, kind_hint)
+        .fetch_worker(&worker, serialized, kind_hint)
         .await
-        .map_err(worker_error_to_core)?;
+        .map_err(worker_error_to_core)
+    {
+        Ok(response) => response,
+        Err(err) => {
+            if !skip_hooks {
+                let error = err.to_string();
+                run_on_worker_error(&state.registry, &error, &ctx);
+            }
+            return Err(err);
+        }
+    };
 
     if !skip_hooks {
+        run_on_worker_complete(&state.registry, &response, &ctx);
         run_on_response(&state.registry, &mut response, &ctx);
     }
 
@@ -230,6 +337,9 @@ fn map_error_status(err: &CoreError) -> StatusCode {
         "FORBIDDEN" => StatusCode::FORBIDDEN,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
         "COLLISION" => StatusCode::CONFLICT,
+        "PAYLOAD_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
+        "HEADER_TOO_LARGE" => StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+        "HEADER_INVALID" => StatusCode::BAD_REQUEST,
         "VALIDATION_ERROR" | "PARSE_ERROR" | "BODY_ERROR" => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -237,6 +347,49 @@ fn map_error_status(err: &CoreError) -> StatusCode {
 
 fn worker_error_to_core(err: WorkerError) -> CoreError {
     CoreError::new("WORKER_ERROR", err.to_string())
+}
+
+fn worker_base_path(worker: &WorkerRef, original_path: &str) -> String {
+    let base = format!("/{}", worker.name);
+    if original_path == base || original_path.starts_with(&format!("{base}/")) {
+        base
+    } else {
+        "/".into()
+    }
+}
+
+fn split_path_query(uri: &str) -> (&str, Option<&str>) {
+    match uri.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (uri, None),
+    }
+}
+
+fn append_query(mut path: String, query: Option<&str>) -> String {
+    if let Some(query) = query {
+        path.push('?');
+        path.push_str(query);
+    }
+    path
+}
+
+fn base_href(base_path: &str) -> String {
+    if base_path == "/" {
+        "/".into()
+    } else {
+        format!("{}/", base_path.trim_end_matches('/'))
+    }
+}
+
+fn set_header(headers: &mut Vec<(String, String)>, name: &str, value: &str) {
+    if let Some((_, existing)) = headers
+        .iter_mut()
+        .find(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+    {
+        *existing = value.to_string();
+    } else {
+        headers.push((name.to_string(), value.to_string()));
+    }
 }
 
 fn json_error(status: StatusCode, code: &str, message: &str) -> Response<Body> {
@@ -266,7 +419,10 @@ mod tests {
 
     struct StubFactory;
     impl IsolateFactory for StubFactory {
-        fn create_isolate(&self) -> Box<dyn edger_core::Isolate> {
+        fn create_isolate(
+            &self,
+            _worker_ref: &edger_core::WorkerRef,
+        ) -> Box<dyn edger_core::Isolate> {
             Box::new(MockIsolate::new())
         }
     }
@@ -341,5 +497,27 @@ mod tests {
             .unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(text.contains("fetch:GET /"));
+    }
+
+    #[tokio::test]
+    async fn worker_request_preserves_query_after_path_rewrite() {
+        let state = pipeline_with_hello();
+        let app = build_pipeline(state);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/hello?name=Alice")
+                    .header(auth_header().0, auth_header().1)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("fetch:GET /?name=Alice"));
     }
 }

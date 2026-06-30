@@ -1,0 +1,74 @@
+[#prod-jornadas-operacionais]
+=== Jornadas operacionais
+
+==== Subir o runtime local
+
+1. Garanta que Rust/Cargo e Deno estão disponíveis.
+2. Inicie o binário Rust com `ROOT_API_KEY` local:
++
+[source,bash]
+----
+ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers \
+  cargo run -p edger-orchestrator --bin edger
+----
+3. Valide readiness:
++
+[source,bash]
+----
+curl http://127.0.0.1:19080/ready
+----
+
+==== Adicionar um worker JS/TS
+
+1. Crie um diretório em `workers/<name>/`.
+2. Adicione `index.ts`, `index.js` ou `index.mjs`.
+3. Use uma forma suportada:
++
+[source,ts]
+----
+Deno.serve((req) => new Response(`path=${new URL(req.url).pathname}`));
+----
++
+ou:
++
+[source,ts]
+----
+export default {
+  fetch(req: Request) {
+    return new Response(req.method);
+  },
+};
+----
+4. Opcionalmente adicione `manifest.yaml` com `name`, `version`, `timeout` e
+   `kind`.
+5. Chame `/<name>` com `Authorization: Bearer <ROOT_API_KEY>`.
+
+==== Adicionar um worker Wasm
+
+1. Crie `workers/<name>/manifest.yaml` com `kind: wasm` e `entrypoint`.
+2. Adicione `index.wasm` ou `index.wat`.
+3. Exporte, no mínimo, `memory`, `http_status()` e `http_body_len()`.
+4. Rode o servidor e chame `/<name>`.
+
+==== Criar uma nova extensão
+
+1. Crie um crate `edger-ext-<nome>`.
+2. Dependa apenas de `edger-core`.
+3. Escolha um modo: `Middleware`, `AuthProvider` ou `WorkerHandler`.
+4. Exporte uma factory clara, como `middleware()`.
+5. Registre explicitamente no bin `edger`.
+6. Rode `cargo test -p edger-ext-<nome>` e o gate Rust do workspace.
+
+==== Validar compatibilidade Buntime
+
+Use `planning/edger/docs/compat-matrix.md` como trilha de compatibilidade. O
+estado atual já cobre fetch JS/TS, `Deno.serve`, default fetch, path relativo,
+`x-base`, alguns streams com fallback de primeiro chunk e Wasm v1. Shell, cron,
+routes table, StaticSpa production e observabilidade ainda dependem da Fase 7.
+
+==== Acompanhar evolução do projeto
+
+* Roadmap consolidado: `planning/edger/roadmap.md`.
+* Plano funcional ativo: `planning/edger/runtime-functional-plan.md`.
+* Pendências Epic 07: `planning/edger/docs/pendencies-epic-07.md`.
+* Decisões de arquitetura: `docs/adr/`.

@@ -9,8 +9,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use bytes::Bytes;
 use edger_core::{
-    Extension, ExtensionContext, Middleware, RequestContext, SerializedRequest, SerializedResponse,
-    WorkerManifest,
+    Extension, ExtensionCapability, ExtensionContext, ExtensionHook, Middleware, RequestContext,
+    SerializedRequest, SerializedResponse, WorkerManifest,
 };
 use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
 use edger_isolation::MockIsolate;
@@ -83,10 +83,88 @@ impl Middleware for TestMiddleware {
     }
 }
 
+struct LifecycleMiddleware {
+    events: Arc<Mutex<Vec<String>>>,
+    priority: i32,
+}
+
+impl LifecycleMiddleware {
+    fn new(events: Arc<Mutex<Vec<String>>>, priority: i32) -> Self {
+        Self { events, priority }
+    }
+
+    fn push_event(&self, event: impl Into<String>) {
+        self.events.lock().expect("events lock").push(event.into());
+    }
+}
+
+impl Extension for LifecycleMiddleware {
+    fn capabilities(&self) -> Vec<ExtensionCapability> {
+        vec![
+            ExtensionCapability::RequestHook,
+            ExtensionCapability::LifecycleHook {
+                hook: ExtensionHook::OnWorkerDispatch,
+            },
+            ExtensionCapability::LifecycleHook {
+                hook: ExtensionHook::OnWorkerComplete,
+            },
+            ExtensionCapability::LifecycleHook {
+                hook: ExtensionHook::OnWorkerError,
+            },
+            ExtensionCapability::ResponseHook,
+        ]
+    }
+
+    fn name(&self) -> &'static str {
+        "worker-lifecycle"
+    }
+
+    fn priority(&self) -> i32 {
+        self.priority
+    }
+
+    fn on_init(&self, _ctx: &mut ExtensionContext) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl Middleware for LifecycleMiddleware {
+    fn on_request(
+        &self,
+        _req: &mut SerializedRequest,
+        ctx: &RequestContext,
+    ) -> Result<Option<SerializedResponse>> {
+        let worker = ctx.worker.as_ref().expect("worker context").name.clone();
+        self.push_event(format!("request:{}:{worker}", ctx.request_id));
+        Ok(None)
+    }
+
+    fn on_worker_dispatch(&self, ctx: &RequestContext) -> Result<()> {
+        let worker = ctx.worker.as_ref().expect("worker context").name.clone();
+        self.push_event(format!("workerDispatch:{}:{worker}", ctx.request_id));
+        Ok(())
+    }
+
+    fn on_worker_complete(&self, _res: &SerializedResponse, ctx: &RequestContext) {
+        let worker = ctx.worker.as_ref().expect("worker context").name.clone();
+        self.push_event(format!("workerComplete:{}:{worker}", ctx.request_id));
+    }
+
+    fn on_worker_error(&self, error: &str, ctx: &RequestContext) {
+        let worker = ctx.worker.as_ref().expect("worker context").name.clone();
+        self.push_event(format!("workerError:{}:{worker}:{error}", ctx.request_id));
+    }
+
+    fn on_response(&self, _res: &mut SerializedResponse, ctx: &RequestContext) {
+        let worker = ctx.worker.as_ref().expect("worker context").name.clone();
+        self.push_event(format!("response:{}:{worker}", ctx.request_id));
+    }
+}
+
 struct StubFactory;
 
 impl IsolateFactory for StubFactory {
-    fn create_isolate(&self) -> Box<dyn edger_core::Isolate> {
+    fn create_isolate(&self, _worker_ref: &edger_core::WorkerRef) -> Box<dyn edger_core::Isolate> {
         Box::new(MockIsolate::new())
     }
 }
@@ -182,6 +260,121 @@ async fn short_circuit_skips_pool_fetch() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::from_u16(418).unwrap());
+}
+
+#[tokio::test]
+async fn disabling_middleware_skips_runtime_hooks_without_rebuilding_pipeline() {
+    let mut registry = ExtensionRegistry::new();
+    registry
+        .register(Arc::new(
+            TestMiddleware::new("teapot", 0, Arc::new(Mutex::new(Vec::new())))
+                .with_short_circuit(418),
+        ))
+        .unwrap();
+    let app = build_pipeline(base_orchestrator(registry.clone()));
+
+    let before_disable = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/hello")
+                .header("authorization", "Bearer root")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(before_disable.status(), StatusCode::from_u16(418).unwrap());
+
+    let disabled = registry.set_extension_enabled("teapot", false).unwrap();
+    assert_eq!(disabled.status, "disabled");
+
+    let after_disable = app
+        .oneshot(
+            Request::builder()
+                .uri("/hello")
+                .header("authorization", "Bearer root")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(after_disable.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn worker_lifecycle_hooks_wrap_pool_dispatch() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut registry = ExtensionRegistry::new();
+    registry
+        .register(Arc::new(LifecycleMiddleware::new(events.clone(), 0)))
+        .unwrap();
+    let extension = registry
+        .admin_extension("worker-lifecycle")
+        .expect("lifecycle extension");
+    assert!(extension
+        .capabilities
+        .contains(&"onWorkerDispatch".to_string()));
+    assert!(extension
+        .capabilities
+        .contains(&"onWorkerComplete".to_string()));
+    assert!(extension
+        .capabilities
+        .contains(&"onWorkerError".to_string()));
+    let app = build_pipeline(base_orchestrator(registry));
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/hello")
+                .header("authorization", "Bearer root")
+                .header("x-request-id", "life-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        *events.lock().expect("events lock"),
+        vec![
+            "request:life-1:hello",
+            "workerDispatch:life-1:hello",
+            "workerComplete:life-1:hello",
+            "response:life-1:hello",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn short_circuit_skips_worker_lifecycle_hooks() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut registry = ExtensionRegistry::new();
+    registry
+        .register(Arc::new(
+            TestMiddleware::new("teapot", -10, Arc::new(Mutex::new(Vec::new())))
+                .with_short_circuit(418),
+        ))
+        .unwrap();
+    registry
+        .register(Arc::new(LifecycleMiddleware::new(events.clone(), 10)))
+        .unwrap();
+    let app = build_pipeline(base_orchestrator(registry));
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/hello")
+                .header("authorization", "Bearer root")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::from_u16(418).unwrap());
+    assert!(events.lock().expect("events lock").is_empty());
 }
 
 #[test]

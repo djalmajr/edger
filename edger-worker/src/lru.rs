@@ -67,6 +67,15 @@ impl WorkerLru {
             .map(|(_, instance)| Arc::clone(instance))
     }
 
+    pub fn values_snapshot(&self) -> Vec<Arc<WorkerInstance>> {
+        self.inner
+            .lock()
+            .expect("lru lock")
+            .iter()
+            .map(|(_, instance)| Arc::clone(instance))
+            .collect()
+    }
+
     pub fn count_idle(&self) -> usize {
         let cache = self.inner.lock().expect("lru lock");
         cache

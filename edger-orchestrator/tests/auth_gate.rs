@@ -18,7 +18,7 @@ use tower::ServiceExt;
 struct StubFactory;
 
 impl IsolateFactory for StubFactory {
-    fn create_isolate(&self) -> Box<dyn edger_core::Isolate> {
+    fn create_isolate(&self, _worker_ref: &edger_core::WorkerRef) -> Box<dyn edger_core::Isolate> {
         Box::new(MockIsolate::new())
     }
 }
@@ -77,6 +77,36 @@ async fn protected_route_without_key_returns_401() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn public_visibility_worker_bypasses_auth() {
+    let store = Arc::new(SqliteApiKeyStore::in_memory().unwrap());
+    let state = orchestrator(
+        auth_provider(store, None),
+        AuthGateConfig::default(),
+        vec![(
+            PathBuf::from("/workers/todos"),
+            WorkerManifest {
+                name: "todos".into(),
+                version: Some("1.0.0".into()),
+                visibility: Some("public".into()),
+                ..Default::default()
+            },
+        )],
+    );
+    let app = build_pipeline(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/todos")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
 }
 
 #[tokio::test]

@@ -1,0 +1,21 @@
+name: shell-demo
+version: "1.0.0"
+entrypoint: index.html
+base: "/"
+injectBase: true
+shellExcludes:
+  - chunked-text
+  - commonjs
+  - commonjs-hono
+  - empty-response
+  - hello-world
+  - logger-stdout
+  - read-body
+  - serve
+  - serve-declarative-style
+  - serve-html
+  - sse
+  - state-demo
+  - stream
+  - todos-shell-demo
+  - wasm-hello

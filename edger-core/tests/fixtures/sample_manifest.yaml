@@ -11,6 +11,9 @@ lowMemory: true
 autoInstall: false
 injectBase: true
 visibility: protected
+shellExcludes:
+  - todos
+  - platform
 publicRoutes:
   routes:
     - /health
@@ -20,6 +23,17 @@ cron:
   - schedule: "0 * * * *"
     path: /cron-tick
     method: GET
+bindings:
+  - kind: durableSql
+    name: db
+    namespace: "@acme"
+    permissions:
+      - sql:read
+      - sql:write
+  - kind: keyValue
+    name: cache
+  - kind: queue
+    name: jobs
 kind: serverless
 env:
   NODE_ENV: production

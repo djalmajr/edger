@@ -1,0 +1,36 @@
+# Evidence: Story 08.22 Worker semver range routing
+
+Date: 2026-06-29
+
+## Focused tests
+
+```bash
+cargo test -p edger-orchestrator --lib manifest_index_stub::tests
+```
+
+Result: passed. Covered:
+
+- `semver_range_picks_highest_matching_version`
+- `exact_version_request_does_not_behave_like_caret_range`
+- `semver_range_without_match_returns_not_found`
+
+```bash
+cargo test -p edger-orchestrator --test routing_resolution semver_range
+```
+
+Result: passed. Covered:
+
+- `namespaced_semver_range_picks_highest_matching_version`
+- `unscoped_semver_range_picks_highest_matching_version`
+
+## Full gates
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+git diff --check
+```
+
+Result: passed on 2026-06-29.

@@ -4,9 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use edger_core::{
-    parse_worker_config, ExecutionKind, SerializedRequest, WorkerConfig, WorkerManifest,
-};
+use edger_core::{parse_worker_config, ExecutionKind, SerializedRequest, WorkerManifest};
 use edger_isolation::{WasiConfig, WasmIsolate};
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 
@@ -22,7 +20,7 @@ const HELLO_WAT: &str = r#"
 struct WasmHelloFactory;
 
 impl IsolateFactory for WasmHelloFactory {
-    fn create_isolate(&self) -> Box<dyn edger_core::Isolate> {
+    fn create_isolate(&self, _worker_ref: &edger_core::WorkerRef) -> Box<dyn edger_core::Isolate> {
         Box::new(WasmIsolate::new(WasiConfig::deny_all()))
     }
 }
@@ -75,6 +73,36 @@ async fn pool_fetch_wasm_worker_returns_hello_body() {
         )
         .await
         .unwrap();
+
+    assert_eq!(res.status, 200);
+    assert_eq!(
+        res.body.as_ref().map(|b| b.as_ref()),
+        Some(b"wasm-hello".as_ref())
+    );
+}
+
+#[tokio::test]
+async fn pool_fetch_uses_wasm_kind_from_worker_config_without_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let worker_dir = dir.path().to_path_buf();
+    write_wasm_fixture(&worker_dir);
+
+    let manifest: WorkerManifest =
+        serde_yaml::from_str(&fs::read_to_string(worker_dir.join("manifest.yaml")).unwrap())
+            .unwrap();
+    let config = parse_worker_config(&manifest);
+
+    let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(WasmHelloFactory));
+    let req = SerializedRequest {
+        method: "GET".into(),
+        uri: "/".into(),
+        headers: vec![],
+        body: None,
+        request_id: "pool-wasm-no-hint".into(),
+        base_href: None,
+    };
+
+    let res = pool.fetch(&worker_dir, &config, req, None).await.unwrap();
 
     assert_eq!(res.status, 200);
     assert_eq!(

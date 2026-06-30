@@ -7,6 +7,9 @@ members = [
   "edger-orchestrator",
   "edger-ext-auth",
   "edger-ext-gateway",
+  "edger-ext-turso",
+  "edger-ext-turso-remote",
+  "edger-ext-keyval",
 ]
 
 [workspace.package]
@@ -37,6 +40,7 @@ http = "1"
 hyper = { version = "1", features = ["full"] }
 semver = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
+libsql = { version = "0.10.0-pre.4", default-features = false, features = ["core", "remote", "sync", "tls"] }
 sha2 = "0.10"
 wasmtime = "29"
 wasmtime-wasi = "29"

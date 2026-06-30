@@ -1,25 +1,28 @@
-/agile-refinement — Mode 1: Planning Lint (post Epic 02 delivery)
+/agile-refinement — Mode 1: Planning Lint (Story 09.02 provider local SQLite)
 Scope: planning/edger/
 Date: 2026-06-29
 
 ## Cross-references
-- [OK] Epic 02 stories updated with completed status; roadmap Fase 2 marked completed.
-- [OK] path-preflight: 0 missing (oracle run).
+- [OK] `planning/edger/docs/durable-provider-contract.md` references existing Story 09.01 and now names `LocalSqliteProvider`.
+- [OK] Story 09.02, Epic 09, value matrix and extension docs reference existing artifacts.
+- [OK] path-preflight expected missing: 0.
 
 ## Dependencies
-- [OK] Epic 02 internal graph 02.01 → {02.02,02.03} → 02.04 satisfied in delivery order.
+- [OK] Epic 09 dependency chain is explicit: 09.01 -> 09.02/09.03 -> 09.04 -> 09.05.
+- [OK] 09.02 preserves the existing `turso` operational identity while making `LocalSqliteProvider` the code-level canonical local type.
 
 ## Completeness
-- [OK] Stories 02.01–02.04: AC checked, tasks [x], pendências documented.
-- [OK] Epic 02 acceptance criteria all [x].
+- [OK] Epic 09 overview has required sections.
+- [OK] Stories 09.01-09.05 have Context, Files, Detail, Tasks and Verification.
+- [OK] Story 09.02 acceptance criteria and tasks are checked for local-provider naming scope.
 
 ## Consistency
-- [OK] Status fields match implementation (completed).
-- [OK] edger-core modules match epic TO-BE list.
+- [OK] Roadmap and README show 9 epics and distinguish 57 numbered stories plus the historical spike artifact.
+- [OK] Durable provider wording is consistent: local SQLite uses `LocalSqliteProvider`; `LocalTursoProvider` is legacy alias; Turso remote/sync is a future external provider.
 
 ## Findings summary
 - RED: 0
-- WARN: 0
-- INFO: 31 (Scope/Out heading variant — non-blocking)
+- WARN: 5 (pre-existing task-count/placeholder warnings outside the provider reclassification path)
+- INFO: 57 (Scope/Out heading variant — non-blocking)
 
 VERDICT: PASS

@@ -1,5 +1,5 @@
 {
-  "passed_at": "2026-06-29T02:44:05Z",
+  "passed_at": "2026-06-30T01:00:37Z",
   "planning_lint": {
     "tool": "/agile-refinement Mode 1",
     "scope": "planning/edger/",
@@ -10,7 +10,8 @@
     "missing": 0
   },
   "bun_test": {
-    "fail": 0
+    "status": "skipped",
+    "reason": "no root JS/TS test suite"
   },
   "memory_lint": {
     "excluded": true,

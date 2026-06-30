@@ -1,0 +1,80 @@
+# Story 08.10 runtime evidence
+
+Date: 2026-06-29
+Scope: Deno CLI manifest env injection and sensitive env filtering
+
+## Focused Deno env test
+
+```bash
+cargo test -p edger-orchestrator --test kind_dispatch_integration deno_backend_injects_only_filtered_manifest_env
+```
+
+Result:
+
+```text
+running 1 test
+test deno_backend_injects_only_filtered_manifest_env ... ok
+
+test result: ok. 1 passed; 0 failed; 8 filtered out
+```
+
+Covered behavior:
+
+- `manifest.env.PUBLIC_FLAG` is injected into the Deno worker process.
+- Sensitive manifest keys are absent inside the worker:
+  - `DATABASE_URL`
+  - `OPENAI_API_KEY`
+  - `GITHUB_TOKEN`
+  - `SERVICE_KEY`
+  - `ADMIN_PASSWORD`
+
+## Deno bridge regression suite
+
+```bash
+cargo test -p edger-orchestrator --test kind_dispatch_integration
+```
+
+Result:
+
+```text
+running 9 tests
+test static_spa_serves_index_assets_and_fallback_through_rust_pipeline ... ok
+test wasm_worker_dispatches_through_real_backend ... ok
+test namespaced_worker_receives_relative_path_and_base_header ... ok
+test js_worker_dispatches_through_deno_backend ... ok
+test deno_backend_injects_only_filtered_manifest_env ... ok
+test commonjs_server_listen_worker_dispatches_through_node_adapter ... ok
+test deno_backend_loads_worker_deno_config_import_map ... ok
+test deno_backend_times_out_hanging_streams ... ok
+test repository_js_examples_dispatch_through_deno_backend ... ok
+
+test result: ok. 9 passed; 0 failed
+```
+
+The full Deno bridge suite confirms that clearing the child process environment
+does not break import maps, CommonJS server-listen compatibility, repository
+examples, static SPA dispatch, Wasm dispatch or timeout handling.
+
+## Full gates
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
+Result:
+
+```text
+cargo test --workspace ... ok
+cargo clippy --workspace -- -D warnings ... ok
+cargo fmt -- --check ... ok
+PASS /agile-refinement Mode 1
+PASS refinement-lint.py oracle
+Total refs: 106
+Missing: 0
+stories: 41
+PASS cargo check
+ALL PLANNING GATES PASS
+```

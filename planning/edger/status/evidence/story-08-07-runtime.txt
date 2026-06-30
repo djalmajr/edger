@@ -1,0 +1,178 @@
+# Story 08.07 runtime evidence
+
+Date: 2026-06-29
+Scope: operation, probes, metrics, request-id correlation, local baseline
+
+## Focused automated tests
+
+```bash
+cargo test -p edger-orchestrator --test metrics_endpoint
+```
+
+Result:
+
+```text
+running 4 tests
+test metrics_endpoint_is_prometheus_text_without_secrets ... ok
+test worker_dispatch_receives_request_id_field_and_header ... ok
+test health_readiness_liveness_aliases_keep_request_id ... ok
+test metrics_reflect_worker_pool_cache_hit_after_dispatch ... ok
+
+test result: ok. 4 passed; 0 failed
+```
+
+```bash
+cargo test -p edger-orchestrator metrics
+cargo test -p edger-worker -- metrics
+```
+
+Result:
+
+```text
+edger-orchestrator metrics: ok
+  metrics::tests::prometheus_snapshot_contains_pool_metrics_without_secret_like_labels ... ok
+  metrics_endpoint_is_prometheus_text_without_secrets ... ok
+  metrics_reflect_worker_pool_cache_hit_after_dispatch ... ok
+
+edger-worker metrics: ok
+  get_metrics_reflects_cache_hit_on_second_fetch ... ok
+```
+
+## Runtime launch
+
+```bash
+ROOT_API_KEY=test-root PORT=19084 RUNTIME_WORKER_DIRS=workers \
+  cargo run -p edger-orchestrator --bin edger
+```
+
+Startup:
+
+```text
+edger listening config.addr=0.0.0.0:19084
+```
+
+## Probe checks
+
+```bash
+for probe in /health /healthz /ready /readyz /livez; do
+  curl -sS -w " status=%{http_code} time=%{time_total}\n" \
+    "http://127.0.0.1:19084$probe"
+done
+```
+
+Result:
+
+```text
+{"status":"ok"} status=200 time=0.001781
+{"status":"ok"} status=200 time=0.002374
+{"status":"ready"} status=200 time=0.002197
+{"status":"ready"} status=200 time=0.001021
+{"status":"live"} status=200 time=0.001368
+```
+
+## Worker dispatch baseline
+
+```bash
+curl -sS -H 'authorization: Bearer test-root' \
+  -H 'content-type: application/json' \
+  -d '{"name":"Alice"}' \
+  -w " status=%{http_code} time=%{time_total}\n" \
+  http://127.0.0.1:19084/hello-world
+
+curl -sS -H 'authorization: Bearer test-root' \
+  -H 'content-type: application/json' \
+  -d '{"name":"Bob"}' \
+  -w " status=%{http_code} time=%{time_total}\n" \
+  http://127.0.0.1:19084/hello-world
+```
+
+Result:
+
+```text
+{"message":"Hello Alice from foo!"} status=200 time=0.215365
+{"message":"Hello Bob from foo!"} status=200 time=0.037221
+```
+
+Note: `workers/hello-world` has no persistent TTL, so the scrape below records
+ephemeral misses/terminations. Persistent cache hit is covered by
+`edger-orchestrator/tests/metrics_endpoint.rs` with `ttl: 30s`.
+
+## Metrics scrape
+
+```bash
+curl -sS http://127.0.0.1:19084/metrics
+```
+
+Relevant output:
+
+```text
+# TYPE edger_pool_workers gauge
+edger_pool_workers 0
+
+# TYPE edger_pool_cache_hits_total counter
+edger_pool_cache_hits_total 0
+
+# TYPE edger_pool_cache_misses_total counter
+edger_pool_cache_misses_total 2
+
+# TYPE edger_pool_terminated_total counter
+edger_pool_terminated_total 2
+
+# TYPE edger_pool_spawn_latency_ms_last gauge
+edger_pool_spawn_latency_ms_last 1
+
+# TYPE edger_pool_spawn_latency_ms_p50 gauge
+edger_pool_spawn_latency_ms_p50 1
+
+# TYPE edger_pool_request_duration_ms_last gauge
+edger_pool_request_duration_ms_last 35
+
+# TYPE edger_ephemeral_rejected_total counter
+edger_ephemeral_rejected_total 0
+```
+
+Header and request-id check:
+
+```bash
+curl -sS -D - -o - -H 'x-request-id: story-08-07' \
+  -w "\nstatus=%{http_code} time=%{time_total}\n" \
+  http://127.0.0.1:19084/healthz
+
+curl -sS -D - -o /dev/null \
+  -w "status=%{http_code} time=%{time_total}\n" \
+  http://127.0.0.1:19084/metrics
+```
+
+Result:
+
+```text
+HTTP/1.1 200 OK
+content-type: application/json
+x-request-id: story-08-07
+content-length: 15
+
+{"status":"ok"}
+status=200 time=0.000984
+
+HTTP/1.1 200 OK
+content-type: text/plain; version=0.0.4; charset=utf-8
+x-request-id: 5ea9470c-5797-47fc-84c4-b49f6d04a163
+content-length: 1829
+
+status=200 time=0.000929
+```
+
+## Browser check
+
+Browser plugin read-only validation against the same local server:
+
+```text
+http://127.0.0.1:19084/healthz -> application/json, {"status":"ok"}
+http://127.0.0.1:19084/readyz -> application/json, {"status":"ready"}
+http://127.0.0.1:19084/metrics -> text/plain, Prometheus metrics body
+```
+
+## Cleanup
+
+The `edger` process started for this validation was stopped. Port `19084` was
+confirmed free afterwards.

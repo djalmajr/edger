@@ -159,6 +159,52 @@ fn namespaced_exact_semver() {
 }
 
 #[test]
+fn namespaced_semver_range_picks_highest_matching_version() {
+    let index = build_index();
+    let route = resolve_route("/@acme/app@^1.0.0/foo", None, &index).unwrap();
+    match route {
+        ResolvedRoute::Worker {
+            worker,
+            rewritten_path,
+            ..
+        } => {
+            assert_eq!(worker.name, "@acme/app");
+            assert_eq!(worker.version, "1.0.0");
+            assert_eq!(rewritten_path, "/foo");
+        }
+        other => panic!("expected worker, got {other:?}"),
+    }
+}
+
+#[test]
+fn unscoped_semver_range_picks_highest_matching_version() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(PathBuf::from("/w/svc-1"), manifest("svc", "1.2.0"))
+        .unwrap();
+    index
+        .insert(PathBuf::from("/w/svc-2"), manifest("svc", "1.4.0"))
+        .unwrap();
+    index
+        .insert(PathBuf::from("/w/svc-3"), manifest("svc", "2.0.0"))
+        .unwrap();
+
+    let route = resolve_route("/svc@~1.2.0/ping", None, &index).unwrap();
+    match route {
+        ResolvedRoute::Worker {
+            worker,
+            rewritten_path,
+            ..
+        } => {
+            assert_eq!(worker.name, "svc");
+            assert_eq!(worker.version, "1.2.0");
+            assert_eq!(rewritten_path, "/ping");
+        }
+        other => panic!("expected worker, got {other:?}"),
+    }
+}
+
+#[test]
 fn namespaced_semver_with_rewrite() {
     let index = build_index();
     let route = resolve_route("/@acme/app@1.0.0/foo", None, &index).unwrap();
@@ -270,6 +316,31 @@ fn unknown_worker_returns_not_found() {
     let index = build_index();
     let err = resolve_route("/nope", None, &index).unwrap_err();
     assert_eq!(err.code, "NOT_FOUND");
+}
+
+#[test]
+fn disabled_worker_is_removed_from_route_resolution_and_inventory() {
+    let index = build_index();
+    let disabled = index.set_worker_enabled("hello", false).unwrap();
+    assert_eq!(disabled.name, "hello");
+    assert_eq!(disabled.status, "disabled");
+
+    let err = resolve_route("/hello", None, &index).unwrap_err();
+    assert_eq!(err.code, "NOT_FOUND");
+    let workers = index.admin_workers();
+    let hello = workers
+        .iter()
+        .find(|worker| worker.name == "hello")
+        .unwrap();
+    assert_eq!(hello.status, "disabled");
+
+    let enabled = index.set_worker_enabled("hello", true).unwrap();
+    assert_eq!(enabled.status, "loaded");
+    let route = resolve_route("/hello", None, &index).unwrap();
+    match route {
+        ResolvedRoute::Worker { worker, .. } => assert_eq!(worker.name, "hello"),
+        other => panic!("expected worker, got {other:?}"),
+    }
 }
 
 #[test]

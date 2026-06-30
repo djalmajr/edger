@@ -14,7 +14,9 @@ mkdir -p "$EVIDENCE"
 for f in refinement-report.txt agile-refinement-report.txt refinement-lint-oracle.txt path-preflight.txt \
   artifact-inspection.txt bun-test.txt cargo-check.txt epics-tree.txt epics-inventory.txt \
   gates-summary.json run-gates.log; do
-  [[ -f "$SCRATCH/$f" ]] && cp "$SCRATCH/$f" "$EVIDENCE/$f"
+  [[ -f "$SCRATCH/$f" ]] || continue
+  [[ "$SCRATCH/$f" -ef "$EVIDENCE/$f" ]] && continue
+  cp "$SCRATCH/$f" "$EVIDENCE/$f"
 done
 
 GENERATED=$(python3 -c "import json; print(json.load(open('$SCRATCH/gates-summary.json'))['passed_at'])")
@@ -27,11 +29,13 @@ generated=$GENERATED
 Planning lint: /agile-refinement Mode 1 — 0 red flags (evidence/refinement-report.txt)
 Oracle: refinement-lint.py — 0 RED (evidence/refinement-lint-oracle.txt)
 Path-preflight: 0 missing
-bun test: 0 fail
+JS test gate: see evidence/bun-test.txt
 
 Next: $NEXT_STEP
 STATUSEOF
-cp "$EVIDENCE/agile-status.txt" "$SCRATCH/agile-status.txt"
+if [[ ! "$EVIDENCE/agile-status.txt" -ef "$SCRATCH/agile-status.txt" ]]; then
+  cp "$EVIDENCE/agile-status.txt" "$SCRATCH/agile-status.txt"
+fi
 
 python3 - "$CONSOLIDATION" "$GENERATED" <<'PY'
 import re, pathlib, sys
@@ -46,7 +50,7 @@ gates = (
     "- [x] refinement-lint.py oracle — 0 RED (status/evidence/refinement-lint-oracle.txt)\n"
     "- [x] Path-preflight — 0 missing (status/evidence/path-preflight.txt)\n"
     "- [x] Fase 1-2 completed; Fases 3-7 ready-for-development\n"
-    "- [x] bun test pass (status/evidence/bun-test.txt)\n"
+    "- [x] JS test gate reviewed (status/evidence/bun-test.txt)\n"
 )
 evidence = (
     "## Evidence (committed)\n\n"
@@ -58,7 +62,7 @@ evidence = (
     "| artifact-inspection.txt | story sections |\n"
     "| gates-summary.json | run-gates.sh |\n"
     "| agile-status.txt | consolidation snapshot |\n"
-    "| bun-test.txt | regression |\n"
+    "| bun-test.txt | optional JS test gate |\n"
 )
 text = re.sub(
     r"## Maturity gates \(planning\)\n.*?(?=\n## Critical path)",

@@ -4,17 +4,17 @@
 
 ## Core
 - Core (edger-core or lib) is pure vocabulary: no I/O.
-- Always run `bun test` + lints before claiming complete.
-- Use colocated .test.ts
+- Always run the Rust gate before claiming complete: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`.
+- Run `bun test` only if a root JS/TS test suite exists; the historical Bun adapter is removed.
 - Small behavior preserving changes.
 - Preserve worker/extension isolation.
 - Update this, root AGENTS.md, roadmap, epics, status when state changes.
 - Use explicit memory scopes (workspace:"djalmajr", project:"edger") ; use zommehq/buntime when referencing buntime knowledge.
 
 ## Launch
-- edger entry: bun edger.ts --dir <worker-dir> [--port N]
+- edger entry: `ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers cargo run -p edger-orchestrator --bin edger`
 - Worker dir must have index.{ts,js,mjs} compatible with Deno.serve or export default { fetch }
-- Copy verbatim from edge-runtime/examples; keep compat.
+- JS/TS workers currently execute via the Deno CLI bridge (`deno` on PATH or `EDGER_DENO_BIN`). Embedded `deno_core` remains the production target; do not reintroduce a Bun adapter.
 
 <!-- ai-memory:start -->
 ## Long-term memory (ai-memory)

@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use edger_core::{
-    extract_api_key_from_pairs, root_principal, ApiKeyPrincipal, ApiKeyStore, AuthProvider,
-    Extension, ExtensionContext, HeaderPairs,
+    extract_api_key_from_pairs, root_principal, AdminApiKeyInfo, AdminCreateApiKeyRequest,
+    ApiKeyPrincipal, ApiKeyStore, AuthProvider, Extension, ExtensionCapability, ExtensionContext,
+    HeaderPairs,
 };
 
 pub mod store;
@@ -46,6 +47,13 @@ impl AuthExtension {
 }
 
 impl Extension for AuthExtension {
+    fn capabilities(&self) -> Vec<ExtensionCapability> {
+        vec![
+            ExtensionCapability::auth_provider(),
+            ExtensionCapability::ApiKeys,
+        ]
+    }
+
     fn name(&self) -> &'static str {
         "auth"
     }
@@ -72,5 +80,38 @@ impl AuthProvider for AuthExtension {
             return Ok(Some(root_principal()));
         }
         self.store.lookup_by_key(&raw_key).map_err(Into::into)
+    }
+
+    fn list_api_keys(&self) -> Result<Vec<AdminApiKeyInfo>> {
+        self.store.list_keys().map_err(Into::into)
+    }
+
+    fn create_api_key(
+        &self,
+        raw_key: &str,
+        request: &AdminCreateApiKeyRequest,
+    ) -> Result<AdminApiKeyInfo> {
+        let role = if request.role.trim().is_empty() {
+            "viewer"
+        } else {
+            request.role.trim()
+        };
+        let id = self.store.insert_key(
+            raw_key,
+            request.name.trim(),
+            role,
+            &request.permissions,
+            &request.namespaces,
+            request.expires_at,
+        )?;
+        self.store
+            .list_keys()?
+            .into_iter()
+            .find(|key| key.id == id)
+            .ok_or_else(|| anyhow::anyhow!("created API key metadata is missing"))
+    }
+
+    fn revoke_api_key(&self, id: u64) -> Result<bool> {
+        self.store.revoke_key(id).map_err(Into::into)
     }
 }

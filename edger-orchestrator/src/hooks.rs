@@ -13,7 +13,7 @@ pub fn run_on_request(
     req: &mut SerializedRequest,
     ctx: &RequestContext,
 ) -> Result<Option<SerializedResponse>> {
-    for middleware in registry.middlewares() {
+    for middleware in registry.active_middlewares() {
         if let Some(response) = middleware.on_request(req, ctx)? {
             return Ok(Some(response));
         }
@@ -27,26 +27,49 @@ pub fn run_on_response(
     res: &mut SerializedResponse,
     ctx: &RequestContext,
 ) {
-    for middleware in registry.middlewares().iter().rev() {
+    for middleware in registry.active_middlewares().iter().rev() {
         middleware.on_response(res, ctx);
     }
 }
 
+pub fn run_on_worker_dispatch(registry: &ExtensionRegistry, ctx: &RequestContext) -> Result<()> {
+    for middleware in registry.active_middlewares() {
+        middleware.on_worker_dispatch(ctx)?;
+    }
+    Ok(())
+}
+
+pub fn run_on_worker_complete(
+    registry: &ExtensionRegistry,
+    res: &SerializedResponse,
+    ctx: &RequestContext,
+) {
+    for middleware in registry.active_middlewares().iter().rev() {
+        middleware.on_worker_complete(res, ctx);
+    }
+}
+
+pub fn run_on_worker_error(registry: &ExtensionRegistry, error: &str, ctx: &RequestContext) {
+    for middleware in registry.active_middlewares().iter().rev() {
+        middleware.on_worker_error(error, ctx);
+    }
+}
+
 pub fn run_on_init(registry: &ExtensionRegistry, ctx: &mut ExtensionContext) -> Result<()> {
-    for ext in registry.middlewares() {
+    for ext in registry.active_middlewares() {
         ext.on_init(ctx)?;
     }
     Ok(())
 }
 
 pub fn run_on_server_start(registry: &ExtensionRegistry, server: &ServerHandle) {
-    for ext in registry.middlewares() {
+    for ext in registry.active_middlewares() {
         ext.on_server_start(server);
     }
 }
 
 pub fn run_on_shutdown(registry: &ExtensionRegistry) -> Result<()> {
-    for ext in registry.middlewares() {
+    for ext in registry.active_middlewares() {
         ext.on_shutdown()?;
     }
     Ok(())

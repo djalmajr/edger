@@ -89,5 +89,4 @@ cargo test -p edger-core -- cron_job
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
-bun test
 ```

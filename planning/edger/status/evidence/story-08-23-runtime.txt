@@ -1,0 +1,23 @@
+# Evidence: Story 08.23 API key bootstrap store
+
+Date: 2026-06-29
+
+## Commands
+
+```bash
+cargo test -p edger-ext-auth file_backed_store_bootstraps_auth_without_durable_sql_provider
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+git diff --check
+```
+
+## Results
+
+- `cargo test -p edger-ext-auth file_backed_store_bootstraps_auth_without_durable_sql_provider`: PASS.
+- `cargo test --workspace`: PASS.
+- `cargo clippy --workspace -- -D warnings`: PASS.
+- `cargo fmt -- --check`: PASS.
+- `SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh`: PASS.
+- `git diff --check`: PASS.

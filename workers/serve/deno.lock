@@ -1,0 +1,22 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@supabase/functions-js@^2.5.0": "2.108.2"
+  },
+  "jsr": {
+    "@supabase/functions-js@2.108.2": {
+      "integrity": "39665d68e1cb721b0714ed1f55c075fba16f8d992672b51458660b3c1ec77c8f"
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "jsr:@supabase/functions-js@^2.5.0"
+    ],
+    "packageJson": {
+      "dependencies": [
+        "npm:@supabase/functions-js@^2.108.2",
+        "npm:@types/bun@latest"
+      ]
+    }
+  }
+}

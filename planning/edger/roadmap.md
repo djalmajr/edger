@@ -25,17 +25,20 @@
 - Objetivo 4: Orquestrador funcional em Rust (roteamento, auth, hooks, servidor básico) preservando contratos Buntime.
 - Objetivo 5: Mecanismo de extensões via crates + primeiras extensões úteis.
 - Objetivo 6: Features avançadas (manifests completos, shell, Wasm, observabilidade) + preparação para migração e uso real.
+- Objetivo 7: Providers duráveis externos substituíveis, mantendo Turso remoto/sync fora do core/orchestrator e atrás de contratos estáveis.
 
 ## Initiatives / Epics
 | Initiative | Epic | Stories | Status | Dependency |
 |---|---|---|---|---|
-| Fase 1: Fundação | [`epics/01-fundacao/`](epics/01-fundacao/00-overview.md) | 4 | **completed** (Bun loader delivered) | -- |
+| Fase 1: Fundação | [`epics/01-fundacao/`](epics/01-fundacao/00-overview.md) | 4 | **completed** (historical Bun bootstrap removed from active runtime) | -- |
 | Fase 2: edger-core | [`epics/02-edger-core/`](epics/02-edger-core/00-overview.md) | 4 | **completed** | Fase 1 |
 | Fase 3: Isolação + Spike | [`epics/03-isolacao-execucao/`](epics/03-isolacao-execucao/00-overview.md) | 4 | **completed** | Fase 2 |
 | Fase 4: Worker Management | [`epics/04-worker-management/`](epics/04-worker-management/00-overview.md) | 4 | **completed** | Fase 2, Fase 3 |
 | Fase 5: Orquestrador | [`epics/05-orquestrador/`](epics/05-orquestrador/00-overview.md) | 5 | **completed** | Fase 1-4 |
 | Fase 6: Extensibilidade | [`epics/06-extensibilidade/`](epics/06-extensibilidade/00-overview.md) | 3 | **completed** | Fase 5 |
 | Fase 7: Avançado | [`epics/07-avancado/`](epics/07-avancado/00-overview.md) | 7 | in-progress | Fase 5-6 |
+| Fase 8: Valor Buntime | [`epics/08-valor-buntime/`](epics/08-valor-buntime/00-overview.md) | 29 | in-progress (valor executável provado; reduzindo gaps must-have restantes) | Fase 7 baseline |
+| Fase 9: Providers Duráveis Externos | [`epics/09-providers-duraveis-externos/`](epics/09-providers-duraveis-externos/00-overview.md) | 5 | in-progress (provider crate, wiring and consumer evidence delivered; real Turso target remains opt-in) | Fase 8.04, Fase 8.06 |
 
 ## Suggested sequence
 1. Fase 1 (Fundação) -- Alinha o skeleton real e estabelece cultura (AGENTS, testes, gate). Alta prioridade porque desbloqueia tudo e evita dívida técnica.
@@ -45,6 +48,8 @@
 5. Fase 5 (Orquestrador) -- Integra tudo anterior. Entrega valor visível (servidor básico rodando workers).
 6. Fase 6 (Extensões) -- Paralela possível com partes de Fase 5; demonstra Open/Closed.
 7. Fase 7 (Avançado) -- Consolida e prepara produção/migração. Inclui learnings de ai-memory em observabilidade e disciplina.
+8. Fase 8 (Valor Buntime) -- Transforma aprendizados Buntime em valor edger-native: API operacional, segurança, serviços de estado, shell/gateway, extensões, operação e provas de migração.
+9. Fase 9 (Providers Duráveis Externos) -- Move Turso remoto/sync e storage compartilhado para providers substituíveis, sem contaminar o core nem o orchestrator.
 
 Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador podem avançar com mocks. Extensões podem começar protótipos cedo.
 
@@ -52,6 +57,7 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 - **Embedding risk (alto)**: Spike (Fase 3) pode revelar complexidade maior (cold starts, Node subset, Wasm interop). Mitigação: spike time-boxed, fallback para mocks mais tempo.
 - **Fidelidade de contratos Buntime**: Risco de drift durante tradução Rust. Mitigação: matriz explícita + testes de compat em Fase 7. PRs devem referenciar design.md.
 - **Dependências externas**: Escolha final de embedding (deno_core) pode ter manutenção (versões V8). Mitigação: documentar em Risks do design.
+- **Provider remoto/sync**: Risco de acoplar edger a Turso/libSQL específico. Mitigação: Epic 09 mantém `DurableSqlProvider` como fronteira; `edger-ext-turso-remote` vive como crate separado e o registro no composition root fica concentrado na Story 09.04.
 - **Escopo creep**: Querer tudo (full SSR Next.js nativo) cedo. Mitigação: non-goals claros no intake/design; foco em foundation + adapters.
 - **Testes e disciplina**: Sem gate forte desde início, qualidade cai. Mitigação: Fase 1 entrega o gate obrigatório.
 - **Migração**: Usuários Buntime existentes. Mitigação: preservar contracts (fetch/routes, manifests, namespaces, TTL, shell) + docs de mapping.
@@ -66,16 +72,20 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 - Multi-proc clustering full (começar early, mas full depois).
 
 ## Verification
-- [x] Fase 1 (Fundação) complete: functional Bun loader + 11+ examples with deno.server index compat running + tests + docs/lints clean.
+- [x] Fase 1 (Fundação) complete as historical bootstrap; active runtime path is now Rust-only (`edger.ts` removed).
 - [x] Roadmap objectives são observáveis (servidor `edger` + pipeline + auth ext após Fase 5–6).
 - [x] Sequência faz sentido com dependências (core antes de tudo, spike cedo).
 - [x] Link claro entre roadmap, design PRs e futuros epics/stories.
 - [x] Incorpora learnings de ai-memory (testes, core puro, AGENTS, single-actor patterns) e visão Buntime + estrutura Edge.
-- [ ] Stakeholder-ready: mostra jornada completa com riscos e out-of-scope (update as Fases advance).
+- [x] Stakeholder-ready: mostra jornada completa com riscos e out-of-scope; Fase 8 prova valor executável e mantém lacunas futuras explícitas.
 
 ## Recommended next step
 - Fases 1–6 **delivered**. Ver `status/checkpoint-2026-06-29-epic-06-closure.md`.
-- **Próxima execução:** Epic 07 — stories `04-real-js-execution.md` + `05-wasm-execution.md` (caminho crítico PR 10).
+- Fase 8 tem **prova executável de paridade de valor** e segue reduzindo gaps `must partial`; ver `status/checkpoint-2026-06-29-epic-08-value-parity.md`.
+- Fase 9 entregou provider externo, wiring configurável e provas de consumidores reais; ver `epics/09-providers-duraveis-externos/00-overview.md`.
+- **Próxima execução técnica:** continuar gaps de maior valor da matriz, voltando para Epic 07 quando a lacuna depender de foundation como cron nativo, embedded `deno_core` ou streaming real.
+- **Próxima estrutura de valor:** evoluir lacunas explícitas da matriz em fatias pequenas e testáveis, tratando storage remoto/sync por Epic 09 quando exigir provider externo.
+- **Plano ativo:** `runtime-functional-plan.md`.
 - Per-story: `/agile-status` checkpoint + `/agile-refinement` após cada story (evidence em `status/`).
 
 ---

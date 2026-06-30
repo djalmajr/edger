@@ -27,7 +27,7 @@ impl Default for MockIsolateFactory {
 }
 
 impl IsolateFactory for MockIsolateFactory {
-    fn create_isolate(&self) -> Box<dyn edger_core::Isolate> {
+    fn create_isolate(&self, _worker_ref: &edger_core::WorkerRef) -> Box<dyn edger_core::Isolate> {
         let mut mock = MockIsolate::new();
         if self.slow_fetch_ms > 0 {
             mock = mock.with_slow_fetch_ms(self.slow_fetch_ms);

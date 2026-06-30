@@ -1,0 +1,61 @@
+# Story 08.18 runtime evidence — gateway read-only Admin API
+
+Date: 2026-06-29
+
+Scope:
+- Gateway diagnostics now include a safe `config` block.
+- `GET /api/admin/gateway/stats` returns the full local gateway diagnostic
+  snapshot.
+- `GET /api/admin/gateway/config` returns safe read-only gateway config.
+- `GET /api/admin/gateway/logs` returns recent gateway decisions with filters:
+  `limit`, `rateLimited`, `status`, and `decision`.
+- All gateway Admin API endpoints require root credentials.
+- Logs/config do not serialize request headers, bodies, `Authorization`,
+  `x-api-key`, or raw secrets.
+- No SSE, persisted history, log deletion, rate-limit reset, config mutation,
+  external proxy, cache, or distributed rate-limit in this slice.
+
+Focused verification:
+
+```bash
+cargo test -p edger-ext-gateway --test gateway_middleware diagnostics_tracks_gateway_decisions_without_sensitive_data -- --exact
+cargo test -p edger-orchestrator --test admin_workers_plugins gateway_admin_readonly_api_exposes_stats_config_and_filtered_logs -- --exact
+```
+
+Result:
+- Initial TDD run failed before implementation:
+  - `diagnostics["config"]["cors"]["origin"]` was `null`.
+  - `/api/admin/gateway/stats` returned `404` instead of root-gated `401`.
+- Final focused gateway run: 1 passed.
+- Final focused Admin API run: 1 passed.
+
+Workspace gate:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+```
+
+Result:
+- Passed.
+- `cargo test --workspace`: all workspace unit, integration and doc tests passed.
+- `cargo clippy --workspace -- -D warnings`: passed with no warnings.
+- `cargo fmt -- --check`: passed.
+
+Planning gate:
+
+```bash
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
+Result:
+- Passed.
+- `/agile-refinement` Mode 1: 0 red flags.
+- `refinement-lint.py`: passed.
+- `path-preflight`: 122 refs, 0 missing.
+- Artifact inspection: 8 epics, 49 stories, all stories with required sections.
+- `bun test`: skipped because no root JS/TS test suite exists after Bun adapter
+  removal.
+- `cargo check`: passed.
+- Overall result: all planning gates passed.

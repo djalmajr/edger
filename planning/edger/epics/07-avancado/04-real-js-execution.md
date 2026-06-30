@@ -1,15 +1,16 @@
-# Story 07.04: Execução JS/TS real (deno_core + facade)
+# Story 07.04: Execução JS/TS real (Deno bridge + deno_core facade)
 
 **Origin:** `planning/edger/epics/07-avancado/00-overview.md`
 
 ## Context
-- **Problema:** Após o spike (Fase 3), o isolate ainda usa mock; não há caminho production para `fetch`, `routes` e SPA estática via deno_core + facade como no Edge Runtime.
-- **Objetivo:** Implementar backend real em `edger-isolation` usando deno_core + facade para `ExecutionKind` JS (FetchHandler, RoutesTable, StaticSpa), integrado ao WorkerPool com limites básicos e suporte eszip/precomp onde aplicável.
+- **Problema:** Após o spike (Fase 3), o isolate ainda usava mock para JS/TS; o adapter Bun foi removido, então não havia mais caminho alternativo para executar exemplos JS/TS fora do runtime Rust. Falta o backend production embutido para `fetch`, `routes` e SPA estática via deno_core + facade como no Edge Runtime.
+- **Objetivo:** Implementar backend real em `edger-isolation` para `ExecutionKind` JS. V1 usa Deno CLI bridge para tornar o runtime funcional; a versão final troca o bridge por deno_core + facade.
 - **Valor:** Workers JS/TS Buntime-compat rodam no runtime Rust; desbloqueia PR 11 e testes E2E reais.
 - **Restrições:** Bloqueado até spike go/no-go; feature flag `deno` no crate isolation; partial Node compat documentado; multi-process prep via `Serialized*` wire types.
 
 ## Traceability
 - **Source docs:** `planning/edger/design.md` (PR 10, Embedding Spike, Execution Isolation Layer, eszip/precomp)
+- **Plano ativo:** `planning/edger/runtime-functional-plan.md`
 - **Design PR:** PR 10 (parte JS/TS)
 - **Edge Runtime refs:** `deno_facade`, `base_rt` patterns
 - **Depende de:** Epic 03 (spike), Epic 04 (WorkerPool), Epic 05 (orchestrator dispatch)
@@ -18,6 +19,7 @@
 
 | Path | Action | Reason |
 |---|---|---|
+| `edger-isolation/src/deno/cli.rs` | create | Bridge funcional via Deno CLI para Deno.serve/default fetch |
 | `edger-isolation/src/deno.rs` | create | Facade deno_core: boot isolate, ops, module load |
 | `edger-isolation/src/deno/fetch.rs` | create | `execute_fetch` — export `fetch(req) -> Response` |
 | `edger-isolation/src/deno/routes.rs` | create | `execute_routes` — tabela de rotas serializada |
@@ -37,9 +39,14 @@
 ## Detail
 
 ### AS-IS
-- `Isolate` trait com `MockIsolate` cobrindo todos os kinds.
-- Spike documentado mas sem código production em `src/deno.rs`.
-- Pool chama mock; latência/spawn não medidos com V8 real.
+- `DenoIsolate` executa JS/TS real via Deno CLI bridge.
+- Exemplos principais em `workers/` passam por `edger-orchestrator` + `WorkerPool`.
+- Worker-local `deno.json`/`deno.jsonc` é carregado pela bridge; import maps locais cobertos por teste.
+- `stream`/`sse` têm resposta bounded-first-chunk no bridge v1; passthrough streaming real segue pendente.
+- `logger-stdout`, `serve` e `commonjs` respondem manualmente via bin Rust; `commonjs-hono` funciona quando chamado com a rota interna como subpath montado, que é a semântica Buntime de strip-prefix + `x-base`.
+- Static SPA real (`entrypoint: index.html`) serve HTML/assets/fallback e injeta `<base href>`.
+- `buntime/apps/todos` foi validado por HTTP sem `Authorization`; Chrome automation ficou bloqueada por indisponibilidade do backend Chrome.
+- Spike `deno_core` segue documentado como caminho embutido pendente.
 
 ### TO-BE
 - `DenoIsolate` carrega entrypoint do worker dir (file ou eszip bundle).
@@ -51,16 +58,23 @@
 - Testes com fixtures em `workers/` espelhando contratos Buntime (`export default { fetch }`, Deno.serve style onde aplicável).
 
 ### Scope
-- **In:** deno_core facade production path, fetch/routes/SPA, pool integration, limites básicos, testes integração.
+- **In:** Deno CLI bridge funcional, deno_core facade production path, fetch/routes/SPA, pool integration, limites básicos, testes integração.
 - **Out:** Wasm (07.05), fullstack/SSR adapters (stub `Fullstack` retorna 501 com mensagem), 100% Node polyfills.
 
 ### Acceptance criteria
-- [ ] Worker `workers/js-fetch/` responde GET com body esperado via `pool.fetch` + `DenoIsolate`.
+- [x] Worker fetch responde com body esperado via pipeline + `DenoIsolate`.
+- [x] Worker com import remoto (`logger-stdout`) responde via validação manual.
+- [x] Worker com `deno.json`/JSR (`serve`) responde via validação manual.
+- [x] CommonJS `http.createServer(...).listen(...)` simples responde via adapter Node mínimo.
+- [x] Worker montado recebe path relativo e header `x-base` compatíveis com Buntime.
+- [x] Static SPA real serve index/assets/fallback com base injection.
+- [x] `buntime/apps/todos` responde sem auth em `/todos` e assets.
 - [ ] Worker `workers/js-routes/` roteia POST `/api/x` corretamente.
 - [ ] SPA fixture retorna `text/html` com status 200; com `inject_base` injeta tag base.
-- [ ] Timeout do manifest encerra execução longa com erro tipado `IsolationError::Timeout`.
+- [x] Timeout do manifest encerra execução longa com erro tipado (`DENO_TIMEOUT`).
+- [x] `stream`/`sse` retornam primeiro chunk/evento sem travar o request no bridge v1.
 - [ ] Path traversal em entrypoint/static rejeitado (`../` fora do worker dir).
-- [ ] `cargo test -p edger-isolation` verde com feature `deno`; mock ainda disponível com `--no-default-features` para CI rápido se necessário.
+- [x] `cargo test -p edger-isolation --features deno deno::cli` verde; mock ainda disponível com `--no-default-features` para CI rápido se necessário.
 - [ ] Spawn + exec baseline registrado em log (prep para harness 07.07).
 
 ### Dependencies
@@ -76,23 +90,35 @@
 ## Tasks
 
 ### Fase 1 — Facade bootstrap
-- [ ] Criar `deno.rs`: V8 platform init (singleton), op registration mínima, load module from path.
-- [ ] Roundtrip hello-world fetch (string module) — teste isolado.
+- [x] Criar bridge funcional `deno/cli.rs` para Deno CLI.
+- [x] Roundtrip hello-world fetch via pipeline.
+- [ ] Criar `deno_core` runtime: V8 platform init (singleton), op registration mínima, load module from path.
 - [ ] Documentar sharp edges do spike em comentários/module docs.
 
 ### Fase 2 — ExecutionKind JS
-- [ ] `execute_fetch`: bridge `SerializedRequest`/`Response` JS ↔ Rust.
+- [x] `execute_fetch`: bridge `SerializedRequest`/`Response` JS ↔ Rust.
 - [ ] `execute_routes`: convenção de export `routes` (objeto ou array) alinhada Buntime.
-- [ ] `serve_static_spa`: fs read + MIME + base injection.
+- [x] `serve_static_spa`: fs read + MIME + base injection.
 
 ### Fase 3 — Pool + limits
-- [ ] `DenoIsolate` wired em `edger-worker/instance.rs`.
-- [ ] Supervisor: timeout timer, terminate on critical error.
+- [x] `DenoIsolate` wired no factory do orquestrador.
+- [x] Bridge Deno CLI aplica timeout/process kill por `config.timeout_ms`.
+- [x] Bridge Deno CLI executa no cwd do worker e carrega `deno.json`/`deno.jsonc`.
+- [x] Bridge Deno CLI captura primeiro chunk de streams sem fim e cancela o reader.
+- [x] Bridge Deno CLI captura Node `http.createServer` e adapta para Fetch Response.
+- [x] Orquestrador injeta `x-base` e preserva base namespaced (`/@scope/app`) sem remover `@`.
+- [x] `visibility: public` bypassa auth para worker inteiro.
+- [ ] Supervisor: memory/CPU guard do backend embutido.
 - [ ] `limits.rs`: port inicial de memory/CPU guard do spike.
 
 ### Fase 4 — Bundling + testes
 - [ ] `bundle.rs`: suporte file-based v1; hook eszip se spike recomendou.
-- [ ] Fixtures `workers/js-*` + integration tests.
+- [x] `workers/` real coberto em integration test (`hello-world`, `read-body`, `empty-response`, `serve-declarative-style`, `chunked-text`, `stream`, `sse`, `serve-html`).
+- [x] Import map via `deno.json` coberto em integration test.
+- [x] CommonJS server-listen simples coberto em integration test.
+- [x] Paridade Buntime de path/base coberta em integration test namespaced.
+- [x] Static SPA + manifest fallback via `package.json` cobertos em testes.
+- [x] Validação manual cobre `logger-stdout` e `serve`.
 - [ ] Gate workspace; atualizar README com feature flags.
 
 ## Verification
@@ -102,5 +128,4 @@ cargo test -p edger-worker --features deno
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
-bun test
 ```

@@ -50,12 +50,12 @@
 - **Out:** Shell UI routing (07.02), cron firing (07.03), OTEL (07.06), limites body (07.07).
 
 ### Acceptance criteria
-- [ ] `load_manifests_from_dirs(&[PathBuf])` retorna registry com workers namespaced (`@scope/name@ver`).
-- [ ] Inferência cobre todos os 5 passos do design; `kind` explícito sobrescreve inferência.
+- [x] `load_manifests_from_dirs(&[PathBuf])` retorna registry com workers namespaced (`@scope/name@ver`).
+- [ ] Inferência cobre todos os 5 passos do design; `kind` explícito sobrescreve inferência. Parcial: manifest/package/index + `.html`/`.wasm`/`.wat`.
 - [ ] Colisão de nome+namespace+versão retorna erro tipado (não sobrescreve silenciosamente).
-- [ ] Cada `ExecutionKind` tem teste de integração que retorna resposta HTTP válida (com backends 07.04/07.05).
-- [ ] `RUNTIME_WORKER_DIRS` com múltiplos paths (`dir1:dir2`) merge correto com precedência documentada.
-- [ ] Worker com `enabled: false` não é despachado; toggle sem restart verificado em teste.
+- [ ] Cada `ExecutionKind` tem teste de integração que retorna resposta HTTP válida (parcial: Wasm real coberto por `kind_dispatch_integration.rs`; JS aguarda 07.04).
+- [x] `RUNTIME_WORKER_DIRS` com múltiplos paths (`dir1:dir2`) merge correto com precedência documentada.
+- [x] Worker com `enabled: false` não é despachado.
 
 ### Dependencies
 - Story 07.04 (JS backend para Fetch/Routes/SPA)
@@ -70,19 +70,19 @@
 ## Tasks
 
 ### Fase 1 — Core + loader (vertical)
-- [ ] Completar/normalizar `ExecutionKind` e `parse_worker_config` em `edger-core` com testes de mapping Buntime.
-- [ ] Implementar `manifest_loader.rs`: scan dir, parse yaml, build `WorkerRef`, collision check.
-- [ ] Testes unitários: inferência por entrypoint, semver default `latest`, namespace parse.
+- [x] Completar/normalizar `ExecutionKind` e `parse_worker_config` em `edger-core` com testes de mapping Buntime.
+- [x] Implementar `manifest_loader.rs`: scan dir, parse yaml/package/index, build `WorkerRef`, collision check.
+- [x] Testes unitários: inferência por entrypoint, semver default `latest`, namespace parse.
 
 ### Fase 2 — Resolver + pipeline
 - [ ] `resolver.rs`: lookup por path (`/name`, `/@scope/name@ver`) usando registry.
-- [ ] Integrar loader no `main`/composition sketch do orchestrator (env `RUNTIME_WORKER_DIRS`).
+- [x] Integrar loader no `main`/composition sketch do orchestrator (env `RUNTIME_WORKER_DIRS`, default `workers`).
 - [ ] Pipeline: após auth/hooks, resolver worker → `pool.fetch(..., kind_hint)`.
 
 ### Fase 3 — Dispatch exhaustivo
 - [ ] `edger-isolation/kinds.rs`: branch por `ExecutionKind` chamando trait methods corretas.
 - [ ] Fixtures em `workers/manifest-kinds/` (fetch, routes, spa, wasm, fullstack stub).
-- [ ] Integration tests E2E via tower/hyper test client.
+- [ ] Integration tests E2E via tower/hyper test client (parcial: Wasm real verde).
 
 ### Fase 4 — Documentação e gate
 - [ ] Atualizar comentários em `design.md` mapping table se gaps encontrados.
@@ -96,5 +96,4 @@ cargo test -p edger-orchestrator -- kind_dispatch
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
-bun test
 ```

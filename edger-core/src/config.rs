@@ -1,5 +1,6 @@
 //! Normalized worker configuration and parsers.
 
+use crate::bindings::BindingManifest;
 use crate::execution::ExecutionKind;
 use crate::manifest::WorkerManifest;
 
@@ -24,6 +25,8 @@ pub struct WorkerConfig {
     pub public_routes: Option<crate::manifest::PublicRoutesConfig>,
     pub cron: Vec<crate::manifest::CronJob>,
     pub kind: Option<ExecutionKind>,
+    pub bindings: Vec<BindingManifest>,
+    pub shell_excludes: Vec<String>,
 }
 
 /// Parse duration string or numeric seconds to milliseconds (Buntime `parseDurationToMs`).
@@ -44,19 +47,16 @@ pub fn parse_duration_string_to_ms(input: &str) -> Option<u64> {
     if let Ok(secs) = input.parse::<u64>() {
         return Some(secs * 1000);
     }
+    if let Some(stripped) = input.strip_suffix("ms") {
+        return stripped.parse().ok();
+    }
     let (num_part, unit) = input.split_at(input.len().saturating_sub(1));
     let num: u64 = num_part.parse().ok()?;
     match unit {
         "s" => Some(num * 1000),
         "m" => Some(num * 60 * 1000),
         "h" => Some(num * 60 * 60 * 1000),
-        _ => {
-            if let Some(stripped) = input.strip_suffix("ms") {
-                stripped.parse().ok()
-            } else {
-                None
-            }
-        }
+        _ => None,
     }
 }
 
@@ -88,7 +88,12 @@ pub fn parse_size_to_bytes(input: &str) -> Option<u64> {
 pub fn infer_execution_kind(manifest: &WorkerManifest) -> ExecutionKind {
     if let Some(ref kind) = manifest.kind {
         if let Some(parsed) = ExecutionKind::from_manifest_kind(kind) {
-            return parsed;
+            return match parsed {
+                ExecutionKind::WasmModule { entry: None } => ExecutionKind::WasmModule {
+                    entry: manifest.entrypoint.clone(),
+                },
+                other => other,
+            };
         }
     }
     if let Some(ref entry) = manifest.entrypoint {
@@ -97,7 +102,7 @@ pub fn infer_execution_kind(manifest: &WorkerManifest) -> ExecutionKind {
                 inject_base: manifest.inject_base.unwrap_or(true),
             };
         }
-        if entry.ends_with(".wasm") {
+        if entry.ends_with(".wasm") || entry.ends_with(".wat") {
             return ExecutionKind::WasmModule {
                 entry: Some(entry.clone()),
             };
@@ -152,5 +157,7 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         public_routes: manifest.public_routes.clone(),
         cron: manifest.cron.clone().unwrap_or_default(),
         kind: Some(infer_execution_kind(manifest)),
+        bindings: manifest.bindings.clone(),
+        shell_excludes: manifest.shell_excludes.clone(),
     }
 }

@@ -1,35 +1,9 @@
-# agile-status — edger (2026-06-29)
+/agile-status — consolidation (planning gates)
+generated=2026-06-29T16:00:30Z
 
-## Epic 02 edger-core — COMPLETED
-Stories: 02.01–02.04 all completed
-Per-story checkpoints:
-  - status/checkpoint-2026-06-29-story-02-01.md
-  - status/checkpoint-2026-06-29-story-02-02.md
-  - status/checkpoint-2026-06-29-story-02-03.md
-  - status/checkpoint-2026-06-29-story-02-04.md
-Per-story refinement:
-  - status/evidence/refinement-story-02-01.txt
-  - status/evidence/refinement-story-02-02.txt
-  - status/evidence/refinement-story-02-03.txt
-  - status/evidence/refinement-story-02-04.txt
-Epic closure: status/checkpoint-2026-06-29-epic-02-closure.md
-Verification: status/evidence/verification-epic-02.txt (SCRATCH mirror)
+Planning lint: /agile-refinement Mode 1 — 0 red flags (evidence/refinement-report.txt)
+Oracle: refinement-lint.py — 0 RED (evidence/refinement-lint-oracle.txt)
+Path-preflight: 0 missing
+JS test gate: see evidence/bun-test.txt
 
-## Epics 03–06 — COMPLETED
-Closures: epic-03/04/05/06 checkpoint files in status/
-
-## Epic 07 — IN PROGRESS
-07.05 Wasm pool E2E delivered; 07.04 deno_core blocked
-Pendências: planning/edger/docs/pendencies-epic-07.md
-
-## Gates (last verification run)
-cargo test -p edger-core — PASS (17 tests)
-cargo test --workspace — PASS
-cargo clippy --workspace -D warnings — PASS
-cargo fmt --check — PASS
-bun test — 6 pass
-run-gates.sh — ALL PLANNING GATES PASS
-refinement-lint — VERDICT PASS (0 RED)
-
-## Next (objective: cada fase)
-Epic 07: 07.05 WASI sandbox, 07.04 deno_core boot
+Next: Harden Deno bridge sandbox and embedded deno_core boot

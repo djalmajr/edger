@@ -1,0 +1,94 @@
+# Story 08.09 runtime evidence
+
+Date: 2026-06-29
+Scope: operational API key create/revoke flow
+
+## Targeted auth provider suite
+
+```bash
+cargo test -p edger-ext-auth
+```
+
+Result:
+
+```text
+running 5 tests
+test extract_api_key_from_pairs_bearer ... ok
+test root_key_returns_synthetic_principal ... ok
+test authenticate_without_header_returns_none ... ok
+test revoked_store_key_no_longer_authenticates ... ok
+test store_key_resolves_namespaces ... ok
+
+test result: ok. 5 passed; 0 failed
+```
+
+Covered behavior:
+
+- SQLite-backed stored keys still authenticate by bearer or x-api-key.
+- `revoke_key(id)` removes a stored key.
+- Revoked stored keys no longer authenticate.
+- Synthetic root remains separate from the store.
+
+## Targeted Admin API suite
+
+```bash
+cargo test -p edger-orchestrator --test admin_workers_plugins
+```
+
+Result:
+
+```text
+running 8 tests
+test root_lists_workers_with_operational_metadata ... ok
+test admin_workers_requires_root_and_does_not_fall_through_to_api_stub ... ok
+test worker_mutation_is_protected_before_not_implemented_response ... ok
+test root_lists_key_metadata_without_raw_secret ... ok
+test root_lists_registered_extensions_and_auth_provider ... ok
+test root_creates_key_once_without_leaking_raw_secret_in_lists ... ok
+test key_create_and_revoke_are_root_only_and_csrf_guarded ... ok
+test non_root_key_can_read_session_but_cannot_list_keys ... ok
+
+test result: ok. 8 passed; 0 failed
+```
+
+Covered behavior:
+
+- `POST /api/admin/keys` with root credentials returns `201`, safe metadata and one-time `rawKey`.
+- Created key can authenticate against `/api/admin/session`.
+- `GET /api/admin/keys` does not include the raw generated key.
+- Non-root keys cannot create or revoke keys.
+- Browser-originated mismatched origin is denied by CSRF guard before create.
+- `POST /api/admin/keys/{id}/revoke` invalidates the key.
+- Repeating revoke is idempotent and returns `revoked=false`.
+
+## Workspace gates
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+```
+
+Result:
+
+```text
+cargo test --workspace ... ok
+cargo clippy --workspace -- -D warnings ... ok
+cargo fmt -- --check ... ok
+```
+
+```bash
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
+Result:
+
+```text
+PASS /agile-refinement Mode 1
+PASS refinement-lint.py oracle
+Total refs: 104
+Missing: 0
+stories: 40
+PASS cargo check
+ALL PLANNING GATES PASS
+```

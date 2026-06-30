@@ -48,12 +48,12 @@
 
 ### Acceptance criteria
 - [x] Módulo WAT mínimo responde via `WasmIsolate::execute_wasm` (ABI v1: `http_status` + `http_body_len`)
-- [x] Worker `workers/wasm-hello/` responde GET via `pool.fetch` com body `wasm-hello` (test `wasm_pool_integration.rs`)
-- [ ] Módulo malformado ou path fora do dir falha com `IsolationError` claro.
-- [ ] WASI não concede acesso a filesystem fora do worker dir (teste negativo).
-- [ ] Env vars `*_SECRET` não passam para Wasm (filtro portado).
+- [x] Worker `workers/wasm-hello/` responde GET via `pool.fetch`/pipeline com body `wasm-hello` (tests `wasm_pool_integration.rs`, `kind_dispatch_integration.rs`)
+- [x] Módulo malformado ou path fora do dir falha com `IsolationError` claro.
+- [x] WASI não concede acesso a filesystem fora do worker dir (imports WASI bloqueados no ABI v1).
+- [x] Env vars `*_SECRET` não passam para Wasm (`WasiConfig` filtra env antes de futura injeção).
 - [ ] Coexistência: processo pode ter isolates V8 e Wasm simultâneos sem shared mutable state.
-- [ ] `cargo test -p edger-isolation --features wasm` verde.
+- [x] `cargo test -p edger-isolation --features wasm` verde.
 
 ### Dependencies
 - Epic 03 — spike wasmtime prep
@@ -69,21 +69,25 @@
 
 ### Fase 1 — Engine + load
 - [x] `wasm/handler.rs`: Engine/Store/Module load from bytes (WAT→wasm)
-- [ ] Load from worker dir entrypoint via manifest
-- [ ] Validação: tamanho máximo módulo, magic bytes, reject unknown imports per policy.
+- [x] Load from worker dir entrypoint via manifest
+- [x] Entrypoint `.wat` compila para bytes Wasm para fixtures/exemplos locais.
+- [x] Validação: tamanho máximo módulo, magic bytes, reject unknown imports per policy.
 
 ### Fase 2 — WASI sandbox
-- [ ] `wasi.rs`: preopen apenas worker root; cap net desabilitada por default.
-- [ ] Env inject: apenas keys permitidas pelo manifest após sensitive filter.
+- [x] `wasi.rs`: deny-by-default + imports WASI/host bloqueados no ABI v1.
+- [x] Env filter: apenas keys não sensíveis ficam em `WasiConfig`.
+- [ ] Host WASI real: preopen apenas worker root; cap net desabilitada por default.
+- [ ] Env inject no host WASI: apenas keys permitidas pelo manifest após sensitive filter.
 
 ### Fase 3 — Request ABI
 - [ ] `handler.rs`: serialize request para linear memory; invoke export; deserialize response.
-- [ ] Documentar ABI em `planning/edger/docs/wasm-abi.md` (curto, versionado).
+- [x] Documentar ABI v1 em `planning/edger/docs/wasm-abi.md` (curto, versionado).
 
 ### Fase 4 — Integração
-- [ ] Wire `WasmIsolate` no worker instance selection.
+- [x] `WorkerPool::fetch` respeita `WorkerConfig.kind` quando `kind_hint` não é informado.
+- [ ] Factory dinâmica do orquestrador Rust seleciona `WasmIsolate` para `WasmModule`.
 - [ ] Build fixture wasm em `workers/wasm-hello/` (script documentado).
-- [ ] Integration test + gate workspace.
+- [x] Integration test `wasm_pool_integration.rs` verde.
 
 ## Verification
 ```bash
@@ -91,5 +95,4 @@ cargo test -p edger-isolation --features wasm
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
-bun test
 ```

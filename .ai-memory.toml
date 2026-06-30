@@ -3,6 +3,8 @@ project   = "edger"
 
 # OIDC onboarding profile (non-secret). Hooks parse workspace/project only;
 # this block lets aim-init self-serve device-flow setup for new developers.
+drop_subagent_captures = "true"
+
 [instance]
 issuer     = "https://keycloak.djalmajr.dev/realms/memory"
 server_url = "https://memory.djalmajr.dev"

@@ -2,6 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use edger_core::{Isolate, WorkerRef};
 use tokio::sync::Mutex as AsyncMutex;
@@ -11,6 +12,8 @@ use crate::state::WorkerState;
 /// A pooled worker with an injected isolate backend and lifecycle state.
 pub struct WorkerInstance {
     pub worker_ref: WorkerRef,
+    created_at: Instant,
+    dispatch_lock: Arc<AsyncMutex<()>>,
     isolate: Arc<AsyncMutex<Box<dyn Isolate>>>,
     state: Mutex<WorkerState>,
     request_count: Mutex<u32>,
@@ -23,6 +26,8 @@ impl WorkerInstance {
     pub fn new(worker_ref: WorkerRef, isolate: Box<dyn Isolate>) -> Self {
         Self {
             worker_ref,
+            created_at: Instant::now(),
+            dispatch_lock: Arc::new(AsyncMutex::new(())),
             isolate: Arc::new(AsyncMutex::new(isolate)),
             state: Mutex::new(WorkerState::Creating),
             request_count: Mutex::new(0),
@@ -34,6 +39,10 @@ impl WorkerInstance {
 
     pub fn isolate(&self) -> Arc<AsyncMutex<Box<dyn Isolate>>> {
         Arc::clone(&self.isolate)
+    }
+
+    pub fn dispatch_lock(&self) -> Arc<AsyncMutex<()>> {
+        Arc::clone(&self.dispatch_lock)
     }
 
     pub fn state(&self) -> WorkerState {
@@ -50,6 +59,10 @@ impl WorkerInstance {
 
     pub fn request_count(&self) -> u32 {
         *self.request_count.lock().expect("request_count lock")
+    }
+
+    pub fn uptime_seconds(&self) -> u64 {
+        self.created_at.elapsed().as_secs()
     }
 
     pub fn increment_request_count(&self) -> u32 {

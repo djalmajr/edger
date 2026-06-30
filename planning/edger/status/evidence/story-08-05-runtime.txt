@@ -1,0 +1,74 @@
+Story 08.05 shell/gateway runtime evidence
+Date: 2026-06-29
+
+Launch:
+ROOT_API_KEY=test-root PORT=19084 RUNTIME_WORKER_DIRS=workers cargo run -p edger-orchestrator --bin edger
+
+Server log:
+edger listening config.addr=0.0.0.0:19084
+
+Shell document route:
+curl -sS -H 'authorization: Bearer test-root' -H 'sec-fetch-dest: document' http://127.0.0.1:19084/reports/list
+
+Result:
+<!doctype html>
+<html>
+  <head><base href="/" />
+    <meta charset="utf-8" />
+    <script src="/shell.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>edger shell demo</h1>
+      <iframe src="/todos-shell-demo" title="todos-shell-demo"></iframe>
+    </main>
+  </body>
+</html>
+
+Shell root asset:
+curl -sS -H 'authorization: Bearer test-root' http://127.0.0.1:19084/shell.js
+
+Result:
+globalThis.edgerShellDemo = true;
+
+Iframe app bypass:
+curl -sS -H 'authorization: Bearer test-root' -H 'sec-fetch-dest: iframe' http://127.0.0.1:19084/todos-shell-demo/list
+
+Result:
+{"base":"/todos-shell-demo","path":"/list"}
+
+Auth gate:
+curl -sS -i -H 'sec-fetch-dest: document' http://127.0.0.1:19084/reports/list
+
+Result:
+HTTP/1.1 401 Unauthorized
+content-type: application/json
+content-length: 62
+
+{"code":"UNAUTHORIZED","message":"missing or invalid API key"}
+
+Reserved admin route:
+curl -sS -H 'authorization: Bearer test-root' -H 'sec-fetch-dest: document' http://127.0.0.1:19084/api/admin/session
+
+Result:
+{"principal":{"id":0,"name":"root","keyPrefix":"root","role":"admin","permissions":["*"],"namespaces":["*"],"isRoot":true,"expiresAt":null}}
+
+CORS preflight:
+curl -sS -i -X OPTIONS -H 'origin: https://app.example.com' -H 'access-control-request-headers: authorization' -H 'authorization: Bearer test-root' http://127.0.0.1:19084/hello-world
+
+Result:
+HTTP/1.1 204 No Content
+access-control-allow-origin: *
+access-control-allow-methods: GET, HEAD, PUT, PATCH, POST, DELETE, OPTIONS
+access-control-allow-headers: authorization
+access-control-max-age: 86400
+
+Browser embedded validation:
+Navigating the in-app Browser to http://127.0.0.1:19084/reports/list without an Authorization header rendered:
+{"code":"UNAUTHORIZED","message":"missing or invalid API key"}
+
+Attempting to set Authorization through the available raw CDP capability failed with:
+This method is not supported through raw CDP.
+
+Conclusion:
+Browser confirmed the protected route behavior, while authenticated shell rendering was verified with curl and Rust tests.

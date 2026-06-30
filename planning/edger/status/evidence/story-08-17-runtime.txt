@@ -1,0 +1,59 @@
+# Story 08.17 runtime evidence — gateway operational diagnostics
+
+Date: 2026-06-29
+
+Scope:
+- `Extension::diagnostics()` now exposes optional pure JSON diagnostics for
+  extension inventory.
+- `AdminExtensionInfo` serializes `diagnostics` only when an extension provides
+  it.
+- `GatewayExtension` exposes local counters for `continue`, `preflight`,
+  `redirect`, and `rate_limited` decisions.
+- Gateway diagnostics keep the latest 100 local decisions.
+- Diagnostic entries include request id, method, path, client, decision, status,
+  and `rateLimited`.
+- Diagnostic entries do not serialize request headers, body, `Authorization`,
+  `x-api-key`, or raw secrets.
+- `/api/admin/extensions` includes gateway diagnostics for root operators.
+- No gateway-specific SSE, persisted history, log filters, avg duration,
+  external proxy, cache, or distributed rate-limit in this slice.
+
+Focused verification:
+
+```bash
+cargo test -p edger-ext-gateway --test gateway_middleware
+cargo test -p edger-orchestrator --test admin_workers_plugins root_lists_registered_extensions_and_auth_provider -- --exact
+```
+
+Result:
+- Initial TDD run failed before implementation:
+  - `GatewayExtension::diagnostics` did not exist.
+  - `gateway["diagnostics"]["requests"]["total"]` was `null` in the Admin API
+    inventory.
+- Final focused gateway run: 14 passed.
+- Final focused Admin API run: 1 passed.
+
+Workspace gate:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+```
+
+Result:
+- `cargo test --workspace`: passed.
+- `cargo clippy --workspace -- -D warnings`: passed.
+- `cargo fmt -- --check`: passed.
+
+Planning gate:
+
+```bash
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
+Result:
+- Passed, including `/agile-refinement` Mode 1 with 0 red flags,
+  refinement-lint oracle, path-preflight with 0 missing refs, artifact
+  inspection with 8 epics / 48 stories, skipped Bun test because no root JS/TS
+  suite exists, and `cargo check --workspace`.

@@ -104,6 +104,5 @@ cargo test --workspace -- --ignored
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
-bun test
 test -f planning/edger/docs/compat-matrix.md
 ```

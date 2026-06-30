@@ -1,0 +1,31 @@
+[#eng-decisoes-arquiteturais]
+=== Decisões arquiteturais
+
+As decisões estruturais ficam em link:../adr/README.md[`docs/adr/`]. Leia os
+ADRs quando for alterar stack, fronteiras entre crates, runtime JS/TS,
+isolamento Wasm, auth, extensões ou contratos de worker.
+
+[cols="1,2,1",options="header"]
+|===
+| # | Decisão | Status
+
+| link:../adr/0001-orquestrador-rust-sem-main-service-ts.md[0001]
+| Orquestrador Rust sem main-service TS/Deno
+| Aceito
+
+| link:../adr/0002-core-puro-e-crates-focadas.md[0002]
+| `edger-core` puro e crates focadas
+| Aceito
+
+| link:../adr/0003-extensoes-estaticas-via-crates.md[0003]
+| Extensões estáticas via crates `edger-ext-*`
+| Aceito
+
+| link:../adr/0004-js-ts-v1-via-deno-cli-bridge.md[0004]
+| JS/TS v1 via Deno CLI bridge, com `deno_core` como alvo
+| Aceito
+
+| link:../adr/0005-wasm-standalone-wasmtime-abi-v1.md[0005]
+| Wasm standalone com `wasmtime` e ABI HTTP v1
+| Aceito
+|===

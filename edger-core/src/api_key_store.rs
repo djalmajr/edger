@@ -1,11 +1,13 @@
 //! API key store trait (pure contract; implementations live in extensions).
 
+use crate::admin::AdminApiKeyInfo;
 use crate::principal::ApiKeyPrincipal;
 use crate::CoreError;
 
 /// Persistence contract for API keys (SQLite/Turso impls in `edger-ext-auth`).
 pub trait ApiKeyStore: Send + Sync {
     fn lookup_by_key(&self, raw_key: &str) -> Result<Option<ApiKeyPrincipal>, CoreError>;
+    fn list_keys(&self) -> Result<Vec<AdminApiKeyInfo>, CoreError>;
     fn insert_key(
         &self,
         raw_key: &str,
@@ -15,4 +17,5 @@ pub trait ApiKeyStore: Send + Sync {
         namespaces: &[String],
         expires_at: Option<u64>,
     ) -> Result<u64, CoreError>;
+    fn revoke_key(&self, id: u64) -> Result<bool, CoreError>;
 }

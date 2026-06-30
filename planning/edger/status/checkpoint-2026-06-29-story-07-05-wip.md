@@ -7,10 +7,14 @@
 
 - `edger-isolation/src/wasm/handler.rs` — `WasmHttpHandler` com ABI mínima
 - `edger-isolation/src/wasm/load.rs` — load seguro do worker dir (anti `../`)
+- `edger-isolation/src/wasm/handler.rs` — valida magic bytes, tamanho máximo, imports host/WASI bloqueados
+- `edger-isolation/src/wasm/wasi.rs` — `WasiConfig` deny-by-default + filtro de env sensível
 - `WorkerConfig.worker_dir` — pool injeta path no fetch
+- `WorkerPool::fetch` — `config.kind` agora tem precedência quando `kind_hint` não é passado
 - `WasmIsolate::execute_wasm` — bytes pré-carregados ou load via entrypoint
 - `workers/wasm-hello/manifest.yaml` + teste pool E2E
-- Testes: handler unit + wasm_integration (2) + wasm_pool_integration (1) + load (2)
+- `planning/edger/docs/wasm-abi.md` — ABI v1 documentada
+- Testes: handler unit + wasi unit + wasm_integration (2) + wasm_pool_integration (2) + load (2)
 
 ## Gates
 
@@ -22,13 +26,11 @@
 
 | Item | Prioridade |
 |---|---|
-| Carregar `.wasm` via orchestrator `bun edger.ts` launch | Média |
-| WASI sandbox (`wasi.rs`) — preopen deny-by-default com teste negativo | Alta |
-| Filtro env `*_SECRET` | Média |
+| Ampliar E2E `.wasm` via bin Rust além de `wasm-hello` | Média |
+| Host WASI real (`wasi.rs`) — preopen apenas worker root | Alta |
 | ABI request/response em linear memory (não só body estático) | Média |
-| `planning/edger/docs/wasm-abi.md` | Baixa |
-| Wire em `edger-worker/instance.rs` para kind `WasmModule` | Alta |
+| Factory dinâmica por worker kind no orquestrador Rust | Concluído |
 
 ## Próximo
 
-Pool wiring + fixture `workers/wasm-hello/` OU story 07.04 spike deno_core boot (bloqueado — ver pendências).
+Host WASI real com preopen restrito, ABI request/response em linear memory, ou story 07.04 deno_core boot (bloqueador de JS/TS funcional — ver pendências).

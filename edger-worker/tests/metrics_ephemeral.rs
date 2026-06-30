@@ -19,7 +19,7 @@ struct SlowFactory {
 }
 
 impl IsolateFactory for SlowFactory {
-    fn create_isolate(&self) -> Box<dyn Isolate> {
+    fn create_isolate(&self, _worker_ref: &edger_core::WorkerRef) -> Box<dyn Isolate> {
         if self.delay_ms > 0 {
             std::thread::sleep(Duration::from_millis(self.delay_ms));
         }
@@ -103,6 +103,18 @@ fn make_worker_ref(dir: PathBuf, name: &str, ttl_ms: u64, max_requests: u32) -> 
     worker_ref
 }
 
+fn make_versioned_worker_ref(
+    dir: PathBuf,
+    name: &str,
+    version: &str,
+    ttl_ms: u64,
+    max_requests: u32,
+) -> WorkerRef {
+    let mut worker_ref = make_worker_ref(dir, name, ttl_ms, max_requests);
+    worker_ref.version = version.into();
+    worker_ref
+}
+
 fn pool_with_factory(config: PoolConfig, factory: Arc<dyn IsolateFactory>) -> WorkerPool {
     WorkerPool::with_factory(config, factory)
 }
@@ -134,6 +146,45 @@ async fn get_metrics_reflects_cache_hit_on_second_fetch() {
     let metrics = pool.get_metrics();
     assert!(metrics.cache_hits >= 1, "expected cache hit metric");
     assert!(metrics.cache_misses >= 1, "expected at least one miss");
+}
+
+#[tokio::test]
+async fn worker_stats_snapshot_reports_identity_state_and_requests() {
+    // Mutation captured: deriving stats identity from the directory instead of
+    // the resolved worker ref would lose the manifest version in the snapshot.
+    let dir = PathBuf::from("/workers/metrics-worker");
+    let worker_ref = make_versioned_worker_ref(dir, "metrics-worker", "1.2.3", 30_000, 0);
+    let pool = pool_with_factory(PoolConfig::default(), Arc::new(SlowFactory { delay_ms: 0 }));
+
+    pool.fetch_worker(
+        &worker_ref,
+        sample_req("/a"),
+        Some(ExecutionKind::FetchHandler),
+    )
+    .await
+    .unwrap();
+    pool.fetch_worker(
+        &worker_ref,
+        sample_req("/b"),
+        Some(ExecutionKind::FetchHandler),
+    )
+    .await
+    .unwrap();
+
+    let workers = pool.worker_stats();
+    assert_eq!(workers.len(), 1);
+    let worker = &workers[0];
+    assert_eq!(worker.app, "metrics-worker@1.2.3");
+    assert_eq!(worker.name, "metrics-worker");
+    assert_eq!(worker.version, "1.2.3");
+    assert_eq!(worker.request_count, 2);
+    assert_eq!(worker.state, edger_worker::WorkerState::Idle);
+    assert!(!worker.unhealthy);
+    assert_eq!(
+        pool.get_worker_stats(worker.worker_id)
+            .map(|stats| stats.request_count),
+        Some(2)
+    );
 }
 
 #[tokio::test]
@@ -220,7 +271,7 @@ struct SlowEchoFactory {
 }
 
 impl IsolateFactory for SlowEchoFactory {
-    fn create_isolate(&self) -> Box<dyn Isolate> {
+    fn create_isolate(&self, _worker_ref: &edger_core::WorkerRef) -> Box<dyn Isolate> {
         Box::new(EchoIsolate {
             delay_ms: self.delay_ms,
         })

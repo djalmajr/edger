@@ -1,0 +1,106 @@
+# Story 08.21 runtime evidence — Gateway rate-limit metrics API
+
+Date: 2026-06-29
+Scope: `planning/edger/epics/08-valor-buntime/21-gateway-rate-limit-metrics-api.md`
+
+## Red/green
+
+Initial focused test before implementation:
+
+```text
+cargo test -p edger-orchestrator --test admin_workers_plugins gateway_admin_rate_limit_metrics_api_exposes_local_bucket_summary
+
+FAILED
+left: 404
+right: 401
+```
+
+Focused test after implementation:
+
+```text
+cargo test -p edger-orchestrator --test admin_workers_plugins gateway_admin_rate_limit_metrics_api_exposes_local_bucket_summary
+
+test gateway_admin_rate_limit_metrics_api_exposes_local_bucket_summary ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out
+```
+
+## Focused integration suite
+
+```text
+cargo test -p edger-orchestrator --test admin_workers_plugins
+
+running 13 tests
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+## Full Rust gate
+
+```text
+cargo test --workspace
+
+All workspace tests passed, including admin_workers_plugins with 13 tests and
+gateway_middleware with 15 tests.
+```
+
+```text
+cargo clippy --workspace -- -D warnings
+
+Finished `dev` profile with no warnings.
+```
+
+```text
+cargo fmt -- --check
+
+passed
+```
+
+## Runtime launch evidence
+
+```text
+ROOT_API_KEY=test-root PORT=19085 RUNTIME_WORKER_DIRS=workers cargo run -p edger-orchestrator --bin edger
+
+edger listening config.addr=0.0.0.0:19085
+```
+
+```text
+curl -sS -i -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19085/api/admin/gateway/rate-limit/metrics
+
+HTTP/1.1 200 OK
+{"activeBuckets":0,"enabled":false,"scope":"local-memory"}
+```
+
+```text
+curl -sS -i http://127.0.0.1:19085/api/admin/gateway/rate-limit/metrics
+
+HTTP/1.1 401 Unauthorized
+{"code":"UNAUTHORIZED","message":"missing or invalid API key"}
+```
+
+The runtime process was stopped after the curl checks and port `19085` was
+released.
+
+## Planning gate
+
+```text
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+
+[run-gates] PASS /agile-refinement Mode 1 (0 red flags)
+[run-gates] PASS refinement-lint.py oracle
+Total refs: 128
+Missing: 0
+[run-gates] PASS path-preflight
+epics: 8
+stories: 52
+PASS — all stories have required sections
+bun test skipped: no root JS/TS test suite exists after Bun adapter removal
+[run-gates] PASS cargo check
+[run-gates] ALL PLANNING GATES PASS
+```
+
+## Notes
+
+- New endpoint: `GET /api/admin/gateway/rate-limit/metrics`.
+- Auth boundary: root-only; unauthenticated requests return `401`.
+- Response scope is explicit: `scope: "local-memory"`.
+- No bucket keys, IPs, authorization headers or raw secrets are serialized.

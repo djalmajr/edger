@@ -1,0 +1,15 @@
+[#_business]
+== Business
+
+A trilha de *Business* descreve o Edger do ponto de vista de quem usa e opera o
+runtime: o que ele entrega, quais conceitos existem, como as jornadas acontecem
+e o que está dentro ou fora do escopo atual. A contraparte técnica de cada tema
+vive na <<_developers,Parte II — Developers>>.
+
+include::01-visao-geral.adoc[]
+
+include::02-glossario.adoc[]
+
+include::03-jornadas-operacionais.adoc[]
+
+include::04-escopo-e-roadmap.adoc[]

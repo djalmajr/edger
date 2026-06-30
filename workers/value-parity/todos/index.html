@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>edger value parity todos</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main id="edger-value-parity-todos" class="todo-shell">
+      <header>
+        <p class="eyebrow">Value parity fixture</p>
+        <h1>Todos</h1>
+      </header>
+      <form class="composer">
+        <label for="new-todo">New task</label>
+        <div>
+          <input id="new-todo" name="todo" value="Validate migrated app flow" />
+          <button type="button">Add</button>
+        </div>
+      </form>
+      <section aria-label="Todo list" class="list">
+        <label><input checked type="checkbox" /> Serve document</label>
+        <label><input checked type="checkbox" /> Serve assets</label>
+        <label><input type="checkbox" /> Preserve deep link fallback</label>
+      </section>
+      <footer>
+        <span>2 completed</span>
+        <nav aria-label="Filters">
+          <a href="./">All</a>
+          <a href="./filter/active">Active</a>
+          <a href="./filter/completed">Completed</a>
+        </nav>
+      </footer>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

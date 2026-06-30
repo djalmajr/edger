@@ -1,0 +1,37 @@
+Story 08.28 runtime evidence
+Date: 2026-06-29
+
+Scope:
+- Add worker lifecycle hooks without coupling edger-worker to extensions.
+- Prove hooks wrap real WorkerPool dispatch in the orchestrator pipeline.
+
+Test-first failure:
+- cargo test -p edger-orchestrator --test registry_hooks worker_lifecycle_hooks_wrap_pool_dispatch -- --exact
+- Result: FAIL before implementation.
+- Evidence: compile errors for missing Middleware methods on_worker_dispatch, on_worker_complete, on_worker_error and missing ExtensionHook variants OnWorkerDispatch, OnWorkerComplete, OnWorkerError.
+
+Commands run:
+
+1. cargo test -p edger-orchestrator --test registry_hooks
+   Result: PASS
+   Evidence: 8 tests passed, including worker_lifecycle_hooks_wrap_pool_dispatch and short_circuit_skips_worker_lifecycle_hooks.
+
+2. cargo test --workspace
+   Result: PASS
+   Evidence: workspace unit, integration and doc tests passed.
+
+3. cargo clippy --workspace -- -D warnings
+   Result: PASS
+   Evidence: clippy completed with warnings denied.
+
+4. cargo fmt -- --check
+   Result: PASS
+   Evidence: formatting check completed with no diff.
+
+5. SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+   Result: PASS
+   Evidence: planning refs, story sections, deploy-layout-check and cargo check passed.
+
+Conclusion:
+- Story 08.28 is closed for worker lifecycle hooks around orchestrator dispatch.
+- Dynamic extension reload/rescan and full manifest persistence remain separate gaps.

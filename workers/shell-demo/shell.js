@@ -1,0 +1,1 @@
+globalThis.edgerShellDemo = true;

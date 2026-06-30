@@ -628,7 +628,7 @@ def format_report(repo: Path, scope: Path, state: LintState, round_label: str) -
     else:
         lines.append("VERDICT: PASS — 0 RED findings (warnings may remain)")
     lines.append("")
-    return "\n".join(lines)
+    return "\n".join(line.rstrip() for line in lines)
 
 
 def main() -> int:

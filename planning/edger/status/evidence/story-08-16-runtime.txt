@@ -1,0 +1,51 @@
+# Story 08.16 runtime evidence — gateway local rate limit
+
+Date: 2026-06-29
+
+Scope:
+- `edger-ext-gateway` now supports opt-in local in-memory rate limiting.
+- The default key uses `X-Forwarded-For` first IP, then `X-Real-IP`, then
+  `unknown`.
+- CORS preflight still returns 204 before rate limiting and does not consume a
+  bucket token.
+- Blocked requests return 429 with `x-ratelimit-limit`,
+  `x-ratelimit-remaining: 0`, and `retry-after`.
+- Rate limiting runs before redirect rules, so redirects are protected too.
+- No persisted/distributed buckets, admin API, SSE/UI, regex excludes, or
+  user-authenticated keying in this slice.
+
+Focused verification:
+
+```bash
+cargo test -p edger-ext-gateway --test gateway_middleware
+```
+
+Result:
+- Initial TDD run failed before implementation:
+  - `GatewayRateLimitConfig` and `GatewayExtension::with_rate_limit` did not exist.
+- Final focused run: 12 passed.
+
+Workspace gate:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+```
+
+Result:
+- `cargo test --workspace`: passed.
+- `cargo clippy --workspace -- -D warnings`: passed.
+- `cargo fmt -- --check`: passed.
+
+Planning gate:
+
+```bash
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
+Result:
+- Passed, including `/agile-refinement` Mode 1 with 0 red flags,
+  refinement-lint oracle, path-preflight with 0 missing refs, artifact
+  inspection with 8 epics / 47 stories, skipped Bun test because no root JS/TS
+  suite exists, and `cargo check --workspace`.

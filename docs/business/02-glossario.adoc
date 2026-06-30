@@ -1,0 +1,78 @@
+[#prod-glossario]
+=== Glossário
+
+[cols="1,3",options="header"]
+|===
+| Termo | Significado
+
+| Worker
+| Unidade executável servida pelo runtime. Vive em um diretório próprio dentro
+  de `RUNTIME_WORKER_DIRS` e pode ter manifest, entrypoint, versão e kind.
+
+| Worker manifest
+| Arquivo `manifest.yaml` / `manifest.yml` que descreve `name`, `version`,
+  `entrypoint`, `kind`, TTL, timeouts, public routes, cron e outros metadados.
+  Quando ausente, o loader tenta `package.json` ou entrypoints convencionais.
+
+| Execution kind
+| Modo de execução normalizado: `FetchHandler`, `RoutesTable`, `StaticSpa`,
+  `WasmModule` ou `Fullstack`. O kind pode vir do manifest ou ser inferido pelo
+  entrypoint.
+
+| Orchestrator
+| Camada Rust em `edger-orchestrator` que compõe HTTP server, auth, router,
+  registry de extensões, pipeline e `WorkerPool`.
+
+| Isolate
+| Trait de execução definida em `edger-core`. Implementações atuais incluem
+  `DenoIsolate`, `WasmIsolate` e `MockIsolate` para testes.
+
+| Deno CLI bridge
+| Backend JS/TS funcional v1. Executa `deno eval --no-check` por request,
+  dentro do diretório do worker, usando `deno.json` / `deno.jsonc` local quando
+  presente.
+
+| deno_core
+| Alvo futuro de produção para JS/TS embutido. A bridge Deno CLI comprova o
+  contrato funcional, mas ainda não é a meta final de performance.
+
+| Wasm ABI v1
+| Contrato mínimo para módulos Wasm: exports `memory`, `http_status()` e
+  `http_body_len()`. O body fica no offset `0` da linear memory.
+
+| WorkerPool
+| Componente de `edger-worker` que cria, cacheia, supervisiona e despacha
+  requests para isolates.
+
+| Extension
+| Trait base para extensões Rust. Crates `edger-ext-*` devem escolher um modo:
+  `Middleware`, `AuthProvider` ou `WorkerHandler`.
+
+| AuthProvider
+| Extensão responsável por resolver API keys em `ApiKeyPrincipal`. A extensão
+  atual é `edger-ext-auth`.
+
+| Middleware
+| Extensão com hooks `on_request` / `on_response`. `edger-ext-gateway` é o
+  template inicial de middleware pass-through.
+
+| ApiKeyPrincipal
+| Principal autenticado com `role`, `permissions`, `namespaces`, prefixo de key
+  e flag `is_root`.
+
+| Namespace
+| Escopo de acesso para workers namespaced, como `@acme/app`. O root principal
+  acessa todos os namespaces.
+
+| publicRoutes
+| Configuração compatível com Buntime para bypass de auth e hooks em rotas
+  públicas específicas.
+
+| Shell
+| Camada planejada para micro-frontends e SPAs, incluindo injeção de
+  `<base href>`. O protocolo dedicado ainda está em skeleton.
+
+| Cron
+| Scheduler nativo planejado para disparar requests internas declaradas em
+  `manifest.cron[]`. Ainda não está implementado.
+|===

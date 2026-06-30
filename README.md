@@ -1,6 +1,6 @@
 # edger
 
-Edge runtime (Rust vision + Buntime contracts) with Bun adapter for immediate functionality.
+Edge runtime in Rust with Buntime-compatible contracts.
 
 ## Objetivo
 
@@ -10,37 +10,49 @@ Edge runtime (Rust vision + Buntime contracts) with Bun adapter for immediate fu
 - Open/Closed: core fechado, extensões abertas.
 - Contratos Buntime: workers, manifests, namespaces, TTL, shell.
 
-## Current (Fase 1 functional)
+## Current
 
-- Bun-based `edger.ts` loader (portable loadWorkerHandler) + CLI.
-- Supports workers/ with `index.{ts,js,mjs}` verbatim from edge-runtime/examples (Deno.serve or export default {fetch}).
-- 11+ examples copied and several running:
-  - hello-world, serve-declarative-style, empty-response, read-body, chunked-text, sse, stream, ...
-- `bun test` passes (core compat).
-- Planning: intake/roadmap/design/analysis + **7 epics / 31 stories** (`planning/edger/epics/`) + status/ + AGENTS.md.
-- Fase 1 complete; Fases 2-7 **ready-for-development** (ver `status/consolidation-2026-06-29-backlog-ready.md`).
-- Rust skeleton (workspace crates) ready for Fase 2+ (core pure vocab first).
+- Rust orchestrator loads worker roots from `RUNTIME_WORKER_DIRS` (default `workers`) and serves the pipeline.
+- `workers/wasm-hello` executes through the Rust/wasmtime path.
+- JS/TS workers execute through the Rust pipeline using the Deno CLI bridge in `edger-isolation`.
+- The Deno bridge runs from the worker directory and loads local `deno.json` / `deno.jsonc` when present.
+- The historical Bun adapter was removed; the Rust binary is the only runtime entrypoint.
+- Planning: intake/roadmap/design/analysis + **9 epics / 57 numbered stories + 1 spike artifact** (`planning/edger/epics/`) + status/ + AGENTS.md.
+- Fases 1-6 delivered as foundation; Fase 7 remains the advanced-runtime track, Fase 8 now has value-parity proof plus follow-up slices for must-have operational gaps, and Fase 9 has started durable external provider planning.
 
-## Como rodar (Bun adapter)
+## Como rodar
 
 ```bash
-bun edger.ts --dir workers/hello-world --port 8000
-# in another term:
-curl -X POST -H 'content-type: application/json' -d '{"name":"Test"}' http://localhost:8000/
+ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers cargo run -p edger-orchestrator --bin edger
 ```
 
-Worker dirs must follow the deno.server pattern (index compat).
+Em outro terminal:
+
+```bash
+curl -H 'authorization: Bearer test-root' http://127.0.0.1:19080/wasm-hello
+curl -H 'authorization: Bearer test-root' -H 'content-type: application/json' \
+  -d '{"name":"Alice"}' http://127.0.0.1:19080/hello-world
+```
+
+The JS/TS backend requires `deno` on `PATH` or `EDGER_DENO_BIN=/path/to/deno`. Embedded `deno_core` remains the planned production optimization.
 
 ## Status
 
-Fase 1 complete (loader + examples + discipline + docs). Backlog maduro: 7 epics, 31 stories.
+Foundation complete through Fase 6. Fase 7 is in progress: manifest loading, Wasm v1, Deno/fetch JS/TS examples, static SPAs, shell routing, state bindings, operation probes and value-parity checks now execute through the Rust server. `stream`/`sse` use a bounded first-chunk fallback until true streaming passthrough lands; CommonJS server-listen has a minimal Node adapter and mounted workers follow Buntime path semantics: relative path plus `x-base`.
 
-Ver `planning/edger/roadmap.md`, `planning/edger/status/consolidation-2026-06-29-backlog-ready.md`.
+Fase 8 has executable value evidence for SPA `/todos`, manifest-less `index.html` autodiscovery, protected workers, state bindings, shell/gateway routing, gateway CORS/auth behavior, gateway redirect rules with query preservation, gateway local rate limiting, gateway operational diagnostics, gateway read-only Admin API for stats/config/logs/log-stats with duration and rate-limit metrics, pool metrics, worker stats, API key create/revoke, Deno manifest env filtering, runtime worker enable/disable, runtime extension enable/disable, and the Buntime-derived `base: ""` route-hijack guard. Remaining explicit gaps are embedded `deno_core`, native cron execution, proxy/cache/rate-limit persistence and distribution, gateway SSE/history/mutations, retry/DLQ depth, persistent extension reload and marketplace. Turso remote/sync is now tracked as a durable external provider in Fase 9, not as an internal edger implementation requirement.
 
-Next: `/agile-story` em `planning/edger/epics/02-edger-core/01-setup-core-crate.md`.
+Ver `planning/edger/roadmap.md`, `planning/edger/runtime-functional-plan.md`, `planning/edger/docs/pendencies-epic-07.md`, `planning/edger/docs/value-parity-matrix.md`.
 
-## Rust (future)
+Next: continue Epic 07 hardening where gaps depend on runtime foundation, and use Epic 09 for durable external provider work such as Turso remote/sync. Keep `planning/edger/docs/value-parity-matrix.md` as the source of truth for remaining Buntime-value gaps.
 
-`cargo build` / workspace. Embedding spike in later Fase.
+## Gates
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
 
 See planning/edger/* and AGENTS.md .

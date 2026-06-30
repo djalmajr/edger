@@ -99,5 +99,4 @@ cargo test -p edger-orchestrator -- request_id
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
-bun test
 ```

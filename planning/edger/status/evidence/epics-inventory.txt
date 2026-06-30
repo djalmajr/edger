@@ -5,3 +5,5 @@
 05-orquestrador: 6 stories
 06-extensibilidade: 4 stories
 07-avancado: 8 stories
+08-valor-buntime: 30 stories
+09-providers-duraveis-externos: 6 stories

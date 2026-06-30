@@ -29,7 +29,7 @@ pub use transport::{InProcessTransport, IsolateTransport, UdsTransport};
 pub use wire::{decode_frame, encode_frame, validate_request};
 
 #[cfg(feature = "deno")]
-pub use deno::DenoIsolate;
+pub use deno::{DenoFacade, DenoIsolate};
 
 #[cfg(feature = "wasm")]
 pub use wasm::{WasiConfig, WasmHttpHandler, WasmIsolate};

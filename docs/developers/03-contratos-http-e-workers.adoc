@@ -1,0 +1,186 @@
+[#eng-contratos-http-workers]
+=== Contratos HTTP e workers
+
+O binário `edger` expõe probes fixos e usa fallback HTTP para dispatch de
+workers. Todas as rotas de worker exigem autenticação, exceto quando um
+`publicRoutes` aplicável permite bypass.
+
+==== Probes
+
+[cols="1,2,3",options="header"]
+|===
+| Método | Path | Resposta
+
+| `GET`
+| `/health`
+| `200 {"status":"ok"}`
+
+| `GET`
+| `/ready`
+| `200 {"status":"ready"}` quando o server tem `WorkerPool`; `503` com
+  `{"status":"not_ready"}` caso contrário.
+|===
+
+Toda resposta passa pelo middleware de request id. Se `x-request-id` não vier
+na request, o runtime gera um UUID e devolve `x-request-id` na resposta.
+
+==== Auth
+
+Headers aceitos:
+
+[source,http]
+----
+Authorization: Bearer <api-key>
+X-API-Key: <api-key>
+----
+
+Para desenvolvimento local, `ROOT_API_KEY` cria um principal sintético root:
+
+[source,bash]
+----
+curl -H 'authorization: Bearer test-root' http://127.0.0.1:19080/hello-world
+----
+
+==== Dispatch de workers
+
+[cols="1,2,3",options="header"]
+|===
+| Método | Path | Uso
+
+| qualquer
+| `/<name>`
+| Executa a versão `latest` ou maior semver do worker.
+
+| qualquer
+| `/<name>@<version>`
+| Executa versão específica.
+
+| qualquer
+| `/@<scope>/<name>`
+| Executa worker namespaced com gate de namespace.
+
+| qualquer
+| `/@<scope>/<name>@<version>`
+| Executa versão específica de worker namespaced.
+|===
+
+Antes de enviar ao isolate, o pipeline:
+
+* resolve `WorkerRef` no `ManifestIndex`;
+* valida auth e namespace;
+* reescreve o path para o restante interno do worker;
+* injeta `base_href` e header `x-base`;
+* executa `on_request` e `on_response` quando a rota não é pública;
+* chama `WorkerPool::fetch`.
+
+==== Paths reservados
+
+[cols="1,3",options="header"]
+|===
+| Path | Comportamento
+
+| `/health`, `/ready`
+| Probes do runtime, sem dispatch para worker.
+
+| `/api`, `/api/*`
+| Reservado; atualmente retorna `404` com `API_STUB`.
+
+| `/.well-known/*`
+| Reservado; atualmente retorna `404` com `WELL_KNOWN`.
+
+| Plugin `base`
+| Resolver reconhece base de plugin; dispatch ainda retorna `501` com
+  `PLUGIN_BASE`.
+|===
+
+==== Contrato JS/TS
+
+Workers JS/TS precisam ter `index.ts`, `index.js` ou `index.mjs`, salvo
+entrypoint explícito no manifest. A Deno CLI bridge suporta:
+
+[source,ts]
+----
+Deno.serve((req) => new Response("ok"));
+----
+
+e:
+
+[source,ts]
+----
+export default {
+  fetch(req: Request) {
+    return new Response(req.method);
+  },
+};
+----
+
+Características atuais:
+
+* o processo Deno roda com `current_dir` no diretório do worker;
+* `deno.json` ou `deno.jsonc` local é carregado quando presente;
+* `EDGER_DENO_BIN` permite apontar para um binário Deno específico;
+* timeout usa `WorkerConfig.timeout_ms`;
+* streams finitos são bufferizados;
+* `stream`/`sse` usam fallback bounded-first-chunk até streaming real;
+* CommonJS server-listen tem adapter mínimo para `node:http.createServer`.
+
+==== Contrato Wasm
+
+O kind `WasmModule` executa `.wasm` ou `.wat` via `wasmtime`.
+
+Exports v1:
+
+[cols="1,2,3",options="header"]
+|===
+| Export | Tipo | Uso
+
+| `memory`
+| linear memory
+| Body lido a partir do offset `0`.
+
+| `http_status`
+| `() -> i32`
+| Status HTTP. Default: `200` quando ausente.
+
+| `http_body_len`
+| `() -> i32`
+| Tamanho do body em bytes. Default: `0` quando ausente.
+|===
+
+Limites v1: módulo até 4 MiB, body até 64 KiB, imports de host e WASI negados
+por default.
+
+==== Erros esperados
+
+[cols="1,3",options="header"]
+|===
+| Status | Situação
+
+| `400`
+| Payload/body inválido ou erro de parsing.
+
+| `401`
+| API key ausente, inválida ou expirada.
+
+| `403`
+| Principal sem acesso ao namespace do worker.
+
+| `404`
+| Worker, versão, `/api` stub ou `/.well-known` stub não encontrado.
+
+| `409`
+| Colisão de manifest `(name, version)`.
+
+| `500`
+| Erro inesperado de pipeline, worker, isolate, store ou filesystem.
+
+| `501`
+| Base de plugin resolvida, mas dispatch de plugin ainda não implementado.
+|===
+
+Formato de erro:
+
+[source,json]
+----
+{"code":"NOT_FOUND","message":"worker not found: missing-worker"}
+----

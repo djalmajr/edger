@@ -55,6 +55,14 @@ if [[ "$PF_EXIT" -ne 0 || "${MISSING:-1}" != "0" ]]; then
 fi
 log "PASS path-preflight"
 
+# --- operation/deploy layout contract ---
+set +e
+python3 planning/edger/scripts/deploy-layout-check.py --repo . 2>&1 | tee "$SCRATCH/deploy-layout-check.txt"
+DL_EXIT=${PIPESTATUS[0]}
+set -e
+[[ "$DL_EXIT" -eq 0 ]] || { log "FAIL deploy-layout-check"; exit 1; }
+log "PASS deploy-layout-check"
+
 # --- story section inspection ---
 python3 - <<'PY' | tee "$SCRATCH/artifact-inspection.txt"
 import pathlib, re, sys
@@ -85,13 +93,21 @@ print("PASS — all stories have required sections")
 PY
 log "PASS artifact inspection"
 
-# --- bun test + cargo check ---
-set +e
-bun test 2>&1 | tee "$SCRATCH/bun-test.txt"
-BUN_EXIT=${PIPESTATUS[0]}
-set -e
-[[ "$BUN_EXIT" -eq 0 && $(grep -c '0 fail' "$SCRATCH/bun-test.txt") -ge 1 ]] || { log "FAIL bun test"; exit 1; }
-log "PASS bun test"
+# --- optional JS tests + cargo check ---
+ROOT_JS_TESTS=$(find . -maxdepth 2 \( -name '*.test.ts' -o -name '*.spec.ts' \) -not -path './target/*' -print | sort)
+if [[ -n "$ROOT_JS_TESTS" ]]; then
+  set +e
+  bun test 2>&1 | tee "$SCRATCH/bun-test.txt"
+  BUN_EXIT=${PIPESTATUS[0]}
+  set -e
+  [[ "$BUN_EXIT" -eq 0 && $(grep -c '0 fail' "$SCRATCH/bun-test.txt") -ge 1 ]] || { log "FAIL bun test"; exit 1; }
+  log "PASS bun test"
+  BUN_STATUS='{"status":"passed","fail":0}'
+else
+  printf 'bun test skipped: no root JS/TS test suite exists after Bun adapter removal\n' | tee "$SCRATCH/bun-test.txt"
+  log "SKIP bun test (no root JS/TS test suite)"
+  BUN_STATUS='{"status":"skipped","reason":"no root JS/TS test suite"}'
+fi
 
 set +e
 cargo check --workspace 2>&1 | tee "$SCRATCH/cargo-check.txt"
@@ -122,7 +138,7 @@ print(json.dumps({
     "oracle": "refinement-lint.py"
   },
   "path_preflight": {"missing": 0},
-  "bun_test": {"fail": 0},
+  "bun_test": $BUN_STATUS,
   "memory_lint": {"excluded": True, "reason": "server stability — operator directive 2026-06-29"}
 }, indent=2))
 PY

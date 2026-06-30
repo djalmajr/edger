@@ -13,14 +13,18 @@ pub async fn axum_to_serialized(
     request_id: String,
 ) -> Result<SerializedRequest, CoreError> {
     let (parts, body) = req.into_parts();
+    let headers = header_pairs(&parts.headers)?;
+    validate_headers(&headers).map_err(|err| CoreError::new("HEADER_TOO_LARGE", err.message))?;
+
     let body_bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
         .await
-        .map_err(|e| CoreError::new("BODY_ERROR", e.to_string()))?;
+        .map_err(|_| CoreError::new("PAYLOAD_TOO_LARGE", "request body exceeds limit"))?;
 
-    let headers = header_pairs(&parts.headers)?;
-    validate_headers(&headers)?;
-
-    let uri = parts.uri.path().to_string();
+    let uri = parts
+        .uri
+        .path_and_query()
+        .map(|value| value.as_str().to_string())
+        .unwrap_or_else(|| parts.uri.path().to_string());
 
     Ok(SerializedRequest {
         method: parts.method.to_string(),
@@ -69,7 +73,7 @@ fn header_pairs(headers: &HeaderMap) -> Result<Vec<(String, String)>, CoreError>
     for (name, value) in headers {
         let value = value
             .to_str()
-            .map_err(|_| CoreError::validation("headers", "non-utf8 header value"))?;
+            .map_err(|_| CoreError::new("HEADER_INVALID", "non-utf8 header value"))?;
         pairs.push((name.to_string(), value.to_string()));
     }
     Ok(pairs)
@@ -83,7 +87,7 @@ mod tests {
     use bytes::Bytes;
 
     #[tokio::test]
-    async fn roundtrip_preserves_method_path_headers_body() {
+    async fn roundtrip_preserves_method_path_query_headers_body() {
         let req = Request::builder()
             .method("POST")
             .uri("/foo/bar?x=1")
@@ -93,7 +97,7 @@ mod tests {
 
         let serialized = axum_to_serialized(req, "req-1".into()).await.unwrap();
         assert_eq!(serialized.method, "POST");
-        assert_eq!(serialized.uri, "/foo/bar");
+        assert_eq!(serialized.uri, "/foo/bar?x=1");
         assert_eq!(
             serialized.body.as_ref().map(|b| b.as_ref()),
             Some(b"payload".as_ref())

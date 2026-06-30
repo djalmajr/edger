@@ -8,4 +8,9 @@ description = "Template Middleware extension for edger (copy to create new edger
 [dependencies]
 edger-core = { path = "../edger-core" }
 anyhow.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+edger-ext-turso-remote = { path = "../edger-ext-turso-remote" }
+tempfile = "3"

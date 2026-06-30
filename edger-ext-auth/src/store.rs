@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use edger_core::{ApiKeyPrincipal, ApiKeyStore, CoreError};
+use edger_core::{AdminApiKeyInfo, ApiKeyPrincipal, ApiKeyStore, CoreError};
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 
@@ -114,6 +114,63 @@ impl ApiKeyStore for SqliteApiKeyStore {
         }))
     }
 
+    fn list_keys(&self) -> Result<Vec<AdminApiKeyInfo>, CoreError> {
+        let conn = self.conn.lock().map_err(|_| lock_err())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, key_prefix, role, permissions, namespaces, expires_at, created_at
+                 FROM api_keys ORDER BY id ASC",
+            )
+            .map_err(db_err)?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            })
+            .map_err(db_err)?;
+
+        let mut keys = Vec::new();
+        for row in rows {
+            let (
+                id,
+                name,
+                key_prefix,
+                role,
+                permissions_json,
+                namespaces_json,
+                expires_at,
+                created_at,
+            ) = row.map_err(db_err)?;
+            let permissions: Vec<String> =
+                serde_json::from_str(&permissions_json).map_err(json_err)?;
+            let namespaces: Vec<String> =
+                serde_json::from_str(&namespaces_json).map_err(json_err)?;
+
+            keys.push(AdminApiKeyInfo {
+                created_at: created_at as u64,
+                expires_at: expires_at.map(|v| v as u64),
+                id,
+                is_root: false,
+                key_prefix,
+                name,
+                namespaces,
+                permissions,
+                role,
+            });
+        }
+
+        Ok(keys)
+    }
+
     fn insert_key(
         &self,
         raw_key: &str,
@@ -143,6 +200,14 @@ impl ApiKeyStore for SqliteApiKeyStore {
         )
         .map_err(db_err)?;
         Ok(conn.last_insert_rowid() as u64)
+    }
+
+    fn revoke_key(&self, id: u64) -> Result<bool, CoreError> {
+        let conn = self.conn.lock().map_err(|_| lock_err())?;
+        let changed = conn
+            .execute("DELETE FROM api_keys WHERE id = ?1", params![id])
+            .map_err(db_err)?;
+        Ok(changed > 0)
     }
 }
 

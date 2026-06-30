@@ -1,0 +1,46 @@
+# Story 08.13 runtime evidence — extension enable/disable
+
+Date: 2026-06-29
+
+Scope:
+- Runtime-only extension enable/disable overlay in `ExtensionRegistry`.
+- Admin API inventory status for registered extensions.
+- Middleware hooks skip disabled extensions without rebuilding the pipeline.
+- Service provider lookup ignores disabled providers.
+- No manifest persistence, upload/rescan, dynamic reload, UI or marketplace in this slice.
+
+Focused verification:
+
+```bash
+cargo test -p edger-orchestrator --test registry_hooks
+cargo test -p edger-orchestrator --test registry_providers
+cargo test -p edger-orchestrator --test admin_workers_plugins
+```
+
+Result:
+- `registry_hooks`: 6 passed.
+- `registry_providers`: 6 passed.
+- `admin_workers_plugins`: 10 passed.
+
+Workspace gate:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+```
+
+Result:
+- `cargo test --workspace`: passed.
+- `cargo clippy --workspace -- -D warnings`: passed.
+- `cargo fmt -- --check`: passed.
+
+Planning gate:
+
+```bash
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
+Result:
+- Passed, including refinement-lint oracle, path-preflight, artifact inspection,
+  skipped Bun test because no root JS/TS suite exists, and `cargo check --workspace`.

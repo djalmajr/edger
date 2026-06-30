@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// API key principal resolved from auth headers.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ApiKeyPrincipal {
     pub id: u64,
     pub name: String,

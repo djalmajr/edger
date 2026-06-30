@@ -26,24 +26,24 @@ Consolidar o runtime para uso real e migração Buntime: execução production-p
 - Matriz de compatibilidade Buntime com testes automatizados + harness de perf (PR 12).
 
 ### Constraints, assumptions, and references
-- JS/TS: `deno_core` + facade (decisão do usuário; spike Fase 3 obrigatório).
+- JS/TS: Deno CLI bridge funcional em v1; `deno_core` + facade permanece o alvo embutido de produção.
 - Wasm: `wasmtime` + WASI standalone (não co-localizado no isolate JS).
 - Extensões: registro estático (inventory/linkme); sem dlopen em v1.
 - Auth Turso/SQLite já wired nos épicos 05–06; verificar persistência aqui se gaps.
 - Multi-process iniciado cedo (Fases 4–5); wire formats `Serialized*` já definidos em `edger-core`.
 - Disciplina: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check` antes de qualquer PR deste épico.
-- `bun test` deve continuar passando (loader funcional Fase 1 inalterado).
+- O adapter Bun foi removido; não usar Bun como fallback de runtime. `bun test` só se aplica se uma suíte JS raiz for reintroduzida.
 
 ### AS-IS
 - Orquestrador básico (épico 05) resolve paths e despacha para pool com mock ou execução parcial.
 - Isolamento (Fase 3) tem spike e trait `Isolate` com mock cobrindo `ExecutionKind`.
-- Manifests parciais em `edger-core`; carregamento multi-dir e inferência completa de kind ainda incompletos.
+- Manifest loader multi-dir e inferência de kind estão em progresso; Wasm já executa via pipeline Rust para `workers/wasm-hello`.
 - Sem cron nativo, shell routing dedicado, OTEL, `/metrics` ou matriz de compat formal.
 - PR 10–12 do design ainda não implementados.
 
 ### TO-BE
 - `load_manifests_from_dirs` indexa workers por nome/namespace/semver com detecção de colisão.
-- Pipeline despacha todos os variants de `ExecutionKind` para backends reais ou mock documentado.
+- Pipeline despacha `FetchHandler` JS/TS e `WasmModule` para backends reais; variants restantes ainda dependem das stories específicas.
 - `edger-isolation/src/deno.rs` (facade) cobre fetch/routes/SPA; `wasmtime` cobre `WasmModule`.
 - Shell routing com `inject_base` e documentação de evolução de protocolo (WebTransport etc.).
 - `CronScheduler` em orchestrator com tokio-cron disparando HTTP interno autenticado.
@@ -60,10 +60,10 @@ Consolidar o runtime para uso real e migração Buntime: execução production-p
 
 | Story | Arquivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|
-| 07.01 Manifests + kinds completos | `01-full-manifests-kinds.md` | large | not started | 07.04, 07.05, Epic 05 |
+| 07.01 Manifests + kinds completos | `01-full-manifests-kinds.md` | large | **in progress** (loader + startup) | 07.04, 07.05, Epic 05 |
 | 07.02 Shell routing | `02-shell-routing.md` | medium | not started | 07.01 |
 | 07.03 Cron nativo | `03-native-cron.md` | medium | not started | 07.01, Epic 05 |
-| 07.04 Execução JS real | `04-real-js-execution.md` | large | not started | Epic 03 (spike), Epic 04, Epic 05 |
+| 07.04 Execução JS real | `04-real-js-execution.md` | large | in progress (Deno CLI bridge v1) | Epic 03 (spike), Epic 04, Epic 05 |
 | 07.05 Execução Wasm | `05-wasm-execution.md` | large | **in progress** (v1 ABI) | Epic 03 (spike), Epic 04, Epic 05 |
 | 07.06 Observabilidade OTEL | `06-observability-otel.md` | medium | not started | 07.01, 07.04, 07.05 |
 | 07.07 Hardening + matriz compat | `07-hardening-compat-matrix.md` | large | not started | 07.02, 07.03, 07.06 |
@@ -106,7 +106,7 @@ flowchart LR
 - [ ] Matriz de compatibilidade Buntime com testes automatizados passando (`tests/compat/` ou equivalente).
 - [ ] Harness de performance (portado de Buntime) define baselines documentadas em PR 12.
 - [ ] `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check` verde.
-- [ ] `bun test` inalterado e passando.
+- [ ] Gate de planejamento verde; JS root test gate registrado como skipped ou passing conforme existir suíte JS raiz.
 
 ## Risks
 
@@ -125,4 +125,6 @@ flowchart LR
 - Ao fechar o épico: `/agile-refinement` + atualizar `planning/edger/roadmap.md` (Fase 7 → done).
 
 ## Status
-**in-progress** (2026-06-29) — Epic 06 done; 07.05 v1 slice delivered; 07.04 bloqueado V8 boot. Pendências: `docs/pendencies-epic-07.md`
+**in-progress** (2026-06-29) — Epic 06 done; 07.05 v1 slice delivered; 07.04 Deno CLI bridge v1 delivered; `deno_core` embedded boot remains pending. Pendências: `docs/pendencies-epic-07.md`
+
+Plano funcional ativo: `planning/edger/runtime-functional-plan.md`.

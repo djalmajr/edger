@@ -1,0 +1,69 @@
+[#prod-visao-geral]
+=== Visão geral
+
+O Edger resolve uma dor de plataformas que executam workloads em borda: manter
+workers isolados, roteados, autenticados e extensíveis sem delegar a
+orquestração principal para uma camada TypeScript/Deno separada.
+
+Em vez de ter um "main-service" em JS gerenciando roteamento, auth, plugins e
+lifecycle, o Edger centraliza essas decisões em Rust. O código de usuário
+continua podendo ser JS/TS, CommonJS básico ou Wasm, mas o caminho de produção
+passa pelo pipeline Rust: HTTP server -> auth -> router -> hooks -> pool ->
+isolate -> resposta.
+
+==== O que o runtime entrega
+
+* Orquestrador Rust com health/readiness, roteamento e pipeline de dispatch.
+* Descoberta de workers por `RUNTIME_WORKER_DIRS`, `manifest.yaml`,
+  `package.json` ou `index.{ts,js,mjs,wasm,wat}`.
+* Endereçamento de workers por `/name`, `/name@version`, `/@scope/name` e
+  `/@scope/name@version`.
+* Execução JS/TS real via Deno CLI bridge v1, compatível com `Deno.serve` e
+  `export default { fetch(req) {} }`.
+* Execução Wasm v1 via `wasmtime`, com ABI HTTP mínima e sandbox deny-by-default.
+* `WorkerPool` com cache LRU, TTL, workers efêmeros, supervisor e métricas
+  internas.
+* Extensibilidade por crates `edger-ext-*`, registradas explicitamente no binário.
+* Auth por `ROOT_API_KEY` local e `EDGER_AUTH_DB` SQLite para API keys.
+* Ponte de migração para contratos Buntime: manifests, namespaces, public
+  routes, hooks e shell planejados.
+
+==== Exemplo de uso
+
+Um operador inicia o runtime apontando para um diretório de workers:
+
+[source,bash]
+----
+ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers \
+  cargo run -p edger-orchestrator --bin edger
+----
+
+Em outro terminal, uma chamada autenticada executa o worker pelo pipeline Rust:
+
+[source,bash]
+----
+curl -H 'authorization: Bearer test-root' \
+  -H 'content-type: application/json' \
+  -d '{"name":"Alice"}' \
+  http://127.0.0.1:19080/hello-world
+----
+
+Resposta esperada para o exemplo atual:
+
+[source,json]
+----
+{"message":"Hello Alice from foo!"}
+----
+
+==== Princípios de produto
+
+* *Orquestração em Rust.* Routing, auth, hooks, manifests e lifecycle pertencem
+  ao runtime, não ao código de usuário.
+* *Workers como unidade de deploy.* Cada worker tem diretório, manifest,
+  versão, kind e limites próprios.
+* *Core fechado, extensões abertas.* `edger-core` define vocabulário e traits;
+  funcionalidades variáveis entram por crates `edger-ext-*`.
+* *Compatibilidade gradual.* O objetivo é preservar contratos Buntime onde forem
+  úteis, sem reintroduzir o adapter Bun como fallback.
+* *Isolamento explícito.* JS/TS, Wasm, pool e supervisor têm fronteiras
+  documentadas, com hardening incremental.

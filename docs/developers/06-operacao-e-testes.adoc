@@ -1,0 +1,516 @@
+[#eng-operacao-testes]
+=== Operação e testes
+
+==== Variáveis principais
+
+[cols="1,3",options="header"]
+|===
+| Variável | Descrição
+
+| `PORT`
+| Porta do HTTP server. Default: `3000`.
+
+| `RUNTIME_WORKER_DIRS`
+| Lista de roots ou workers diretos separados por `:`. Default: `workers`.
+
+| `ROOT_API_KEY`
+| Key root sintética para bootstrap/local. Opcional, mas necessária para chamar
+  workers protegidos sem API key persistida.
+
+| `EDGER_AUTH_DB`
+| Caminho SQLite para API keys. Default: store em memória.
+
+| `EDGER_DURABLE_SQL_PROVIDER`
+| Seleciona o provider SQL durável no composition root. Valores: `local`
+  (default), `turso-remote` ou `turso-sync`.
+
+| `EDGER_STATE_DIR`
+| Diretório base para providers locais file-backed de SQL/KV/queue. Sem essa
+  variável, o estado local usa armazenamento em memória.
+
+| `EDGER_EXTENSION_STATUS_FILE`
+| Arquivo JSON opcional para persistir enable/disable operacional de extensões.
+  Quando ausente e `EDGER_STATE_DIR` está configurado, o default é
+  `$EDGER_STATE_DIR/extension-status.json`.
+
+| `EDGER_TURSO_NAMESPACE`
+| Namespace configurado para o provider Turso remoto/sync. Default: `default`.
+
+| `EDGER_TURSO_URL`
+| URL libSQL/Turso usada quando `EDGER_DURABLE_SQL_PROVIDER` seleciona Turso.
+  Obrigatória para `turso-remote` e `turso-sync`.
+
+| `EDGER_TURSO_AUTH_TOKEN`
+| Token do provider Turso remoto/sync. Obrigatório para URL remota. Nunca deve
+  aparecer em diagnostics.
+
+| `EDGER_TURSO_LOCAL_PATH`
+| Caminho da replica local quando `EDGER_DURABLE_SQL_PROVIDER=turso-sync`.
+
+| `EDGER_DENO_BIN`
+| Caminho do binário Deno usado pela Deno CLI bridge. Default: `deno`.
+
+| `RUST_LOG`
+| Controle de logs/tracing. O bin adiciona `edger_orchestrator=info` por
+  default.
+|===
+
+==== Gates locais
+
+Antes de declarar uma mudança completa, rode:
+
+[source,bash]
+----
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+----
+
+Gate agregado do planejamento:
+
+[source,bash]
+----
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+----
+
+O gate agregado também roda
+`python3 planning/edger/scripts/deploy-layout-check.py --repo .` para garantir
+que este runbook continue documentando o layout local mínimo: roots de workers,
+estado local, status store de extensões, probes, Admin API e backup.
+
+`bun test` só se aplica se uma suíte JS/TS raiz voltar a existir. O adapter Bun
+histórico foi removido e não deve ser usado como fallback de runtime.
+
+==== Validação manual de lançamento
+
+[source,bash]
+----
+ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers \
+  cargo run -p edger-orchestrator --bin edger
+----
+
+Em outro terminal:
+
+[source,bash]
+----
+curl http://127.0.0.1:19080/ready
+curl -H 'authorization: Bearer test-root' http://127.0.0.1:19080/wasm-hello
+curl -H 'authorization: Bearer test-root' \
+  -H 'content-type: application/json' \
+  -d '{"name":"Alice"}' \
+  http://127.0.0.1:19080/hello-world
+----
+
+==== Probes e métricas
+
+Os probes operacionais são públicos e leves. `health` indica que o processo
+HTTP está respondendo; `ready` exige pool inicializado; `livez` é o probe de
+liveness para supervisores externos.
+
+[cols="1,2",options="header"]
+|===
+| Endpoint | Contrato
+
+| `/health`, `/healthz`
+| `200 {"status":"ok"}` quando o processo HTTP responde.
+
+| `/ready`, `/readyz`
+| `200 {"status":"ready"}` depois da inicialização do runtime; `503
+  {"status":"not_ready"}` antes disso.
+
+| `/livez`
+| `200 {"status":"live"}` enquanto o processo estiver vivo.
+
+| `/metrics`
+| Prometheus text format com snapshot read-only do `WorkerPool`.
+|===
+
+[source,bash]
+----
+curl http://127.0.0.1:19080/healthz
+curl http://127.0.0.1:19080/readyz
+curl http://127.0.0.1:19080/livez
+curl http://127.0.0.1:19080/metrics
+----
+
+`/metrics` expõe apenas contadores e gauges numéricos. Ele não serializa
+configuração, headers de autenticação, API keys ou variáveis de ambiente.
+Métricas v1:
+
+* `edger_pool_workers`
+* `edger_pool_idle_workers`
+* `edger_pool_active_requests`
+* `edger_pool_cache_hits_total`
+* `edger_pool_cache_misses_total`
+* `edger_pool_terminated_total`
+* `edger_pool_spawn_latency_ms_last`
+* `edger_pool_spawn_latency_ms_p50`
+* `edger_pool_request_duration_ms_last`
+* `edger_ephemeral_inflight`
+* `edger_ephemeral_queued`
+* `edger_ephemeral_rejected_total`
+
+O middleware preserva `x-request-id` quando enviado pelo cliente e gera um UUID
+quando ausente. O mesmo ID é propagado para o worker via header antes do
+dispatch, permitindo correlação entre resposta, logs do orchestrator e logs do
+worker.
+
+==== Backup local
+
+O escopo atual é local/single-node. Para backup consistente, pare o processo ou
+pause tráfego de escrita antes da cópia:
+
+[source,bash]
+----
+export EDGER_AUTH_DB=/var/lib/edger/auth.sqlite
+export EDGER_STATE_DIR=/var/lib/edger/state
+export EDGER_EXTENSION_STATUS_FILE=/var/lib/edger/extension-status.json
+
+mkdir -p backups/edger-$(date +%Y%m%d)
+cp "$EDGER_AUTH_DB" backups/edger-$(date +%Y%m%d)/auth.sqlite
+cp -R "$EDGER_STATE_DIR" backups/edger-$(date +%Y%m%d)/state
+test -f "$EDGER_EXTENSION_STATUS_FILE" && \
+  cp "$EDGER_EXTENSION_STATUS_FILE" backups/edger-$(date +%Y%m%d)/extension-status.json
+----
+
+Restauração local é a operação inversa: pare o processo, restaure
+`EDGER_AUTH_DB`, `EDGER_STATE_DIR` e, quando usado, `EDGER_EXTENSION_STATUS_FILE`,
+depois reinicie com as mesmas variáveis. Quando `EDGER_STATE_DIR` não está
+configurado, os providers de estado são efêmeros e não há estado de app para
+preservar. Quando nenhum status store de extensões está configurado, o
+enable/disable de extensões permanece apenas em memória.
+
+==== Troubleshooting operacional
+
+[cols="1,2",options="header"]
+|===
+| Sintoma | Verificação
+
+| `/readyz` retorna `503`
+| Confirme se o binário terminou a descoberta de manifests e chamou
+  `mark_ready`; veja logs de startup e `RUNTIME_WORKER_DIRS`.
+
+| `/metrics` mostra `cache_misses` e `terminated_total` subindo juntos
+| O worker provavelmente está com `ttl: 0` e executa como efêmero. Configure
+  `ttl` no manifesto quando quiser warm reuse.
+
+| Chamada a worker protegido retorna `401`
+| Envie `authorization: Bearer <key>` ou configure `ROOT_API_KEY` para
+  bootstrap local.
+
+| Worker JS/TS não executa
+| Confirme `deno` no `PATH` ou configure `EDGER_DENO_BIN`.
+
+| Estado some após restart
+| Configure `EDGER_STATE_DIR` para provider local ou selecione
+  `EDGER_DURABLE_SQL_PROVIDER=turso-sync` com `EDGER_TURSO_*`; sem isso,
+  SQL/KV/queue locais usam memória.
+
+| Status de extensão volta para `enabled` após restart
+| Configure `EDGER_EXTENSION_STATUS_FILE` ou `EDGER_STATE_DIR`; sem status
+  store, enable/disable de extensões é runtime-only.
+
+| Mutação administrativa browser-facing retorna erro de origem
+| Envie `Origin` compatível com `Host` ou chame como CLI/API Bearer sem headers
+  browser `Sec-Fetch-*`.
+|===
+
+==== Admin API operacional
+
+A API administrativa fica reservada sob `/api/admin/*` para evitar colisão com
+workers. `GET /api/admin/session` aceita qualquer API key válida e retorna o
+principal autenticado. `GET /api/admin/workers` aceita root ou uma key com
+`workers:read`; keys não-root veem somente workers dentro dos seus namespaces.
+Os endpoints de extensões, keys e mutações v1 exigem root.
+
+[cols="1,1,3",options="header"]
+|===
+| Método | Path | Descrição
+
+| `GET`
+| `/api/admin/session`
+| Valida a key enviada e retorna o principal.
+
+| `GET`
+| `/api/admin/workers`
+| Lista workers descobertos com nome, namespace, versão, kind, source, status e rotas públicas. Keys não-root são filtradas por namespace.
+
+| `GET`
+| `/api/admin/extensions`
+| Lista middleware/extensions e auth providers registrados, incluindo status e
+  diagnostics seguros quando disponíveis.
+
+| `GET`
+| `/api/admin/keys`
+| Lista metadata de chaves persistidas, sem raw key ou hash.
+
+| `POST`
+| `/api/admin/workers/{name}/enable`
+| Mutação protegida. Recoloca worker no overlay runtime em memória.
+
+| `POST`
+| `/api/admin/workers/{name}/disable`
+| Mutação protegida. Remove worker do roteamento pelo overlay runtime em memória.
+
+| `POST`
+| `/api/admin/extensions/{name}/enable`
+| Mutação protegida. Recoloca extensão ativa e persiste status quando o status
+  store está configurado.
+
+| `POST`
+| `/api/admin/extensions/{name}/disable`
+| Mutação protegida. Remove extensão ativa de hooks/providers e persiste status
+  quando o status store está configurado.
+|===
+
+Exemplos:
+
+[source,bash]
+----
+curl -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/session
+
+curl -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/workers
+
+curl -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/extensions
+
+curl -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/keys
+
+curl -i -X POST -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/workers/todos/disable
+
+curl -i -X POST -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/extensions/gateway/disable
+----
+
+Sem key válida, a API retorna `401`. Com key válida sem permissão suficiente,
+endpoints administrativos retornam `403`. A resposta de keys expõe somente
+metadata operacional como `id`, `name`, `keyPrefix`, `role`, `permissions`,
+`namespaces`, `expiresAt` e `createdAt`.
+
+Mutações administrativas browser-facing (`POST`, `PUT`, `PATCH`, `DELETE`) devem
+enviar `Origin` compatível com `Host`. Chamadas CLI/API com Bearer token podem
+operar sem `Origin`; se headers `Sec-Fetch-*` ou `Origin` estiverem presentes, o
+runtime aplica validação same-origin. O header interno `x-edger-internal: true`
+é apenas bypass de CSRF para chamadas internas autenticadas como root; ele nunca
+autentica a chamada sozinho nem eleva uma API key não-root.
+
+Limites de ingresso:
+
+[cols="1,1,2",options="header"]
+|===
+| Recurso | Resposta | Limite atual
+
+| Corpo HTTP
+| `413 PAYLOAD_TOO_LARGE`
+| `4 MiB` no wire layer do orchestrator
+
+| Quantidade de headers
+| `431 HEADER_TOO_LARGE`
+| `100`
+
+| Tamanho total dos headers
+| `431 HEADER_TOO_LARGE`
+| `64 KiB`
+
+| Tamanho de valor por header
+| `431 HEADER_TOO_LARGE`
+| `8 KiB`
+|===
+
+==== Service bindings v1: SQL, KV e queue
+
+Workers podem declarar bindings explícitos no `manifest.yaml`. O orchestrator
+normaliza esses bindings e injeta o header `x-edger-bindings` apenas quando o
+worker declara capacidade de estado e o `ExtensionRegistry` possui provider
+registrado para cada `kind`.
+
+[source,yaml]
+----
+name: state-demo
+entrypoint: index.ts
+kind: fetch
+bindings:
+  - kind: durableSql
+    name: db
+    namespace: state-demo
+    permissions:
+      - sql:read
+      - sql:write
+  - kind: keyValue
+    name: cache
+  - kind: queue
+    name: jobs
+----
+
+O namespace default do binding é o namespace do worker (`@scope`) quando existir;
+caso contrário, o nome do worker. Um worker público com bindings é negado antes
+do dispatch, porque bindings exigem principal autenticado. A autorização v1
+valida acesso ao namespace do binding.
+
+[source,typescript]
+----
+Deno.serve((req: Request) => {
+  const bindings = req.headers.get("x-edger-bindings");
+  return new Response(bindings ?? "null");
+});
+----
+
+Implementações de state atuais:
+
+[cols="1,3",options="header"]
+|===
+| Crate | Entrega
+
+| `edger-ext-turso`
+| `LocalSqliteProvider` com SQLite por namespace, em memória ou file-backed. O crate e o alias `LocalTursoProvider` são históricos; o escopo atual é local/single-node.
+
+| `edger-ext-turso-remote`
+| `RemoteTursoProvider` com libSQL/Turso remoto ou remote-replica. Selecionado por `EDGER_DURABLE_SQL_PROVIDER=turso-remote` ou `turso-sync`; provas remotas reais exigem `EDGER_TURSO_TEST_URL`/`EDGER_TURSO_TEST_AUTH_TOKEN`.
+
+| `edger-ext-keyval`
+| KV `set/get/delete` com versionstamp e TTL, além de queue `enqueue/dequeue/ack`, sobre `DurableSqlProvider`.
+|===
+
+No binário `edger`, os providers são registrados no composition root:
+
+* `edger-ext-turso` como `provider:durableSql` quando `EDGER_DURABLE_SQL_PROVIDER` está ausente ou `local`.
+* `edger-ext-turso-remote` como `provider:durableSql` quando `EDGER_DURABLE_SQL_PROVIDER=turso-remote` ou `turso-sync`.
+* `edger-ext-keyval` como `provider:keyValue` e `provider:queue`.
+
+`EDGER_STATE_DIR=/caminho/estado` ativa SQLite file-backed por namespace. Sem
+essa variável, o provider SQL local usa armazenamento em memória, adequado para
+testes e demos locais.
+
+O identificador operacional da extensão SQL local permanece `turso` por
+compatibilidade com inventário/admin API existentes. Código novo deve preferir
+`LocalSqliteProvider`; `LocalTursoProvider` existe como alias legado.
+
+Escopo v1: contrato local/single-node, seleção de provider externo e provas com
+consumidores reais. Turso remoto/sync foi reclassificado para provider externo
+no Epic 09, registrado sobre o mesmo `DurableSqlProvider`. O crate
+`edger-ext-turso-remote` compila como provider substituível, o binário consegue
+selecioná-lo por configuração e os testes provam worker, KV/queue e gateway
+history usando esse provider sem mudar contratos públicos. Prova contra um
+serviço Turso remoto real continua opt-in por depender de URL/token externos.
+SDK worker para chamar operações diretamente, retry/backoff/DLQ completos e
+coordenação multi-pod ficam fora desta fatia.
+
+==== Shell e gateway v1
+
+Um worker com `base: "/"` no manifesto atua como shell central. Navegações de
+documento (`Sec-Fetch-Dest: document`) e assets root-level de um único segmento
+podem ser roteados para esse shell. Apps embutidos em iframe devem aparecer em
+`shellExcludes` para evitar shell-in-shell loop.
+
+[source,yaml]
+----
+name: shell-demo
+entrypoint: index.html
+base: "/"
+injectBase: true
+shellExcludes:
+  - todos-shell-demo
+----
+
+O shell recebe `x-base: /` e `<base href="/">`. Apps excluídos continuam workers
+normais e recebem seu próprio base path, por exemplo `x-base:
+/todos-shell-demo`. Paths reservados como `/api`, `/health`, `/ready` e
+`/.well-known` nunca são roteados para o shell.
+
+Validação local:
+
+[source,bash]
+----
+curl -H 'authorization: Bearer test-root' \
+  -H 'sec-fetch-dest: document' \
+  http://127.0.0.1:19080/reports/list
+
+curl -H 'authorization: Bearer test-root' \
+  -H 'sec-fetch-dest: iframe' \
+  http://127.0.0.1:19080/todos-shell-demo/list
+----
+
+O `edger-ext-gateway` também aplica políticas de borda locais:
+
+* CORS/preflight mínimo: `OPTIONS` com `Origin` retorna `204` com headers
+  `Access-Control-Allow-*`, e respostas passam a receber
+  `Access-Control-Allow-Origin`.
+* Redirect rules por prefixo: regras ordenadas podem short-circuitar requests
+  com status `301`, `302`, `307` ou `308`, preservando o sufixo do path e a
+  query string no header `Location`.
+* Rate limit local em memória: quando configurado, o gateway mantém um token
+  bucket por cliente (`X-Forwarded-For`, depois `X-Real-IP`, senão `unknown`) e
+  bloqueia excesso com `429`, `x-ratelimit-limit`,
+  `x-ratelimit-remaining: 0` e `retry-after`. Preflight CORS não consome bucket.
+* Diagnóstico operacional local: `GET /api/admin/extensions` com credencial root
+  inclui `diagnostics` para o gateway, com contadores de `continue`, `preflight`,
+  `redirect` e `rate_limited`, além das últimas 100 decisões. O snapshot não
+  serializa headers, body, `Authorization`, `x-api-key` nem segredos brutos.
+* Histórico persistente opcional: quando a composição cria
+  `GatewayExtension::with_history_store(provider, namespace)`, o gateway grava
+  `gateway_decisions` via `DurableSqlProvider`, atualiza status/duração em
+  `on_response` e expõe a contagem em `diagnostics.history.persistent`. O
+  binário `edger` ainda não liga esse histórico por env; a evidência atual é o
+  teste de contrato do gateway contra `edger-ext-turso-remote`.
+* API admin read-only do gateway:
++
+[source,bash]
+----
+curl -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/gateway/stats
+
+curl -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/gateway/config
+
+curl -H 'authorization: Bearer test-root' \
+  'http://127.0.0.1:19080/api/admin/gateway/logs?rateLimited=true&limit=20'
+
+curl -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/gateway/logs/stats
+
+curl -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/gateway/rate-limit/metrics
+----
++
+`/api/admin/gateway/logs` aceita filtros `limit`, `rateLimited`, `status` e
+`decision`. `/api/admin/gateway/logs/stats` agrega `total`, `rateLimited`,
+`byStatus`, `byDecision`, `withoutStatus`, `duration.samples` e
+`duration.avgMs` sobre as decisões recentes retidas quando há amostras de
+duração. `/api/admin/gateway/rate-limit/metrics` expõe apenas métricas
+agregadas do rate limit local (`enabled`, `activeBuckets`, `maxRequests`,
+`windowSeconds`, `scope`), sem listar buckets ou chaves de cliente. Todos os
+endpoints exigem credencial root e são somente leitura.
+
+Proxy externo, cache, rate-limit persistente/distribuído, listagem/reset de
+buckets, mutações dinâmicas de gateway, SSE e excludes dinâmicos ficam fora do
+v1. Histórico persistente já existe como capacidade de composição e prova de
+contrato, mas ainda não tem wiring operacional próprio no binário.
+
+==== Healthcheck
+
+[source,http]
+----
+GET /health
+----
+
+Resposta esperada:
+
+[source,json]
+----
+{"status":"ok"}
+----
+
+==== Operação segura
+
+* Capture corpo e status das validações manuais em scratch/logs quando usar como
+  evidência.
+* Não use root key compartilhada em ambiente remoto.
+* Trate `EDGER_AUTH_DB` como dado operacional, não como fixture descartável.
+* Se a ponte Deno falhar, verifique `EDGER_DENO_BIN`, `deno.json` local e
+  permissões antes de alterar o contrato do worker.
+* Qualquer mudança em auth, manifests, routing ou worker lifecycle exige gate
+  Rust completo.

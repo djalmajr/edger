@@ -1,0 +1,84 @@
+[#eng-ambiente-local]
+=== Ambiente local
+
+==== Requisitos
+
+* Rust toolchain compatível com `rust-version = "1.80"`.
+* `cargo`.
+* `deno` no `PATH` para workers JS/TS, ou `EDGER_DENO_BIN`.
+* `curl` para validação manual.
+
+==== Rodar o servidor Rust
+
+[source,bash]
+----
+ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers \
+  cargo run -p edger-orchestrator --bin edger
+----
+
+Valide probes:
+
+[source,bash]
+----
+curl http://127.0.0.1:19080/health
+curl http://127.0.0.1:19080/ready
+----
+
+==== Chamar workers de exemplo
+
+[source,bash]
+----
+curl -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/wasm-hello
+
+curl -H 'authorization: Bearer test-root' \
+  -H 'content-type: application/json' \
+  -d '{"name":"Alice"}' \
+  http://127.0.0.1:19080/hello-world
+
+curl -H 'authorization: Bearer test-root' \
+  -d '12345' \
+  http://127.0.0.1:19080/read-body
+----
+
+==== Múltiplos diretórios de workers
+
+`RUNTIME_WORKER_DIRS` usa `:` como separador:
+
+[source,bash]
+----
+ROOT_API_KEY=test-root RUNTIME_WORKER_DIRS='workers:/tmp/edger-workers' \
+  cargo run -p edger-orchestrator --bin edger
+----
+
+Cada path pode ser um root com vários workers ou um worker direto.
+
+==== Deno customizado
+
+Quando `deno` não está no `PATH`:
+
+[source,bash]
+----
+EDGER_DENO_BIN=/path/to/deno ROOT_API_KEY=test-root \
+  cargo run -p edger-orchestrator --bin edger
+----
+
+==== Auth persistente local
+
+Sem `EDGER_AUTH_DB`, o store de API keys é em memória. Para persistir:
+
+[source,bash]
+----
+EDGER_AUTH_DB=.local/edger-auth.sqlite ROOT_API_KEY=test-root \
+  cargo run -p edger-orchestrator --bin edger
+----
+
+O projeto ainda não documenta uma CLI operacional para criar API keys nesse
+banco; em desenvolvimento, `ROOT_API_KEY` é o caminho simples.
+
+==== Build
+
+[source,bash]
+----
+cargo build --workspace
+----

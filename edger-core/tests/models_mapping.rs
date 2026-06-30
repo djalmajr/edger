@@ -2,7 +2,7 @@
 
 use edger_core::{
     create_worker_ref, infer_execution_kind, parse_duration_string_to_ms, parse_size_to_bytes,
-    parse_worker_config, ExecutionKind, WorkerManifest,
+    parse_worker_config, BindingKind, ExecutionKind, WorkerManifest,
 };
 
 const SAMPLE_YAML: &str = include_str!("fixtures/sample_manifest.yaml");
@@ -13,12 +13,19 @@ fn manifest_deserializes_from_yaml_fixture() {
     assert_eq!(manifest.name, "@acme/checkout");
     assert_eq!(manifest.version.as_deref(), Some("1.2.3"));
     assert_eq!(manifest.max_requests, Some(1000));
+    assert_eq!(manifest.shell_excludes, vec!["todos", "platform"]);
     assert!(manifest
         .public_routes
         .as_ref()
         .unwrap()
         .routes
         .contains(&"/health".into()));
+    assert_eq!(manifest.bindings.len(), 3);
+    assert_eq!(manifest.bindings[0].kind, BindingKind::DurableSql);
+    assert_eq!(manifest.bindings[0].name, "db");
+    assert_eq!(manifest.bindings[0].namespace.as_deref(), Some("@acme"));
+    assert_eq!(manifest.bindings[1].kind, BindingKind::KeyValue);
+    assert_eq!(manifest.bindings[2].kind, BindingKind::Queue);
 }
 
 #[test]
@@ -36,8 +43,16 @@ fn parse_worker_config_normalizes_buntime_fields() {
     assert!(!config.auto_install);
     assert!(config.inject_base);
     assert_eq!(config.visibility, "protected");
+    assert_eq!(config.shell_excludes, vec!["todos", "platform"]);
     assert_eq!(config.cron.len(), 1);
     assert_eq!(config.kind, Some(ExecutionKind::FetchHandler));
+    assert_eq!(config.bindings.len(), 3);
+    assert_eq!(config.bindings[0].name, "db");
+    assert_eq!(
+        config.bindings[0].permissions,
+        vec!["sql:read", "sql:write"]
+    );
+    assert_eq!(config.bindings[1].namespace, None);
 }
 
 #[test]
@@ -81,11 +96,37 @@ fn infer_execution_kind_rules() {
         ..Default::default()
     };
     assert_eq!(infer_execution_kind(&explicit), ExecutionKind::RoutesTable);
+
+    let explicit_wasm = WorkerManifest {
+        name: "explicit-wasm".into(),
+        entrypoint: Some("index.wasm".into()),
+        kind: Some("wasm".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        infer_execution_kind(&explicit_wasm),
+        ExecutionKind::WasmModule {
+            entry: Some("index.wasm".into())
+        }
+    );
+
+    let wat = WorkerManifest {
+        name: "wat".into(),
+        entrypoint: Some("index.wat".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        infer_execution_kind(&wat),
+        ExecutionKind::WasmModule {
+            entry: Some("index.wat".into())
+        }
+    );
 }
 
 #[test]
 fn duration_and_size_parsers() {
     assert_eq!(parse_duration_string_to_ms("30s"), Some(30_000));
+    assert_eq!(parse_duration_string_to_ms("100ms"), Some(100));
     assert_eq!(parse_duration_string_to_ms("5m"), Some(300_000));
     assert_eq!(parse_size_to_bytes("10mb"), Some(10 * 1024 * 1024));
     assert_eq!(parse_size_to_bytes("1024"), Some(1024));

@@ -1,0 +1,33 @@
+Story 08.06 provider registry runtime evidence
+Date: 2026-06-29
+
+Launch:
+ROOT_API_KEY=test-root PORT=19084 RUNTIME_WORKER_DIRS=workers cargo run -p edger-orchestrator --bin edger
+
+Server log:
+edger listening config.addr=0.0.0.0:19084
+
+Admin extension inventory:
+curl -sS -H 'authorization: Bearer test-root' http://127.0.0.1:19084/api/admin/extensions
+
+Result:
+{"extensions":[{"capabilities":["apiKeys","authProvider"],"kind":"authProvider","name":"auth","priority":-100},{"capabilities":["middleware","onRequest","onResponse"],"kind":"middleware","name":"gateway","priority":0},{"capabilities":["provider:keyValue","provider:queue"],"kind":"serviceProvider","name":"keyval","priority":0},{"capabilities":["provider:durableSql"],"kind":"serviceProvider","name":"turso","priority":0}]}
+
+Authenticated state-demo binding lookup:
+curl -sS -H 'authorization: Bearer test-root' http://127.0.0.1:19084/state-demo
+
+Result:
+{"path":"/","bindings":{"bindings":[{"kind":"durableSql","name":"db","namespace":"state-demo","permissions":["sql:read","sql:write"]},{"kind":"keyValue","name":"cache","namespace":"state-demo","permissions":[]},{"kind":"queue","name":"jobs","namespace":"state-demo","permissions":[]}],"worker":"state-demo"}}
+
+Unauthenticated state-demo:
+curl -sS -i http://127.0.0.1:19084/state-demo
+
+Result:
+HTTP/1.1 401 Unauthorized
+content-type: application/json
+content-length: 62
+
+{"code":"UNAUTHORIZED","message":"missing or invalid API key"}
+
+Conclusion:
+The real edger binary registers auth, gateway, durable SQL, KV and queue capabilities. A worker with bindings receives descriptors only after authentication and provider lookup succeeds.
