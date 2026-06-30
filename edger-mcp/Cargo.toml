@@ -1,0 +1,19 @@
+[package]
+name = "edger-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "edger-mcp"
+path = "src/main.rs"
+
+[dependencies]
+edger-core = { path = "../edger-core" }
+edger-orchestrator = { path = "../edger-orchestrator" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

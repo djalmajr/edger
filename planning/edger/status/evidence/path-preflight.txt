@@ -116,6 +116,7 @@ OK planning/edger/status/checkpoint-2026-06-29-epic-05-closure.md
 OK planning/edger/status/checkpoint-2026-06-29-epic-06-closure.md
 OK planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
 OK planning/edger/status/checkpoint-2026-06-29-epic-09-provider-reclassification.md
+OK planning/edger/status/checkpoint-2026-06-29-epic-13-mcp-v1.md
 OK planning/edger/status/checkpoint-2026-06-29-modular-ai-native-roadmap.md
 OK planning/edger/status/checkpoint-2026-06-29-remove-bun-adapter-plan.md
 OK planning/edger/status/checkpoint-2026-06-29-story-02-01.md
@@ -177,5 +178,5 @@ OK planning/edger/status/closure-2026-06-29-story-09-05-consumer-proofs.md
 OK planning/edger/status/consolidation-2026-06-28.md
 OK planning/edger/status/consolidation-2026-06-29-backlog-ready.md
 ---
-Total refs: 178
+Total refs: 179
 Missing: 0

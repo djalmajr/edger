@@ -39,23 +39,22 @@ Entregar uma primeira versao funcional, testada localmente, de control plane MCP
 
 | Story | Arquivo | Objetivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|---|
-| 13.01 Contratos machine-readable | `01-contratos-machine-readable.md` | Gerar ou manter schemas de API/capabilities para agentes | medium | planned | Epic 08.02, Epic 10.01 |
-| 13.02 MCP server control plane | `02-mcp-server-control-plane.md` | Criar primeiro MCP server local do edger com tools seguras | large | planned | 13.01 |
-| 13.03 Authoring local de worker | `03-authoring-worker-local.md` | Permitir criar/modificar worker em workspace controlado via tool | large | planned | 13.02 |
-| 13.04 Validacao local de worker | `04-validacao-local-worker.md` | Rodar validacao local de worker e registrar evidencia | medium | planned | 13.03 |
-| 13.05 Preparacao de commit/PR | `05-preparacao-commit-pr.md` | Preparar diff, commit local e PR metadata sem deploy remoto | medium | planned | 13.04 |
+| 13.01 Contratos machine-readable | `01-contratos-machine-readable.md` | Gerar ou manter schemas de API/capabilities para agentes | medium | completed | Epic 08.02, Epic 10.01 |
+| 13.02 MCP server control plane | `02-mcp-server-control-plane.md` | Criar primeiro MCP server local do edger com tools seguras | large | completed | 13.01 |
+| 13.03 Authoring local de worker | `03-authoring-worker-local.md` | Permitir criar/modificar worker em workspace controlado via tool | large | completed | 13.02 |
+| 13.04 Validacao local de worker | `04-validacao-local-worker.md` | Rodar validacao local de worker e registrar evidencia | medium | completed | 13.03 |
+| 13.05 Preparacao de commit/PR | `05-preparacao-commit-pr.md` | Preparar diff, commit local e PR metadata sem deploy remoto | medium | completed | 13.04 |
 
 ## Epic acceptance criteria
 
-- [ ] Pelo menos um servidor MCP local do edger inicia e lista tools.
-- [ ] Tools de descoberta retornam workers, capabilities e contracts sem segredos.
-- [ ] Tool de authoring cria ou modifica worker em workspace permitido com dry-run.
-- [ ] Tool de validacao roda checks locais e retorna evidencia objetiva.
-- [ ] Fluxo completo e testado localmente: descobrir, criar/modificar worker, validar e preparar commit/PR.
-- [ ] Nenhuma tool realiza deploy remoto nesta fase.
-- [ ] Gate de planejamento fica verde: `SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh`.
+- [x] Pelo menos um servidor MCP local do edger inicia e lista tools.
+- [x] Tools de descoberta retornam workers, capabilities e contracts sem segredos.
+- [x] Tool de authoring cria ou modifica worker em workspace permitido com dry-run.
+- [x] Tool de validacao roda checks locais e retorna evidencia objetiva.
+- [x] Fluxo completo e testado localmente: descobrir, criar/modificar worker, validar e preparar commit/PR.
+- [x] Nenhuma tool realiza deploy remoto nesta fase.
+- [x] Gate de planejamento fica verde: `SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh`.
 
 ## Status
 
-planned (2026-06-29) - criado para garantir que AI-native/MCP seja implementacao funcional local testada, nao apenas item de roadmap.
-
+completed (2026-06-29) - primeira versao funcional local entregue em `edger-mcp`: stdio JSON-RPC com `initialize`, `tools/list`, `tools/call` e tools para capabilities, workers, inspect, authoring local sob `workers/`, validacao local de manifests e preparacao de commit/PR metadata sem deploy remoto. `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt -- --check`, validacao stdio manual e `SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh` passaram.

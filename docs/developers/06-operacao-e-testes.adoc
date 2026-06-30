@@ -13,6 +13,10 @@
 | `RUNTIME_WORKER_DIRS`
 | Lista de roots ou workers diretos separados por `:`. Default: `workers`.
 
+| `EDGER_MCP_WORKSPACE_ROOT`
+| Raiz local permitida para o servidor MCP `edger-mcp`. Default: diretório
+  atual do processo.
+
 | `ROOT_API_KEY`
 | Key root sintética para bootstrap/local. Opcional, mas necessária para chamar
   workers protegidos sem API key persistida.
@@ -80,6 +84,68 @@ estado local, status store de extensões, probes, Admin API e backup.
 
 `bun test` só se aplica se uma suíte JS/TS raiz voltar a existir. O adapter Bun
 histórico foi removido e não deve ser usado como fallback de runtime.
+
+==== Control plane MCP local
+
+O crate `edger-mcp` entrega a primeira superfície AI-native local do edger. Ele
+roda por stdio, fala JSON-RPC 2.0 newline-delimited e não faz deploy remoto.
+
+[source,bash]
+----
+EDGER_MCP_WORKSPACE_ROOT=. cargo run -p edger-mcp --bin edger-mcp
+----
+
+Métodos de protocolo cobertos:
+
+* `initialize`
+* `tools/list`
+* `tools/call`
+
+Tools iniciais:
+
+[cols="1,3",options="header"]
+|===
+| Tool | Contrato local
+
+| `edger.list_capabilities`
+| Retorna `schemaVersion`, versão de protocolo, capabilities AI-native, tipos
+  de recurso e limites de segurança.
+
+| `edger.list_workers`
+| Carrega manifests locais com o manifest loader do edger e retorna inventário
+  seguro de workers.
+
+| `edger.inspect_worker`
+| Retorna um worker específico por nome e versão opcional.
+
+| `edger.write_worker_file`
+| Cria ou substitui arquivo sob `workers/` dentro do workspace permitido. O
+  default é `dryRun: true`.
+
+| `edger.validate_local`
+| Roda validação local in-process de descoberta/parsing de manifests e retorna
+  evidência estruturada.
+
+| `edger.prepare_commit`
+| Resume mudanças Git locais e prepara mensagem de commit e metadata de PR sem
+  criar commit, abrir PR ou fazer deploy.
+|===
+
+Exemplo de chamada stdio:
+
+[source,bash]
+----
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' |
+  EDGER_MCP_WORKSPACE_ROOT=. cargo run -q -p edger-mcp --bin edger-mcp
+----
+
+Limites de segurança v1:
+
+* Escrita fica restrita a paths relativos sob `workers/`.
+* `workspaceRoot` e `workerDirs` não podem escapar da raiz configurada.
+* O inventário MCP não serializa `env` de manifests.
+* Validação é local; nenhuma tool realiza deploy remoto.
 
 ==== Validação manual de lançamento
 

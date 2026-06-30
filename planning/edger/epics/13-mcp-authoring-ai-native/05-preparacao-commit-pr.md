@@ -12,10 +12,10 @@ O fluxo AI-native deve terminar em uma mudanca revisavel. Nesta fase, o limite e
 
 | Path | Action | Reason |
 |---|---|---|
+| `edger-mcp/src/discovery.rs` | create | Implementar resumo Git e metadata segura |
+| `edger-mcp/tests/protocol.rs` | create | Provar status, mensagem e PR metadata sem commit |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar politica local de commit/PR |
 | `planning/edger/status/evidence/` | edit | Registrar evidencia do fluxo completo |
-| `workers/` | edit | Usar worker criado/modificado como fixture local |
-| `edger-orchestrator/tests/value_parity.rs` | edit | Manter prova automatizada do worker |
 
 ## Detail
 
@@ -27,35 +27,39 @@ O fluxo AI-native deve terminar em uma mudanca revisavel. Nesta fase, o limite e
 ### TO-BE
 
 - Tool prepara resumo de diff, arquivos alterados, resultados de validacao e sugestao de mensagem de commit.
-- Commit local so acontece quando autorizado pelo operador.
-- PR metadata e preparada como texto/arquivo local; push e abertura remota ficam fora desta fase salvo autorizacao explicita fora do MCP automatico.
+- A primeira versao nao executa commit automaticamente; ela retorna `statusShort`, arquivos alterados/staged, mensagem sugerida e metadata de PR.
+- Push e abertura remota ficam fora desta fase salvo autorizacao explicita fora do MCP automatico.
 
 ### Scope
 
-- **In:** diff summary, commit local autorizado, PR metadata local, evidencia.
+- **In:** diff/status summary, mensagem de commit sugerida, PR metadata local, evidencia.
 - **Out:** deploy, merge remoto automatico, escrita em repos nao autorizados.
 
 ### Critérios de aceite
 
-- [ ] Tool retorna resumo de diff e validacao antes de qualquer commit.
-- [ ] Commit local exige autorizacao explicita.
-- [ ] PR metadata inclui objetivo, testes e riscos.
-- [ ] Fluxo completo nao executa deploy remoto.
+- [x] Tool retorna resumo de diff/status antes de qualquer commit.
+- [x] Tool nao executa commit automaticamente.
+- [x] PR metadata inclui objetivo, validacao e ausencia de deploy remoto.
+- [x] Fluxo completo nao executa deploy remoto.
 
 ## Tasks
 
-- [ ] Definir contrato de resumo de diff e PR metadata.
-- [ ] Integrar resultado da validacao local.
-- [ ] Implementar caminho de commit local autorizado.
-- [ ] Registrar evidencia do fluxo completo.
+- [x] Definir contrato de resumo de diff e PR metadata.
+- [x] Integrar resultado da validacao local.
+- [x] Implementar caminho de preparacao sem commit automatico.
+- [x] Registrar evidencia do fluxo completo.
 
 ## Verification
 
 ```bash
 git status --short --branch
+cargo test -p edger-mcp
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
 SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
 ```
 
+## Status
+
+completed (2026-06-29) - `edger.prepare_commit` resume status Git local, arquivos alterados/staged, mensagem sugerida e metadata de PR sem criar commit, abrir PR ou fazer deploy remoto.

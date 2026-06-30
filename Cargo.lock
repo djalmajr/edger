@@ -854,6 +854,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "edger-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "edger-core",
+ "edger-orchestrator",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "edger-orchestrator"
 version = "0.1.0"
 dependencies = [

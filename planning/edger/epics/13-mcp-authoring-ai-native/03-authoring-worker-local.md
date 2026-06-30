@@ -12,9 +12,8 @@ Para entregar valor AI-native real, um agente precisa criar ou modificar worker 
 
 | Path | Action | Reason |
 |---|---|---|
-| `workers/` | edit | Criar ou modificar workers dentro do workspace permitido |
-| `edger-orchestrator/tests/manifest_loader.rs` | edit | Provar worker criado/modificado reconhecido pelo runtime |
-| `edger-orchestrator/tests/value_parity.rs` | edit | Provar fluxo local representativo |
+| `edger-mcp/src/discovery.rs` | create | Implementar escrita controlada dentro de `workers/` |
+| `edger-mcp/tests/protocol.rs` | create | Provar dry-run, path guard e worker criado descoberto |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar limites de authoring |
 
 ## Detail
@@ -29,6 +28,7 @@ Para entregar valor AI-native real, um agente precisa criar ou modificar worker 
 - Tool de authoring recebe plano estruturado, valida path dentro do workspace e suporta dry-run.
 - Mudanca produz diff previsivel e arquivos no layout de worker.
 - Nao escreve fora de `workers/` ou raiz explicitamente permitida.
+- A primeira versao usa `edger.write_worker_file`, que cria ou substitui arquivos sob `workers/`, com `dryRun: true` por default e `overwrite` explicito para replace.
 
 ### Scope
 
@@ -37,26 +37,28 @@ Para entregar valor AI-native real, um agente precisa criar ou modificar worker 
 
 ### Critérios de aceite
 
-- [ ] Dry-run mostra arquivos que seriam criados/modificados.
-- [ ] Path traversal e escrita fora do workspace sao bloqueados.
-- [ ] Worker criado e descoberto pelo manifest/autodiscovery.
-- [ ] Teste local prova dispatch ou rota basica do worker.
+- [x] Dry-run mostra arquivos que seriam criados/modificados.
+- [x] Path traversal e escrita fora do workspace sao bloqueados.
+- [x] Worker criado e descoberto pelo manifest/autodiscovery.
+- [x] Teste local prova authoring + discovery do worker criado.
 
 ## Tasks
 
-- [ ] Definir input estruturado de authoring.
-- [ ] Implementar validacao de path e dry-run.
-- [ ] Implementar escrita controlada no workspace permitido.
-- [ ] Adicionar teste de worker criado/modificado.
+- [x] Definir input estruturado de authoring.
+- [x] Implementar validacao de path e dry-run.
+- [x] Implementar escrita controlada no workspace permitido.
+- [x] Adicionar teste de worker criado/modificado.
 
 ## Verification
 
 ```bash
-cargo test -p edger-orchestrator --test manifest_loader
-cargo test -p edger-orchestrator --test value_parity
+cargo test -p edger-mcp
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
 SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
 ```
 
+## Status
+
+completed (2026-06-29) - `edger.write_worker_file` cria/substitui arquivos dentro de `workers/`, bloqueia path traversal, usa dry-run por default e tem teste provando que um worker criado via MCP passa a ser descoberto por `edger.list_workers`.

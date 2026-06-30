@@ -1,0 +1,17 @@
+Command:
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | EDGER_MCP_WORKSPACE_ROOT=. cargo run -q -p edger-mcp --bin edger-mcp
+
+Result:
+exit code 0
+
+Observed tools:
+- edger.list_capabilities
+- edger.list_workers
+- edger.inspect_worker
+- edger.write_worker_file
+- edger.validate_local
+- edger.prepare_commit
+
+Notes:
+- Response used JSON-RPC 2.0 shape with id=1 and result.tools array.
+- No remote deploy was triggered.

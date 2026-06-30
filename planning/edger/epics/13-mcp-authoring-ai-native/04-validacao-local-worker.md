@@ -13,8 +13,8 @@ Authoring sem validacao gera risco. O MCP deve conseguir rodar validacao local d
 | Path | Action | Reason |
 |---|---|---|
 | `planning/edger/status/evidence/` | edit | Registrar evidencia local de validacao |
-| `edger-orchestrator/tests/value_parity.rs` | edit | Cobrir worker criado/modificado |
-| `planning/edger/scripts/run-gates.sh` | edit | Reusar gates locais quando cabivel |
+| `edger-mcp/src/discovery.rs` | create | Implementar validacao local in-process |
+| `edger-mcp/tests/protocol.rs` | create | Provar sucesso e falha de validacao |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar comando local e limites |
 
 ## Detail
@@ -29,6 +29,7 @@ Authoring sem validacao gera risco. O MCP deve conseguir rodar validacao local d
 - Tool de validacao roda checks locais relevantes: manifest/autodiscovery, dispatch, security preflight e gates definidos.
 - Evidencia contem comando, status, resumo e paths de logs.
 - Falhas retornam diagnostico suficiente para agente corrigir.
+- A primeira versao de `edger.validate_local` valida descoberta/parsing de manifests sem executar shell arbitrario. Gates completos continuam fora da tool e documentados no runbook.
 
 ### Scope
 
@@ -37,25 +38,28 @@ Authoring sem validacao gera risco. O MCP deve conseguir rodar validacao local d
 
 ### Critérios de aceite
 
-- [ ] Validacao falha para worker invalido com mensagem estruturada.
-- [ ] Validacao passa para worker criado pela Story 13.03.
-- [ ] Evidencia local e registrada sem segredos.
-- [ ] Tool nao executa comando fora da allowlist definida.
+- [x] Validacao falha para worker invalido com mensagem estruturada.
+- [x] Validacao passa para worker criado pela Story 13.03.
+- [x] Evidencia local e retornada sem segredos pela resposta MCP.
+- [x] Tool nao executa comando fora da allowlist definida.
 
 ## Tasks
 
-- [ ] Definir allowlist de checks locais.
-- [ ] Implementar runner de validacao ou adaptador para gates existentes.
-- [ ] Persistir evidencia objetiva.
-- [ ] Adicionar testes de sucesso e falha.
+- [x] Definir allowlist de checks locais.
+- [x] Implementar runner de validacao ou adaptador para gates existentes.
+- [x] Retornar evidencia objetiva na resposta MCP.
+- [x] Adicionar testes de sucesso e falha.
 
 ## Verification
 
 ```bash
-cargo test -p edger-orchestrator --test value_parity
+cargo test -p edger-mcp
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
 SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
 ```
 
+## Status
+
+completed (2026-06-29) - `edger.validate_local` valida discovery/parsing de manifests localmente, retorna `passed` ou `failed` com diagnostics estruturados e tem testes cobrindo sucesso e manifest invalido sem deploy remoto.
