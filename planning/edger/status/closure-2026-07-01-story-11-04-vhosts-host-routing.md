@@ -57,4 +57,4 @@ See `planning/edger/status/evidence/story-11-04-runtime.txt`.
 - The full workspace test should be rerun on a host that allows binding the local proxy test socket.
 
 ## Next steps
-- Continue with Story 11.03 historico e SSE operacional after 11.02.
+- Continue the active roadmap sequence with Epic 07 work after 11.03.

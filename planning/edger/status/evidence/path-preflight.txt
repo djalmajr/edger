@@ -179,6 +179,7 @@ OK planning/edger/status/closure-2026-06-29-story-09-05-consumer-proofs.md
 OK planning/edger/status/closure-2026-07-01-story-10-02-reconcile-reload.md
 OK planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md
 OK planning/edger/status/closure-2026-07-01-story-11-02-cache-rate-limit-persistente.md
+OK planning/edger/status/closure-2026-07-01-story-11-03-gateway-historico-sse.md
 OK planning/edger/status/closure-2026-07-01-story-11-04-vhosts-host-routing.md
 OK planning/edger/status/closure-2026-07-01-story-12-02-shell-catalog.md
 OK planning/edger/status/consolidation-2026-06-28.md
@@ -186,5 +187,5 @@ OK planning/edger/status/consolidation-2026-06-29-backlog-ready.md
 OK planning/edger/status/evidence/cpanel-browser-2026-06-30.md
 OK planning/edger/status/evidence/mcp-stdio-2026-06-30.md
 ---
-Total refs: 187
+Total refs: 188
 Missing: 0

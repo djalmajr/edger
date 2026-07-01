@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use axum::extract::{Path, Query, State};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -40,6 +41,7 @@ pub fn router() -> Router<OrchestratorState> {
         )
         .route("/api/admin/gateway/config", get(gateway_config))
         .route("/api/admin/gateway/logs/stats", get(gateway_logs_stats))
+        .route("/api/admin/gateway/logs/stream", get(gateway_logs_stream))
         .route("/api/admin/gateway/logs", get(gateway_logs))
         .route("/api/admin/keys", get(list_keys).post(create_key))
         .route("/api/admin/keys/{id}/revoke", post(revoke_key))
@@ -248,6 +250,27 @@ async fn gateway_logs(
     }
 }
 
+async fn gateway_logs_stream(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Query(query): Query<GatewayLogsQuery>,
+) -> Response {
+    match require_root(&state, &headers)
+        .and_then(|_| gateway_diagnostics(&state))
+        .and_then(|diagnostics| gateway_logs_sse_response(&diagnostics, &query))
+    {
+        Ok(body) => (
+            [
+                (CONTENT_TYPE, "text/event-stream"),
+                (CACHE_CONTROL, "no-cache"),
+            ],
+            body,
+        )
+            .into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
 async fn gateway_logs_stats(
     State(state): State<OrchestratorState>,
     headers: HeaderMap,
@@ -392,6 +415,44 @@ fn gateway_logs_response(
     diagnostics: &Value,
     query: &GatewayLogsQuery,
 ) -> Result<Value, CoreError> {
+    let (total, logs) = gateway_filtered_logs(diagnostics, query)?;
+    let returned = logs.len();
+    let limit = query.limit.unwrap_or(50).min(100);
+    Ok(json!({
+        "filters": {
+            "decision": &query.decision,
+            "limit": limit,
+            "rateLimited": query.rate_limited,
+            "status": query.status,
+        },
+        "logs": logs,
+        "returned": returned,
+        "total": total,
+    }))
+}
+
+fn gateway_logs_sse_response(
+    diagnostics: &Value,
+    query: &GatewayLogsQuery,
+) -> Result<String, CoreError> {
+    let (_, logs) = gateway_filtered_logs(diagnostics, query)?;
+    let mut body = String::new();
+    for event in logs {
+        body.push_str("event: gateway.decision\n");
+        body.push_str("data: ");
+        body.push_str(&event.to_string());
+        body.push_str("\n\n");
+    }
+    if body.is_empty() {
+        body.push_str(": gateway.decision keepalive\n\n");
+    }
+    Ok(body)
+}
+
+fn gateway_filtered_logs(
+    diagnostics: &Value,
+    query: &GatewayLogsQuery,
+) -> Result<(usize, Vec<Value>), CoreError> {
     let decisions = diagnostics
         .get("recentDecisions")
         .and_then(Value::as_array)
@@ -404,18 +465,7 @@ fn gateway_logs_response(
         .take(limit)
         .cloned()
         .collect::<Vec<_>>();
-    let returned = logs.len();
-    Ok(json!({
-        "filters": {
-            "decision": &query.decision,
-            "limit": limit,
-            "rateLimited": query.rate_limited,
-            "status": query.status,
-        },
-        "logs": logs,
-        "returned": returned,
-        "total": total,
-    }))
+    Ok((total, logs))
 }
 
 fn gateway_rate_limit_metrics_response(diagnostics: &Value) -> Result<Value, CoreError> {

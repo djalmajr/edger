@@ -2,6 +2,8 @@
 
 **Origin:** `planning/edger/epics/11-gateway-operacional-avancado/00-overview.md`
 
+**Status:** completed
+
 ## Context
 
 O gateway tem ring buffer local e endpoints read-only, mas operacao real precisa observar eventos recentes e receber stream local seguro. Essa story adiciona historico/SSE sem transformar isso em UI final.
@@ -38,17 +40,17 @@ O gateway tem ring buffer local e endpoints read-only, mas operacao real precisa
 
 ### Critérios de aceite
 
-- [ ] SSE exige autenticacao root.
-- [ ] Evento nao contem Authorization, Cookie, body nem query sensivel.
-- [ ] Historico e stream compartilham o mesmo contrato de evento.
-- [ ] Teste prova pelo menos um evento emitido em fluxo real de gateway.
+- [x] SSE exige autenticacao root.
+- [x] Evento nao contem Authorization, Cookie, body nem query sensivel.
+- [x] Historico e stream compartilham o mesmo contrato de evento.
+- [x] Teste prova pelo menos um evento emitido em fluxo real de gateway.
 
 ## Tasks
 
-- [ ] Definir contrato de evento seguro.
-- [ ] Implementar emissao de evento e buffering local.
-- [ ] Expor SSE root-only ou endpoint equivalente local.
-- [ ] Adicionar testes de auth, redaction e fluxo.
+- [x] Definir contrato de evento seguro.
+- [x] Implementar emissao de evento e buffering local.
+- [x] Expor SSE root-only ou endpoint equivalente local.
+- [x] Adicionar testes de auth, redaction e fluxo.
 
 ## Verification
 
@@ -61,3 +63,13 @@ cargo fmt -- --check
 SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
 ```
 
+## Closure
+
+completed (2026-07-01) - `/api/admin/gateway/logs/stream` expõe eventos SSE
+`gateway.decision` root-only usando o mesmo objeto JSON redigido de
+`/api/admin/gateway/logs`. O endpoint aceita os mesmos filtros (`limit`,
+`rateLimited`, `status`, `decision`) e retorna `text/event-stream`. O teste
+`gateway_admin_logs_stream_is_root_only_and_emits_redacted_events` executa um
+fluxo real do middleware gateway, completa a resposta, valida `401` sem root,
+consome o evento com root e confirma que Authorization, Cookie, body e query
+sensivel nao aparecem no payload.

@@ -5,9 +5,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderMap, Request, StatusCode};
 use axum::Router;
-use edger_core::{ApiKeyStore, Middleware, RequestContext, SerializedRequest, WorkerManifest};
+use edger_core::{
+    ApiKeyStore, Middleware, RequestContext, SerializedRequest, SerializedResponse, WorkerManifest,
+};
 use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
 use edger_ext_gateway::{GatewayExtension, GatewayRateLimitConfig};
 use edger_ext_keyval::SqlKeyValueProvider;
@@ -149,6 +151,27 @@ async fn app_get_status(app: Router, path: &str, token: Option<&str>) -> StatusC
         .await
         .unwrap()
         .status()
+}
+
+async fn app_text_get(
+    app: Router,
+    path: &str,
+    token: Option<&str>,
+) -> (StatusCode, HeaderMap, String) {
+    let mut builder = Request::builder().uri(path);
+    if let Some(token) = token {
+        builder = builder.header("authorization", format!("Bearer {token}"));
+    }
+    let res = app
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = res.status();
+    let headers = res.headers().clone();
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, headers, String::from_utf8(body.to_vec()).unwrap())
 }
 
 async fn json_post(
@@ -933,6 +956,63 @@ async fn gateway_admin_gateway_log_stats_api_aggregates_recent_decisions() {
     assert!(stats["duration"]["avgMs"].is_u64());
     assert!(!stats.to_string().contains("authorization"));
     assert!(!stats.to_string().contains("should-not-leak"));
+}
+
+#[tokio::test]
+async fn gateway_admin_logs_stream_is_root_only_and_emits_redacted_events() {
+    let gateway = Arc::new(GatewayExtension::new());
+    let ctx = RequestContext::new("gw-sse");
+    let mut req = gateway_request(
+        "gw-sse",
+        "/plain?token=should-not-leak-query",
+        "203.0.113.40",
+        Some("Bearer should-not-leak-auth"),
+    );
+    req.headers
+        .push(("cookie".into(), "session=should-not-leak-cookie".into()));
+    let mut response = SerializedResponse {
+        status: 202,
+        headers: vec![],
+        body: Some(b"should-not-leak-body".to_vec().into()),
+    };
+
+    assert!(gateway.on_request(&mut req, &ctx).unwrap().is_none());
+    gateway.on_response(&mut response, &ctx);
+
+    let gateway_middleware: Arc<dyn Middleware> = gateway;
+    let app = build_pipeline(test_state_with_gateway(gateway_middleware));
+
+    let unauthorized = app_get_status(app.clone(), "/api/admin/gateway/logs/stream", None).await;
+    assert_eq!(unauthorized, StatusCode::UNAUTHORIZED);
+
+    let (status, headers, body) = app_text_get(
+        app,
+        "/api/admin/gateway/logs/stream?decision=continue&limit=1",
+        Some("root-secret"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    assert!(body.contains("event: gateway.decision\n"));
+
+    let data = body
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("SSE data line");
+    let event: serde_json::Value = serde_json::from_str(data).unwrap();
+    assert_eq!(event["requestId"], "gw-sse");
+    assert_eq!(event["decision"], "continue");
+    assert_eq!(event["status"], 202);
+    assert_eq!(event["path"], "[redacted]");
+    assert!(event["durationMs"].is_u64());
+    assert!(!body.contains("authorization"));
+    assert!(!body.contains("cookie"));
+    assert!(!body.contains("should-not-leak"));
 }
 
 #[tokio::test]

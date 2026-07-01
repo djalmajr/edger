@@ -1,0 +1,43 @@
+# Story 11.03 runtime evidence
+
+Date: 2026-07-01
+
+## Passing tests
+
+```text
+cargo test -p edger-orchestrator --test admin_workers_plugins gateway_admin_logs_stream_is_root_only_and_emits_redacted_events
+test gateway_admin_logs_stream_is_root_only_and_emits_redacted_events ... ok
+
+cargo test -p edger-orchestrator --test admin_workers_plugins
+22 passed; 0 failed
+
+cargo fmt -- --check
+passed
+
+cargo clippy --workspace -- -D warnings
+passed
+
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+ALL PLANNING GATES PASS
+```
+
+## Workspace test caveat
+
+```text
+cargo test --workspace
+blocked at edger-ext-gateway/tests/gateway_middleware.rs:
+proxy_rule_forwards_to_local_upstream_without_sensitive_headers
+error: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+```
+
+## Behavior covered
+
+- `GET /api/admin/gateway/logs/stream` returns `401` without root auth.
+- With root auth, the endpoint returns `text/event-stream`.
+- Events use `event: gateway.decision`.
+- Event `data` is the same redacted JSON contract exposed by
+  `/api/admin/gateway/logs`.
+- A real gateway middleware request/response flow produces the event under
+  test.
+- Authorization, Cookie, response body and sensitive query values do not appear
+  in the SSE payload.

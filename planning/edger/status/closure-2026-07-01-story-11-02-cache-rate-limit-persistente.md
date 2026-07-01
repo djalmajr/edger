@@ -44,4 +44,4 @@ workspace crates pass.
 
 ## Follow-up
 
-- Continue Story 11.03 for gateway history/SSE.
+- Continue the active roadmap sequence with Epic 07 work.

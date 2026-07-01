@@ -805,6 +805,9 @@ curl -H 'authorization: Bearer test-root' \
 curl -H 'authorization: Bearer test-root' \
   'http://127.0.0.1:19080/api/admin/gateway/logs?rateLimited=true&limit=20'
 
+curl -N -H 'authorization: Bearer test-root' \
+  'http://127.0.0.1:19080/api/admin/gateway/logs/stream?decision=continue&limit=20'
+
 curl -H 'authorization: Bearer test-root' \
   http://127.0.0.1:19080/api/admin/gateway/logs/stats
 
@@ -813,19 +816,21 @@ curl -H 'authorization: Bearer test-root' \
 ----
 +
 `/api/admin/gateway/logs` aceita filtros `limit`, `rateLimited`, `status` e
-`decision`. `/api/admin/gateway/logs/stats` agrega `total`, `rateLimited`,
-`byStatus`, `byDecision`, `withoutStatus`, `duration.samples` e
-`duration.avgMs` sobre as decisões recentes retidas quando há amostras de
-duração. `/api/admin/gateway/rate-limit/metrics` expõe apenas métricas
-agregadas do rate limit (`enabled`, `activeBuckets`, `maxRequests`,
+`decision`. `/api/admin/gateway/logs/stream` aceita os mesmos filtros e retorna
+`text/event-stream`, com eventos `gateway.decision` cujo `data` é o mesmo objeto
+JSON redigido usado pelo histórico. `/api/admin/gateway/logs/stats` agrega
+`total`, `rateLimited`, `byStatus`, `byDecision`, `withoutStatus`,
+`duration.samples` e `duration.avgMs` sobre as decisões recentes retidas quando
+há amostras de duração. `/api/admin/gateway/rate-limit/metrics` expõe apenas
+métricas agregadas do rate limit (`enabled`, `activeBuckets`, `maxRequests`,
 `windowSeconds`, `mode`, `scope`), sem listar buckets ou chaves de cliente. Em
 memória, `scope` é `local-memory`; com provider persistente, `scope` é
 `persistent-durable-sql`. Todos os endpoints exigem credencial root e são
 somente leitura.
 
 Proxy para alvos externos, cache distribuído multi-região, listagem/reset de
-buckets, mutações dinâmicas de gateway, SSE, wildcard vhosts, DNS/certificados
-e excludes dinâmicos ficam fora do v1.
+buckets, mutações dinâmicas de gateway, streaming remoto, wildcard vhosts,
+DNS/certificados e excludes dinâmicos ficam fora do v1.
 
 ==== Healthcheck
 
