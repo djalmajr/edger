@@ -68,7 +68,7 @@ Consolidar o runtime para uso real e migração Buntime: execução production-p
 | 07.04 Execução JS real | `04-real-js-execution.md` | large | in progress (Deno CLI bridge v1) | Epic 03 (spike), Epic 04, Epic 05 |
 | 07.05 Execução Wasm | `05-wasm-execution.md` | large | **completed** (standalone wasmtime v1; ABI/WASI host follow-ups) | Epic 03 (spike), Epic 04, Epic 05 |
 | 07.06 Observabilidade OTEL | `06-observability-otel.md` | medium | **completed** (observability v1; OTLP exporter pending) | 07.01, 07.04, 07.05 |
-| 07.07 Hardening + matriz compat | `07-hardening-compat-matrix.md` | large | not started | 07.02, 07.03, 07.06 |
+| 07.07 Hardening + matriz compat | `07-hardening-compat-matrix.md` | large | **completed** (limits, compat smoke, perf harness, CI v1) | 07.02, 07.03, 07.06 |
 
 **Nota de sequência (caminho crítico):** PR 10 (stories 07.04 + 07.05 em paralelo) desbloqueia PR 11 (07.01 → 07.02/07.03). PR 12 fecha com 07.06 → 07.07.
 
@@ -105,9 +105,9 @@ flowchart LR
 - [x] Cron nativo dispara requisições internas conforme `manifest.cron[]`; testes cobrem schedule v1 + auth interna.
 - [x] Tracing estruturado com `request_id` em orchestrator -> pool -> isolate;
   env OTEL configurável sem falhar startup; `/metrics` Prometheus.
-- [ ] Limites body/header (port Buntime HeaderLimits) enforced no pipeline.
-- [ ] Matriz de compatibilidade Buntime com testes automatizados passando (`tests/compat/` ou equivalente).
-- [ ] Harness de performance (portado de Buntime) define baselines documentadas em PR 12.
+- [x] Limites body/header (port Buntime HeaderLimits) enforced no pipeline.
+- [x] Matriz de compatibilidade Buntime com testes automatizados passando (`tests/compat/` ou equivalente).
+- [x] Harness de performance define baselines documentadas em PR 12.
 - [ ] `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check` verde.
 - [ ] Gate de planejamento verde; JS root test gate registrado como skipped ou passing conforme existir suíte JS raiz.
 
@@ -128,6 +128,6 @@ flowchart LR
 - Ao fechar o épico: `/agile-refinement` + atualizar `planning/edger/roadmap.md` (Fase 7 → done).
 
 ## Status
-**in-progress** (2026-07-01) — Epic 06 done; 07.05 standalone wasmtime v1 delivered; 07.04 Deno CLI bridge v1 delivered; 07.03 cron scheduler v1 delivered; 07.06 observability v1 delivered; `deno_core` embedded boot, full Wasm request-memory ABI, host WASI and OTLP exporter layer remain pending. Pendências: `docs/pendencies-epic-07.md`
+**in-progress** (2026-07-01) — Epic 06 done; 07.05 standalone wasmtime v1 delivered; 07.04 Deno CLI bridge v1 delivered; 07.03 cron scheduler v1 delivered; 07.06 observability v1 delivered; 07.07 hardening/compat v1 delivered; `deno_core` embedded boot, full Wasm request-memory ABI, host WASI, OTLP exporter layer and expanded perf scenarios remain pending. Pendências: `docs/pendencies-epic-07.md`
 
 Plano funcional ativo: `planning/edger/runtime-functional-plan.md`.

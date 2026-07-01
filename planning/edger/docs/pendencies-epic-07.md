@@ -91,7 +91,16 @@ Documento dedicado para itens não resolvidos durante execução da Fase 7.
 - [ ] Export OTLP real segue pendente até linkar
   `tracing-opentelemetry`/exporter no workspace.
 
-### 07.07 Hardening + compat matrix — **not started**
+### 07.07 Hardening + compat matrix — **completed (v1)**
 
-- Turso auth, argon2 keys (carry from 06.02)
-- Harness performance baselines
+- [x] Ingress body cap retorna 413 antes de dispatch ao worker.
+- [x] Header count >100 e header value >8KiB retornam 431 antes de dispatch ao
+  worker.
+- [x] `compat-matrix.md` tem smoke test para linhas críticas `tested` e partials
+  conhecidos.
+- [x] Harness `perf_harness` ignorado mede p50/p95 e hit rate de worker
+  persistente in-memory.
+- [x] `.github/workflows/ci.yml` roda Rust gate obrigatório e perf harness manual.
+- [ ] Turso auth, argon2 keys (carry from 06.02)
+- [ ] Perf scenarios slow/ephemeral/burst
+- [ ] Per-worker body override no manifest
