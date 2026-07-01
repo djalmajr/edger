@@ -62,6 +62,30 @@ pub struct AdminErrorResponse {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AdminExtensionManifest {
+    pub config: AdminExtensionManifestConfig,
+    pub hooks: Vec<String>,
+    pub menus: Vec<AdminExtensionManifestMenu>,
+    pub provides: Vec<String>,
+    pub requirements: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminExtensionManifestConfig {
+    pub keys: Vec<String>,
+    pub redacted: bool,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminExtensionManifestMenu {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AdminExtensionInfo {
     pub capabilities: Vec<String>,
     pub config_source: String,
@@ -70,6 +94,7 @@ pub struct AdminExtensionInfo {
     pub diagnostics: Option<Value>,
     pub id: String,
     pub kind: String,
+    pub manifest: AdminExtensionManifest,
     pub name: String,
     pub priority: i32,
     pub status: String,

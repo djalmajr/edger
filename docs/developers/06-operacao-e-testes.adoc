@@ -361,6 +361,59 @@ curl -i -X POST -H 'authorization: Bearer test-root' \
   http://127.0.0.1:19080/api/admin/extensions/gateway/disable
 ----
 
+Cada item de `/api/admin/extensions` mantém os campos operacionais legados
+(`capabilities`, `dependencies`, `configSource`, `diagnostics`) e adiciona um
+`manifest` estruturado para UI, MCP e validação local. O manifesto é derivado
+das capabilities/dependencies tipadas declaradas pela extensão no registro
+estático v1; ele não carrega arquivos remotos nem lê valores de configuração.
+
+[source,json]
+----
+{
+  "manifest": {
+    "config": {
+      "keys": [],
+      "redacted": true,
+      "source": "staticRegistration"
+    },
+    "hooks": ["onRequest", "onResponse"],
+    "menus": [],
+    "provides": ["middleware"],
+    "requirements": []
+  }
+}
+----
+
+Campos do manifesto:
+
+[cols="1,3",options="header"]
+|===
+| Campo | Semântica
+
+| `menus`
+| Contribuições de menu declaradas por `ExtensionCapability::MenuContribution`,
+  expondo somente `name`.
+
+| `hooks`
+| Hooks declarados por capabilities de request/response/lifecycle, como
+  `onRequest`, `onResponse` e `onInit`.
+
+| `provides`
+| Capabilities fornecidas que não são menus nem hooks, como `middleware`,
+  `authProvider`, `apiKeys`, `provider:durableSql`, `provider:keyValue` e
+  `provider:queue`.
+
+| `requirements`
+| Dependências declaradas por `ExtensionDependency`, no mesmo label de
+  capability usado pelo inventário operacional.
+
+| `config`
+| Origem segura de configuração. No registro estático v1, `source` é
+  `staticRegistration`, `keys` lista apenas nomes de env/secret conhecidos
+  pelo contrato e atualmente fica vazio, e `redacted: true` indica que valores
+  brutos nunca são serializados.
+|===
+
 Sem key válida, a API retorna `401`. Com key válida sem permissão suficiente,
 endpoints administrativos retornam `403`. A resposta de keys expõe somente
 metadata operacional como `id`, `name`, `keyPrefix`, `role`, `permissions`,

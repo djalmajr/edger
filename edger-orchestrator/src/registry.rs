@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use edger_core::{
-    AdminExtensionInfo, AuthProvider, BindingKind, CoreError, DurableSqlProvider,
+    AdminExtensionInfo, AdminExtensionManifest, AdminExtensionManifestConfig,
+    AdminExtensionManifestMenu, AuthProvider, BindingKind, CoreError, DurableSqlProvider,
     ExtensionCapability, ExtensionDependency, KeyValueProvider, Middleware, QueueProvider,
 };
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,8 @@ pub struct ExtensionRegistry {
 struct ExtensionStatusDocument {
     extensions: BTreeMap<String, bool>,
 }
+
+const STATIC_REGISTRATION_CONFIG_SOURCE: &str = "staticRegistration";
 
 impl ExtensionRegistry {
     pub fn new() -> Self {
@@ -576,23 +579,25 @@ fn upsert_admin_extension(
 ) {
     let labels = extension
         .capabilities
-        .into_iter()
+        .iter()
         .map(|capability| capability.label())
         .collect::<Vec<_>>();
     let dependency_labels = extension
         .dependencies
-        .into_iter()
+        .iter()
         .map(|dependency| dependency.capability.label())
         .collect::<Vec<_>>();
+    let manifest = admin_extension_manifest(&extension.capabilities, &extension.dependencies);
     let entry = by_name
         .entry(extension.name.to_string())
         .or_insert_with(|| AdminExtensionInfo {
             capabilities: vec![],
-            config_source: "staticRegistration".into(),
+            config_source: STATIC_REGISTRATION_CONFIG_SOURCE.into(),
             dependencies: vec![],
             diagnostics: None,
             id: format!("extension:{}", extension.name),
             kind: extension.kind.into(),
+            manifest: empty_admin_extension_manifest(),
             name: extension.name.into(),
             priority: extension.priority,
             status: extension.status.into(),
@@ -606,6 +611,7 @@ fn upsert_admin_extension(
     if entry.diagnostics.is_none() {
         entry.diagnostics = extension.diagnostics.map(sanitize_diagnostics);
     }
+    merge_admin_extension_manifest(&mut entry.manifest, manifest);
     for label in labels {
         if !entry.capabilities.contains(&label) {
             entry.capabilities.push(label);
@@ -618,6 +624,98 @@ fn upsert_admin_extension(
         }
     }
     entry.dependencies.sort();
+}
+
+fn admin_extension_manifest(
+    capabilities: &[ExtensionCapability],
+    dependencies: &[ExtensionDependency],
+) -> AdminExtensionManifest {
+    let mut manifest = empty_admin_extension_manifest();
+    for capability in capabilities {
+        match capability {
+            ExtensionCapability::LifecycleHook { hook } => {
+                push_unique_string(&mut manifest.hooks, hook.label().into());
+            }
+            ExtensionCapability::MenuContribution { name } => {
+                push_unique_menu(&mut manifest.menus, name.clone());
+            }
+            ExtensionCapability::RequestHook => {
+                push_unique_string(&mut manifest.hooks, capability.label());
+            }
+            ExtensionCapability::ResponseHook => {
+                push_unique_string(&mut manifest.hooks, capability.label());
+            }
+            ExtensionCapability::ApiKeys
+            | ExtensionCapability::AuthProvider
+            | ExtensionCapability::Middleware
+            | ExtensionCapability::ServiceProvider { .. }
+            | ExtensionCapability::WorkerHandler => {
+                push_unique_string(&mut manifest.provides, capability.label());
+            }
+        }
+    }
+    for dependency in dependencies {
+        push_unique_string(&mut manifest.requirements, dependency.capability.label());
+    }
+    sort_admin_extension_manifest(&mut manifest);
+    manifest
+}
+
+fn empty_admin_extension_manifest() -> AdminExtensionManifest {
+    AdminExtensionManifest {
+        config: AdminExtensionManifestConfig {
+            keys: vec![],
+            redacted: true,
+            source: STATIC_REGISTRATION_CONFIG_SOURCE.into(),
+        },
+        hooks: vec![],
+        menus: vec![],
+        provides: vec![],
+        requirements: vec![],
+    }
+}
+
+fn merge_admin_extension_manifest(
+    entry: &mut AdminExtensionManifest,
+    manifest: AdminExtensionManifest,
+) {
+    for key in manifest.config.keys {
+        push_unique_string(&mut entry.config.keys, key);
+    }
+    entry.config.redacted |= manifest.config.redacted;
+    for hook in manifest.hooks {
+        push_unique_string(&mut entry.hooks, hook);
+    }
+    for menu in manifest.menus {
+        push_unique_menu(&mut entry.menus, menu.name);
+    }
+    for capability in manifest.provides {
+        push_unique_string(&mut entry.provides, capability);
+    }
+    for requirement in manifest.requirements {
+        push_unique_string(&mut entry.requirements, requirement);
+    }
+    sort_admin_extension_manifest(entry);
+}
+
+fn sort_admin_extension_manifest(manifest: &mut AdminExtensionManifest) {
+    manifest.config.keys.sort();
+    manifest.hooks.sort();
+    manifest.menus.sort_by(|a, b| a.name.cmp(&b.name));
+    manifest.provides.sort();
+    manifest.requirements.sort();
+}
+
+fn push_unique_menu(menus: &mut Vec<AdminExtensionManifestMenu>, name: String) {
+    if !menus.iter().any(|menu| menu.name == name) {
+        menus.push(AdminExtensionManifestMenu { name });
+    }
+}
+
+fn push_unique_string(values: &mut Vec<String>, value: String) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
 }
 
 fn sanitize_diagnostics(value: Value) -> Value {

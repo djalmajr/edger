@@ -21,7 +21,8 @@ pub mod worker_ref;
 
 pub use admin::{
     AdminApiKeyInfo, AdminApiKeysResponse, AdminCreateApiKeyRequest, AdminCreateApiKeyResponse,
-    AdminErrorResponse, AdminExtensionInfo, AdminExtensionsResponse, AdminMutationResponse,
+    AdminErrorResponse, AdminExtensionInfo, AdminExtensionManifest, AdminExtensionManifestConfig,
+    AdminExtensionManifestMenu, AdminExtensionsResponse, AdminMutationResponse,
     AdminRevokeApiKeyResponse, AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse,
 };
 pub use api_key_store::ApiKeyStore;

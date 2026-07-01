@@ -4,9 +4,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use edger_core::{create_worker_ref, root_principal, BindingKind, BindingManifest, WorkerManifest};
+use edger_ext_gateway::GatewayExtension;
 use edger_ext_keyval::SqlKeyValueProvider;
 use edger_ext_turso::LocalSqliteProvider;
-use edger_orchestrator::{resolve_service_bindings, ExtensionRegistry};
+use edger_orchestrator::{collect_extensions, resolve_service_bindings, ExtensionRegistry};
 
 fn state_providers() -> (
     Arc<LocalSqliteProvider>,
@@ -74,6 +75,53 @@ fn registers_service_providers_and_exposes_admin_capabilities() {
         .capabilities
         .contains(&"provider:keyValue".to_string()));
     assert!(keyval.capabilities.contains(&"provider:queue".to_string()));
+    assert_eq!(keyval.manifest.hooks, Vec::<String>::new());
+    assert_eq!(keyval.manifest.menus, vec![]);
+    assert_eq!(
+        keyval.manifest.provides,
+        vec![
+            "provider:keyValue".to_string(),
+            "provider:queue".to_string()
+        ]
+    );
+    assert_eq!(
+        keyval.manifest.requirements,
+        vec!["provider:durableSql".to_string()]
+    );
+    assert_eq!(keyval.manifest.config.keys, Vec::<String>::new());
+    assert!(keyval.manifest.config.redacted);
+    assert_eq!(keyval.manifest.config.source, "staticRegistration");
+}
+
+#[test]
+fn middleware_manifest_groups_gateway_hooks_and_safe_config() {
+    // Mutation captured: flattening hooks into generic capabilities would leave
+    // UI/MCP consumers unable to discover the gateway request/response hooks.
+    let registry = collect_extensions(vec![GatewayExtension::middleware()]).unwrap();
+
+    let gateway = registry
+        .admin_extension("gateway")
+        .expect("gateway middleware in admin inventory");
+
+    assert_eq!(gateway.kind, "middleware");
+    assert_eq!(
+        gateway.capabilities,
+        vec![
+            "middleware".to_string(),
+            "onRequest".to_string(),
+            "onResponse".to_string()
+        ]
+    );
+    assert_eq!(
+        gateway.manifest.hooks,
+        vec!["onRequest".to_string(), "onResponse".to_string()]
+    );
+    assert_eq!(gateway.manifest.menus, vec![]);
+    assert_eq!(gateway.manifest.provides, vec!["middleware".to_string()]);
+    assert_eq!(gateway.manifest.requirements, Vec::<String>::new());
+    assert_eq!(gateway.manifest.config.keys, Vec::<String>::new());
+    assert!(gateway.manifest.config.redacted);
+    assert_eq!(gateway.manifest.config.source, "staticRegistration");
 }
 
 #[test]

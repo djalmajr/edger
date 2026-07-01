@@ -263,6 +263,20 @@ async fn root_lists_operational_extension_inventory_for_middleware_and_provider(
         gateway["capabilities"],
         serde_json::json!(["middleware", "onRequest", "onResponse"])
     );
+    assert_eq!(
+        gateway["manifest"],
+        serde_json::json!({
+            "config": {
+                "keys": [],
+                "redacted": true,
+                "source": "staticRegistration"
+            },
+            "hooks": ["onRequest", "onResponse"],
+            "menus": [],
+            "provides": ["middleware"],
+            "requirements": []
+        })
+    );
     assert_eq!(gateway["diagnostics"]["requests"]["total"], 1);
     assert_eq!(gateway["diagnostics"]["rateLimit"]["enabled"], false);
     assert_eq!(
@@ -281,6 +295,12 @@ async fn root_lists_operational_extension_inventory_for_middleware_and_provider(
         auth["capabilities"],
         serde_json::json!(["apiKeys", "authProvider"])
     );
+    assert_eq!(
+        auth["manifest"]["provides"],
+        serde_json::json!(["apiKeys", "authProvider"])
+    );
+    assert_eq!(auth["manifest"]["config"]["keys"], serde_json::json!([]));
+    assert_eq!(auth["manifest"]["config"]["redacted"], true);
 
     let keyval = extensions
         .iter()
@@ -296,6 +316,20 @@ async fn root_lists_operational_extension_inventory_for_middleware_and_provider(
     assert_eq!(
         keyval["dependencies"],
         serde_json::json!(["provider:durableSql"])
+    );
+    assert_eq!(
+        keyval["manifest"],
+        serde_json::json!({
+            "config": {
+                "keys": [],
+                "redacted": true,
+                "source": "staticRegistration"
+            },
+            "hooks": [],
+            "menus": [],
+            "provides": ["provider:keyValue", "provider:queue"],
+            "requirements": ["provider:durableSql"]
+        })
     );
 }
 
