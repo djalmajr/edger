@@ -38,26 +38,35 @@ O shell atual prova roteamento e app composition, mas o valor Buntime inclui cat
 
 ### Critérios de aceite
 
-- [ ] Catalogo e gerado de dados do runtime, nao de lista hardcoded.
-- [ ] Item desabilitado ou sem permissao tem comportamento explicito.
-- [ ] Shell nao intercepta assets nem reserved paths indevidamente.
-- [ ] Browser/local test cobre pelo menos catalogo e navegação para app.
+- [x] Catalogo e gerado de dados do runtime, nao de lista hardcoded.
+- [x] Item desabilitado ou sem permissao tem comportamento explicito.
+- [x] Shell nao intercepta assets nem reserved paths indevidamente.
+- [x] Browser/local test cobre pelo menos catalogo e navegação para app.
 
 ## Tasks
 
-- [ ] Definir shape de catalogo derivado de capabilities.
-- [ ] Implementar shell/catalogo local ou atualizar worker demo.
-- [ ] Cobrir roteamento e permissao em testes.
-- [ ] Atualizar docs e matriz.
+- [x] Definir shape de catalogo derivado de capabilities.
+- [x] Implementar shell/catalogo local ou atualizar worker demo.
+- [x] Cobrir roteamento e permissao em testes.
+- [x] Atualizar docs e matriz.
 
 ## Verification
 
 ```bash
 cargo test -p edger-orchestrator --test shell_gateway
 cargo test -p edger-orchestrator --test admin_workers_plugins
+cargo test -p edger-orchestrator --test registry_providers
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
 SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
 ```
 
+## Status
+
+completed (2026-07-01) - `GET /api/admin/catalog` expõe catalogo root-only
+derivado do inventario de workers e das `MenuContribution` registradas por
+extensoes. `workers/shell-demo` consome esse contrato, mantém root key apenas em
+memoria e trata itens desabilitados/sem credencial explicitamente. Evidencia:
+`planning/edger/status/evidence/story-12-02-runtime.txt` e
+`planning/edger/status/closure-2026-07-01-story-12-02-shell-catalog.md`.

@@ -1038,6 +1038,9 @@ impl Default for GatewayExtension {
 impl Extension for GatewayExtension {
     fn capabilities(&self) -> Vec<ExtensionCapability> {
         vec![
+            ExtensionCapability::MenuContribution {
+                name: "Gateway".into(),
+            },
             ExtensionCapability::Middleware,
             ExtensionCapability::RequestHook,
             ExtensionCapability::ResponseHook,

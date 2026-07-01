@@ -20,9 +20,10 @@ pub mod wire;
 pub mod worker_ref;
 
 pub use admin::{
-    AdminApiKeyInfo, AdminApiKeysResponse, AdminCreateApiKeyRequest, AdminCreateApiKeyResponse,
-    AdminErrorResponse, AdminExtensionInfo, AdminExtensionManifest, AdminExtensionManifestConfig,
-    AdminExtensionManifestMenu, AdminExtensionReconcileAction, AdminExtensionReconcileActionKind,
+    AdminApiKeyInfo, AdminApiKeysResponse, AdminCatalogItem, AdminCatalogResponse,
+    AdminCreateApiKeyRequest, AdminCreateApiKeyResponse, AdminErrorResponse, AdminExtensionInfo,
+    AdminExtensionManifest, AdminExtensionManifestConfig, AdminExtensionManifestMenu,
+    AdminExtensionReconcileAction, AdminExtensionReconcileActionKind,
     AdminExtensionReconcileClassification, AdminExtensionReconcileDiagnostics,
     AdminExtensionReconcileRequest, AdminExtensionReconcileResponse,
     AdminExtensionReconcileSummary, AdminExtensionsResponse, AdminMutationResponse,

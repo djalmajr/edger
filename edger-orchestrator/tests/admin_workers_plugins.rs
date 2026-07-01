@@ -291,7 +291,7 @@ async fn root_lists_operational_extension_inventory_for_middleware_and_provider(
         .is_some_and(|value| !value.is_empty()));
     assert_eq!(
         gateway["capabilities"],
-        serde_json::json!(["middleware", "onRequest", "onResponse"])
+        serde_json::json!(["menu:Gateway", "middleware", "onRequest", "onResponse"])
     );
     assert_eq!(
         gateway["manifest"],
@@ -302,7 +302,7 @@ async fn root_lists_operational_extension_inventory_for_middleware_and_provider(
                 "source": "staticRegistration"
             },
             "hooks": ["onRequest", "onResponse"],
-            "menus": [],
+            "menus": [{"name": "Gateway"}],
             "provides": ["middleware"],
             "requirements": []
         })
@@ -429,6 +429,10 @@ async fn local_extension_validation_contract_reports_manifest_status_diagnostics
         gateway["manifest"]["provides"],
         serde_json::json!(["middleware"])
     );
+    assert_eq!(
+        gateway["manifest"]["menus"],
+        serde_json::json!([{ "name": "Gateway" }])
+    );
     assert_eq!(gateway["diagnostics"]["requests"]["total"], 1);
     assert_eq!(
         gateway["diagnostics"]["recentDecisions"][0]["path"],
@@ -456,6 +460,63 @@ async fn local_extension_validation_contract_reports_manifest_status_diagnostics
         keyval["manifest"]["requirements"],
         serde_json::json!(["provider:durableSql"])
     );
+}
+
+#[tokio::test]
+async fn root_catalog_derives_workers_and_module_menu_contributions() {
+    let state = test_state();
+    state.index.set_worker_enabled("todos", false).unwrap();
+    let app = build_pipeline(state);
+
+    let (unauthorized_status, unauthorized_body) =
+        app_json_get(app.clone(), "/api/admin/catalog", None).await;
+    assert_eq!(unauthorized_status, StatusCode::UNAUTHORIZED);
+    assert_eq!(unauthorized_body["code"], "UNAUTHORIZED");
+    assert!(!unauthorized_body.to_string().contains("Gateway"));
+
+    let (non_root_status, non_root_body) = app_json_get(
+        app.clone(),
+        "/api/admin/catalog",
+        Some("super-secret-token"),
+    )
+    .await;
+    assert_eq!(non_root_status, StatusCode::FORBIDDEN);
+    assert_eq!(non_root_body["code"], "FORBIDDEN");
+    assert!(!non_root_body.to_string().contains("Gateway"));
+
+    let (catalog_status, catalog) =
+        app_json_get(app, "/api/admin/catalog", Some("root-secret")).await;
+    assert_eq!(catalog_status, StatusCode::OK);
+    let items = catalog["items"].as_array().unwrap();
+
+    let todos = items
+        .iter()
+        .find(|item| item["id"] == "worker:todos")
+        .expect("todos worker catalog item");
+    assert_eq!(todos["title"], "todos");
+    assert_eq!(todos["route"], "/todos");
+    assert_eq!(todos["kind"], "worker");
+    assert_eq!(todos["status"], "disabled");
+    assert_eq!(todos["visibility"], "public");
+
+    let acme = items
+        .iter()
+        .find(|item| item["id"] == "worker:@acme/api")
+        .expect("namespaced worker catalog item");
+    assert_eq!(acme["route"], "/@acme/api");
+    assert_eq!(acme["visibility"], "protected");
+
+    let gateway = items
+        .iter()
+        .find(|item| item["id"] == "module:gateway:gateway")
+        .expect("gateway menu contribution catalog item");
+    assert_eq!(gateway["title"], "Gateway");
+    assert_eq!(gateway["kind"], "moduleMenu");
+    assert_eq!(gateway["owner"], "gateway");
+    assert_eq!(gateway["ownerKind"], "middleware");
+    assert_eq!(gateway["route"], "#module-gateway");
+    assert_eq!(gateway["status"], "enabled");
+    assert_eq!(gateway["visibility"], "root");
 }
 
 #[tokio::test]

@@ -8,10 +8,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use edger_core::{
-    principal_has_permission, AdminApiKeysResponse, AdminCreateApiKeyRequest,
-    AdminCreateApiKeyResponse, AdminErrorResponse, AdminExtensionReconcileRequest,
-    AdminExtensionsResponse, AdminMutationResponse, AdminRevokeApiKeyResponse,
-    AdminSessionResponse, AdminWorkersResponse, ApiKeyPrincipal, CoreError,
+    principal_has_permission, AdminApiKeysResponse, AdminCatalogItem, AdminCatalogResponse,
+    AdminCreateApiKeyRequest, AdminCreateApiKeyResponse, AdminErrorResponse, AdminExtensionInfo,
+    AdminExtensionReconcileRequest, AdminExtensionsResponse, AdminMutationResponse,
+    AdminRevokeApiKeyResponse, AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse,
+    ApiKeyPrincipal, CoreError,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -25,6 +26,7 @@ use crate::server::request_id_from_headers;
 pub fn router() -> Router<OrchestratorState> {
     Router::new()
         .route("/api/admin/session", get(session))
+        .route("/api/admin/catalog", get(catalog))
         .route("/api/admin/workers", get(list_workers))
         .route("/api/admin/extensions", get(list_extensions))
         .route(
@@ -69,6 +71,19 @@ async fn session(State(state): State<OrchestratorState>, headers: HeaderMap) -> 
     }
 }
 
+async fn catalog(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
+    match require_root(&state, &headers) {
+        Ok(_) => Json(AdminCatalogResponse {
+            items: build_catalog(
+                state.index.admin_workers(),
+                state.registry.admin_extensions(),
+            ),
+        })
+        .into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
 async fn list_workers(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
     match authenticate(&state, &headers).and_then(|principal| {
         require_permission(&principal, "workers:read")?;
@@ -79,6 +94,81 @@ async fn list_workers(State(state): State<OrchestratorState>, headers: HeaderMap
         })
         .into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+fn build_catalog(
+    workers: Vec<AdminWorkerInfo>,
+    extensions: Vec<AdminExtensionInfo>,
+) -> Vec<AdminCatalogItem> {
+    let mut items = Vec::new();
+    for worker in workers {
+        items.push(worker_catalog_item(&worker));
+    }
+    for extension in extensions {
+        for menu in &extension.manifest.menus {
+            items.push(module_catalog_item(&extension, &menu.name));
+        }
+    }
+    items.sort_by(|a, b| {
+        a.title
+            .cmp(&b.title)
+            .then_with(|| a.owner.cmp(&b.owner))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    items
+}
+
+fn worker_catalog_item(worker: &AdminWorkerInfo) -> AdminCatalogItem {
+    AdminCatalogItem {
+        id: format!("worker:{}", worker.name),
+        kind: "worker".into(),
+        owner: worker.name.clone(),
+        owner_kind: "worker".into(),
+        route: worker
+            .plugin_base
+            .clone()
+            .unwrap_or_else(|| format!("/{}", worker.name)),
+        source: worker.source.clone(),
+        status: worker.status.clone(),
+        title: worker.name.clone(),
+        visibility: worker.visibility.clone(),
+    }
+}
+
+fn module_catalog_item(extension: &AdminExtensionInfo, title: &str) -> AdminCatalogItem {
+    AdminCatalogItem {
+        id: format!("module:{}:{}", extension.name, catalog_slug(title)),
+        kind: "moduleMenu".into(),
+        owner: extension.name.clone(),
+        owner_kind: extension.kind.clone(),
+        route: format!("#module-{}", catalog_slug(title)),
+        source: "extensionManifest".into(),
+        status: extension.status.clone(),
+        title: title.into(),
+        visibility: "root".into(),
+    }
+}
+
+fn catalog_slug(value: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_separator = false;
+    for ch in value.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+            last_was_separator = false;
+        } else if !last_was_separator && !slug.is_empty() {
+            slug.push('-');
+            last_was_separator = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        "module".into()
+    } else {
+        slug
     }
 }
 

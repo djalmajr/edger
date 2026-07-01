@@ -1,13 +1,261 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
-    <script src="/shell.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>edger shell</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f7f8fb;
+        color: #151923;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      .shell {
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        align-items: center;
+        padding: 20px 28px;
+        border-bottom: 1px solid #dfe3eb;
+        background: #ffffff;
+      }
+
+      h1,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 22px;
+        line-height: 30px;
+        font-weight: 700;
+      }
+
+      .eyebrow {
+        color: #5d6678;
+        font-size: 13px;
+        line-height: 20px;
+      }
+
+      .key-form {
+        display: flex;
+        gap: 8px;
+        align-items: end;
+      }
+
+      label {
+        display: grid;
+        gap: 4px;
+        color: #4a5365;
+        font-size: 12px;
+      }
+
+      input {
+        width: min(34vw, 320px);
+        min-width: 180px;
+        height: 34px;
+        border: 1px solid #c9cfdb;
+        border-radius: 6px;
+        padding: 0 10px;
+        font: inherit;
+        background: #ffffff;
+      }
+
+      button {
+        height: 36px;
+        border: 1px solid #1f2937;
+        border-radius: 6px;
+        padding: 0 12px;
+        font: inherit;
+        background: #1f2937;
+        color: #ffffff;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        background: #ffffff;
+        color: #1f2937;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+        gap: 0;
+        min-height: 0;
+      }
+
+      .catalog {
+        border-right: 1px solid #dfe3eb;
+        background: #ffffff;
+        padding: 18px;
+        overflow: auto;
+      }
+
+      .catalog-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+
+      .catalog-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .catalog-item {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 4px 10px;
+        text-decoration: none;
+        color: inherit;
+        border: 1px solid #dfe3eb;
+        border-radius: 8px;
+        padding: 10px;
+        background: #ffffff;
+      }
+
+      .catalog-item:hover {
+        border-color: #8b95a7;
+      }
+
+      .catalog-item[aria-disabled="true"] {
+        color: #8791a3;
+        background: #f1f3f7;
+        cursor: not-allowed;
+      }
+
+      .catalog-title {
+        font-weight: 650;
+        font-size: 14px;
+      }
+
+      .catalog-meta {
+        color: #5d6678;
+        font-size: 12px;
+        grid-column: 1 / -1;
+      }
+
+      .badge {
+        align-self: start;
+        border-radius: 999px;
+        background: #eef2f7;
+        color: #354052;
+        font-size: 11px;
+        padding: 3px 8px;
+      }
+
+      .badge.disabled {
+        background: #fff1f0;
+        color: #a33a32;
+      }
+
+      .detail {
+        padding: 22px 28px;
+        overflow: auto;
+      }
+
+      .detail-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+      }
+
+      .detail-cell {
+        border: 1px solid #dfe3eb;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 12px;
+      }
+
+      .detail-cell span {
+        display: block;
+        color: #697386;
+        font-size: 12px;
+        margin-bottom: 4px;
+      }
+
+      .detail-cell strong {
+        font-size: 14px;
+        overflow-wrap: anywhere;
+      }
+
+      .alert {
+        margin-top: 12px;
+        color: #a33a32;
+        font-size: 13px;
+      }
+
+      @media (max-width: 760px) {
+        .topbar,
+        .key-form {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        input {
+          width: auto;
+        }
+
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+
+        .catalog {
+          border-right: 0;
+          border-bottom: 1px solid #dfe3eb;
+        }
+      }
+    </style>
   </head>
   <body>
-    <main>
-      <h1>edger shell demo</h1>
-      <iframe src="/todos-shell-demo" title="todos-shell-demo"></iframe>
+    <main id="edger-shell-catalog" class="shell">
+      <header class="topbar">
+        <div>
+          <h1>edger shell</h1>
+          <p id="sessionLine" class="eyebrow">Catalog offline</p>
+        </div>
+        <form id="catalogForm" class="key-form">
+          <label>
+            Root key
+            <input name="apiKey" autocomplete="off" type="password" placeholder="ROOT_API_KEY" />
+          </label>
+          <button type="submit">Connect</button>
+          <button id="refreshButton" class="secondary" type="button" disabled>Refresh</button>
+        </form>
+      </header>
+      <section class="workspace">
+        <aside class="catalog" aria-label="Module catalog">
+          <div class="catalog-header">
+            <strong>Catalog</strong>
+            <span id="catalogCount" class="badge">0 items</span>
+          </div>
+          <nav
+            id="catalogList"
+            class="catalog-list"
+            data-catalog-source="/api/admin/catalog"
+            aria-label="Catalog items"
+          ></nav>
+          <p id="alert" class="alert" hidden></p>
+        </aside>
+        <section class="detail" aria-label="Catalog detail">
+          <div id="detailPanel" class="detail-grid"></div>
+        </section>
+      </section>
     </main>
+    <script src="/shell.js" type="module"></script>
   </body>
 </html>

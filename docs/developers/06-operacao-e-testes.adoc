@@ -296,7 +296,7 @@ A API administrativa fica reservada sob `/api/admin/*` para evitar colisão com
 workers. `GET /api/admin/session` aceita qualquer API key válida e retorna o
 principal autenticado. `GET /api/admin/workers` aceita root ou uma key com
 `workers:read`; keys não-root veem somente workers dentro dos seus namespaces.
-Os endpoints de extensões, keys e mutações v1 exigem root.
+O catálogo de módulos, endpoints de extensões, keys e mutações v1 exigem root.
 
 [cols="1,1,3",options="header"]
 |===
@@ -309,6 +309,11 @@ Os endpoints de extensões, keys e mutações v1 exigem root.
 | `GET`
 | `/api/admin/workers`
 | Lista workers descobertos com nome, namespace, versão, kind, source, status e rotas públicas. Keys não-root são filtradas por namespace.
+
+| `GET`
+| `/api/admin/catalog`
+| Lista itens navegáveis do shell a partir do inventário de workers e de
+  `MenuContribution` declarada por extensões. Root-only.
 
 | `GET`
 | `/api/admin/extensions`
@@ -354,6 +359,9 @@ curl -H 'authorization: Bearer test-root' \
 
 curl -H 'authorization: Bearer test-root' \
   http://127.0.0.1:19080/api/admin/workers
+
+curl -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/catalog
 
 curl -H 'authorization: Bearer test-root' \
   http://127.0.0.1:19080/api/admin/extensions
@@ -667,7 +675,7 @@ Evidência Browser versionada:
 * `planning/edger/status/evidence/cpanel-browser-2026-06-30.md`
 * `planning/edger/status/evidence/cpanel-browser-2026-06-30.png`
 
-==== Shell e gateway v1
+==== Shell, catálogo e gateway v1
 
 Um worker com `base: "/"` no manifesto atua como shell central. Navegações de
 documento (`Sec-Fetch-Dest: document`) e assets root-level de um único segmento
@@ -690,10 +698,22 @@ normais e recebem seu próprio base path, por exemplo `x-base:
 /todos-shell-demo`. Paths reservados como `/api`, `/health`, `/ready` e
 `/.well-known` nunca são roteados para o shell.
 
+O shell local em `workers/shell-demo` renderiza o catálogo operacional de
+`GET /api/admin/catalog`. A resposta é derivada do `ManifestIndex` e das
+contribuições de menu expostas por `ExtensionCapability::MenuContribution`,
+sem lista fixa no frontend. Cada item inclui `id`, `title`, `route`, `owner`,
+`ownerKind`, `status`, `visibility` e `source`. Itens desabilitados aparecem de
+forma explícita e não são acionáveis. O frontend mantém a root key apenas em
+memória; sem root key, ele exibe o erro operacional em vez de renderizar
+módulos protegidos.
+
 Validação local:
 
 [source,bash]
 ----
+curl -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/catalog
+
 curl -H 'authorization: Bearer test-root' \
   -H 'sec-fetch-dest: document' \
   http://127.0.0.1:19080/reports/list

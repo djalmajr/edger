@@ -107,6 +107,26 @@ pub struct AdminExtensionsResponse {
     pub extensions: Vec<AdminExtensionInfo>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminCatalogItem {
+    pub id: String,
+    pub kind: String,
+    pub owner: String,
+    pub owner_kind: String,
+    pub route: String,
+    pub source: String,
+    pub status: String,
+    pub title: String,
+    pub visibility: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminCatalogResponse {
+    pub items: Vec<AdminCatalogItem>,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum AdminExtensionReconcileActionKind {
