@@ -1,5 +1,10 @@
 //! Prometheus text exposition for edger runtime metrics.
 
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 use edger_worker::{PoolMetrics, WorkerState, WorkerStats};
 use serde::Serialize;
 
@@ -42,6 +47,43 @@ pub struct MetricsWorkerStats {
     pub unhealthy: bool,
     pub uptime_seconds: u64,
     pub version: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct HttpMetrics {
+    inner: Arc<HttpMetricsInner>,
+}
+
+#[derive(Debug, Default)]
+struct HttpMetricsInner {
+    duration_ms_last: AtomicU64,
+    requests: Mutex<BTreeMap<(String, u16), u64>>,
+}
+
+impl HttpMetrics {
+    pub fn record(&self, method: &str, status: u16, duration: Duration) {
+        self.inner
+            .duration_ms_last
+            .store(duration.as_millis() as u64, Ordering::Relaxed);
+        let mut requests = self.inner.requests.lock().expect("http metrics lock");
+        *requests
+            .entry((method.to_ascii_uppercase(), status))
+            .or_default() += 1;
+    }
+
+    pub fn duration_ms_last(&self) -> u64 {
+        self.inner.duration_ms_last.load(Ordering::Relaxed)
+    }
+
+    fn request_counts(&self) -> Vec<((String, u16), u64)> {
+        self.inner
+            .requests
+            .lock()
+            .expect("http metrics lock")
+            .iter()
+            .map(|(key, count)| (key.clone(), *count))
+            .collect()
+    }
 }
 
 pub fn metrics_stats_response(
@@ -193,6 +235,34 @@ pub fn cron_metrics_prometheus(metrics: &CronMetrics) -> String {
         metrics.failures_total(),
     );
     out
+}
+
+pub fn http_metrics_prometheus(metrics: &HttpMetrics) -> String {
+    let mut out = String::new();
+    out.push_str("# HELP edger_http_requests_total HTTP requests handled by the orchestrator\n");
+    out.push_str("# TYPE edger_http_requests_total counter\n");
+    for ((method, status), count) in metrics.request_counts() {
+        out.push_str("edger_http_requests_total{method=\"");
+        out.push_str(&escape_label_value(&method));
+        out.push_str("\",status=\"");
+        out.push_str(&status.to_string());
+        out.push_str("\"} ");
+        out.push_str(&count.to_string());
+        out.push('\n');
+    }
+    out.push('\n');
+    push_metric(
+        &mut out,
+        "edger_http_request_duration_ms_last",
+        "gauge",
+        "Last observed HTTP request duration in milliseconds",
+        metrics.duration_ms_last(),
+    );
+    out
+}
+
+fn escape_label_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn worker_state_label(state: WorkerState) -> &'static str {

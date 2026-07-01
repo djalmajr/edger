@@ -11,6 +11,7 @@ use edger_core::{
     create_worker_ref, ExecutionKind, Isolate, SerializedRequest, SerializedResponse, WorkerConfig,
     WorkerManifest, WorkerRef,
 };
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::ephemeral::EphemeralGate;
@@ -185,6 +186,24 @@ impl WorkerPool {
         req: SerializedRequest,
         kind_hint: Option<ExecutionKind>,
     ) -> Result<SerializedResponse, WorkerError> {
+        let span = tracing::info_span!(
+            "pool.fetch",
+            request_id = %req.request_id,
+            worker_name = %worker_ref.name,
+            worker_version = %worker_ref.version,
+            worker_namespace = worker_ref.namespace.as_deref().unwrap_or("")
+        );
+        self.fetch_worker_inner(worker_ref, req, kind_hint)
+            .instrument(span)
+            .await
+    }
+
+    async fn fetch_worker_inner(
+        &self,
+        worker_ref: &WorkerRef,
+        req: SerializedRequest,
+        kind_hint: Option<ExecutionKind>,
+    ) -> Result<SerializedResponse, WorkerError> {
         self.ensure_active()?;
         let started = Instant::now();
 
@@ -308,22 +327,42 @@ async fn dispatch_to_isolate<I: Isolate + ?Sized>(
     req: SerializedRequest,
     config: &WorkerConfig,
 ) -> Result<SerializedResponse, edger_core::IsolationError> {
-    match kind {
-        ExecutionKind::FetchHandler => isolate.execute_fetch(req, config).await,
-        ExecutionKind::RoutesTable => isolate.execute_routes(req, config).await,
-        ExecutionKind::StaticSpa { inject_base } => {
-            let base = if inject_base {
-                Some(req.base_href.as_deref().unwrap_or("/"))
-            } else {
-                None
-            };
-            isolate.serve_static_spa(&req.uri, base, config).await
+    let execution_kind = execution_kind_label(&kind).to_string();
+    let request_id = req.request_id.clone();
+    async move {
+        match kind {
+            ExecutionKind::FetchHandler => isolate.execute_fetch(req, config).await,
+            ExecutionKind::RoutesTable => isolate.execute_routes(req, config).await,
+            ExecutionKind::StaticSpa { inject_base } => {
+                let base = if inject_base {
+                    Some(req.base_href.as_deref().unwrap_or("/"))
+                } else {
+                    None
+                };
+                isolate.serve_static_spa(&req.uri, base, config).await
+            }
+            ExecutionKind::WasmModule { .. } => isolate.execute_wasm(req, config).await,
+            ExecutionKind::Fullstack { adapter } => Ok(SerializedResponse {
+                status: 501,
+                headers: vec![("x-adapter".into(), adapter)],
+                body: Some(Bytes::from_static(b"fullstack not implemented")),
+            }),
         }
-        ExecutionKind::WasmModule { .. } => isolate.execute_wasm(req, config).await,
-        ExecutionKind::Fullstack { adapter } => Ok(SerializedResponse {
-            status: 501,
-            headers: vec![("x-adapter".into(), adapter)],
-            body: Some(Bytes::from_static(b"fullstack not implemented")),
-        }),
+    }
+    .instrument(tracing::debug_span!(
+        "isolate.execute",
+        request_id = %request_id,
+        execution_kind = %execution_kind
+    ))
+    .await
+}
+
+fn execution_kind_label(kind: &ExecutionKind) -> &'static str {
+    match kind {
+        ExecutionKind::FetchHandler => "fetch",
+        ExecutionKind::RoutesTable => "routes",
+        ExecutionKind::StaticSpa { .. } => "static_spa",
+        ExecutionKind::WasmModule { .. } => "wasm",
+        ExecutionKind::Fullstack { .. } => "fullstack",
     }
 }

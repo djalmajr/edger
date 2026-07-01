@@ -26,13 +26,12 @@ use edger_ext_turso::LocalSqliteProvider;
 use edger_ext_turso_remote::RemoteTursoProvider;
 use edger_isolation::{DenoFacade, DenoIsolate, WasiConfig, WasmIsolate};
 use edger_orchestrator::{
-    build_pipeline, collect_cron_registrations, collect_extensions, load_manifests_from_dirs,
-    parse_runtime_worker_dirs, port_from_env, run_on_init, run_on_server_start, run_on_shutdown,
-    serve, AuthGate, AuthGateConfig, CronScheduler, CronSchedulerConfig, ExtensionRegistry,
-    OrchestratorState, ServerConfig, ServerState,
+    build_pipeline, collect_cron_registrations, collect_extensions, init_tracing_from_env,
+    load_manifests_from_dirs, parse_runtime_worker_dirs, port_from_env, run_on_init,
+    run_on_server_start, run_on_shutdown, serve, AuthGate, AuthGateConfig, CronScheduler,
+    CronSchedulerConfig, ExtensionRegistry, OrchestratorState, ServerConfig, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
-use tracing_subscriber::EnvFilter;
 
 struct RuntimeIsolateFactory;
 
@@ -49,11 +48,7 @@ impl IsolateFactory for RuntimeIsolateFactory {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env().add_directive("edger_orchestrator=info".parse()?),
-        )
-        .init();
+    let _tracing = init_tracing_from_env()?;
 
     let port = port_from_env();
     let config = ServerConfig::from_port(port);

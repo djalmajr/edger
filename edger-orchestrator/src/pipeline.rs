@@ -23,7 +23,9 @@ use crate::metrics::{cron_metrics_prometheus, metrics_stats_response, pool_metri
 use crate::operational_log::log_operational_error;
 use crate::registry::ExtensionRegistry;
 use crate::router::{resolve_host_route, resolve_route, ReservedPath, ResolvedRoute};
-use crate::server::{request_id_from_headers, request_id_middleware, ServerState};
+use crate::server::{
+    request_id_from_headers, request_id_middleware, request_metrics_middleware, ServerState,
+};
 use crate::service_bindings::{resolve_service_bindings, SERVICE_BINDINGS_HEADER};
 use crate::shell_gateway::resolve_shell_worker;
 use crate::wire::{axum_to_serialized, serialized_to_axum};
@@ -40,6 +42,7 @@ pub struct OrchestratorState {
 
 /// Build the full axum application (health + readiness + pipeline fallback).
 pub fn build_pipeline(state: OrchestratorState) -> Router {
+    let metrics_state = state.server.clone();
     Router::new()
         .route("/health", get(health_handler))
         .route("/healthz", get(health_handler))
@@ -50,6 +53,10 @@ pub fn build_pipeline(state: OrchestratorState) -> Router {
         .route("/readyz", get(ready_handler))
         .merge(admin_api::router())
         .fallback(any(pipeline_handler))
+        .layer(axum::middleware::from_fn_with_state(
+            metrics_state,
+            request_metrics_middleware,
+        ))
         .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -77,6 +84,9 @@ async fn ready_handler(State(state): State<OrchestratorState>) -> impl IntoRespo
 async fn metrics_handler(State(state): State<OrchestratorState>) -> impl IntoResponse {
     let mut body = pool_metrics_prometheus(&state.pool.get_metrics());
     body.push_str(&cron_metrics_prometheus(&state.server.cron_metrics()));
+    body.push_str(&crate::metrics::http_metrics_prometheus(
+        &state.server.http_metrics(),
+    ));
     (
         [(
             header::CONTENT_TYPE,
@@ -116,6 +126,7 @@ async fn handle_request(
     request_id: String,
 ) -> Result<Response<Body>, CoreError> {
     let path = req.uri().path().to_string();
+    tracing::debug!(request_id = %request_id, path = %path, method = %req.method(), "http request pipeline");
     let host = req
         .headers()
         .get(header::HOST)
@@ -282,6 +293,13 @@ async fn dispatch_worker(
         skip_hooks,
     } = params;
 
+    tracing::info!(
+        request_id = %request_id,
+        worker_name = %worker.name,
+        worker_version = %worker.version,
+        worker_namespace = worker.namespace.as_deref().unwrap_or(""),
+        "worker dispatch"
+    );
     sanitize_internal_headers(&mut req, principal.as_ref());
     let mut serialized = axum_to_serialized(req, request_id.clone()).await?;
     let (original_path, query) = split_path_query(&serialized.uri);

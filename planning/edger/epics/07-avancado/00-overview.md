@@ -38,7 +38,8 @@ Consolidar o runtime para uso real e migração Buntime: execução production-p
 - Orquestrador básico (épico 05) resolve paths e despacha para pool com mock ou execução parcial.
 - Isolamento (Fase 3) tem spike e trait `Isolate` com mock cobrindo `ExecutionKind`.
 - Manifest loader multi-dir e inferência de kind estão em progresso; Wasm já executa via pipeline Rust para `workers/wasm-hello`.
-- Sem cron nativo, shell routing dedicado, OTEL, `/metrics` ou matriz de compat formal.
+- Cron nativo e `/metrics` existem em v1; observabilidade ainda precisava
+  fechar correlação gerada, contadores HTTP e startup `OTEL_*` não fatal.
 - PR 10–12 do design ainda não implementados.
 
 ### TO-BE
@@ -47,7 +48,8 @@ Consolidar o runtime para uso real e migração Buntime: execução production-p
 - `edger-isolation/src/deno.rs` (facade) cobre fetch/routes/SPA; `wasmtime` cobre `WasmModule`.
 - Shell routing com `inject_base` e documentação de evolução de protocolo (WebTransport etc.).
 - `CronScheduler` em orchestrator com tokio-cron disparando HTTP interno autenticado.
-- Tracing + OTEL + endpoint Prometheus; limites body/header; testes de compat Buntime; harness de perf.
+- Tracing estruturado, env OTEL não fatal e endpoint Prometheus; limites
+  body/header; testes de compat Buntime; harness de perf.
 
 ### Out of scope
 - Deploy K8s/Helm, cpanel, marketplace de extensões.
@@ -65,7 +67,7 @@ Consolidar o runtime para uso real e migração Buntime: execução production-p
 | 07.03 Cron nativo | `03-native-cron.md` | medium | **completed** (tokio scheduler v1) | 07.01, Epic 05 |
 | 07.04 Execução JS real | `04-real-js-execution.md` | large | in progress (Deno CLI bridge v1) | Epic 03 (spike), Epic 04, Epic 05 |
 | 07.05 Execução Wasm | `05-wasm-execution.md` | large | **in progress** (v1 ABI) | Epic 03 (spike), Epic 04, Epic 05 |
-| 07.06 Observabilidade OTEL | `06-observability-otel.md` | medium | not started | 07.01, 07.04, 07.05 |
+| 07.06 Observabilidade OTEL | `06-observability-otel.md` | medium | **completed** (observability v1; OTLP exporter pending) | 07.01, 07.04, 07.05 |
 | 07.07 Hardening + matriz compat | `07-hardening-compat-matrix.md` | large | not started | 07.02, 07.03, 07.06 |
 
 **Nota de sequência (caminho crítico):** PR 10 (stories 07.04 + 07.05 em paralelo) desbloqueia PR 11 (07.01 → 07.02/07.03). PR 12 fecha com 07.06 → 07.07.
@@ -101,7 +103,8 @@ flowchart LR
 - [ ] Todos os variants de `ExecutionKind` despacham para backend correto (JS via deno_core facade; Wasm via wasmtime; StaticSpa com `inject_base`).
 - [ ] Shell routing serve HTML com `<base href>` quando `inject_base: true`; notas de protocolo evoluído documentadas.
 - [x] Cron nativo dispara requisições internas conforme `manifest.cron[]`; testes cobrem schedule v1 + auth interna.
-- [ ] Tracing estruturado com `request_id` em orchestrator → pool → isolate; OTEL export configurável; `/metrics` Prometheus.
+- [x] Tracing estruturado com `request_id` em orchestrator -> pool -> isolate;
+  env OTEL configurável sem falhar startup; `/metrics` Prometheus.
 - [ ] Limites body/header (port Buntime HeaderLimits) enforced no pipeline.
 - [ ] Matriz de compatibilidade Buntime com testes automatizados passando (`tests/compat/` ou equivalente).
 - [ ] Harness de performance (portado de Buntime) define baselines documentadas em PR 12.
@@ -125,6 +128,6 @@ flowchart LR
 - Ao fechar o épico: `/agile-refinement` + atualizar `planning/edger/roadmap.md` (Fase 7 → done).
 
 ## Status
-**in-progress** (2026-07-01) — Epic 06 done; 07.05 v1 slice delivered; 07.04 Deno CLI bridge v1 delivered; 07.03 cron scheduler v1 delivered; `deno_core` embedded boot remains pending. Pendências: `docs/pendencies-epic-07.md`
+**in-progress** (2026-07-01) — Epic 06 done; 07.05 v1 slice delivered; 07.04 Deno CLI bridge v1 delivered; 07.03 cron scheduler v1 delivered; 07.06 observability v1 delivered; `deno_core` embedded boot and OTLP exporter layer remain pending. Pendências: `docs/pendencies-epic-07.md`
 
 Plano funcional ativo: `planning/edger/runtime-functional-plan.md`.

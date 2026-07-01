@@ -68,7 +68,24 @@ Documento dedicado para itens não resolvidos durante execução da Fase 7.
 - [x] Shutdown do binário cancela tasks cron antes do shutdown do pool.
 - [ ] Full cron grammar/timezones/distributed leader election seguem fora do v1.
 
-### 07.06 OTEL — **not started**
+### 07.06 OTEL — **completed (observability v1)**
+
+- [x] `edger-orchestrator/src/tracing_init.rs` centraliza startup de tracing,
+  prefere `EDGER_LOG` sobre `RUST_LOG` e aceita `OTEL_EXPORTER_OTLP_ENDPOINT`
+  e `OTEL_TRACES_SAMPLER` sem falhar startup.
+- [x] Request sem `x-request-id` recebe UUID gerado antes do dispatch; response
+  e worker observam o mesmo valor.
+- [x] Dispatch de worker loga `request_id`, `worker_name`, versão e namespace
+  sem headers de autenticação, API keys ou body.
+- [x] `WorkerPool::fetch_worker` e o dispatch para isolate recebem spans leves
+  com worker/kind para correlação.
+- [x] `/metrics` inclui `edger_http_requests_total` e
+  `edger_http_request_duration_ms_last`, além dos contadores de pool/cron já
+  existentes.
+- [x] Testes cobrem scrape Prometheus, propagação de request id gerado, logs
+  redigidos e config de tracing/OTEL env.
+- [ ] Export OTLP real segue pendente até linkar
+  `tracing-opentelemetry`/exporter no workspace.
 
 ### 07.07 Hardening + compat matrix — **not started**
 

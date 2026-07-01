@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::{io, io::Write};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -16,6 +18,46 @@ use edger_orchestrator::{
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
+use tracing_subscriber::fmt::MakeWriter;
+
+#[derive(Clone, Default)]
+struct CapturedLogs {
+    buffer: Arc<Mutex<Vec<u8>>>,
+}
+
+impl CapturedLogs {
+    fn text(&self) -> String {
+        String::from_utf8(self.buffer.lock().expect("log buffer").clone()).expect("utf8 logs")
+    }
+}
+
+struct CapturedLogWriter {
+    buffer: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Write for CapturedLogWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.buffer
+            .lock()
+            .expect("log buffer")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for CapturedLogs {
+    type Writer = CapturedLogWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        CapturedLogWriter {
+            buffer: self.buffer.clone(),
+        }
+    }
+}
 
 struct RequestIdEchoFactory;
 
@@ -144,6 +186,7 @@ async fn metrics_endpoint_is_prometheus_text_without_secrets() {
     );
     let body = body_text(response).await;
     assert!(body.contains("# TYPE edger_pool_cache_hits_total counter"));
+    assert!(body.contains("# TYPE edger_http_requests_total counter"));
     assert!(body.contains("edger_pool_workers 0"));
     assert!(!body.contains("test-root"));
     assert!(!body.to_ascii_lowercase().contains("authorization"));
@@ -182,6 +225,8 @@ async fn metrics_reflect_worker_pool_cache_hit_after_dispatch() {
 
     assert!(body.contains("edger_pool_cache_hits_total 1"));
     assert!(body.contains("edger_pool_cache_misses_total 1"));
+    assert!(body.contains("edger_http_requests_total{method=\"GET\",status=\"200\"}"));
+    assert!(body.contains("edger_http_request_duration_ms_last"));
     assert!(!body.contains("echo@1.0.0"));
     assert!(!body.contains("worker_id"));
 }
@@ -312,4 +357,71 @@ async fn worker_dispatch_receives_request_id_field_and_header() {
     );
     let body = body_text(response).await;
     assert_eq!(body, "field=trace-worker header=trace-worker");
+}
+
+#[tokio::test]
+async fn generated_request_id_is_propagated_to_worker_and_response() {
+    // Mutation captured: generating the response header after dispatch but not
+    // inserting it into the request would make the worker see a different ID.
+    let app = build_pipeline(test_state());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/echo")
+                .header("authorization", "Bearer test-root")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_request_id = response
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("generated request id")
+        .to_string();
+    assert!(!response_request_id.is_empty());
+    let body = body_text(response).await;
+    assert_eq!(
+        body,
+        format!("field={response_request_id} header={response_request_id}")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn worker_dispatch_log_includes_correlation_fields_without_secrets() {
+    // Mutation captured: dispatch logs must include correlation data without
+    // dumping auth headers or request bodies.
+    let logs = CapturedLogs::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_target(true)
+        .without_time()
+        .with_max_level(tracing::Level::INFO)
+        .with_writer(logs.clone())
+        .finish();
+    let _ = tracing::subscriber::set_global_default(subscriber);
+    let app = build_pipeline(test_state());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/echo")
+                .header("authorization", "Bearer test-root")
+                .header("x-request-id", "trace-dispatch")
+                .body(Body::from("secret body"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = logs.text();
+    assert!(text.contains("worker dispatch"), "logs:\n{text}");
+    assert!(text.contains("request_id=trace-dispatch"), "logs:\n{text}");
+    assert!(text.contains("worker_name=echo"), "logs:\n{text}");
+    assert!(!text.contains("authorization"), "logs:\n{text}");
+    assert!(!text.contains("test-root"), "logs:\n{text}");
+    assert!(!text.contains("secret body"), "logs:\n{text}");
 }

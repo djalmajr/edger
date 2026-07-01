@@ -3,6 +3,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::State;
 use axum::http::{header, HeaderValue, Request, StatusCode};
@@ -17,7 +18,9 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::cron::CronMetrics;
-use crate::metrics::{cron_metrics_prometheus, pool_metrics_prometheus};
+use crate::metrics::{
+    cron_metrics_prometheus, http_metrics_prometheus, pool_metrics_prometheus, HttpMetrics,
+};
 
 /// Listener configuration (addr from `PORT` env in the binary).
 #[derive(Debug, Clone)]
@@ -37,6 +40,7 @@ struct ServerStateInner {
     ready: AtomicBool,
     pool: std::sync::RwLock<Option<WorkerPool>>,
     cron_metrics: CronMetrics,
+    http_metrics: HttpMetrics,
 }
 
 /// Shared application state for health/readiness and future pipeline wiring.
@@ -52,6 +56,7 @@ impl ServerState {
                 ready: AtomicBool::new(false),
                 pool: std::sync::RwLock::new(None),
                 cron_metrics: CronMetrics::default(),
+                http_metrics: HttpMetrics::default(),
             }),
         }
     }
@@ -84,6 +89,10 @@ impl ServerState {
     pub fn cron_metrics(&self) -> CronMetrics {
         self.inner.cron_metrics.clone()
     }
+
+    pub fn http_metrics(&self) -> HttpMetrics {
+        self.inner.http_metrics.clone()
+    }
 }
 
 async fn health() -> impl IntoResponse {
@@ -109,6 +118,7 @@ async fn metrics(State(state): State<ServerState>) -> impl IntoResponse {
     let metrics = state.pool_metrics().unwrap_or_default();
     let mut body = pool_metrics_prometheus(&metrics);
     body.push_str(&cron_metrics_prometheus(&state.cron_metrics()));
+    body.push_str(&http_metrics_prometheus(&state.http_metrics()));
     (
         [(
             header::CONTENT_TYPE,
@@ -126,6 +136,7 @@ pub fn request_id_from_headers(headers: &axum::http::HeaderMap) -> Option<String
 }
 
 pub async fn request_id_middleware(req: Request<axum::body::Body>, next: Next) -> Response {
+    let mut req = req;
     let request_id = req
         .headers()
         .get("x-request-id")
@@ -133,15 +144,33 @@ pub async fn request_id_middleware(req: Request<axum::body::Body>, next: Next) -
         .map(str::to_owned)
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    let mut response = next.run(req).await;
     if let Ok(value) = HeaderValue::from_str(&request_id) {
+        req.headers_mut().insert("x-request-id", value.clone());
+        let mut response = next.run(req).await;
         response.headers_mut().insert("x-request-id", value);
+        response
+    } else {
+        next.run(req).await
     }
+}
+
+pub async fn request_metrics_middleware(
+    State(state): State<ServerState>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let method = req.method().as_str().to_string();
+    let started = Instant::now();
+    let response = next.run(req).await;
+    state
+        .http_metrics()
+        .record(&method, response.status().as_u16(), started.elapsed());
     response
 }
 
 /// Build the axum router with health/readiness routes and tracing middleware.
 pub fn router(state: ServerState) -> Router {
+    let metrics_state = state.clone();
     Router::new()
         .route("/health", get(health))
         .route("/healthz", get(health))
@@ -149,6 +178,10 @@ pub fn router(state: ServerState) -> Router {
         .route("/metrics", get(metrics))
         .route("/ready", get(ready))
         .route("/readyz", get(ready))
+        .layer(middleware::from_fn_with_state(
+            metrics_state,
+            request_metrics_middleware,
+        ))
         .layer(middleware::from_fn(request_id_middleware))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
