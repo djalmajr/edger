@@ -64,12 +64,16 @@ pub struct AdminErrorResponse {
 #[serde(rename_all = "camelCase")]
 pub struct AdminExtensionInfo {
     pub capabilities: Vec<String>,
+    pub config_source: String,
+    pub dependencies: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Value>,
+    pub id: String,
     pub kind: String,
     pub name: String,
     pub priority: i32,
     pub status: String,
+    pub version: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

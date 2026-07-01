@@ -11,6 +11,7 @@ use edger_core::{
     ExtensionCapability, ExtensionDependency, KeyValueProvider, Middleware, QueueProvider,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 /// Registry of middleware extensions sorted by `priority()` (lower runs first).
 #[derive(Clone, Default)]
@@ -258,56 +259,71 @@ impl ExtensionRegistry {
         for middleware in self.middlewares() {
             upsert_admin_extension(
                 &mut by_name,
-                middleware.name(),
-                "middleware",
-                middleware.priority(),
-                middleware.capabilities(),
-                status_label(self.is_extension_enabled(middleware.name())),
-                middleware.diagnostics(),
+                AdminExtensionRegistration {
+                    capabilities: middleware.capabilities(),
+                    dependencies: middleware.dependencies(),
+                    diagnostics: middleware.diagnostics(),
+                    kind: "middleware",
+                    name: middleware.name(),
+                    priority: middleware.priority(),
+                    status: status_label(self.is_extension_enabled(middleware.name())),
+                },
             );
         }
         if let Some(provider) = self.registered_auth_provider() {
             upsert_admin_extension(
                 &mut by_name,
-                provider.name(),
-                "authProvider",
-                provider.priority(),
-                provider.capabilities(),
-                status_label(self.is_extension_enabled(provider.name())),
-                provider.diagnostics(),
+                AdminExtensionRegistration {
+                    capabilities: provider.capabilities(),
+                    dependencies: provider.dependencies(),
+                    diagnostics: provider.diagnostics(),
+                    kind: "authProvider",
+                    name: provider.name(),
+                    priority: provider.priority(),
+                    status: status_label(self.is_extension_enabled(provider.name())),
+                },
             );
         }
         if let Some(provider) = self.registered_durable_sql_provider() {
             upsert_admin_extension(
                 &mut by_name,
-                provider.name(),
-                "serviceProvider",
-                provider.priority(),
-                provider.capabilities(),
-                status_label(self.is_extension_enabled(provider.name())),
-                provider.diagnostics(),
+                AdminExtensionRegistration {
+                    capabilities: provider.capabilities(),
+                    dependencies: provider.dependencies(),
+                    diagnostics: provider.diagnostics(),
+                    kind: "serviceProvider",
+                    name: provider.name(),
+                    priority: provider.priority(),
+                    status: status_label(self.is_extension_enabled(provider.name())),
+                },
             );
         }
         if let Some(provider) = self.registered_key_value_provider() {
             upsert_admin_extension(
                 &mut by_name,
-                provider.name(),
-                "serviceProvider",
-                provider.priority(),
-                provider.capabilities(),
-                status_label(self.is_extension_enabled(provider.name())),
-                provider.diagnostics(),
+                AdminExtensionRegistration {
+                    capabilities: provider.capabilities(),
+                    dependencies: provider.dependencies(),
+                    diagnostics: provider.diagnostics(),
+                    kind: "serviceProvider",
+                    name: provider.name(),
+                    priority: provider.priority(),
+                    status: status_label(self.is_extension_enabled(provider.name())),
+                },
             );
         }
         if let Some(provider) = self.registered_queue_provider() {
             upsert_admin_extension(
                 &mut by_name,
-                provider.name(),
-                "serviceProvider",
-                provider.priority(),
-                provider.capabilities(),
-                status_label(self.is_extension_enabled(provider.name())),
-                provider.diagnostics(),
+                AdminExtensionRegistration {
+                    capabilities: provider.capabilities(),
+                    dependencies: provider.dependencies(),
+                    diagnostics: provider.diagnostics(),
+                    kind: "serviceProvider",
+                    name: provider.name(),
+                    priority: provider.priority(),
+                    status: status_label(self.is_extension_enabled(provider.name())),
+                },
             );
         }
 
@@ -544,36 +560,51 @@ fn duplicate_provider_error(capability: &ExtensionCapability) -> CoreError {
     )
 }
 
+struct AdminExtensionRegistration {
+    capabilities: Vec<ExtensionCapability>,
+    dependencies: Vec<ExtensionDependency>,
+    diagnostics: Option<Value>,
+    kind: &'static str,
+    name: &'static str,
+    priority: i32,
+    status: &'static str,
+}
+
 fn upsert_admin_extension(
     by_name: &mut BTreeMap<String, AdminExtensionInfo>,
-    name: &str,
-    kind: &str,
-    priority: i32,
-    capabilities: Vec<ExtensionCapability>,
-    status: &str,
-    diagnostics: Option<serde_json::Value>,
+    extension: AdminExtensionRegistration,
 ) {
-    let labels = capabilities
+    let labels = extension
+        .capabilities
         .into_iter()
         .map(|capability| capability.label())
         .collect::<Vec<_>>();
+    let dependency_labels = extension
+        .dependencies
+        .into_iter()
+        .map(|dependency| dependency.capability.label())
+        .collect::<Vec<_>>();
     let entry = by_name
-        .entry(name.to_string())
+        .entry(extension.name.to_string())
         .or_insert_with(|| AdminExtensionInfo {
             capabilities: vec![],
+            config_source: "staticRegistration".into(),
+            dependencies: vec![],
             diagnostics: None,
-            kind: kind.into(),
-            name: name.into(),
-            priority,
-            status: status.into(),
+            id: format!("extension:{}", extension.name),
+            kind: extension.kind.into(),
+            name: extension.name.into(),
+            priority: extension.priority,
+            status: extension.status.into(),
+            version: env!("CARGO_PKG_VERSION").into(),
         });
-    if entry.kind != kind {
+    if entry.kind != extension.kind {
         entry.kind = "mixed".into();
     }
-    entry.priority = entry.priority.min(priority);
-    entry.status = status.into();
+    entry.priority = entry.priority.min(extension.priority);
+    entry.status = extension.status.into();
     if entry.diagnostics.is_none() {
-        entry.diagnostics = diagnostics;
+        entry.diagnostics = extension.diagnostics.map(sanitize_diagnostics);
     }
     for label in labels {
         if !entry.capabilities.contains(&label) {
@@ -581,6 +612,76 @@ fn upsert_admin_extension(
         }
     }
     entry.capabilities.sort();
+    for label in dependency_labels {
+        if !entry.dependencies.contains(&label) {
+            entry.dependencies.push(label);
+        }
+    }
+    entry.dependencies.sort();
+}
+
+fn sanitize_diagnostics(value: Value) -> Value {
+    match value {
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(sanitize_diagnostics).collect())
+        }
+        Value::Object(values) => Value::Object(sanitize_diagnostic_object(values)),
+        Value::String(value) if is_sensitive_diagnostic_value(&value) => "[redacted]".into(),
+        value => value,
+    }
+}
+
+fn sanitize_diagnostic_object(values: Map<String, Value>) -> Map<String, Value> {
+    values
+        .into_iter()
+        .map(|(key, value)| {
+            if is_sensitive_diagnostic_key(&key) {
+                (key, "[redacted]".into())
+            } else {
+                (key, sanitize_diagnostics(value))
+            }
+        })
+        .collect()
+}
+
+fn is_sensitive_diagnostic_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    normalized.contains("authorization")
+        || normalized.contains("cookie")
+        || normalized.contains("credential")
+        || normalized.contains("header")
+        || normalized.contains("password")
+        || normalized.contains("path")
+        || normalized.contains("secret")
+        || normalized.contains("token")
+}
+
+fn is_sensitive_diagnostic_value(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("authorization")
+        || lower.contains("bearer ")
+        || lower.contains("token=")
+        || lower.contains("api_key=")
+        || lower.contains("apikey=")
+        || lower.contains("secret=")
+        || looks_like_sensitive_filesystem_path(value)
+}
+
+fn looks_like_sensitive_filesystem_path(value: &str) -> bool {
+    value.starts_with("/Users/")
+        || value.starts_with("/home/")
+        || value.starts_with("/private/")
+        || value.starts_with("/root/")
+        || value.starts_with("/tmp/")
+        || value.starts_with("/var/")
+        || value.starts_with("~/")
+        || value
+            .get(1..3)
+            .is_some_and(|prefix| prefix == ":/" || prefix == ":\\")
 }
 
 fn status_label(enabled: bool) -> &'static str {

@@ -10,6 +10,8 @@ use axum::Router;
 use edger_core::{ApiKeyStore, Middleware, RequestContext, SerializedRequest, WorkerManifest};
 use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
 use edger_ext_gateway::{GatewayExtension, GatewayRateLimitConfig};
+use edger_ext_keyval::SqlKeyValueProvider;
+use edger_ext_turso::LocalSqliteProvider;
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
     build_pipeline, collect_extensions, AuthGate, AuthGateConfig, ManifestIndex, OrchestratorState,
@@ -70,6 +72,15 @@ fn test_state_with_gateway(gateway: Arc<dyn Middleware>) -> OrchestratorState {
     let auth = Arc::new(AuthExtension::new(store, Some("root-secret".into())));
     let mut registry = collect_extensions(vec![gateway]).unwrap();
     registry.register_auth_provider(auth.clone()).unwrap();
+    let durable_sql = Arc::new(LocalSqliteProvider::in_memory());
+    registry
+        .register_durable_sql_provider(durable_sql.clone())
+        .unwrap();
+    let key_value = Arc::new(SqlKeyValueProvider::new(durable_sql));
+    registry
+        .register_key_value_provider(key_value.clone())
+        .unwrap();
+    registry.register_queue_provider(key_value).unwrap();
 
     let server = ServerState::new_unready();
     let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(StubFactory));
@@ -202,24 +213,90 @@ async fn root_lists_workers_with_operational_metadata() {
 }
 
 #[tokio::test]
-async fn root_lists_registered_extensions_and_auth_provider() {
-    let (status, body) = json_get("/api/admin/extensions", Some("root-secret")).await;
+async fn admin_extensions_requires_root_before_exposing_operational_inventory() {
+    let (missing_status, missing_body) = json_get("/api/admin/extensions", None).await;
+    assert_eq!(missing_status, StatusCode::UNAUTHORIZED);
+    assert_eq!(missing_body["code"], "UNAUTHORIZED");
+
+    let (non_root_status, non_root_body) =
+        json_get("/api/admin/extensions", Some("super-secret-token")).await;
+    assert_eq!(non_root_status, StatusCode::FORBIDDEN);
+    assert_eq!(non_root_body["code"], "FORBIDDEN");
+    assert!(!non_root_body.to_string().contains("gateway"));
+}
+
+#[tokio::test]
+async fn root_lists_operational_extension_inventory_for_middleware_and_provider() {
+    let gateway = Arc::new(GatewayExtension::new());
+    let ctx = RequestContext::new("extension-inventory-test");
+    let mut request = gateway_request(
+        "inventory-request",
+        "/Users/djalmajr/secret?token=should-not-leak",
+        "203.0.113.40",
+        Some("Bearer should-not-leak"),
+    );
+    assert!(gateway.on_request(&mut request, &ctx).unwrap().is_none());
+
+    let app = build_pipeline(test_state_with_gateway(gateway));
+    let (status, body) = app_json_get(app, "/api/admin/extensions", Some("root-secret")).await;
 
     assert_eq!(status, StatusCode::OK);
+    let body_text = body.to_string();
+    assert!(!body_text.contains("root-secret"));
+    assert!(!body_text.contains("should-not-leak"));
+    assert!(!body_text.contains("/Users/djalmajr"));
+
     let extensions = body["extensions"].as_array().unwrap();
-    assert!(extensions.iter().any(|ext| ext["name"] == "auth"
-        && ext["kind"] == "authProvider"
-        && ext["status"] == "enabled"));
-    assert!(extensions.iter().any(|ext| ext["name"] == "gateway"
-        && ext["kind"] == "middleware"
-        && ext["status"] == "enabled"));
     let gateway = extensions
         .iter()
         .find(|ext| ext["name"] == "gateway")
         .expect("gateway extension should be listed");
-    assert_eq!(gateway["diagnostics"]["requests"]["total"], 0);
+    assert_eq!(gateway["id"], "extension:gateway");
+    assert_eq!(gateway["kind"], "middleware");
+    assert_eq!(gateway["status"], "enabled");
+    assert_eq!(gateway["configSource"], "staticRegistration");
+    assert_eq!(gateway["dependencies"], serde_json::json!([]));
+    assert!(gateway["version"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+    assert_eq!(
+        gateway["capabilities"],
+        serde_json::json!(["middleware", "onRequest", "onResponse"])
+    );
+    assert_eq!(gateway["diagnostics"]["requests"]["total"], 1);
     assert_eq!(gateway["diagnostics"]["rateLimit"]["enabled"], false);
-    assert!(!gateway.to_string().contains("root-secret"));
+    assert_eq!(
+        gateway["diagnostics"]["recentDecisions"][0]["path"],
+        "[redacted]"
+    );
+
+    let auth = extensions
+        .iter()
+        .find(|ext| ext["name"] == "auth")
+        .expect("auth provider should be listed");
+    assert_eq!(auth["id"], "extension:auth");
+    assert_eq!(auth["kind"], "authProvider");
+    assert_eq!(auth["status"], "enabled");
+    assert_eq!(
+        auth["capabilities"],
+        serde_json::json!(["apiKeys", "authProvider"])
+    );
+
+    let keyval = extensions
+        .iter()
+        .find(|ext| ext["name"] == "keyval")
+        .expect("keyval service provider should be listed");
+    assert_eq!(keyval["id"], "extension:keyval");
+    assert_eq!(keyval["kind"], "serviceProvider");
+    assert_eq!(keyval["status"], "enabled");
+    assert_eq!(
+        keyval["capabilities"],
+        serde_json::json!(["provider:keyValue", "provider:queue"])
+    );
+    assert_eq!(
+        keyval["dependencies"],
+        serde_json::json!(["provider:durableSql"])
+    );
 }
 
 #[tokio::test]
