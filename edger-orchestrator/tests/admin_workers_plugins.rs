@@ -185,6 +185,36 @@ async fn json_post(
     (status, serde_json::from_slice(&body).unwrap())
 }
 
+async fn json_post_with_request_id(
+    app: Router,
+    path: &str,
+    token: Option<&str>,
+    body: serde_json::Value,
+    request_id: &str,
+) -> (StatusCode, serde_json::Value) {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("content-type", "application/json")
+        .header("x-request-id", request_id);
+    if let Some(token) = token {
+        builder = builder.header("authorization", format!("Bearer {token}"));
+    }
+    let res = app
+        .oneshot(
+            builder
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&body).unwrap())
+}
+
 #[tokio::test]
 async fn admin_workers_requires_root_and_does_not_fall_through_to_api_stub() {
     let (status, body) = json_get("/api/admin/workers", None).await;
@@ -331,6 +361,275 @@ async fn root_lists_operational_extension_inventory_for_middleware_and_provider(
             "requirements": ["provider:durableSql"]
         })
     );
+}
+
+#[tokio::test]
+async fn extension_reconcile_requires_root_before_exposing_plan() {
+    let status_dir = tempfile::tempdir().unwrap();
+    let status_path = status_dir.path().join("extension-status.json");
+    let state = test_state();
+    state
+        .registry
+        .load_extension_status_store(&status_path)
+        .unwrap();
+    fs::write(
+        &status_path,
+        serde_json::json!({
+            "extensions": {
+                "gateway": false,
+                "edger-ext-new-crate": true
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let app = build_pipeline(state);
+
+    let (unauthorized_status, unauthorized_body) = json_post(
+        app.clone(),
+        "/api/admin/extensions/reconcile",
+        None,
+        serde_json::json!({ "dryRun": false }),
+        None,
+    )
+    .await;
+    assert_eq!(unauthorized_status, StatusCode::UNAUTHORIZED);
+    assert_eq!(unauthorized_body["code"], "UNAUTHORIZED");
+    assert!(!unauthorized_body.to_string().contains("gateway"));
+
+    let (non_root_status, non_root_body) = json_post(
+        app.clone(),
+        "/api/admin/extensions/reconcile",
+        Some("super-secret-token"),
+        serde_json::json!({ "dryRun": false }),
+        None,
+    )
+    .await;
+    assert_eq!(non_root_status, StatusCode::FORBIDDEN);
+    assert_eq!(non_root_body["code"], "FORBIDDEN");
+    let non_root_text = non_root_body.to_string();
+    assert!(!non_root_text.contains("gateway"));
+    assert!(!non_root_text.contains("edger-ext-new-crate"));
+
+    let (csrf_status, csrf_body) = json_post(
+        app.clone(),
+        "/api/admin/extensions/reconcile",
+        Some("root-secret"),
+        serde_json::json!({ "dryRun": false }),
+        Some("https://evil.local"),
+    )
+    .await;
+    assert_eq!(csrf_status, StatusCode::FORBIDDEN);
+    assert_eq!(csrf_body["code"], "CSRF_DENIED");
+
+    let (inventory_status, inventory) =
+        app_json_get(app, "/api/admin/extensions", Some("root-secret")).await;
+    assert_eq!(inventory_status, StatusCode::OK);
+    let gateway = inventory["extensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|extension| extension["name"] == "gateway")
+        .unwrap();
+    assert_eq!(gateway["status"], "enabled");
+}
+
+#[tokio::test]
+async fn extension_reconcile_dry_run_does_not_change_effective_state() {
+    let status_dir = tempfile::tempdir().unwrap();
+    let status_path = status_dir.path().join("extension-status.json");
+    let state = test_state();
+    state
+        .registry
+        .load_extension_status_store(&status_path)
+        .unwrap();
+    fs::write(
+        &status_path,
+        serde_json::json!({
+            "extensions": {
+                "gateway": false
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let app = build_pipeline(state);
+    let (before_status, before_inventory) =
+        app_json_get(app.clone(), "/api/admin/extensions", Some("root-secret")).await;
+    assert_eq!(before_status, StatusCode::OK);
+
+    let (reconcile_status, reconcile) = json_post_with_request_id(
+        app.clone(),
+        "/api/admin/extensions/reconcile",
+        Some("root-secret"),
+        serde_json::json!({ "dryRun": true }),
+        "reconcile-dry-run",
+    )
+    .await;
+    assert_eq!(reconcile_status, StatusCode::OK);
+    assert_eq!(reconcile["requestId"], "reconcile-dry-run");
+    assert_eq!(
+        reconcile["actions"],
+        serde_json::json!([{
+            "action": "disable",
+            "applied": false,
+            "classification": "runtime",
+            "from": true,
+            "name": "gateway",
+            "to": false
+        }])
+    );
+    assert_eq!(
+        reconcile["summary"],
+        serde_json::json!({
+            "applied": 0,
+            "noop": 0,
+            "restartRequired": 0,
+            "runtime": 1,
+            "total": 1
+        })
+    );
+    assert_eq!(
+        reconcile["diagnostics"]["desiredSource"],
+        "extensionStatusFile"
+    );
+    assert_eq!(reconcile["diagnostics"]["dryRun"], true);
+    assert_eq!(reconcile["diagnostics"]["dynamicLoading"], false);
+    assert_eq!(
+        reconcile["diagnostics"]["effectiveSource"],
+        "inMemoryRegistry"
+    );
+    assert_eq!(reconcile["diagnostics"]["mode"], "dryRun");
+    assert_eq!(reconcile["diagnostics"]["statusStore"], "configured");
+    let reconcile_text = reconcile.to_string();
+    assert!(!reconcile_text.contains("root-secret"));
+    assert!(!reconcile_text.contains(status_path.to_string_lossy().as_ref()));
+
+    let (after_status, after_inventory) =
+        app_json_get(app, "/api/admin/extensions", Some("root-secret")).await;
+    assert_eq!(after_status, StatusCode::OK);
+    assert_eq!(after_inventory, before_inventory);
+}
+
+#[tokio::test]
+async fn extension_reconcile_applies_runtime_supported_enable_disable() {
+    let status_dir = tempfile::tempdir().unwrap();
+    let status_path = status_dir.path().join("extension-status.json");
+    let state = test_state();
+    state
+        .registry
+        .load_extension_status_store(&status_path)
+        .unwrap();
+    fs::write(
+        &status_path,
+        serde_json::json!({
+            "extensions": {
+                "gateway": false
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let app = build_pipeline(state);
+
+    let (reconcile_status, reconcile) = json_post_with_request_id(
+        app.clone(),
+        "/api/admin/extensions/reconcile",
+        Some("root-secret"),
+        serde_json::json!({ "dryRun": false }),
+        "reconcile-apply-disable",
+    )
+    .await;
+    assert_eq!(reconcile_status, StatusCode::OK);
+    assert_eq!(reconcile["requestId"], "reconcile-apply-disable");
+    assert_eq!(
+        reconcile["actions"][0],
+        serde_json::json!({
+            "action": "disable",
+            "applied": true,
+            "classification": "runtime",
+            "from": true,
+            "name": "gateway",
+            "to": false
+        })
+    );
+    assert_eq!(reconcile["summary"]["applied"], 1);
+    assert_eq!(reconcile["summary"]["restartRequired"], 0);
+
+    let (inventory_status, inventory) =
+        app_json_get(app, "/api/admin/extensions", Some("root-secret")).await;
+    assert_eq!(inventory_status, StatusCode::OK);
+    let gateway = inventory["extensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|extension| extension["name"] == "gateway")
+        .unwrap();
+    assert_eq!(gateway["status"], "disabled");
+}
+
+#[tokio::test]
+async fn extension_reconcile_marks_unknown_desired_extension_restart_required() {
+    let status_dir = tempfile::tempdir().unwrap();
+    let status_path = status_dir.path().join("extension-status.json");
+    let state = test_state();
+    state
+        .registry
+        .load_extension_status_store(&status_path)
+        .unwrap();
+    fs::write(
+        &status_path,
+        serde_json::json!({
+            "extensions": {
+                "edger-ext-new-crate": true
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let app = build_pipeline(state);
+
+    let (reconcile_status, reconcile) = json_post_with_request_id(
+        app.clone(),
+        "/api/admin/extensions/reconcile",
+        Some("root-secret"),
+        serde_json::json!({ "dryRun": false }),
+        "reconcile-restart-required",
+    )
+    .await;
+    assert_eq!(reconcile_status, StatusCode::OK);
+    assert_eq!(reconcile["requestId"], "reconcile-restart-required");
+    assert_eq!(
+        reconcile["actions"],
+        serde_json::json!([{
+            "action": "enable",
+            "applied": false,
+            "classification": "restartRequired",
+            "from": null,
+            "name": "edger-ext-new-crate",
+            "to": true
+        }])
+    );
+    assert_eq!(
+        reconcile["summary"],
+        serde_json::json!({
+            "applied": 0,
+            "noop": 0,
+            "restartRequired": 1,
+            "runtime": 0,
+            "total": 1
+        })
+    );
+    assert_eq!(reconcile["diagnostics"]["dynamicLoading"], false);
+
+    let (inventory_status, inventory) =
+        app_json_get(app, "/api/admin/extensions", Some("root-secret")).await;
+    assert_eq!(inventory_status, StatusCode::OK);
+    assert!(!inventory["extensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|extension| extension["name"] == "edger-ext-new-crate"));
 }
 
 #[tokio::test]

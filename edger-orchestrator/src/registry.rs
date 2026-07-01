@@ -8,7 +8,10 @@ use std::sync::{Arc, RwLock};
 
 use edger_core::{
     AdminExtensionInfo, AdminExtensionManifest, AdminExtensionManifestConfig,
-    AdminExtensionManifestMenu, AuthProvider, BindingKind, CoreError, DurableSqlProvider,
+    AdminExtensionManifestMenu, AdminExtensionReconcileAction, AdminExtensionReconcileActionKind,
+    AdminExtensionReconcileClassification, AdminExtensionReconcileDiagnostics,
+    AdminExtensionReconcileRequest, AdminExtensionReconcileResponse,
+    AdminExtensionReconcileSummary, AuthProvider, BindingKind, CoreError, DurableSqlProvider,
     ExtensionCapability, ExtensionDependency, KeyValueProvider, Middleware, QueueProvider,
 };
 use serde::{Deserialize, Serialize};
@@ -30,6 +33,35 @@ pub struct ExtensionRegistry {
 #[serde(rename_all = "camelCase")]
 struct ExtensionStatusDocument {
     extensions: BTreeMap<String, bool>,
+}
+
+struct ReconcileStatusStore {
+    desired_source: &'static str,
+    label: &'static str,
+}
+
+impl ReconcileStatusStore {
+    fn extension_status_file() -> Self {
+        Self {
+            desired_source: "extensionStatusFile",
+            label: "configured",
+        }
+    }
+
+    fn in_memory_overlay() -> Self {
+        Self {
+            desired_source: "inMemoryOverlay",
+            label: "notConfigured",
+        }
+    }
+
+    fn desired_source(&self) -> &str {
+        self.desired_source
+    }
+
+    fn label(&self) -> &str {
+        self.label
+    }
 }
 
 const STATIC_REGISTRATION_CONFIG_SOURCE: &str = "staticRegistration";
@@ -340,6 +372,93 @@ impl ExtensionRegistry {
         extensions
     }
 
+    pub fn reconcile_extensions(
+        &self,
+        request_id: String,
+        request: &AdminExtensionReconcileRequest,
+    ) -> Result<AdminExtensionReconcileResponse, CoreError> {
+        let (desired, status_store) = self.desired_extension_statuses()?;
+        let registered = self
+            .admin_extensions()
+            .into_iter()
+            .map(|extension| extension.name)
+            .collect::<BTreeSet<_>>();
+        let mut actions = Vec::with_capacity(desired.len());
+
+        for (name, desired_enabled) in desired {
+            if registered.contains(&name) {
+                let effective = self.is_extension_enabled(&name);
+                let action = reconcile_action_kind(effective, desired_enabled);
+                let applied = !request.dry_run && action != AdminExtensionReconcileActionKind::Noop;
+                if applied {
+                    self.set_extension_enabled_in_memory(&name, desired_enabled);
+                }
+                actions.push(AdminExtensionReconcileAction {
+                    action,
+                    applied,
+                    classification: AdminExtensionReconcileClassification::Runtime,
+                    from_enabled: Some(effective),
+                    name: name.clone(),
+                    to_enabled: Some(desired_enabled),
+                });
+            } else {
+                actions.push(AdminExtensionReconcileAction {
+                    action: desired_action_kind(desired_enabled),
+                    applied: false,
+                    classification: AdminExtensionReconcileClassification::RestartRequired,
+                    from_enabled: None,
+                    name: name.clone(),
+                    to_enabled: Some(desired_enabled),
+                });
+            }
+        }
+
+        let summary = summarize_reconcile_actions(&actions);
+        Ok(AdminExtensionReconcileResponse {
+            actions,
+            diagnostics: AdminExtensionReconcileDiagnostics {
+                desired_source: status_store.desired_source().into(),
+                dry_run: request.dry_run,
+                dynamic_loading: false,
+                effective_source: "inMemoryRegistry".into(),
+                mode: if request.dry_run { "dryRun" } else { "apply" }.into(),
+                status_store: status_store.label().into(),
+            },
+            request_id,
+            summary,
+        })
+    }
+
+    fn desired_extension_statuses(
+        &self,
+    ) -> Result<(BTreeMap<String, bool>, ReconcileStatusStore), CoreError> {
+        let path = self
+            .extension_status_store
+            .read()
+            .expect("extension status store lock")
+            .clone();
+        if let Some(path) = path {
+            let statuses = read_extension_status_document(&path)?
+                .map(|document| document.extensions)
+                .unwrap_or_default();
+            return Ok((statuses, ReconcileStatusStore::extension_status_file()));
+        }
+
+        let statuses = self
+            .extension_status
+            .read()
+            .expect("extension status lock")
+            .clone();
+        Ok((statuses, ReconcileStatusStore::in_memory_overlay()))
+    }
+
+    fn set_extension_enabled_in_memory(&self, name: &str, enabled: bool) {
+        self.extension_status
+            .write()
+            .expect("extension status lock")
+            .insert(name.to_string(), enabled);
+    }
+
     fn ensure_status(&self, name: &str) {
         self.extension_status
             .write()
@@ -561,6 +680,48 @@ fn duplicate_provider_error(capability: &ExtensionCapability) -> CoreError {
         "COLLISION",
         format!("provider already registered for {}", capability.label()),
     )
+}
+
+fn reconcile_action_kind(effective: bool, desired: bool) -> AdminExtensionReconcileActionKind {
+    if effective == desired {
+        AdminExtensionReconcileActionKind::Noop
+    } else {
+        desired_action_kind(desired)
+    }
+}
+
+fn desired_action_kind(desired: bool) -> AdminExtensionReconcileActionKind {
+    if desired {
+        AdminExtensionReconcileActionKind::Enable
+    } else {
+        AdminExtensionReconcileActionKind::Disable
+    }
+}
+
+fn summarize_reconcile_actions(
+    actions: &[AdminExtensionReconcileAction],
+) -> AdminExtensionReconcileSummary {
+    let mut summary = AdminExtensionReconcileSummary {
+        total: actions.len() as u64,
+        ..Default::default()
+    };
+    for action in actions {
+        if action.applied {
+            summary.applied += 1;
+        }
+        if action.action == AdminExtensionReconcileActionKind::Noop {
+            summary.noop += 1;
+        }
+        match action.classification {
+            AdminExtensionReconcileClassification::RestartRequired => {
+                summary.restart_required += 1;
+            }
+            AdminExtensionReconcileClassification::Runtime => {
+                summary.runtime += 1;
+            }
+        }
+    }
+    summary
 }
 
 struct AdminExtensionRegistration {

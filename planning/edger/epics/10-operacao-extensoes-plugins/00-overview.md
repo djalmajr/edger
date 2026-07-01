@@ -40,7 +40,7 @@ Criar a camada operacional de modulos/extensoes: inventario machine-readable, ma
 | Story | Arquivo | Objetivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|---|
 | 10.01 Inventario operacional | `01-inventario-operacional-de-modulos.md` | Definir e expor inventario de modulos/extensoes com capabilities e diagnostics | medium | completed | Epic 06, Epic 08.13 |
-| 10.02 Reconcile/reload controlado | `02-reconcile-reload-controlado.md` | Separar dry-run, reconcile e reload seguro sem loader dinamico de Rust | large | planned | 10.01, Epic 08.26 |
+| 10.02 Reconcile/reload controlado | `02-reconcile-reload-controlado.md` | Separar dry-run, reconcile e reload seguro sem loader dinamico de Rust | large | completed | 10.01, Epic 08.26 |
 | 10.03 Manifesto operacional | `03-manifesto-configuracao-modulo.md` | Persistir manifesto/configuracao de modulo com redaction e compatibilidade | medium | completed | 10.01 |
 | 10.04 Validacao local de extensoes | `04-validacao-local-extensoes.md` | Rodar validacao local de modulo/extensao e registrar evidencia | medium | planned | 10.02, 10.03 |
 
@@ -55,7 +55,6 @@ Criar a camada operacional de modulos/extensoes: inventario machine-readable, ma
 
 ## Status
 
-in-progress (2026-07-01) - Stories 10.01 e 10.03 entregues. 10.01: inventario operacional root-only expoe `id`, `version`, `kind`, `capabilities`, `dependencies`, `status`, `configSource` e diagnostics redigidos (chaves/valores/paths sensiveis) via `/api/admin/extensions`, com testes cobrindo middleware (gateway) e provider (keyval) e negacao non-root. 10.03: manifesto operacional tipado por extensao (`manifest` com `menus`, `hooks`, `provides`, `requirements` e `config` com `keys` por nome + `redacted`/`source`), derivado das capabilities/dependencias declaradas, backward-compatible com registro estatico, documentado no adoc e coberto em `registry_providers.rs`. Reconcile/reload e validacao local seguem nas stories 10.02 e 10.04.
+in-progress (2026-07-01) - Stories 10.01, 10.02 e 10.03 entregues. 10.01: inventario operacional root-only expoe `id`, `version`, `kind`, `capabilities`, `dependencies`, `status`, `configSource` e diagnostics redigidos (chaves/valores/paths sensiveis) via `/api/admin/extensions`, com testes cobrindo middleware (gateway) e provider (keyval) e negacao non-root. 10.02: reconcile root-only em `/api/admin/extensions/reconcile` compara o status store persistido com o overlay em memoria, diferencia dry-run/apply, classifica `runtime` versus `restartRequired`, preserva request ID e nao faz dynamic loading. 10.03: manifesto operacional tipado por extensao (`manifest` com `menus`, `hooks`, `provides`, `requirements` e `config` com `keys` por nome + `redacted`/`source`), derivado das capabilities/dependencias declaradas, backward-compatible com registro estatico, documentado no adoc e coberto em `registry_providers.rs`. Validacao local segue na story 10.04.
 
 planned (2026-06-29) - criado para retirar operacao de plugins/extensoes do Epic 08 e dar dono modular para reload/reconcile, manifesto operacional, diagnostics e validacao local.
-

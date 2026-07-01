@@ -9,9 +9,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use edger_core::{
     principal_has_permission, AdminApiKeysResponse, AdminCreateApiKeyRequest,
-    AdminCreateApiKeyResponse, AdminErrorResponse, AdminExtensionsResponse, AdminMutationResponse,
-    AdminRevokeApiKeyResponse, AdminSessionResponse, AdminWorkersResponse, ApiKeyPrincipal,
-    CoreError,
+    AdminCreateApiKeyResponse, AdminErrorResponse, AdminExtensionReconcileRequest,
+    AdminExtensionsResponse, AdminMutationResponse, AdminRevokeApiKeyResponse,
+    AdminSessionResponse, AdminWorkersResponse, ApiKeyPrincipal, CoreError,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -27,6 +27,10 @@ pub fn router() -> Router<OrchestratorState> {
         .route("/api/admin/session", get(session))
         .route("/api/admin/workers", get(list_workers))
         .route("/api/admin/extensions", get(list_extensions))
+        .route(
+            "/api/admin/extensions/reconcile",
+            post(reconcile_extensions),
+        )
         .route("/api/admin/gateway/stats", get(gateway_stats))
         .route(
             "/api/admin/gateway/rate-limit/metrics",
@@ -84,6 +88,24 @@ async fn list_extensions(State(state): State<OrchestratorState>, headers: Header
             extensions: state.registry.admin_extensions(),
         })
         .into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn reconcile_extensions(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Json(request): Json<AdminExtensionReconcileRequest>,
+) -> Response {
+    let request_id =
+        request_id_from_headers(&headers).unwrap_or_else(|| Uuid::new_v4().to_string());
+    match require_root(&state, &headers).and_then(|principal| {
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        state
+            .registry
+            .reconcile_extensions(request_id.clone(), &request)
+    }) {
+        Ok(response) => Json(response).into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
 }

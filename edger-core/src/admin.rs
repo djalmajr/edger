@@ -107,6 +107,83 @@ pub struct AdminExtensionsResponse {
     pub extensions: Vec<AdminExtensionInfo>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AdminExtensionReconcileActionKind {
+    Disable,
+    Enable,
+    Noop,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminExtensionReconcileAction {
+    pub action: AdminExtensionReconcileActionKind,
+    pub applied: bool,
+    pub classification: AdminExtensionReconcileClassification,
+    #[serde(rename = "from")]
+    pub from_enabled: Option<bool>,
+    pub name: String,
+    #[serde(rename = "to")]
+    pub to_enabled: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AdminExtensionReconcileClassification {
+    RestartRequired,
+    Runtime,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminExtensionReconcileDiagnostics {
+    pub desired_source: String,
+    pub dry_run: bool,
+    pub dynamic_loading: bool,
+    pub effective_source: String,
+    pub mode: String,
+    pub status_store: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminExtensionReconcileRequest {
+    #[serde(default = "default_reconcile_dry_run")]
+    pub dry_run: bool,
+}
+
+impl Default for AdminExtensionReconcileRequest {
+    fn default() -> Self {
+        Self {
+            dry_run: default_reconcile_dry_run(),
+        }
+    }
+}
+
+fn default_reconcile_dry_run() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminExtensionReconcileResponse {
+    pub actions: Vec<AdminExtensionReconcileAction>,
+    pub diagnostics: AdminExtensionReconcileDiagnostics,
+    pub request_id: String,
+    pub summary: AdminExtensionReconcileSummary,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminExtensionReconcileSummary {
+    pub applied: u64,
+    pub noop: u64,
+    pub restart_required: u64,
+    pub runtime: u64,
+    pub total: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminMutationResponse {

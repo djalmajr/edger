@@ -320,6 +320,12 @@ Os endpoints de extensões, keys e mutações v1 exigem root.
 | Lista metadata de chaves persistidas, sem raw key ou hash.
 
 | `POST`
+| `/api/admin/extensions/reconcile`
+| Mutação protegida. Compara o status store persistido com o registry em memória,
+  retorna plano `runtime`/`restartRequired` e aplica somente enable/disable de
+  extensões já registradas quando `dryRun` é `false`.
+
+| `POST`
 | `/api/admin/workers/{name}/enable`
 | Mutação protegida. Recoloca worker no overlay runtime em memória.
 
@@ -336,6 +342,7 @@ Os endpoints de extensões, keys e mutações v1 exigem root.
 | `/api/admin/extensions/{name}/disable`
 | Mutação protegida. Remove extensão ativa de hooks/providers e persiste status
   quando o status store está configurado.
+
 |===
 
 Exemplos:
@@ -360,6 +367,79 @@ curl -i -X POST -H 'authorization: Bearer test-root' \
 curl -i -X POST -H 'authorization: Bearer test-root' \
   http://127.0.0.1:19080/api/admin/extensions/gateway/disable
 ----
+
+==== Reconcile controlado de extensões
+
+O reconcile local é root-only. O estado desejado vem do status store persistido
+(`EDGER_EXTENSION_STATUS_FILE` ou o fallback em `EDGER_STATE_DIR`), e o estado
+efetivo é o registry em memória do processo atual. Com `dryRun: true`, o runtime
+só calcula o plano. Com `dryRun: false`, ações `runtime` atualizam o overlay em
+memória para refletir o arquivo desejado. O reconcile não regrava o arquivo de
+status; ele trata o arquivo como fonte desejada auditável.
+
+[source,bash]
+----
+curl -s -X POST \
+  -H 'authorization: Bearer test-root' \
+  -H 'content-type: application/json' \
+  -H 'x-request-id: local-reconcile-001' \
+  --data '{"dryRun":true}' \
+  http://127.0.0.1:19080/api/admin/extensions/reconcile
+----
+
+Resposta típica de dry-run:
+
+[source,json]
+----
+{
+  "actions": [
+    {
+      "action": "disable",
+      "applied": false,
+      "classification": "runtime",
+      "from": true,
+      "name": "gateway",
+      "to": false
+    }
+  ],
+  "diagnostics": {
+    "desiredSource": "extensionStatusFile",
+    "dryRun": true,
+    "dynamicLoading": false,
+    "effectiveSource": "inMemoryRegistry",
+    "mode": "dryRun",
+    "statusStore": "configured"
+  },
+  "requestId": "local-reconcile-001",
+  "summary": {
+    "applied": 0,
+    "noop": 0,
+    "restartRequired": 0,
+    "runtime": 1,
+    "total": 1
+  }
+}
+----
+
+Classificações:
+
+[cols="1,3",options="header"]
+|===
+| Classificação | Semântica
+
+| `runtime`
+| A mudança é suportada no processo atual. Com `dryRun: false`, o orchestrator
+  aplica somente enable/disable de extensão já registrada.
+
+| `restartRequired`
+| O estado desejado referencia uma extensão que não existe no registry efetivo.
+  Isso representa novo binário, nova crate ou nova dependência fora do registro
+  estático carregado. O reconcile não tenta hot-load nem download remoto.
+|===
+
+Diagnostics do reconcile não incluem API keys, tokens, paths locais sensíveis ou
+conteúdo bruto do status store. Ações `restartRequired` nunca tentam hot-load
+de crate, download remoto, deploy ou alteração do composition root em runtime.
 
 Cada item de `/api/admin/extensions` mantém os campos operacionais legados
 (`capabilities`, `dependencies`, `configSource`, `diagnostics`) e adiciona um
