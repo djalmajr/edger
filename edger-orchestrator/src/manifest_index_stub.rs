@@ -28,6 +28,7 @@ pub struct ManifestIndex {
 #[derive(Clone, Debug, Default)]
 struct ManifestIndexState {
     entries: HashMap<String, Vec<ManifestEntry>>,
+    host_routes: HashMap<String, WorkerRef>,
     plugins: Vec<PluginRef>,
     homepage: Option<WorkerRef>,
     shell: Option<WorkerRef>,
@@ -58,6 +59,16 @@ impl ManifestIndex {
             ));
         }
 
+        let host_aliases = normalize_host_aliases(&manifest.hosts)?;
+        for host in &host_aliases {
+            if state.host_routes.contains_key(host) {
+                return Err(CoreError::new(
+                    "COLLISION",
+                    format!("duplicate host route: {host}"),
+                ));
+            }
+        }
+
         let plugin_base = manifest.base.as_deref().and_then(normalize_base);
         if plugin_base.as_deref() == Some("/") {
             state.homepage = Some(worker.clone());
@@ -72,6 +83,9 @@ impl ManifestIndex {
             state
                 .plugins
                 .sort_by(|a, b| b.base.len().cmp(&a.base.len()));
+        }
+        for host in host_aliases {
+            state.host_routes.insert(host, worker.clone());
         }
 
         state.entries.entry(key).or_default().push(ManifestEntry {
@@ -135,6 +149,13 @@ impl ManifestIndex {
             }
         }
         None
+    }
+
+    pub fn worker_for_host(&self, host: &str) -> Option<WorkerRef> {
+        let normalized = normalize_host_alias(host).ok()??;
+        let state = self.inner.read().ok()?;
+        let worker = state.host_routes.get(&normalized)?;
+        state.worker_ref_is_enabled(worker).then(|| worker.clone())
     }
 
     pub fn homepage(&self) -> Option<WorkerRef> {
@@ -268,6 +289,55 @@ fn normalize_base(base: &str) -> Option<String> {
         format!("/{trimmed}")
     };
     Some(normalized)
+}
+
+fn normalize_host_aliases(hosts: &[String]) -> Result<Vec<String>, CoreError> {
+    let mut aliases = Vec::new();
+    for host in hosts {
+        let Some(alias) = normalize_host_alias(host)? else {
+            continue;
+        };
+        if !aliases.contains(&alias) {
+            aliases.push(alias);
+        }
+    }
+    Ok(aliases)
+}
+
+fn normalize_host_alias(host: &str) -> Result<Option<String>, CoreError> {
+    let trimmed = host.trim().trim_end_matches('.');
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.contains("://")
+        || trimmed
+            .chars()
+            .any(|ch| ch.is_whitespace() || matches!(ch, '/' | '\\' | '*' | '[' | ']' | '@'))
+    {
+        return Err(CoreError::new(
+            "VALIDATION_ERROR",
+            format!("invalid host route: {host}"),
+        ));
+    }
+    let without_port = strip_host_port(trimmed);
+    if without_port.is_empty() || without_port.contains(':') {
+        return Err(CoreError::new(
+            "VALIDATION_ERROR",
+            format!("invalid host route: {host}"),
+        ));
+    }
+    Ok(Some(without_port.to_ascii_lowercase()))
+}
+
+fn strip_host_port(host: &str) -> &str {
+    let Some((name, port)) = host.rsplit_once(':') else {
+        return host;
+    };
+    if !name.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) {
+        name
+    } else {
+        host
+    }
 }
 
 fn lock_err() -> CoreError {

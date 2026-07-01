@@ -22,7 +22,7 @@ use crate::manifest_index_stub::ManifestIndex;
 use crate::metrics::{metrics_stats_response, pool_metrics_prometheus};
 use crate::operational_log::log_operational_error;
 use crate::registry::ExtensionRegistry;
-use crate::router::{resolve_route, ReservedPath, ResolvedRoute};
+use crate::router::{resolve_host_route, resolve_route, ReservedPath, ResolvedRoute};
 use crate::server::{request_id_from_headers, request_id_middleware, ServerState};
 use crate::service_bindings::{resolve_service_bindings, SERVICE_BINDINGS_HEADER};
 use crate::shell_gateway::resolve_shell_worker;
@@ -114,6 +114,14 @@ async fn handle_request(
     request_id: String,
 ) -> Result<Response<Body>, CoreError> {
     let path = req.uri().path().to_string();
+    let host = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok());
+    if let Some(route) = resolve_host_route(&path, host, &state.index)? {
+        return dispatch_resolved_route(state, req, request_id, &path, route).await;
+    }
+
     if let Some(shell) =
         resolve_shell_worker(req.method().as_str(), &path, req.headers(), &state.index)
     {
@@ -147,10 +155,20 @@ async fn handle_request(
 
     let route = resolve_route(&path, None, &state.index)?;
 
+    dispatch_resolved_route(state, req, request_id, &path, route).await
+}
+
+async fn dispatch_resolved_route(
+    state: &OrchestratorState,
+    req: Request<Body>,
+    request_id: String,
+    path: &str,
+    route: ResolvedRoute,
+) -> Result<Response<Body>, CoreError> {
     match route {
         ResolvedRoute::Reserved { kind } => handle_reserved(kind),
         ResolvedRoute::PluginBase { .. } => {
-            let principal = state.auth.authorize(&path, req.headers(), None, None)?;
+            let principal = state.auth.authorize(path, req.headers(), None, None)?;
             dispatch_plugin_stub(principal)
         }
         ResolvedRoute::HomepageFallback { worker } => {
@@ -159,14 +177,14 @@ async fn handle_request(
                 None
             } else {
                 state.auth.authorize(
-                    &path,
+                    path,
                     req.headers(),
                     worker.config.public_routes.as_ref(),
                     worker.namespace.as_deref(),
                 )?
             };
             let skip_hooks = public_worker
-                || should_skip_hooks(&path, &state.auth, worker.config.public_routes.as_ref());
+                || should_skip_hooks(path, &state.auth, worker.config.public_routes.as_ref());
             dispatch_worker(
                 state,
                 req,
@@ -191,14 +209,14 @@ async fn handle_request(
                 None
             } else {
                 state.auth.authorize(
-                    &path,
+                    path,
                     req.headers(),
                     worker.config.public_routes.as_ref(),
                     worker.namespace.as_deref(),
                 )?
             };
             let skip_hooks = public_worker
-                || should_skip_hooks(&path, &state.auth, worker.config.public_routes.as_ref());
+                || should_skip_hooks(path, &state.auth, worker.config.public_routes.as_ref());
             dispatch_worker(
                 state,
                 req,

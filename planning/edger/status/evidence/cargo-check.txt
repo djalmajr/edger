@@ -1,1 +1,11 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.24s
+    Checking edger-core v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-core)
+    Checking edger-ext-keyval v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-ext-keyval)
+    Checking edger-ext-auth v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-ext-auth)
+    Checking edger-ext-turso v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-ext-turso)
+    Checking edger-ext-turso-remote v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-ext-turso-remote)
+    Checking edger-isolation v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-isolation)
+    Checking edger-worker v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-worker)
+    Checking edger-ext-gateway v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-ext-gateway)
+    Checking edger-orchestrator v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-orchestrator)
+    Checking edger-mcp v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-mcp)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.91s

@@ -3,7 +3,9 @@
 use std::path::PathBuf;
 
 use edger_core::WorkerManifest;
-use edger_orchestrator::{resolve_route, ManifestIndex, ReservedPath, ResolvedRoute};
+use edger_orchestrator::{
+    resolve_host_route, resolve_route, ManifestIndex, ReservedPath, ResolvedRoute,
+};
 
 fn manifest(name: &str, version: &str) -> WorkerManifest {
     WorkerManifest {
@@ -55,6 +57,15 @@ fn plugin_manifest(name: &str, base: &str) -> WorkerManifest {
         name: name.into(),
         version: Some("1.0.0".into()),
         base: Some(base.into()),
+        ..Default::default()
+    }
+}
+
+fn host_manifest(name: &str, version: &str, hosts: Vec<&str>) -> WorkerManifest {
+    WorkerManifest {
+        name: name.into(),
+        version: Some(version.into()),
+        hosts: hosts.into_iter().map(String::from).collect(),
         ..Default::default()
     }
 }
@@ -174,6 +185,82 @@ fn namespaced_semver_range_picks_highest_matching_version() {
         }
         other => panic!("expected worker, got {other:?}"),
     }
+}
+
+#[test]
+fn known_host_resolves_to_configured_worker_before_path_routing() {
+    let mut index = build_index();
+    index
+        .insert(
+            PathBuf::from("/workers/hosted"),
+            host_manifest("@acme/hosted", "2.0.0", vec!["App.Example.test:19080"]),
+        )
+        .unwrap();
+
+    let route = resolve_host_route("/dashboard", Some("app.example.test:19080"), &index)
+        .unwrap()
+        .expect("host route");
+    match route {
+        ResolvedRoute::Worker {
+            worker,
+            rewritten_path,
+            ..
+        } => {
+            assert_eq!(worker.name, "@acme/hosted");
+            assert_eq!(worker.version, "2.0.0");
+            assert_eq!(rewritten_path, "/dashboard");
+        }
+        other => panic!("expected worker, got {other:?}"),
+    }
+}
+
+#[test]
+fn unknown_host_keeps_existing_path_fallback() {
+    let index = build_index();
+    let host_route = resolve_host_route("/hello", Some("unknown.example.test"), &index).unwrap();
+    assert_eq!(host_route, None);
+
+    let route = resolve_route("/hello", None, &index).unwrap();
+    match route {
+        ResolvedRoute::Worker { worker, .. } => assert_eq!(worker.name, "hello"),
+        other => panic!("expected worker, got {other:?}"),
+    }
+}
+
+#[test]
+fn reserved_path_wins_over_known_host() {
+    let mut index = build_index();
+    index
+        .insert(
+            PathBuf::from("/workers/hosted"),
+            host_manifest("hosted", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+
+    let route = resolve_host_route("/api/admin/session", Some("app.example.test"), &index)
+        .unwrap()
+        .expect("reserved route");
+    assert_eq!(
+        route,
+        ResolvedRoute::Reserved {
+            kind: ReservedPath::Api
+        }
+    );
+}
+
+#[test]
+fn disabled_host_worker_is_not_resolved_by_host_alias() {
+    let mut index = build_index();
+    index
+        .insert(
+            PathBuf::from("/workers/hosted"),
+            host_manifest("hosted", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+    index.set_worker_enabled("hosted", false).unwrap();
+
+    let route = resolve_host_route("/", Some("app.example.test"), &index).unwrap();
+    assert_eq!(route, None);
 }
 
 #[test]
@@ -307,6 +394,24 @@ fn collision_on_duplicate_insert() {
         .unwrap();
     let err = index
         .insert(PathBuf::from("/w/b"), manifest("dup", "1.0.0"))
+        .unwrap_err();
+    assert_eq!(err.code, "COLLISION");
+}
+
+#[test]
+fn duplicate_host_alias_is_a_collision() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/w/a"),
+            host_manifest("a", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+    let err = index
+        .insert(
+            PathBuf::from("/w/b"),
+            host_manifest("b", "1.0.0", vec!["APP.example.test."]),
+        )
         .unwrap_err();
     assert_eq!(err.code, "COLLISION");
 }

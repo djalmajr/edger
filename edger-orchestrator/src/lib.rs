@@ -29,7 +29,9 @@ pub use manifest_loader::{load_manifests_from_dirs, parse_runtime_worker_dirs};
 pub use metrics::pool_metrics_prometheus;
 pub use pipeline::{build_pipeline, OrchestratorState};
 pub use registry::{collect_extensions, ExtensionRegistry};
-pub use router::{resolve_route, PathParser, PluginRef, ReservedPath, ResolvedRoute};
+pub use router::{
+    resolve_host_route, resolve_route, PathParser, PluginRef, ReservedPath, ResolvedRoute,
+};
 pub use security::validate_admin_mutation_security;
 pub use server::{port_from_env, router, serve, ServerConfig, ServerState};
 pub use service_bindings::{resolve_service_bindings, SERVICE_BINDINGS_HEADER};

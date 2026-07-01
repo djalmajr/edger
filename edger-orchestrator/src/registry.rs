@@ -808,6 +808,7 @@ fn admin_extension_manifest(
             }
             ExtensionCapability::ApiKeys
             | ExtensionCapability::AuthProvider
+            | ExtensionCapability::HostRouting
             | ExtensionCapability::Middleware
             | ExtensionCapability::ServiceProvider { .. }
             | ExtensionCapability::WorkerHandler => {

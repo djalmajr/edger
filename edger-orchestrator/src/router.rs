@@ -3,6 +3,7 @@
 //! Mapping table (Buntime -> Rust):
 //! - `/health`, `/ready` -> `Reserved`
 //! - `/api`, `/.well-known/*` -> `Reserved`
+//! - exact `Host` alias -> `Worker` before shell fallback
 //! - plugin `base` prefix -> `PluginBase` (longest match wins)
 //! - `/name`, `/name@ver`, `/@scope/name`, `/@scope/name@ver` -> `Worker`
 //! - `/` or unknown path -> `HomepageFallback` when configured
@@ -171,6 +172,32 @@ pub fn resolve_route(
         },
         Err(err) => Err(err),
     }
+}
+
+/// Resolve exact vhost mappings before shell fallback while preserving reserved paths.
+pub fn resolve_host_route(
+    path: &str,
+    host: Option<&str>,
+    index: &ManifestIndex,
+) -> Result<Option<ResolvedRoute>, CoreError> {
+    let normalized = normalize_path(path);
+
+    if let Some(kind) = reserved_kind(&normalized) {
+        return Ok(Some(ResolvedRoute::Reserved { kind }));
+    }
+
+    let Some(host) = host else {
+        return Ok(None);
+    };
+    let Some(worker) = index.worker_for_host(host) else {
+        return Ok(None);
+    };
+
+    Ok(Some(ResolvedRoute::Worker {
+        kind_hint: worker.kind.clone(),
+        rewritten_path: normalized,
+        worker,
+    }))
 }
 
 #[cfg(test)]

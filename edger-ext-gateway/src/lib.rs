@@ -1041,6 +1041,7 @@ impl Extension for GatewayExtension {
             ExtensionCapability::MenuContribution {
                 name: "Gateway".into(),
             },
+            ExtensionCapability::HostRouting,
             ExtensionCapability::Middleware,
             ExtensionCapability::RequestHook,
             ExtensionCapability::ResponseHook,

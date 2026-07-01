@@ -736,6 +736,28 @@ O `edger-ext-gateway` também aplica políticas de borda locais:
   timeout local, remove `Authorization`, cookies e headers hop-by-hop antes do
   upstream e registra `proxied`/`proxyErrors` em diagnostics. Alvos externos
   continuam bloqueados nesta fatia.
+* Vhosts/host routing local: um worker pode declarar `hosts` no manifesto para
+  receber requests por `Host` exato antes do shell fallback. O runtime normaliza
+  host para lowercase, ignora porta no match e rejeita aliases com wildcard,
+  caminho, esquema ou whitespace. Paths reservados (`/api`, `/health`, `/ready`,
+  `/.well-known`) continuam protegidos mesmo quando o host é conhecido.
++
+[source,yaml]
+----
+name: "@acme/hosted-app"
+version: "1.0.0"
+entrypoint: index.ts
+kind: fetch
+hosts:
+  - app.example.test
+----
++
+[source,bash]
+----
+curl -H 'authorization: Bearer test-root' \
+  -H 'host: app.example.test:19080' \
+  http://127.0.0.1:19080/dashboard
+----
 * Rate limit local em memória: quando configurado, o gateway mantém um token
   bucket por cliente (`X-Forwarded-For`, depois `X-Real-IP`, senão `unknown`) e
   bloqueia excesso com `429`, `x-ratelimit-limit`,
@@ -780,8 +802,8 @@ agregadas do rate limit local (`enabled`, `activeBuckets`, `maxRequests`,
 endpoints exigem credencial root e são somente leitura.
 
 Proxy para alvos externos, cache, rate-limit persistente/distribuído,
-listagem/reset de buckets, mutações dinâmicas de gateway, SSE, vhosts e
-excludes dinâmicos ficam fora do v1. Histórico persistente já existe como
+listagem/reset de buckets, mutações dinâmicas de gateway, SSE, wildcard vhosts,
+DNS/certificados e excludes dinâmicos ficam fora do v1. Histórico persistente já existe como
 capacidade de composição e prova de contrato, mas ainda não tem wiring
 operacional próprio no binário.
 

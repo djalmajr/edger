@@ -291,7 +291,13 @@ async fn root_lists_operational_extension_inventory_for_middleware_and_provider(
         .is_some_and(|value| !value.is_empty()));
     assert_eq!(
         gateway["capabilities"],
-        serde_json::json!(["menu:Gateway", "middleware", "onRequest", "onResponse"])
+        serde_json::json!([
+            "hostRouting",
+            "menu:Gateway",
+            "middleware",
+            "onRequest",
+            "onResponse"
+        ])
     );
     assert_eq!(
         gateway["manifest"],
@@ -303,7 +309,7 @@ async fn root_lists_operational_extension_inventory_for_middleware_and_provider(
             },
             "hooks": ["onRequest", "onResponse"],
             "menus": [{"name": "Gateway"}],
-            "provides": ["middleware"],
+            "provides": ["hostRouting", "middleware"],
             "requirements": []
         })
     );
@@ -427,7 +433,7 @@ async fn local_extension_validation_contract_reports_manifest_status_diagnostics
     );
     assert_eq!(
         gateway["manifest"]["provides"],
-        serde_json::json!(["middleware"])
+        serde_json::json!(["hostRouting", "middleware"])
     );
     assert_eq!(
         gateway["manifest"]["menus"],

@@ -107,6 +107,7 @@ fn middleware_manifest_groups_gateway_hooks_and_safe_config() {
     assert_eq!(
         gateway.capabilities,
         vec![
+            "hostRouting".to_string(),
             "menu:Gateway".to_string(),
             "middleware".to_string(),
             "onRequest".to_string(),
@@ -118,7 +119,10 @@ fn middleware_manifest_groups_gateway_hooks_and_safe_config() {
         vec!["onRequest".to_string(), "onResponse".to_string()]
     );
     assert_eq!(gateway.manifest.menus[0].name, "Gateway");
-    assert_eq!(gateway.manifest.provides, vec!["middleware".to_string()]);
+    assert_eq!(
+        gateway.manifest.provides,
+        vec!["hostRouting".to_string(), "middleware".to_string()]
+    );
     assert_eq!(gateway.manifest.requirements, Vec::<String>::new());
     assert_eq!(gateway.manifest.config.keys, Vec::<String>::new());
     assert!(gateway.manifest.config.redacted);
