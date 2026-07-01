@@ -792,6 +792,7 @@ dependencies = [
  "edger-core",
  "edger-ext-turso-remote",
  "serde_json",
+ "sha2",
  "tempfile",
  "tracing",
 ]

@@ -429,7 +429,11 @@ fn gateway_rate_limit_metrics_response(diagnostics: &Value) -> Result<Value, Cor
             "gateway rate limit metrics unavailable",
         ));
     };
-    metrics.insert("scope".into(), Value::String("local-memory".into()));
+    let scope = match metrics.get("mode").and_then(Value::as_str) {
+        Some("persistent") => "persistent-durable-sql",
+        _ => "local-memory",
+    };
+    metrics.insert("scope".into(), Value::String(scope.into()));
     Ok(Value::Object(metrics))
 }
 

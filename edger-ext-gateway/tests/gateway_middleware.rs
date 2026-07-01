@@ -10,8 +10,8 @@ use edger_core::{
     SerializedResponse, StateValue,
 };
 use edger_ext_gateway::{
-    GatewayCorsConfig, GatewayExtension, GatewayProxyRule, GatewayRateLimitConfig,
-    GatewayRedirectRule,
+    GatewayCacheConfig, GatewayCorsConfig, GatewayExtension, GatewayProxyRule,
+    GatewayRateLimitConfig, GatewayRedirectRule,
 };
 use edger_ext_turso_remote::RemoteTursoProvider;
 
@@ -553,6 +553,272 @@ fn persistent_history_uses_external_durable_sql_provider() {
     assert!(!persisted.contains("should-not-leak"));
     assert!(!persisted.contains("accepted"));
     assert!(!persisted.contains("should-not-persist"));
+}
+
+#[test]
+fn durable_cache_records_hit_miss_and_redacts_cache_key() {
+    let temp = tempfile::tempdir().unwrap();
+    let sql = Arc::new(
+        RemoteTursoProvider::new_local_for_tests(vec![(
+            "@gateway".to_string(),
+            temp.path().join("gateway-cache.db"),
+        )])
+        .unwrap(),
+    );
+    let ext = GatewayExtension::new().with_cache_store(
+        GatewayCacheConfig::new(60),
+        sql.clone(),
+        "@gateway",
+    );
+    let mut first = SerializedRequest {
+        method: "GET".into(),
+        uri: "/public?token=should-not-persist".into(),
+        headers: vec![("host".into(), "App.Example.Test:19080".into())],
+        body: None,
+        request_id: "gw-cache-1".into(),
+        base_href: None,
+    };
+    let mut first_response = SerializedResponse {
+        status: 200,
+        headers: vec![("content-type".into(), "text/plain".into())],
+        body: Some(b"cached-public".to_vec().into()),
+    };
+    let mut second = first.clone();
+    second.request_id = "gw-cache-2".into();
+
+    assert!(ext
+        .on_request(&mut first, &RequestContext::new("gw-cache-1"))
+        .unwrap()
+        .is_none());
+    ext.on_response(&mut first_response, &RequestContext::new("gw-cache-1"));
+    assert!(first_response
+        .headers
+        .contains(&("x-edger-cache".into(), "miss".into())));
+
+    let cached = ext
+        .on_request(&mut second, &RequestContext::new("gw-cache-2"))
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(cached.status, 200);
+    assert_eq!(cached.body.as_deref(), Some(&b"cached-public"[..]));
+    assert!(cached
+        .headers
+        .contains(&("x-edger-cache".into(), "hit".into())));
+
+    let diagnostics = ext.diagnostics().unwrap();
+    assert_eq!(diagnostics["cache"]["enabled"], true);
+    assert_eq!(diagnostics["cache"]["hits"], 1);
+    assert_eq!(diagnostics["cache"]["misses"], 1);
+    assert_eq!(diagnostics["cache"]["writes"], 1);
+    assert_eq!(diagnostics["cache"]["activeEntries"], 1);
+    assert_eq!(diagnostics["requests"]["cacheHit"], 1);
+    assert_eq!(diagnostics["recentDecisions"][1]["decision"], "cache_hit");
+
+    let rows = sql
+        .query(
+            "@gateway",
+            "select cache_key, headers_json, body from gateway_cache_entries",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let StateValue::Text(cache_key) = &rows[0].values[0] else {
+        panic!("cache key should be stored as text");
+    };
+    assert_eq!(cache_key.len(), 64);
+    assert!(!cache_key.contains("public"));
+    assert!(!cache_key.contains("should-not-persist"));
+
+    let persisted = format!("{:?}", rows);
+    assert!(!persisted.contains("App.Example.Test"));
+    assert!(!persisted.contains("should-not-persist"));
+}
+
+#[test]
+fn durable_cache_ttl_expiry_is_observable() {
+    let temp = tempfile::tempdir().unwrap();
+    let sql = Arc::new(
+        RemoteTursoProvider::new_local_for_tests(vec![(
+            "@gateway".to_string(),
+            temp.path().join("gateway-cache-ttl.db"),
+        )])
+        .unwrap(),
+    );
+    let ext = GatewayExtension::new().with_cache_store(
+        GatewayCacheConfig::new(0),
+        sql.clone(),
+        "@gateway",
+    );
+    let mut first = SerializedRequest {
+        method: "GET".into(),
+        uri: "/ttl".into(),
+        headers: vec![("host".into(), "app.example.test".into())],
+        body: None,
+        request_id: "gw-cache-ttl-1".into(),
+        base_href: None,
+    };
+    let mut response = SerializedResponse {
+        status: 200,
+        headers: vec![],
+        body: Some(b"expires".to_vec().into()),
+    };
+    let mut second = first.clone();
+    second.request_id = "gw-cache-ttl-2".into();
+
+    assert!(ext
+        .on_request(&mut first, &RequestContext::new("gw-cache-ttl-1"))
+        .unwrap()
+        .is_none());
+    ext.on_response(&mut response, &RequestContext::new("gw-cache-ttl-1"));
+    assert!(ext
+        .on_request(&mut second, &RequestContext::new("gw-cache-ttl-2"))
+        .unwrap()
+        .is_none());
+
+    let diagnostics = ext.diagnostics().unwrap();
+    assert_eq!(diagnostics["cache"]["misses"], 2);
+    assert_eq!(diagnostics["cache"]["expired"], 1);
+    assert_eq!(diagnostics["cache"]["activeEntries"], 0);
+}
+
+#[test]
+fn durable_cache_skips_sensitive_requests() {
+    let temp = tempfile::tempdir().unwrap();
+    let sql = Arc::new(
+        RemoteTursoProvider::new_local_for_tests(vec![(
+            "@gateway".to_string(),
+            temp.path().join("gateway-cache-sensitive.db"),
+        )])
+        .unwrap(),
+    );
+    let ext =
+        GatewayExtension::new().with_cache_store(GatewayCacheConfig::new(60), sql, "@gateway");
+    let mut req = SerializedRequest {
+        method: "GET".into(),
+        uri: "/private".into(),
+        headers: vec![("authorization".into(), "Bearer should-not-cache".into())],
+        body: None,
+        request_id: "gw-cache-sensitive".into(),
+        base_href: None,
+    };
+    let mut response = SerializedResponse {
+        status: 200,
+        headers: vec![],
+        body: Some(b"private".to_vec().into()),
+    };
+
+    assert!(ext
+        .on_request(&mut req, &RequestContext::new("gw-cache-sensitive"))
+        .unwrap()
+        .is_none());
+    ext.on_response(&mut response, &RequestContext::new("gw-cache-sensitive"));
+
+    let diagnostics = ext.diagnostics().unwrap();
+    assert_eq!(diagnostics["cache"]["hits"], 0);
+    assert_eq!(diagnostics["cache"]["misses"], 0);
+    assert_eq!(diagnostics["cache"]["writes"], 0);
+    assert_eq!(diagnostics["cache"]["activeEntries"], 0);
+    assert!(response
+        .headers
+        .iter()
+        .all(|(name, _)| !name.eq_ignore_ascii_case("x-edger-cache")));
+}
+
+#[test]
+fn persistent_rate_limit_survives_gateway_reconstruction() {
+    let temp = tempfile::tempdir().unwrap();
+    let sql = Arc::new(
+        RemoteTursoProvider::new_local_for_tests(vec![(
+            "@gateway".to_string(),
+            temp.path().join("gateway-rate-limit.db"),
+        )])
+        .unwrap(),
+    );
+    let config = GatewayRateLimitConfig::new(1, 60).with_key_header("x-client-id");
+    let first_ext = GatewayExtension::new().with_persistent_rate_limit_store(
+        config.clone(),
+        sql.clone(),
+        "@gateway",
+    );
+    let second_ext =
+        GatewayExtension::new().with_persistent_rate_limit_store(config, sql.clone(), "@gateway");
+    let mut first = SerializedRequest {
+        method: "GET".into(),
+        uri: "/api/users".into(),
+        headers: vec![("x-client-id".into(), "team-a".into())],
+        body: None,
+        request_id: "gw-persistent-rl-1".into(),
+        base_href: None,
+    };
+    let mut second = first.clone();
+    second.request_id = "gw-persistent-rl-2".into();
+
+    assert!(first_ext
+        .on_request(&mut first, &RequestContext::new("gw-persistent-rl-1"))
+        .unwrap()
+        .is_none());
+
+    let blocked = second_ext
+        .on_request(&mut second, &RequestContext::new("gw-persistent-rl-2"))
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(blocked.status, 429);
+    assert!(blocked
+        .headers
+        .contains(&("x-ratelimit-limit".into(), "1".into())));
+    assert!(blocked
+        .headers
+        .contains(&("x-ratelimit-remaining".into(), "0".into())));
+
+    let diagnostics = second_ext.diagnostics().unwrap();
+    assert_eq!(diagnostics["rateLimit"]["enabled"], true);
+    assert_eq!(diagnostics["rateLimit"]["mode"], "persistent");
+    assert_eq!(diagnostics["rateLimit"]["activeBuckets"], 1);
+
+    let rows = sql
+        .query(
+            "@gateway",
+            "select bucket_key, request_count from gateway_rate_limit_buckets",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].values[1], StateValue::Integer(1));
+    let persisted = format!("{:?}", rows);
+    assert!(!persisted.contains("team-a"));
+}
+
+#[test]
+fn memory_rate_limit_remains_local_without_provider() {
+    let config = GatewayRateLimitConfig::new(1, 60).with_key_header("x-client-id");
+    let first_ext = GatewayExtension::new().with_rate_limit(config.clone());
+    let second_ext = GatewayExtension::new().with_rate_limit(config);
+    let mut first = SerializedRequest {
+        method: "GET".into(),
+        uri: "/api/users".into(),
+        headers: vec![("x-client-id".into(), "team-a".into())],
+        body: None,
+        request_id: "gw-memory-rl-1".into(),
+        base_href: None,
+    };
+    let mut second = first.clone();
+    second.request_id = "gw-memory-rl-2".into();
+
+    assert!(first_ext
+        .on_request(&mut first, &RequestContext::new("gw-memory-rl-1"))
+        .unwrap()
+        .is_none());
+    assert!(second_ext
+        .on_request(&mut second, &RequestContext::new("gw-memory-rl-2"))
+        .unwrap()
+        .is_none());
+
+    let diagnostics = second_ext.diagnostics().unwrap();
+    assert_eq!(diagnostics["rateLimit"]["enabled"], true);
+    assert_eq!(diagnostics["rateLimit"]["mode"], "memory");
+    assert_eq!(diagnostics["rateLimit"]["activeBuckets"], 1);
 }
 
 #[test]

@@ -16,6 +16,7 @@ use edger_core::{
     RequestContext, SerializedRequest, SerializedResponse, StateValue,
 };
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tracing::trace;
 
 const GATEWAY_TEST_HEADER: &str = "x-gateway-test";
@@ -26,6 +27,9 @@ const RATE_LIMIT_LIMIT_HEADER: &str = "x-ratelimit-limit";
 const RATE_LIMIT_REMAINING_HEADER: &str = "x-ratelimit-remaining";
 const RETRY_AFTER_HEADER: &str = "retry-after";
 const GATEWAY_HISTORY_ERROR: &str = "GATEWAY_HISTORY_ERROR";
+const GATEWAY_CACHE_ERROR: &str = "GATEWAY_CACHE_ERROR";
+const GATEWAY_RATE_LIMIT_ERROR: &str = "GATEWAY_RATE_LIMIT_ERROR";
+const GATEWAY_CACHE_HEADER: &str = "x-edger-cache";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GatewayCorsConfig {
@@ -290,6 +294,17 @@ impl GatewayRateLimitConfig {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GatewayCacheConfig {
+    pub ttl_seconds: u64,
+}
+
+impl GatewayCacheConfig {
+    pub fn new(ttl_seconds: u64) -> Self {
+        Self { ttl_seconds }
+    }
+}
+
 #[derive(Debug)]
 struct GatewayRateLimit {
     buckets: Mutex<HashMap<String, RateLimitBucket>>,
@@ -327,6 +342,7 @@ struct RateLimitDecision {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct GatewayDecisionCounters {
+    cache_hit: u64,
     continued: u64,
     preflight: u64,
     proxied: u64,
@@ -490,6 +506,385 @@ impl GatewayHistoryStore {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct GatewayCacheStats {
+    expired: u64,
+    hits: u64,
+    misses: u64,
+    writes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GatewayCacheCandidate {
+    key: String,
+}
+
+struct GatewayCacheStore {
+    config: GatewayCacheConfig,
+    namespace: String,
+    sql: Arc<dyn DurableSqlProvider>,
+    stats: Mutex<GatewayCacheStats>,
+}
+
+impl GatewayCacheStore {
+    fn new(
+        config: GatewayCacheConfig,
+        sql: Arc<dyn DurableSqlProvider>,
+        namespace: impl Into<String>,
+    ) -> Self {
+        Self {
+            config,
+            namespace: namespace.into(),
+            sql,
+            stats: Mutex::new(GatewayCacheStats::default()),
+        }
+    }
+
+    fn ensure_schema(&self) -> Result<(), CoreError> {
+        self.sql.execute_batch(
+            &self.namespace,
+            r#"
+            create table if not exists gateway_cache_entries (
+                cache_key text primary key,
+                status integer not null,
+                headers_json text not null,
+                body blob,
+                expires_at_ms integer not null,
+                created_at_ms integer not null
+            );
+            create index if not exists idx_gateway_cache_entries_expires_at
+                on gateway_cache_entries(expires_at_ms);
+            "#,
+        )
+    }
+
+    fn lookup(&self, key: &str) -> Result<Option<SerializedResponse>, CoreError> {
+        self.ensure_schema()?;
+        let rows = self.sql.query(
+            &self.namespace,
+            r#"
+            select status, headers_json, body, expires_at_ms
+              from gateway_cache_entries
+             where cache_key = ?
+             limit 1
+            "#,
+            &[StateValue::Text(key.to_string())],
+        )?;
+        let Some(row) = rows.first() else {
+            self.record_miss(false);
+            return Ok(None);
+        };
+        let expires_at_ms = row_integer(row.values.get(3), GATEWAY_CACHE_ERROR)?;
+        if expires_at_ms <= now_millis() {
+            self.delete_key(key)?;
+            self.record_miss(true);
+            return Ok(None);
+        }
+
+        let status =
+            u16::try_from(row_integer(row.values.first(), GATEWAY_CACHE_ERROR)?).map_err(|_| {
+                CoreError::new(GATEWAY_CACHE_ERROR, "cached response status was invalid")
+            })?;
+        let headers_json = row_text(row.values.get(1), GATEWAY_CACHE_ERROR)?;
+        let headers =
+            serde_json::from_str::<Vec<(String, String)>>(&headers_json).map_err(|err| {
+                CoreError::new(
+                    GATEWAY_CACHE_ERROR,
+                    format!("cached response headers were invalid: {err}"),
+                )
+            })?;
+        let body = match row.values.get(2) {
+            Some(StateValue::Bytes(value)) => Some(value.clone().into()),
+            Some(StateValue::Null) | None => None,
+            _ => {
+                return Err(CoreError::new(
+                    GATEWAY_CACHE_ERROR,
+                    "cached response body was invalid",
+                ));
+            }
+        };
+        self.record_hit();
+        Ok(Some(SerializedResponse {
+            body,
+            headers,
+            status,
+        }))
+    }
+
+    fn store(
+        &self,
+        candidate: &GatewayCacheCandidate,
+        response: &SerializedResponse,
+    ) -> Result<bool, CoreError> {
+        if !Self::is_cacheable_response(response) {
+            return Ok(false);
+        }
+        self.ensure_schema()?;
+        let headers_json = serde_json::to_string(&response.headers).map_err(|err| {
+            CoreError::new(
+                GATEWAY_CACHE_ERROR,
+                format!("cached response headers could not be encoded: {err}"),
+            )
+        })?;
+        let now = now_millis();
+        let ttl_ms = self
+            .config
+            .ttl_seconds
+            .saturating_mul(1_000)
+            .min(i64::MAX as u64) as i64;
+        let expires_at = now.saturating_add(ttl_ms);
+        let body = response
+            .body
+            .as_ref()
+            .map(|body| StateValue::Bytes(body.to_vec()))
+            .unwrap_or(StateValue::Null);
+        self.sql.execute(
+            &self.namespace,
+            r#"
+            insert into gateway_cache_entries (
+                cache_key,
+                status,
+                headers_json,
+                body,
+                expires_at_ms,
+                created_at_ms
+            ) values (?, ?, ?, ?, ?, ?)
+            on conflict(cache_key) do update set
+                status = excluded.status,
+                headers_json = excluded.headers_json,
+                body = excluded.body,
+                expires_at_ms = excluded.expires_at_ms,
+                created_at_ms = excluded.created_at_ms
+            "#,
+            &[
+                StateValue::Text(candidate.key.clone()),
+                StateValue::Integer(i64::from(response.status)),
+                StateValue::Text(headers_json),
+                body,
+                StateValue::Integer(expires_at),
+                StateValue::Integer(now),
+            ],
+        )?;
+        if let Ok(mut stats) = self.stats.lock() {
+            stats.writes = stats.writes.saturating_add(1);
+        }
+        Ok(true)
+    }
+
+    fn active_entry_count(&self) -> Result<u64, CoreError> {
+        self.ensure_schema()?;
+        let rows = self.sql.query(
+            &self.namespace,
+            "select count(*) as total from gateway_cache_entries where expires_at_ms > ?",
+            &[StateValue::Integer(now_millis())],
+        )?;
+        let Some(row) = rows.first() else {
+            return Err(CoreError::new(
+                GATEWAY_CACHE_ERROR,
+                "gateway cache count returned no rows",
+            ));
+        };
+        let total = row_integer(row.values.first(), GATEWAY_CACHE_ERROR)?;
+        u64::try_from(total).map_err(|_| {
+            CoreError::new(
+                GATEWAY_CACHE_ERROR,
+                "gateway cache count returned a negative value",
+            )
+        })
+    }
+
+    fn delete_key(&self, key: &str) -> Result<(), CoreError> {
+        self.sql.execute(
+            &self.namespace,
+            "delete from gateway_cache_entries where cache_key = ?",
+            &[StateValue::Text(key.to_string())],
+        )?;
+        Ok(())
+    }
+
+    fn stats(&self) -> GatewayCacheStats {
+        self.stats
+            .lock()
+            .map(|stats| stats.clone())
+            .unwrap_or_default()
+    }
+
+    fn record_hit(&self) {
+        if let Ok(mut stats) = self.stats.lock() {
+            stats.hits = stats.hits.saturating_add(1);
+        }
+    }
+
+    fn record_miss(&self, expired: bool) {
+        if let Ok(mut stats) = self.stats.lock() {
+            stats.misses = stats.misses.saturating_add(1);
+            if expired {
+                stats.expired = stats.expired.saturating_add(1);
+            }
+        }
+    }
+
+    fn is_cacheable_response(response: &SerializedResponse) -> bool {
+        if response.status != 200 {
+            return false;
+        }
+        !response.headers.iter().any(|(name, value)| {
+            let name = name.to_ascii_lowercase();
+            let value = value.to_ascii_lowercase();
+            name == "set-cookie"
+                || (name == "cache-control"
+                    && (value.contains("no-store") || value.contains("private")))
+        })
+    }
+}
+
+struct GatewayPersistentRateLimitStore {
+    config: GatewayRateLimitConfig,
+    namespace: String,
+    sql: Arc<dyn DurableSqlProvider>,
+}
+
+impl GatewayPersistentRateLimitStore {
+    fn new(
+        config: GatewayRateLimitConfig,
+        sql: Arc<dyn DurableSqlProvider>,
+        namespace: impl Into<String>,
+    ) -> Self {
+        Self {
+            config,
+            namespace: namespace.into(),
+            sql,
+        }
+    }
+
+    fn ensure_schema(&self) -> Result<(), CoreError> {
+        self.sql.execute_batch(
+            &self.namespace,
+            r#"
+            create table if not exists gateway_rate_limit_buckets (
+                bucket_key text primary key,
+                window_start_ms integer not null,
+                request_count integer not null,
+                updated_at_ms integer not null
+            );
+            create index if not exists idx_gateway_rate_limit_buckets_window
+                on gateway_rate_limit_buckets(window_start_ms);
+            "#,
+        )
+    }
+
+    fn decide(&self, raw_key: &str) -> Result<RateLimitDecision, CoreError> {
+        self.ensure_schema()?;
+        let key = hash_with_prefix("edger-gateway-rate-limit-v1:", raw_key);
+        let now = now_millis();
+        let window_ms = self.window_ms();
+        let rows = self.sql.query(
+            &self.namespace,
+            r#"
+            select window_start_ms, request_count
+              from gateway_rate_limit_buckets
+             where bucket_key = ?
+             limit 1
+            "#,
+            &[StateValue::Text(key.clone())],
+        )?;
+        let capacity = i64::from(self.config.max_requests);
+        let (window_start, count) = rows
+            .first()
+            .map(|row| {
+                Ok((
+                    row_integer(row.values.first(), GATEWAY_RATE_LIMIT_ERROR)?,
+                    row_integer(row.values.get(1), GATEWAY_RATE_LIMIT_ERROR)?,
+                ))
+            })
+            .transpose()?
+            .filter(|(window_start, _)| now.saturating_sub(*window_start) < window_ms)
+            .unwrap_or((now, 0));
+
+        if count >= capacity {
+            let retry_after_seconds = window_start
+                .saturating_add(window_ms)
+                .saturating_sub(now)
+                .saturating_add(999)
+                / 1_000;
+            return Ok(RateLimitDecision {
+                allowed: false,
+                remaining: 0,
+                retry_after_seconds: u64::try_from(retry_after_seconds.max(1)).unwrap_or(1),
+            });
+        }
+
+        let next_count = count.saturating_add(1);
+        self.write_bucket(&key, window_start, next_count, now)?;
+        Ok(RateLimitDecision {
+            allowed: true,
+            remaining: u32::try_from((capacity - next_count).max(0)).unwrap_or(0),
+            retry_after_seconds: 0,
+        })
+    }
+
+    fn active_bucket_count(&self) -> Result<u64, CoreError> {
+        self.ensure_schema()?;
+        let oldest_active = now_millis().saturating_sub(self.window_ms());
+        let rows = self.sql.query(
+            &self.namespace,
+            "select count(*) as total from gateway_rate_limit_buckets where window_start_ms >= ?",
+            &[StateValue::Integer(oldest_active)],
+        )?;
+        let Some(row) = rows.first() else {
+            return Err(CoreError::new(
+                GATEWAY_RATE_LIMIT_ERROR,
+                "gateway rate limit count returned no rows",
+            ));
+        };
+        let total = row_integer(row.values.first(), GATEWAY_RATE_LIMIT_ERROR)?;
+        u64::try_from(total).map_err(|_| {
+            CoreError::new(
+                GATEWAY_RATE_LIMIT_ERROR,
+                "gateway rate limit count returned a negative value",
+            )
+        })
+    }
+
+    fn write_bucket(
+        &self,
+        key: &str,
+        window_start: i64,
+        count: i64,
+        updated_at: i64,
+    ) -> Result<(), CoreError> {
+        self.sql.execute(
+            &self.namespace,
+            r#"
+            insert into gateway_rate_limit_buckets (
+                bucket_key,
+                window_start_ms,
+                request_count,
+                updated_at_ms
+            ) values (?, ?, ?, ?)
+            on conflict(bucket_key) do update set
+                window_start_ms = excluded.window_start_ms,
+                request_count = excluded.request_count,
+                updated_at_ms = excluded.updated_at_ms
+            "#,
+            &[
+                StateValue::Text(key.to_string()),
+                StateValue::Integer(window_start),
+                StateValue::Integer(count),
+                StateValue::Integer(updated_at),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn window_ms(&self) -> i64 {
+        self.config
+            .window_seconds
+            .saturating_mul(1_000)
+            .min(i64::MAX as u64) as i64
+    }
+}
+
 #[derive(Debug)]
 struct GatewayDiagnostics {
     capacity: usize,
@@ -512,6 +907,7 @@ impl GatewayDiagnostics {
         if let Ok(mut counters) = self.counters.lock() {
             counters.total = counters.total.saturating_add(1);
             match entry.decision {
+                "cache_hit" => counters.cache_hit = counters.cache_hit.saturating_add(1),
                 "continue" => counters.continued = counters.continued.saturating_add(1),
                 "preflight" => counters.preflight = counters.preflight.saturating_add(1),
                 "proxy" => counters.proxied = counters.proxied.saturating_add(1),
@@ -548,8 +944,9 @@ impl GatewayDiagnostics {
     fn snapshot(
         &self,
         cors: &GatewayCorsConfig,
+        cache: Value,
         history: Value,
-        rate_limit: Option<&GatewayRateLimit>,
+        rate_limit: Value,
         proxy_rule_count: usize,
         redirect_rule_count: usize,
     ) -> Value {
@@ -569,24 +966,9 @@ impl GatewayDiagnostics {
             })
             .unwrap_or_default();
 
-        let rate_limit = rate_limit
-            .map(|rate_limit| {
-                json!({
-                    "activeBuckets": rate_limit.active_bucket_count(),
-                    "enabled": true,
-                    "maxRequests": rate_limit.config.max_requests,
-                    "windowSeconds": rate_limit.config.window_seconds,
-                })
-            })
-            .unwrap_or_else(|| {
-                json!({
-                    "activeBuckets": 0,
-                    "enabled": false,
-                })
-            });
-
         json!({
             "config": {
+                "cache": cache.clone(),
                 "cors": {
                     "allowedHeaders": &cors.allowed_headers,
                     "maxAgeSeconds": cors.max_age_seconds,
@@ -602,10 +984,12 @@ impl GatewayDiagnostics {
                     "count": redirect_rule_count,
                 },
             },
+            "cache": cache,
             "history": history,
             "rateLimit": rate_limit,
             "recentDecisions": recent_decisions,
             "requests": {
+                "cacheHit": counters.cache_hit,
                 "continued": counters.continued,
                 "preflight": counters.preflight,
                 "proxied": counters.proxied,
@@ -723,13 +1107,52 @@ fn optional_u64(value: Option<u64>) -> StateValue {
         .unwrap_or(StateValue::Null)
 }
 
+fn row_integer(value: Option<&StateValue>, code: &str) -> Result<i64, CoreError> {
+    match value {
+        Some(StateValue::Integer(value)) => Ok(*value),
+        _ => Err(CoreError::new(
+            code,
+            "SQL row returned an unexpected integer value",
+        )),
+    }
+}
+
+fn row_text(value: Option<&StateValue>, code: &str) -> Result<String, CoreError> {
+    match value {
+        Some(StateValue::Text(value)) => Ok(value.clone()),
+        _ => Err(CoreError::new(
+            code,
+            "SQL row returned an unexpected text value",
+        )),
+    }
+}
+
+fn hash_with_prefix(prefix: &str, value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(prefix.as_bytes());
+    hasher.update(value.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn normalize_cache_host(host: &str) -> String {
+    host.trim()
+        .trim_end_matches('.')
+        .split(':')
+        .next()
+        .unwrap_or("no-host")
+        .to_ascii_lowercase()
+}
+
 /// Minimal gateway middleware — CORS plus deterministic redirect rules.
 pub struct GatewayExtension {
+    cache_store: Option<GatewayCacheStore>,
     cors: GatewayCorsConfig,
     diagnostics: GatewayDiagnostics,
     history_store: Option<GatewayHistoryStore>,
     prefix: String,
+    pending_cache: Mutex<HashMap<String, GatewayCacheCandidate>>,
     invocations: Arc<AtomicU32>,
+    persistent_rate_limit_store: Option<GatewayPersistentRateLimitStore>,
     rate_limit: Option<GatewayRateLimit>,
     proxy_rules: Vec<GatewayProxyRule>,
     redirect_rules: Vec<GatewayRedirectRule>,
@@ -742,11 +1165,14 @@ impl GatewayExtension {
 
     pub fn with_prefix(prefix: impl Into<String>) -> Self {
         Self {
+            cache_store: None,
             cors: GatewayCorsConfig::default(),
             diagnostics: GatewayDiagnostics::default(),
             history_store: None,
             prefix: prefix.into(),
+            pending_cache: Mutex::new(HashMap::new()),
             invocations: Arc::new(AtomicU32::new(0)),
+            persistent_rate_limit_store: None,
             rate_limit: None,
             proxy_rules: vec![],
             redirect_rules: vec![],
@@ -760,6 +1186,28 @@ impl GatewayExtension {
 
     pub fn with_rate_limit(mut self, config: GatewayRateLimitConfig) -> Self {
         self.rate_limit = Some(GatewayRateLimit::new(config));
+        self
+    }
+
+    pub fn with_persistent_rate_limit_store(
+        mut self,
+        config: GatewayRateLimitConfig,
+        sql: Arc<dyn DurableSqlProvider>,
+        namespace: impl Into<String>,
+    ) -> Self {
+        self.rate_limit = Some(GatewayRateLimit::new(config.clone()));
+        self.persistent_rate_limit_store =
+            Some(GatewayPersistentRateLimitStore::new(config, sql, namespace));
+        self
+    }
+
+    pub fn with_cache_store(
+        mut self,
+        config: GatewayCacheConfig,
+        sql: Arc<dyn DurableSqlProvider>,
+        namespace: impl Into<String>,
+    ) -> Self {
+        self.cache_store = Some(GatewayCacheStore::new(config, sql, namespace));
         self
     }
 
@@ -876,11 +1324,106 @@ impl GatewayExtension {
         Some(rule.forward(req))
     }
 
+    fn cache_response(
+        &self,
+        req: &SerializedRequest,
+    ) -> Result<Option<SerializedResponse>, CoreError> {
+        let Some(cache_store) = &self.cache_store else {
+            return Ok(None);
+        };
+        let Some(candidate) = Self::cache_candidate(req) else {
+            return Ok(None);
+        };
+        match cache_store.lookup(&candidate.key)? {
+            Some(mut response) => {
+                Self::set_header(&mut response.headers, GATEWAY_CACHE_HEADER, "hit".into());
+                for (name, value) in self.cors_headers(None) {
+                    Self::set_header(&mut response.headers, &name, value);
+                }
+                Ok(Some(response))
+            }
+            None => {
+                self.pending_cache
+                    .lock()
+                    .map_err(|_| {
+                        CoreError::new(GATEWAY_CACHE_ERROR, "gateway cache state poisoned")
+                    })?
+                    .insert(req.request_id.clone(), candidate);
+                Ok(None)
+            }
+        }
+    }
+
+    fn cache_candidate(req: &SerializedRequest) -> Option<GatewayCacheCandidate> {
+        if !matches!(req.method.to_ascii_uppercase().as_str(), "GET" | "HEAD") {
+            return None;
+        }
+        if req.headers.iter().any(|(name, _)| {
+            matches!(
+                name.to_ascii_lowercase().as_str(),
+                "authorization" | "cookie" | "proxy-authorization" | "x-api-key"
+            )
+        }) {
+            return None;
+        }
+        let host = Self::request_header(req, "host")
+            .map(normalize_cache_host)
+            .unwrap_or_else(|| "no-host".into());
+        let source = format!("{}|{}|{}", req.method.to_ascii_uppercase(), host, req.uri);
+        Some(GatewayCacheCandidate {
+            key: hash_with_prefix("edger-gateway-cache-v1:", &source),
+        })
+    }
+
+    fn store_cached_response(
+        &self,
+        candidate: &GatewayCacheCandidate,
+        response: &mut SerializedResponse,
+    ) {
+        let Some(cache_store) = &self.cache_store else {
+            return;
+        };
+        match cache_store.store(candidate, response) {
+            Ok(true) => {
+                Self::set_header(&mut response.headers, GATEWAY_CACHE_HEADER, "miss".into())
+            }
+            Ok(false) => {}
+            Err(error) => {
+                trace!(
+                    error_code = %error.code,
+                    extension = self.name(),
+                    "gateway cache write failed"
+                );
+            }
+        }
+    }
+
+    fn complete_pending_cache(&self, request_id: &str, response: &mut SerializedResponse) {
+        let candidate = self
+            .pending_cache
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(request_id));
+        if let Some(candidate) = candidate {
+            self.store_cached_response(&candidate, response);
+        }
+    }
+
+    fn discard_pending_cache(&self, request_id: &str) {
+        if let Ok(mut pending) = self.pending_cache.lock() {
+            pending.remove(request_id);
+        }
+    }
+
     fn rate_limit_response(&self, req: &SerializedRequest) -> Result<Option<SerializedResponse>> {
         let Some(rate_limit) = &self.rate_limit else {
             return Ok(None);
         };
-        let decision = Self::rate_limit_decision(rate_limit, req)?;
+        let decision = if let Some(store) = &self.persistent_rate_limit_store {
+            store.decide(&Self::rate_limit_key(&rate_limit.config, req))?
+        } else {
+            Self::rate_limit_decision(rate_limit, req)?
+        };
         if decision.allowed {
             return Ok(None);
         }
@@ -1027,6 +1570,64 @@ impl GatewayExtension {
             }),
         }
     }
+
+    fn cache_diagnostics(&self) -> Value {
+        let Some(cache_store) = &self.cache_store else {
+            return json!({
+                "activeEntries": 0,
+                "enabled": false,
+                "mode": "disabled",
+            });
+        };
+        let stats = cache_store.stats();
+        let active_entries = cache_store.active_entry_count();
+        let mut value = json!({
+            "enabled": true,
+            "expired": stats.expired,
+            "hits": stats.hits,
+            "misses": stats.misses,
+            "mode": "persistent",
+            "ttlSeconds": cache_store.config.ttl_seconds,
+            "writes": stats.writes,
+        });
+        match active_entries {
+            Ok(count) => value["activeEntries"] = json!(count),
+            Err(error) => value["errorCode"] = json!(error.code),
+        }
+        value
+    }
+
+    fn rate_limit_diagnostics(&self) -> Value {
+        let Some(rate_limit) = &self.rate_limit else {
+            return json!({
+                "activeBuckets": 0,
+                "enabled": false,
+                "mode": "disabled",
+            });
+        };
+        let mut value = json!({
+            "enabled": true,
+            "maxRequests": rate_limit.config.max_requests,
+            "mode": if self.persistent_rate_limit_store.is_some() {
+                "persistent"
+            } else {
+                "memory"
+            },
+            "windowSeconds": rate_limit.config.window_seconds,
+        });
+        if let Some(store) = &self.persistent_rate_limit_store {
+            match store.active_bucket_count() {
+                Ok(count) => value["activeBuckets"] = json!(count),
+                Err(error) => {
+                    value["activeBuckets"] = json!(0);
+                    value["errorCode"] = json!(error.code);
+                }
+            }
+        } else {
+            value["activeBuckets"] = json!(rate_limit.active_bucket_count());
+        }
+        value
+    }
 }
 
 impl Default for GatewayExtension {
@@ -1064,8 +1665,9 @@ impl Extension for GatewayExtension {
     fn diagnostics(&self) -> Option<Value> {
         Some(self.diagnostics.snapshot(
             &self.cors,
+            self.cache_diagnostics(),
             self.persistent_history_diagnostics(),
-            self.rate_limit.as_ref(),
+            self.rate_limit_diagnostics(),
             self.proxy_rules.len(),
             self.redirect_rules.len(),
         ))
@@ -1111,9 +1713,27 @@ impl Middleware for GatewayExtension {
             );
             return Ok(Some(response));
         }
+        if let Some(response) = self.cache_response(req)? {
+            self.record_decision(
+                req,
+                "cache_hit",
+                Some(response.status),
+                false,
+                Some(elapsed_ms(ctx.start)),
+            );
+            return Ok(Some(response));
+        }
         if let Some(response) = self.proxy_response(req) {
             match response {
-                Ok(response) => {
+                Ok(mut response) => {
+                    if let Some(candidate) = self
+                        .pending_cache
+                        .lock()
+                        .ok()
+                        .and_then(|mut pending| pending.remove(&req.request_id))
+                    {
+                        self.store_cached_response(&candidate, &mut response);
+                    }
                     self.record_decision(
                         req,
                         "proxy",
@@ -1124,6 +1744,7 @@ impl Middleware for GatewayExtension {
                     return Ok(Some(response));
                 }
                 Err(error) => {
+                    self.discard_pending_cache(&req.request_id);
                     let response = SerializedResponse {
                         body: Some(
                             json!({
@@ -1149,6 +1770,7 @@ impl Middleware for GatewayExtension {
             }
         }
         if let Some(response) = self.redirect_response(req) {
+            self.discard_pending_cache(&req.request_id);
             self.record_decision(
                 req,
                 "redirect",
@@ -1164,6 +1786,7 @@ impl Middleware for GatewayExtension {
 
     fn on_response(&self, res: &mut SerializedResponse, ctx: &RequestContext) {
         let duration_ms = elapsed_ms(ctx.start);
+        self.complete_pending_cache(&ctx.request_id, res);
         self.diagnostics
             .complete_response(&ctx.request_id, res.status, duration_ms);
         if let Some(history_store) = &self.history_store {

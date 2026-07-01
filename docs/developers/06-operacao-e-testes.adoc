@@ -758,20 +758,40 @@ curl -H 'authorization: Bearer test-root' \
   -H 'host: app.example.test:19080' \
   http://127.0.0.1:19080/dashboard
 ----
-* Rate limit local em memória: quando configurado, o gateway mantém um token
-  bucket por cliente (`X-Forwarded-For`, depois `X-Real-IP`, senão `unknown`) e
-  bloqueia excesso com `429`, `x-ratelimit-limit`,
-  `x-ratelimit-remaining: 0` e `retry-after`. Preflight CORS não consome bucket.
+* Cache durável opcional: quando a composição cria
+  `GatewayExtension::with_cache_store(GatewayCacheConfig, provider, namespace)`
+  ou o binário recebe `EDGER_GATEWAY_CACHE_TTL_SECONDS`, o gateway usa
+  `DurableSqlProvider` para cachear respostas `GET`/`HEAD` públicas com status
+  `200`. Requests com `Authorization`, `Cookie`, `Proxy-Authorization` ou
+  `x-api-key` não entram no cache. A chave persistida é hash estável de método,
+  host normalizado e URI, sem gravar query string bruta; hits retornam
+  `x-edger-cache: hit`, misses graváveis retornam `x-edger-cache: miss`, e o
+  snapshot expõe `diagnostics.cache` com `hits`, `misses`, `expired`,
+  `writes`, `ttlSeconds` e `activeEntries`.
+* Rate limit local em memória: quando configurado sem provider persistente, o
+  gateway mantém um token bucket por cliente (`X-Forwarded-For`, depois
+  `X-Real-IP`, senão `unknown`) e bloqueia excesso com `429`,
+  `x-ratelimit-limit`, `x-ratelimit-remaining: 0` e `retry-after`. Preflight
+  CORS não consome bucket.
+* Rate limit persistente opcional: quando a composição cria
+  `GatewayExtension::with_persistent_rate_limit_store(config, provider,
+  namespace)`, ou quando o binário recebe
+  `EDGER_GATEWAY_RATE_LIMIT_MAX_REQUESTS` com
+  `EDGER_GATEWAY_RATE_LIMIT_PERSISTENT=true`, o gateway usa uma janela fixa em
+  `DurableSqlProvider` e persiste apenas hash da chave do bucket. Sem esse modo,
+  reconstruir o módulo não carrega contadores antigos.
 * Diagnóstico operacional local: `GET /api/admin/extensions` com credencial root
-  inclui `diagnostics` para o gateway, com contadores de `continue`, `preflight`,
-  `redirect` e `rate_limited`, além das últimas 100 decisões. O snapshot não
-  serializa headers, body, `Authorization`, `x-api-key` nem segredos brutos.
+  inclui `diagnostics` para o gateway, com contadores de `continue`,
+  `cache_hit`, `preflight`, `redirect` e `rate_limited`, além das últimas 100
+  decisões. O snapshot não serializa headers de request, body,
+  `Authorization`, `x-api-key` nem segredos brutos.
 * Histórico persistente opcional: quando a composição cria
   `GatewayExtension::with_history_store(provider, namespace)`, o gateway grava
   `gateway_decisions` via `DurableSqlProvider`, atualiza status/duração em
   `on_response` e expõe a contagem em `diagnostics.history.persistent`. O
-  binário `edger` ainda não liga esse histórico por env; a evidência atual é o
-  teste de contrato do gateway contra `edger-ext-turso-remote`.
+  binário `edger` liga esse histórico quando `EDGER_GATEWAY_HISTORY=true`.
+  `EDGER_GATEWAY_STATE_NAMESPACE` escolhe o namespace durável do gateway e usa
+  `@gateway` por padrão.
 * API admin read-only do gateway:
 +
 [source,bash]
@@ -797,15 +817,15 @@ curl -H 'authorization: Bearer test-root' \
 `byStatus`, `byDecision`, `withoutStatus`, `duration.samples` e
 `duration.avgMs` sobre as decisões recentes retidas quando há amostras de
 duração. `/api/admin/gateway/rate-limit/metrics` expõe apenas métricas
-agregadas do rate limit local (`enabled`, `activeBuckets`, `maxRequests`,
-`windowSeconds`, `scope`), sem listar buckets ou chaves de cliente. Todos os
-endpoints exigem credencial root e são somente leitura.
+agregadas do rate limit (`enabled`, `activeBuckets`, `maxRequests`,
+`windowSeconds`, `mode`, `scope`), sem listar buckets ou chaves de cliente. Em
+memória, `scope` é `local-memory`; com provider persistente, `scope` é
+`persistent-durable-sql`. Todos os endpoints exigem credencial root e são
+somente leitura.
 
-Proxy para alvos externos, cache, rate-limit persistente/distribuído,
-listagem/reset de buckets, mutações dinâmicas de gateway, SSE, wildcard vhosts,
-DNS/certificados e excludes dinâmicos ficam fora do v1. Histórico persistente já existe como
-capacidade de composição e prova de contrato, mas ainda não tem wiring
-operacional próprio no binário.
+Proxy para alvos externos, cache distribuído multi-região, listagem/reset de
+buckets, mutações dinâmicas de gateway, SSE, wildcard vhosts, DNS/certificados
+e excludes dinâmicos ficam fora do v1.
 
 ==== Healthcheck
 

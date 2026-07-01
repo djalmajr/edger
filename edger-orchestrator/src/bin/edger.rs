@@ -8,14 +8,18 @@
 //! - `EDGER_DURABLE_SQL_PROVIDER` — `local` (default), `turso-remote`, or `turso-sync`
 //! - `EDGER_STATE_DIR` — directory for local SQL/KV/queue state (default in-memory if unset)
 //! - `EDGER_EXTENSION_STATUS_FILE` — JSON overlay for runtime extension enable/disable status
+//! - `EDGER_GATEWAY_CACHE_TTL_SECONDS` — enable gateway durable response cache with this TTL
+//! - `EDGER_GATEWAY_RATE_LIMIT_MAX_REQUESTS` — enable gateway rate limit with this capacity
+//! - `EDGER_GATEWAY_RATE_LIMIT_PERSISTENT` — persist gateway rate counters when true
+//! - `EDGER_GATEWAY_STATE_NAMESPACE` — durable SQL namespace for gateway state (default `@gateway`)
 //! - `EDGER_TURSO_*` — remote/sync Turso provider settings when selected
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use edger_core::{DurableSqlProvider, ExecutionKind, ExtensionContext};
+use edger_core::{DurableSqlProvider, ExecutionKind, ExtensionContext, Middleware};
 use edger_ext_auth::AuthExtension;
-use edger_ext_gateway::GatewayExtension;
+use edger_ext_gateway::{GatewayCacheConfig, GatewayExtension, GatewayRateLimitConfig};
 use edger_ext_keyval::SqlKeyValueProvider;
 use edger_ext_turso::LocalSqliteProvider;
 use edger_ext_turso_remote::RemoteTursoProvider;
@@ -58,9 +62,11 @@ async fn main() -> anyhow::Result<()> {
     let index = load_manifests_from_dirs(&worker_dirs)?;
 
     let auth_ext = AuthExtension::from_env()?.into_arc();
-    let mut registry = collect_extensions(vec![GatewayExtension::middleware()])?;
-    registry.register_auth_provider(auth_ext.clone())?;
     let sql_provider = durable_sql_provider_from_env()?;
+    let gateway_ext: Arc<dyn Middleware> =
+        Arc::new(gateway_extension_from_env(sql_provider.clone())?);
+    let mut registry = collect_extensions(vec![gateway_ext])?;
+    registry.register_auth_provider(auth_ext.clone())?;
     let keyval_provider = Arc::new(SqlKeyValueProvider::new(sql_provider.clone()));
     registry.register_durable_sql_provider(sql_provider)?;
     registry.register_key_value_provider(keyval_provider.clone())?;
@@ -132,6 +138,81 @@ fn local_sql_provider_from_env() -> anyhow::Result<Arc<dyn DurableSqlProvider>> 
         _ => LocalSqliteProvider::in_memory(),
     };
     Ok(Arc::new(provider) as Arc<dyn DurableSqlProvider>)
+}
+
+fn gateway_extension_from_env(
+    sql_provider: Arc<dyn DurableSqlProvider>,
+) -> anyhow::Result<GatewayExtension> {
+    let namespace = gateway_state_namespace_from_env();
+    let mut gateway = GatewayExtension::new();
+
+    if env_flag("EDGER_GATEWAY_HISTORY") {
+        gateway = gateway.with_history_store(sql_provider.clone(), namespace.clone());
+    }
+    if let Some(ttl_seconds) = optional_env_u64("EDGER_GATEWAY_CACHE_TTL_SECONDS")? {
+        gateway = gateway.with_cache_store(
+            GatewayCacheConfig::new(ttl_seconds),
+            sql_provider.clone(),
+            namespace.clone(),
+        );
+    }
+    if let Some(max_requests) = optional_env_u32("EDGER_GATEWAY_RATE_LIMIT_MAX_REQUESTS")? {
+        let window_seconds =
+            optional_env_u64("EDGER_GATEWAY_RATE_LIMIT_WINDOW_SECONDS")?.unwrap_or(60);
+        let mut config = GatewayRateLimitConfig::new(max_requests, window_seconds);
+        if let Some(header) = non_empty_env("EDGER_GATEWAY_RATE_LIMIT_KEY_HEADER") {
+            config = config.with_key_header(header);
+        }
+        gateway = if env_flag("EDGER_GATEWAY_RATE_LIMIT_PERSISTENT") {
+            gateway.with_persistent_rate_limit_store(config, sql_provider.clone(), namespace)
+        } else {
+            gateway.with_rate_limit(config)
+        };
+    }
+
+    Ok(gateway)
+}
+
+fn gateway_state_namespace_from_env() -> String {
+    non_empty_env("EDGER_GATEWAY_STATE_NAMESPACE").unwrap_or_else(|| "@gateway".into())
+}
+
+fn optional_env_u64(name: &str) -> anyhow::Result<Option<u64>> {
+    non_empty_env(name)
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!("{name} must be an unsigned integer; got {value}"))
+        })
+        .transpose()
+}
+
+fn optional_env_u32(name: &str) -> anyhow::Result<Option<u32>> {
+    non_empty_env(name)
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .map_err(|_| anyhow::anyhow!("{name} must be an unsigned integer; got {value}"))
+        })
+        .transpose()
+}
+
+fn env_flag(name: &str) -> bool {
+    non_empty_env(name)
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn load_extension_status_store_from_env(registry: &ExtensionRegistry) -> anyhow::Result<()> {

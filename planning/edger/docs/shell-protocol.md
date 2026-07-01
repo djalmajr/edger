@@ -85,8 +85,9 @@ O gateway middleware cobre CORS/preflight mínimo:
 - `credentials: true` com `*` não é permitido quando a configuração evoluir
   para múltiplas opções.
 
-Proxy externo, cache e rate-limit persistente ficam fora do v1. O proxy exigirá
-allowlist explícita para não introduzir SSRF.
+O gateway também cobre proxy loopback explícito, cache durável opcional e
+rate-limit persistente opcional por `DurableSqlProvider`. Proxy externo amplo
+continua fora do v1 e exigirá allowlist explícita para não introduzir SSRF.
 
 ## Evidência
 
