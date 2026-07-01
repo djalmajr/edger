@@ -176,6 +176,7 @@ OK planning/edger/status/closure-2026-06-29-story-08-29-operational-error-logs.m
 OK planning/edger/status/closure-2026-06-29-story-09-02-provider-local-sqlite.md
 OK planning/edger/status/closure-2026-06-29-story-09-04-provider-wiring.md
 OK planning/edger/status/closure-2026-06-29-story-09-05-consumer-proofs.md
+OK planning/edger/status/closure-2026-07-01-story-07-03-native-cron.md
 OK planning/edger/status/closure-2026-07-01-story-10-02-reconcile-reload.md
 OK planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md
 OK planning/edger/status/closure-2026-07-01-story-11-02-cache-rate-limit-persistente.md
@@ -187,5 +188,5 @@ OK planning/edger/status/consolidation-2026-06-29-backlog-ready.md
 OK planning/edger/status/evidence/cpanel-browser-2026-06-30.md
 OK planning/edger/status/evidence/mcp-stdio-2026-06-30.md
 ---
-Total refs: 188
+Total refs: 189
 Missing: 0

@@ -3,6 +3,8 @@
 use edger_worker::{PoolMetrics, WorkerState, WorkerStats};
 use serde::Serialize;
 
+use crate::cron::CronMetrics;
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MetricsStatsResponse {
@@ -170,6 +172,25 @@ pub fn pool_metrics_prometheus(metrics: &PoolMetrics) -> String {
         "counter",
         "Ephemeral worker requests rejected because the queue was full",
         metrics.ephemeral_rejected,
+    );
+    out
+}
+
+pub fn cron_metrics_prometheus(metrics: &CronMetrics) -> String {
+    let mut out = String::new();
+    push_metric(
+        &mut out,
+        "edger_cron_executions_total",
+        "counter",
+        "Cron job executions completed successfully",
+        metrics.executions_total(),
+    );
+    push_metric(
+        &mut out,
+        "edger_cron_failures_total",
+        "counter",
+        "Cron job executions that failed dispatch or returned an error status",
+        metrics.failures_total(),
     );
     out
 }

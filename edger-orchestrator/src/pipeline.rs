@@ -2,11 +2,11 @@
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, Request, Response, StatusCode};
+use axum::http::{header, HeaderMap, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{any, get};
 use axum::{Json, Router};
-use edger_core::{CoreError, ExecutionKind, WorkerRef};
+use edger_core::{ApiKeyPrincipal, CoreError, ExecutionKind, WorkerRef, INTERNAL_REQUEST_HEADER};
 use edger_worker::{WorkerError, WorkerPool};
 use serde_json::json;
 use tower_http::trace::TraceLayer;
@@ -19,7 +19,7 @@ use crate::hooks::{
     run_on_worker_error,
 };
 use crate::manifest_index_stub::ManifestIndex;
-use crate::metrics::{metrics_stats_response, pool_metrics_prometheus};
+use crate::metrics::{cron_metrics_prometheus, metrics_stats_response, pool_metrics_prometheus};
 use crate::operational_log::log_operational_error;
 use crate::registry::ExtensionRegistry;
 use crate::router::{resolve_host_route, resolve_route, ReservedPath, ResolvedRoute};
@@ -75,12 +75,14 @@ async fn ready_handler(State(state): State<OrchestratorState>) -> impl IntoRespo
 }
 
 async fn metrics_handler(State(state): State<OrchestratorState>) -> impl IntoResponse {
+    let mut body = pool_metrics_prometheus(&state.pool.get_metrics());
+    body.push_str(&cron_metrics_prometheus(&state.server.cron_metrics()));
     (
         [(
             header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
-        pool_metrics_prometheus(&state.pool.get_metrics()),
+        body,
     )
 }
 
@@ -268,7 +270,7 @@ struct DispatchParams {
 
 async fn dispatch_worker(
     state: &OrchestratorState,
-    req: Request<Body>,
+    mut req: Request<Body>,
     params: DispatchParams,
 ) -> Result<Response<Body>, CoreError> {
     let DispatchParams {
@@ -280,6 +282,7 @@ async fn dispatch_worker(
         skip_hooks,
     } = params;
 
+    sanitize_internal_headers(&mut req, principal.as_ref());
     let mut serialized = axum_to_serialized(req, request_id.clone()).await?;
     let (original_path, query) = split_path_query(&serialized.uri);
     let base_path = worker_base_path(&worker, original_path);
@@ -408,6 +411,26 @@ fn set_header(headers: &mut Vec<(String, String)>, name: &str, value: &str) {
     } else {
         headers.push((name.to_string(), value.to_string()));
     }
+}
+
+fn sanitize_internal_headers(req: &mut Request<Body>, principal: Option<&ApiKeyPrincipal>) {
+    if !header_is_true(req.headers(), INTERNAL_REQUEST_HEADER) {
+        return;
+    }
+
+    if principal.is_some_and(|principal| principal.is_root) {
+        req.headers_mut().remove(header::AUTHORIZATION);
+        req.headers_mut().remove("x-api-key");
+    } else {
+        req.headers_mut().remove(INTERNAL_REQUEST_HEADER);
+    }
+}
+
+fn header_is_true(headers: &HeaderMap, name: &str) -> bool {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"))
 }
 
 fn json_error(status: StatusCode, code: &str, message: &str) -> Response<Body> {

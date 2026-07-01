@@ -1,7 +1,7 @@
 # Pendências Epic 07 — Fase 7 Avançado
 
 **Origin:** `planning/edger/epics/07-avancado/00-overview.md`  
-**Atualizado:** 2026-06-29
+**Atualizado:** 2026-07-01
 
 Documento dedicado para itens não resolvidos durante execução da Fase 7.
 
@@ -56,7 +56,17 @@ Documento dedicado para itens não resolvidos durante execução da Fase 7.
 
 ### 07.02 Shell routing — **not started**
 
-### 07.03 Cron nativo — **not started**
+### 07.03 Cron nativo — **completed (scheduler v1)**
+
+- [x] `CronScheduler` em `edger-orchestrator/src/cron.rs` registra jobs de
+  workers habilitados e despacha requests internas pelo `Router` Axum local.
+- [x] Requests internas usam `x-edger-internal: true`,
+  `Authorization: Bearer $ROOT_API_KEY` e `x-request-id: cron-...`.
+- [x] `workers/cron-worker` documenta manifest `cron[]` funcional.
+- [x] `/metrics` expõe `edger_cron_executions_total` e
+  `edger_cron_failures_total`.
+- [x] Shutdown do binário cancela tasks cron antes do shutdown do pool.
+- [ ] Full cron grammar/timezones/distributed leader election seguem fora do v1.
 
 ### 07.06 OTEL — **not started**
 

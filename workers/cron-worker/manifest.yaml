@@ -1,0 +1,8 @@
+name: cron-worker
+version: "1.0.0"
+entrypoint: index.ts
+kind: fetch
+cron:
+  - schedule: "*/1 * * * *"
+    path: /tick
+    method: POST

@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 
 use edger_core::{
     create_worker_ref, principal_can_access_optional_namespace, AdminWorkerInfo, ApiKeyPrincipal,
-    CoreError, WorkerManifest, WorkerRef,
+    CoreError, CronJob, WorkerManifest, WorkerRef,
 };
 
 use crate::router::PluginRef;
@@ -199,6 +199,25 @@ impl ManifestIndex {
             .into_iter()
             .filter(|worker| {
                 principal_can_access_optional_namespace(principal, worker.namespace.as_deref())
+            })
+            .collect()
+    }
+
+    pub fn enabled_cron_jobs(&self) -> Vec<(WorkerRef, Vec<CronJob>)> {
+        let Ok(state) = self.inner.read() else {
+            return Vec::new();
+        };
+        state
+            .entries
+            .values()
+            .flat_map(|entries| {
+                entries.iter().filter_map(|entry| {
+                    if entry.worker.config.enabled && !entry.worker.config.cron.is_empty() {
+                        Some((entry.worker.clone(), entry.worker.config.cron.clone()))
+                    } else {
+                        None
+                    }
+                })
             })
             .collect()
     }

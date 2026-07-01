@@ -2,12 +2,13 @@ extension-validation repo=/Users/djalmajr/Developer/djalmajr/edger
 extension-validation module=gateway
 extension-validation required contract files: ok
 extension-validation command: cargo test -p edger-orchestrator --test admin_workers_plugins local_extension_validation_contract_reports_manifest_status_diagnostics_and_redaction -- --exact
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+    Blocking waiting for file lock on artifact directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.58s
      Running tests/admin_workers_plugins.rs (target/debug/deps/admin_workers_plugins-84de5e4887ac4b61)
 
 running 1 test
 test local_extension_validation_contract_reports_manifest_status_diagnostics_and_redaction ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.01s
 
 PASS extension validation: manifest/status/diagnostics/redaction are locally validated

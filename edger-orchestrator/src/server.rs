@@ -16,7 +16,8 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::metrics::pool_metrics_prometheus;
+use crate::cron::CronMetrics;
+use crate::metrics::{cron_metrics_prometheus, pool_metrics_prometheus};
 
 /// Listener configuration (addr from `PORT` env in the binary).
 #[derive(Debug, Clone)]
@@ -35,6 +36,7 @@ impl ServerConfig {
 struct ServerStateInner {
     ready: AtomicBool,
     pool: std::sync::RwLock<Option<WorkerPool>>,
+    cron_metrics: CronMetrics,
 }
 
 /// Shared application state for health/readiness and future pipeline wiring.
@@ -49,6 +51,7 @@ impl ServerState {
             inner: Arc::new(ServerStateInner {
                 ready: AtomicBool::new(false),
                 pool: std::sync::RwLock::new(None),
+                cron_metrics: CronMetrics::default(),
             }),
         }
     }
@@ -77,6 +80,10 @@ impl ServerState {
             .as_ref()
             .map(WorkerPool::get_metrics)
     }
+
+    pub fn cron_metrics(&self) -> CronMetrics {
+        self.inner.cron_metrics.clone()
+    }
 }
 
 async fn health() -> impl IntoResponse {
@@ -100,12 +107,14 @@ async fn ready(State(state): State<ServerState>) -> impl IntoResponse {
 
 async fn metrics(State(state): State<ServerState>) -> impl IntoResponse {
     let metrics = state.pool_metrics().unwrap_or_default();
+    let mut body = pool_metrics_prometheus(&metrics);
+    body.push_str(&cron_metrics_prometheus(&state.cron_metrics()));
     (
         [(
             header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
-        pool_metrics_prometheus(&metrics),
+        body,
     )
 }
 

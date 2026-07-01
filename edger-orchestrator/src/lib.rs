@@ -3,6 +3,7 @@
 pub mod admin_api;
 pub mod auth;
 pub mod context;
+pub mod cron;
 pub mod hooks;
 pub mod manifest_index_stub;
 pub mod manifest_loader;
@@ -20,6 +21,7 @@ pub mod wire;
 pub use admin_api::router as admin_router;
 pub use auth::{extract_api_key, is_public_route, AuthGate, AuthGateConfig};
 pub use context::RequestContext;
+pub use cron::{collect_cron_registrations, CronMetrics, CronScheduler, CronSchedulerConfig};
 pub use hooks::{
     run_on_init, run_on_request, run_on_response, run_on_server_start, run_on_shutdown,
     run_on_worker_complete, run_on_worker_dispatch, run_on_worker_error,

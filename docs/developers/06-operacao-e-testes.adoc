@@ -832,6 +832,44 @@ Proxy para alvos externos, cache distribuído multi-região, listagem/reset de
 buckets, mutações dinâmicas de gateway, streaming remoto, wildcard vhosts,
 DNS/certificados e excludes dinâmicos ficam fora do v1.
 
+==== Cron scheduler
+
+`manifest.yaml` pode declarar `cron[]`. O binário `edger` coleta jobs de
+workers habilitados no startup, valida o schedule e dispara requests internas
+in-process para o pipeline Axum. Jobs cron ficam habilitados por default; use
+`EDGER_CRON_ENABLED=false` para desativar o scheduler localmente.
+
+[source,yaml]
+----
+name: cron-worker
+version: "1.0.0"
+entrypoint: index.ts
+kind: fetch
+cron:
+  - schedule: "*/1 * * * *"
+    path: /tick
+    method: POST
+----
+
+Requisitos operacionais:
+
+* `ROOT_API_KEY` é obrigatório quando existir ao menos um job cron; ele é usado
+  no dispatch interno como `Authorization: Bearer ...` para passar pelo auth
+  gate. O pipeline remove essa credencial antes de entregar a request ao worker.
+* Cada dispatch inclui `x-edger-internal: true` e `x-request-id: cron-...` para
+  user code autorizado. Esse header sozinho não autentica requests públicas ou
+  admin, e headers `x-edger-internal` spoofados por requests públicas são
+  removidos antes do worker.
+* `enabled: false` remove jobs no startup. Reabilitar worker em runtime exige
+  reload/restart para registrar jobs no scheduler.
+* Schedules inválidos falham no startup com `CRON_SCHEDULE_INVALID`.
+* `/metrics` expõe `edger_cron_executions_total` e
+  `edger_cron_failures_total`.
+
+No v1, o parser aceita `@every <duration>` para testes/desenvolvimento e cron
+simples de minuto (`* * * * *`, `*/N * * * *` ou minuto fixo). Full cron grammar,
+timezones e leader election distribuído ficam fora desta fatia.
+
 ==== Healthcheck
 
 [source,http]

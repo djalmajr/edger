@@ -12,6 +12,7 @@
 //! - `EDGER_GATEWAY_RATE_LIMIT_MAX_REQUESTS` — enable gateway rate limit with this capacity
 //! - `EDGER_GATEWAY_RATE_LIMIT_PERSISTENT` — persist gateway rate counters when true
 //! - `EDGER_GATEWAY_STATE_NAMESPACE` — durable SQL namespace for gateway state (default `@gateway`)
+//! - `EDGER_CRON_ENABLED` — enable manifest `cron[]` jobs (default true)
 //! - `EDGER_TURSO_*` — remote/sync Turso provider settings when selected
 
 use std::path::PathBuf;
@@ -25,9 +26,10 @@ use edger_ext_turso::LocalSqliteProvider;
 use edger_ext_turso_remote::RemoteTursoProvider;
 use edger_isolation::{DenoFacade, DenoIsolate, WasiConfig, WasmIsolate};
 use edger_orchestrator::{
-    build_pipeline, collect_extensions, load_manifests_from_dirs, parse_runtime_worker_dirs,
-    port_from_env, run_on_init, run_on_server_start, run_on_shutdown, serve, AuthGate,
-    AuthGateConfig, ExtensionRegistry, OrchestratorState, ServerConfig, ServerState,
+    build_pipeline, collect_cron_registrations, collect_extensions, load_manifests_from_dirs,
+    parse_runtime_worker_dirs, port_from_env, run_on_init, run_on_server_start, run_on_shutdown,
+    serve, AuthGate, AuthGateConfig, CronScheduler, CronSchedulerConfig, ExtensionRegistry,
+    OrchestratorState, ServerConfig, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tracing_subscriber::EnvFilter;
@@ -82,18 +84,31 @@ async fn main() -> anyhow::Result<()> {
         registry,
         auth: AuthGate::new(AuthGateConfig::default(), auth_ext),
     };
+    let app = build_pipeline(state.clone());
+    let cron_registrations = if env_flag_default_true("EDGER_CRON_ENABLED") {
+        collect_cron_registrations(&state.index)?
+    } else {
+        Vec::new()
+    };
+    let cron_scheduler = CronScheduler::start(
+        CronSchedulerConfig::new(root_api_key_from_env()),
+        cron_registrations,
+        app.clone(),
+        state.server.cron_metrics(),
+    )?;
 
     let shutdown_registry = state.registry.clone();
     let shutdown_server = server.clone();
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             tracing::info!("shutdown signal received");
+            cron_scheduler.shutdown().await;
             let _ = run_on_shutdown(&shutdown_registry);
             shutdown_server.shutdown_pool();
         }
     });
 
-    serve(config, build_pipeline(state)).await
+    serve(config, app).await
 }
 
 fn worker_dirs_from_env() -> Vec<PathBuf> {
@@ -206,6 +221,21 @@ fn env_flag(name: &str) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+fn env_flag_default_true(name: &str) -> bool {
+    non_empty_env(name)
+        .map(|value| {
+            !matches!(
+                value.to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(true)
+}
+
+fn root_api_key_from_env() -> Option<String> {
+    non_empty_env("ROOT_API_KEY")
 }
 
 fn non_empty_env(name: &str) -> Option<String> {

@@ -1,0 +1,56 @@
+# Story 07.03 runtime evidence
+
+Date: 2026-07-01
+
+## Passing tests
+
+```text
+cargo test -p edger-orchestrator --test cron_scheduler_test
+6 passed; 0 failed
+
+cargo test -p edger-orchestrator cron
+cron unit tests passed; cron scheduler integration filters passed
+
+cargo test -p edger-core
+22 passed; 0 failed; doc-tests passed
+
+cargo fmt -- --check
+passed
+
+cargo clippy --workspace -- -D warnings
+passed
+
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+ALL PLANNING GATES PASS
+```
+
+## Workspace test caveat
+
+```text
+cargo test --workspace
+blocked at edger-ext-gateway/tests/gateway_middleware.rs:
+proxy_rule_forwards_to_local_upstream_without_sensitive_headers
+error: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+```
+
+The failing test is the pre-existing loopback proxy test that binds
+`127.0.0.1:0`; the sandbox denies that bind. The test was left unchanged.
+
+## Behavior covered
+
+- Enabled `manifest.cron[]` jobs are collected and scheduled.
+- `@every` short intervals dispatch within the integration-test tolerance.
+- Simple minute cron schedules such as `*/1 * * * *` are accepted by the v1
+  parser.
+- Internal cron requests include `x-edger-internal: true`,
+  pipeline-bound `Authorization: Bearer $ROOT_API_KEY`, and a cron request id.
+- Worker code receives the internal marker but not the root `Authorization`
+  header.
+- Spoofed `x-edger-internal` headers on public worker requests are stripped
+  before user code.
+- The worker receives the rewritten job-local path, for example `/tick`.
+- Disabled workers do not register cron jobs; re-enable requires reload.
+- Invalid schedules fail validation with `CRON_SCHEDULE_INVALID`.
+- Missing `ROOT_API_KEY` with jobs fails startup with `CRON_AUTH_MISSING`.
+- Shutdown stops scheduler tasks and no further ticks are observed after join.
+- `/metrics` exposes `edger_cron_executions_total`.

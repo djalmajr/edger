@@ -62,7 +62,7 @@ Consolidar o runtime para uso real e migração Buntime: execução production-p
 |---|---|---|---|---|
 | 07.01 Manifests + kinds completos | `01-full-manifests-kinds.md` | large | **in progress** (loader + startup) | 07.04, 07.05, Epic 05 |
 | 07.02 Shell routing | `02-shell-routing.md` | medium | not started | 07.01 |
-| 07.03 Cron nativo | `03-native-cron.md` | medium | not started | 07.01, Epic 05 |
+| 07.03 Cron nativo | `03-native-cron.md` | medium | **completed** (tokio scheduler v1) | 07.01, Epic 05 |
 | 07.04 Execução JS real | `04-real-js-execution.md` | large | in progress (Deno CLI bridge v1) | Epic 03 (spike), Epic 04, Epic 05 |
 | 07.05 Execução Wasm | `05-wasm-execution.md` | large | **in progress** (v1 ABI) | Epic 03 (spike), Epic 04, Epic 05 |
 | 07.06 Observabilidade OTEL | `06-observability-otel.md` | medium | not started | 07.01, 07.04, 07.05 |
@@ -100,7 +100,7 @@ flowchart LR
 - [ ] `load_manifests_from_dirs` carrega workers de `RUNTIME_WORKER_DIRS` (`:`) com inferência de `ExecutionKind` e colisão detectada.
 - [ ] Todos os variants de `ExecutionKind` despacham para backend correto (JS via deno_core facade; Wasm via wasmtime; StaticSpa com `inject_base`).
 - [ ] Shell routing serve HTML com `<base href>` quando `inject_base: true`; notas de protocolo evoluído documentadas.
-- [ ] Cron nativo (tokio-cron) dispara requisições internas conforme `manifest.cron[]`; testes cobrem schedule + auth interna.
+- [x] Cron nativo dispara requisições internas conforme `manifest.cron[]`; testes cobrem schedule v1 + auth interna.
 - [ ] Tracing estruturado com `request_id` em orchestrator → pool → isolate; OTEL export configurável; `/metrics` Prometheus.
 - [ ] Limites body/header (port Buntime HeaderLimits) enforced no pipeline.
 - [ ] Matriz de compatibilidade Buntime com testes automatizados passando (`tests/compat/` ou equivalente).
@@ -125,6 +125,6 @@ flowchart LR
 - Ao fechar o épico: `/agile-refinement` + atualizar `planning/edger/roadmap.md` (Fase 7 → done).
 
 ## Status
-**in-progress** (2026-06-29) — Epic 06 done; 07.05 v1 slice delivered; 07.04 Deno CLI bridge v1 delivered; `deno_core` embedded boot remains pending. Pendências: `docs/pendencies-epic-07.md`
+**in-progress** (2026-07-01) — Epic 06 done; 07.05 v1 slice delivered; 07.04 Deno CLI bridge v1 delivered; 07.03 cron scheduler v1 delivered; `deno_core` embedded boot remains pending. Pendências: `docs/pendencies-epic-07.md`
 
 Plano funcional ativo: `planning/edger/runtime-functional-plan.md`.
