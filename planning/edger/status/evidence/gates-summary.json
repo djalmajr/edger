@@ -1,5 +1,5 @@
 {
-  "passed_at": "2026-07-01T19:37:02Z",
+  "passed_at": "2026-07-01T19:43:56Z",
   "planning_lint": {
     "tool": "/agile-refinement Mode 1",
     "scope": "planning/edger/",
@@ -8,6 +8,10 @@
   },
   "path_preflight": {
     "missing": 0
+  },
+  "extension_validation": {
+    "status": "passed",
+    "module": "gateway"
   },
   "bun_test": {
     "status": "skipped",

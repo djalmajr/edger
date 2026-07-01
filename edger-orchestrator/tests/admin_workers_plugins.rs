@@ -364,6 +364,101 @@ async fn root_lists_operational_extension_inventory_for_middleware_and_provider(
 }
 
 #[tokio::test]
+async fn local_extension_validation_contract_reports_manifest_status_diagnostics_and_redaction() {
+    let gateway = Arc::new(GatewayExtension::new());
+    let ctx = RequestContext::new("local-extension-validation");
+    let mut request = gateway_request(
+        "local-extension-validation-request",
+        "/Users/djalmajr/secret?token=should-not-leak",
+        "203.0.113.41",
+        Some("Bearer should-not-leak"),
+    );
+    assert!(gateway.on_request(&mut request, &ctx).unwrap().is_none());
+
+    let app = build_pipeline(test_state_with_gateway(gateway));
+    let (status, body) = app_json_get(app, "/api/admin/extensions", Some("root-secret")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let body_text = body.to_string();
+    assert!(!body_text.contains("root-secret"));
+    assert!(!body_text.contains("should-not-leak"));
+    assert!(!body_text.contains("/Users/djalmajr"));
+
+    let extensions = body["extensions"].as_array().unwrap();
+    assert!(extensions.len() >= 4);
+    for extension in extensions {
+        let name = extension["name"].as_str().unwrap();
+        assert_eq!(extension["id"], format!("extension:{name}"));
+        assert!(extension["version"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        assert!(matches!(
+            extension["kind"].as_str(),
+            Some("middleware" | "authProvider" | "serviceProvider")
+        ));
+        assert!(matches!(
+            extension["status"].as_str(),
+            Some("enabled" | "disabled")
+        ));
+        assert_eq!(extension["configSource"], "staticRegistration");
+        assert!(extension["capabilities"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        assert!(extension["dependencies"].as_array().is_some());
+        assert!(extension["manifest"]["hooks"].as_array().is_some());
+        assert!(extension["manifest"]["menus"].as_array().is_some());
+        assert!(extension["manifest"]["provides"].as_array().is_some());
+        assert!(extension["manifest"]["requirements"].as_array().is_some());
+        assert_eq!(extension["manifest"]["config"]["redacted"], true);
+        assert_eq!(
+            extension["manifest"]["config"]["source"],
+            "staticRegistration"
+        );
+        assert!(extension["manifest"]["config"]["keys"].as_array().is_some());
+    }
+
+    let gateway = extensions
+        .iter()
+        .find(|extension| extension["name"] == "gateway")
+        .unwrap();
+    assert_eq!(
+        gateway["manifest"]["hooks"],
+        serde_json::json!(["onRequest", "onResponse"])
+    );
+    assert_eq!(
+        gateway["manifest"]["provides"],
+        serde_json::json!(["middleware"])
+    );
+    assert_eq!(gateway["diagnostics"]["requests"]["total"], 1);
+    assert_eq!(
+        gateway["diagnostics"]["recentDecisions"][0]["path"],
+        "[redacted]"
+    );
+
+    let auth = extensions
+        .iter()
+        .find(|extension| extension["name"] == "auth")
+        .unwrap();
+    assert_eq!(
+        auth["manifest"]["provides"],
+        serde_json::json!(["apiKeys", "authProvider"])
+    );
+
+    let keyval = extensions
+        .iter()
+        .find(|extension| extension["name"] == "keyval")
+        .unwrap();
+    assert_eq!(
+        keyval["manifest"]["provides"],
+        serde_json::json!(["provider:keyValue", "provider:queue"])
+    );
+    assert_eq!(
+        keyval["manifest"]["requirements"],
+        serde_json::json!(["provider:durableSql"])
+    );
+}
+
+#[tokio::test]
 async fn extension_reconcile_requires_root_before_exposing_plan() {
     let status_dir = tempfile::tempdir().unwrap();
     let status_path = status_dir.path().join("extension-status.json");

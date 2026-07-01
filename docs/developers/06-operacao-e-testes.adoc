@@ -441,6 +441,35 @@ Diagnostics do reconcile não incluem API keys, tokens, paths locais sensíveis 
 conteúdo bruto do status store. Ações `restartRequired` nunca tentam hot-load
 de crate, download remoto, deploy ou alteração do composition root em runtime.
 
+==== Validação local de extensões
+
+Antes de commitar mudanças em uma extensão ou no contrato operacional de módulos,
+rode a validação local de extensões. Ela não acessa rede externa nem faz deploy;
+o script executa um teste Rust alvo que valida inventário, manifesto, status,
+diagnostics e redaction para uma extensão real registrada no composition root.
+
+[source,bash]
+----
+python3 planning/edger/scripts/extension-validation.py --repo . --module gateway
+----
+
+O gate de planejamento também roda essa validação e grava evidência versionada:
+
+[source,bash]
+----
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+----
+
+A validação local de extensão complementa, mas não substitui, o Rust gate
+completo exigido para fechar uma story:
+
+[source,bash]
+----
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+----
+
 Cada item de `/api/admin/extensions` mantém os campos operacionais legados
 (`capabilities`, `dependencies`, `configSource`, `diagnostics`) e adiciona um
 `manifest` estruturado para UI, MCP e validação local. O manifesto é derivado
