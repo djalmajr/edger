@@ -19,11 +19,11 @@ Transformar o gateway em modulo operacional avancado, mantendo o orchestrator en
 - Redirect por prefixo, CORS/preflight e rate limit local ja existem.
 - Gateway diagnostics, logs filtraveis, stats e duration media existem.
 - `GatewayExtension::with_history_store` prova persistencia de decisoes via provider externo.
-- Proxy externo, cache, vhosts, SSE e mutacoes dinamicas ainda nao foram fechados.
+- Proxy loopback local existe como primeira fatia funcional; cache, vhosts, SSE e mutacoes dinamicas ainda nao foram fechados.
 
 ### TO-BE
 
-- Proxy externo com allowlist, limites, timeout e protecoes contra SSRF.
+- Proxy evolui de loopback local testavel para politicas de allowlist mais amplas, limites, timeout e protecoes contra SSRF.
 - Cache e rate limit persistentes quando provider duravel estiver configurado.
 - Historico/SSE local para operacao sem expor segredos.
 - Host routing/vhosts como contrato seguro e testavel.
@@ -39,14 +39,14 @@ Transformar o gateway em modulo operacional avancado, mantendo o orchestrator en
 
 | Story | Arquivo | Objetivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|---|
-| 11.01 Proxy forwarding local | `01-proxy-forwarding-local.md` | Encaminhar requests para upstreams permitidos com limites e SSRF guard | large | planned | Epic 08.15, Epic 08.18 |
+| 11.01 Proxy forwarding local | `01-proxy-forwarding-local.md` | Encaminhar requests para upstreams loopback permitidos com timeout e SSRF guard | large | completed | Epic 08.15, Epic 08.18 |
 | 11.02 Cache e rate limit persistente | `02-cache-rate-limit-persistente.md` | Persistir cache/rate limit quando provider duravel estiver configurado | large | planned | 11.01, Epic 09 |
 | 11.03 Historico e SSE operacional | `03-historico-sse-operacional.md` | Expor historico operacional e stream local de eventos seguros | medium | planned | 11.01, Epic 09 |
 | 11.04 Vhosts e host routing | `04-vhosts-host-routing.md` | Resolver apps por host sem route hijack e com evidencia local | medium | planned | 11.01 |
 
 ## Epic acceptance criteria
 
-- [ ] Proxy externo valida allowlist, timeout, body/header limits e SSRF guard.
+- [x] Proxy local valida loopback allowlist, timeout e SSRF guard.
 - [ ] Cache/rate limit persistente usa provider duravel sem acoplar gateway a Turso.
 - [ ] Historico e SSE expõem eventos seguros, filtraveis e com request ID.
 - [ ] Host routing respeita reserved paths, namespace e isolamento por host.
@@ -55,5 +55,4 @@ Transformar o gateway em modulo operacional avancado, mantendo o orchestrator en
 
 ## Status
 
-planned (2026-06-29) - criado como dono modular para proxy externo, cache, rate limit persistente/distribuido, SSE, historico e vhosts, preservando o Epic 08 como consolidacao.
-
+in-progress (2026-06-30) - Story 11.01 entregou proxy HTTP loopback-only em `edger-ext-gateway`, com timeout, sanitizacao de headers sensiveis, diagnostics e teste de upstream controlado. Cache, rate limit persistente/distribuido, SSE/historico operacional, vhosts e mutacoes dinamicas continuam como stories dedicadas.

@@ -4,9 +4,11 @@
 //! `Middleware` (choose ONE — do not add `AuthProvider` here).
 
 use std::collections::{HashMap, VecDeque};
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
 use edger_core::{
@@ -18,6 +20,7 @@ use tracing::trace;
 
 const GATEWAY_TEST_HEADER: &str = "x-gateway-test";
 const DEFAULT_DECISION_LOG_CAPACITY: usize = 100;
+const DEFAULT_PROXY_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_REDIRECT_STATUS: u16 = 308;
 const RATE_LIMIT_LIMIT_HEADER: &str = "x-ratelimit-limit";
 const RATE_LIMIT_REMAINING_HEADER: &str = "x-ratelimit-remaining";
@@ -130,6 +133,141 @@ impl GatewayRedirectRule {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GatewayProxyRule {
+    from_prefix: String,
+    upstream: GatewayProxyUpstream,
+}
+
+impl GatewayProxyRule {
+    pub fn try_new(
+        from_prefix: impl Into<String>,
+        target: impl Into<String>,
+    ) -> Result<Self, CoreError> {
+        let upstream = GatewayProxyUpstream::parse(&target.into())?;
+        Ok(Self {
+            from_prefix: GatewayRedirectRule::normalize_prefix(from_prefix.into()),
+            upstream,
+        })
+    }
+
+    fn request_path_for(&self, uri: &str) -> Option<String> {
+        let (path, query) = split_path_query(uri);
+        let suffix = if self.from_prefix == "/" {
+            path
+        } else if path == self.from_prefix {
+            ""
+        } else {
+            path.strip_prefix(&self.from_prefix)
+                .filter(|suffix| suffix.starts_with('/'))?
+        };
+        let mut path = join_url_path(&self.upstream.path_prefix, suffix);
+        if let Some(query) = query {
+            path.push('?');
+            path.push_str(query);
+        }
+        Some(path)
+    }
+
+    fn forward(&self, req: &SerializedRequest) -> Result<SerializedResponse, CoreError> {
+        let request_path = self.request_path_for(&req.uri).ok_or_else(|| {
+            CoreError::new("GATEWAY_PROXY_MISS", "proxy rule did not match request")
+        })?;
+        let addr = format!("{}:{}", self.upstream.host, self.upstream.port);
+        let mut stream = TcpStream::connect(addr).map_err(|err| {
+            CoreError::new("GATEWAY_PROXY_ERROR", format!("connect failed: {err}"))
+        })?;
+        let timeout = Some(Duration::from_millis(DEFAULT_PROXY_TIMEOUT_MS));
+        stream.set_read_timeout(timeout).map_err(|err| {
+            CoreError::new("GATEWAY_PROXY_ERROR", format!("read timeout failed: {err}"))
+        })?;
+        stream.set_write_timeout(timeout).map_err(|err| {
+            CoreError::new(
+                "GATEWAY_PROXY_ERROR",
+                format!("write timeout failed: {err}"),
+            )
+        })?;
+
+        let mut request = format!(
+            "{} {} HTTP/1.1\r\nhost: {}\r\nconnection: close\r\n",
+            req.method, request_path, self.upstream.host_header
+        );
+        for (name, value) in sanitized_proxy_headers(&req.headers) {
+            request.push_str(&name);
+            request.push_str(": ");
+            request.push_str(&value);
+            request.push_str("\r\n");
+        }
+        if let Some(body) = &req.body {
+            request.push_str(&format!("content-length: {}\r\n", body.len()));
+        }
+        request.push_str("\r\n");
+        stream
+            .write_all(request.as_bytes())
+            .map_err(|err| CoreError::new("GATEWAY_PROXY_ERROR", format!("write failed: {err}")))?;
+        if let Some(body) = &req.body {
+            stream.write_all(body).map_err(|err| {
+                CoreError::new("GATEWAY_PROXY_ERROR", format!("write failed: {err}"))
+            })?;
+        }
+
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .map_err(|err| CoreError::new("GATEWAY_PROXY_ERROR", format!("read failed: {err}")))?;
+        parse_proxy_response(&response)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GatewayProxyUpstream {
+    host: String,
+    host_header: String,
+    path_prefix: String,
+    port: u16,
+}
+
+impl GatewayProxyUpstream {
+    fn parse(raw: &str) -> Result<Self, CoreError> {
+        let target = raw.trim();
+        let rest = target.strip_prefix("http://").ok_or_else(|| {
+            CoreError::new(
+                "GATEWAY_PROXY_TARGET_DENIED",
+                "proxy targets must use http:// for local validation",
+            )
+        })?;
+        let (authority, path_prefix) = rest.split_once('/').unwrap_or((rest, ""));
+        if authority.is_empty() || authority.contains('@') {
+            return Err(CoreError::new(
+                "GATEWAY_PROXY_TARGET_DENIED",
+                "proxy target authority is invalid",
+            ));
+        }
+        let (host, port) = authority
+            .rsplit_once(':')
+            .and_then(|(host, port)| port.parse::<u16>().ok().map(|port| (host, port)))
+            .unwrap_or((authority, 80));
+        if !is_allowed_local_proxy_host(host) {
+            return Err(CoreError::new(
+                "GATEWAY_PROXY_TARGET_DENIED",
+                "proxy target must be localhost or loopback",
+            ));
+        }
+        let path_prefix = format!("/{}", path_prefix.trim_matches('/'));
+        let path_prefix = if path_prefix == "/" {
+            "/".into()
+        } else {
+            path_prefix
+        };
+        Ok(Self {
+            host: host.to_string(),
+            host_header: authority.to_string(),
+            path_prefix,
+            port,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GatewayRateLimitConfig {
     pub key_header: Option<String>,
     pub max_requests: u32,
@@ -191,7 +329,9 @@ struct RateLimitDecision {
 struct GatewayDecisionCounters {
     continued: u64,
     preflight: u64,
+    proxied: u64,
     rate_limited: u64,
+    proxy_errors: u64,
     redirected: u64,
     total: u64,
 }
@@ -374,6 +514,8 @@ impl GatewayDiagnostics {
             match entry.decision {
                 "continue" => counters.continued = counters.continued.saturating_add(1),
                 "preflight" => counters.preflight = counters.preflight.saturating_add(1),
+                "proxy" => counters.proxied = counters.proxied.saturating_add(1),
+                "proxy_error" => counters.proxy_errors = counters.proxy_errors.saturating_add(1),
                 "rate_limited" => {
                     counters.rate_limited = counters.rate_limited.saturating_add(1);
                 }
@@ -408,6 +550,7 @@ impl GatewayDiagnostics {
         cors: &GatewayCorsConfig,
         history: Value,
         rate_limit: Option<&GatewayRateLimit>,
+        proxy_rule_count: usize,
         redirect_rule_count: usize,
     ) -> Value {
         let counters = self
@@ -451,6 +594,10 @@ impl GatewayDiagnostics {
                     "origin": &cors.origin,
                 },
                 "rateLimit": rate_limit.clone(),
+                "proxyRules": {
+                    "count": proxy_rule_count,
+                    "mode": "local-http",
+                },
                 "redirectRules": {
                     "count": redirect_rule_count,
                 },
@@ -461,6 +608,8 @@ impl GatewayDiagnostics {
             "requests": {
                 "continued": counters.continued,
                 "preflight": counters.preflight,
+                "proxied": counters.proxied,
+                "proxyErrors": counters.proxy_errors,
                 "rateLimited": counters.rate_limited,
                 "redirected": counters.redirected,
                 "total": counters.total,
@@ -474,6 +623,79 @@ fn split_path_query(uri: &str) -> (&str, Option<&str>) {
         Some((path, query)) => (path, Some(query)),
         None => (uri, None),
     }
+}
+
+fn join_url_path(prefix: &str, suffix: &str) -> String {
+    if suffix.is_empty() {
+        return prefix.to_string();
+    }
+    if prefix == "/" {
+        return suffix.to_string();
+    }
+    if prefix.ends_with('/') && suffix.starts_with('/') {
+        format!("{}{}", prefix.trim_end_matches('/'), suffix)
+    } else if !prefix.ends_with('/') && !suffix.starts_with('/') {
+        format!("{prefix}/{suffix}")
+    } else {
+        format!("{prefix}{suffix}")
+    }
+}
+
+fn is_allowed_local_proxy_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1")
+}
+
+fn sanitized_proxy_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter(|(name, _)| {
+            !matches!(
+                name.to_ascii_lowercase().as_str(),
+                "authorization"
+                    | "connection"
+                    | "content-length"
+                    | "cookie"
+                    | "host"
+                    | "proxy-authorization"
+                    | "transfer-encoding"
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+fn parse_proxy_response(raw: &[u8]) -> Result<SerializedResponse, CoreError> {
+    let Some(header_end) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return Err(CoreError::new(
+            "GATEWAY_PROXY_ERROR",
+            "upstream response was malformed",
+        ));
+    };
+    let header_bytes = &raw[..header_end];
+    let body = &raw[header_end + 4..];
+    let header_text = String::from_utf8_lossy(header_bytes);
+    let mut lines = header_text.lines();
+    let status = lines
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|status| status.parse::<u16>().ok())
+        .ok_or_else(|| CoreError::new("GATEWAY_PROXY_ERROR", "upstream status was malformed"))?;
+    let headers = lines
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(name, _)| {
+            !matches!(
+                name.trim().to_ascii_lowercase().as_str(),
+                "connection" | "content-length" | "transfer-encoding"
+            )
+        })
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        .collect::<Vec<_>>();
+
+    Ok(SerializedResponse {
+        body: Some(body.to_vec().into()),
+        headers,
+        status,
+    })
 }
 
 fn elapsed_ms(start: Instant) -> u64 {
@@ -509,6 +731,7 @@ pub struct GatewayExtension {
     prefix: String,
     invocations: Arc<AtomicU32>,
     rate_limit: Option<GatewayRateLimit>,
+    proxy_rules: Vec<GatewayProxyRule>,
     redirect_rules: Vec<GatewayRedirectRule>,
 }
 
@@ -525,6 +748,7 @@ impl GatewayExtension {
             prefix: prefix.into(),
             invocations: Arc::new(AtomicU32::new(0)),
             rate_limit: None,
+            proxy_rules: vec![],
             redirect_rules: vec![],
         }
     }
@@ -541,6 +765,11 @@ impl GatewayExtension {
 
     pub fn with_redirect_rules(mut self, redirect_rules: Vec<GatewayRedirectRule>) -> Self {
         self.redirect_rules = redirect_rules;
+        self
+    }
+
+    pub fn with_proxy_rules(mut self, proxy_rules: Vec<GatewayProxyRule>) -> Self {
+        self.proxy_rules = proxy_rules;
         self
     }
 
@@ -634,6 +863,17 @@ impl GatewayExtension {
             headers: vec![("location".into(), location)],
             status: rule.status,
         })
+    }
+
+    fn proxy_response(
+        &self,
+        req: &SerializedRequest,
+    ) -> Option<Result<SerializedResponse, CoreError>> {
+        let rule = self
+            .proxy_rules
+            .iter()
+            .find(|rule| rule.request_path_for(&req.uri).is_some())?;
+        Some(rule.forward(req))
     }
 
     fn rate_limit_response(&self, req: &SerializedRequest) -> Result<Option<SerializedResponse>> {
@@ -822,6 +1062,7 @@ impl Extension for GatewayExtension {
             &self.cors,
             self.persistent_history_diagnostics(),
             self.rate_limit.as_ref(),
+            self.proxy_rules.len(),
             self.redirect_rules.len(),
         ))
     }
@@ -865,6 +1106,43 @@ impl Middleware for GatewayExtension {
                 Some(elapsed_ms(ctx.start)),
             );
             return Ok(Some(response));
+        }
+        if let Some(response) = self.proxy_response(req) {
+            match response {
+                Ok(response) => {
+                    self.record_decision(
+                        req,
+                        "proxy",
+                        Some(response.status),
+                        false,
+                        Some(elapsed_ms(ctx.start)),
+                    );
+                    return Ok(Some(response));
+                }
+                Err(error) => {
+                    let response = SerializedResponse {
+                        body: Some(
+                            json!({
+                                "code": error.code,
+                                "message": "gateway proxy upstream failed",
+                            })
+                            .to_string()
+                            .into_bytes()
+                            .into(),
+                        ),
+                        headers: vec![("content-type".into(), "application/json".into())],
+                        status: 502,
+                    };
+                    self.record_decision(
+                        req,
+                        "proxy_error",
+                        Some(response.status),
+                        false,
+                        Some(elapsed_ms(ctx.start)),
+                    );
+                    return Ok(Some(response));
+                }
+            }
         }
         if let Some(response) = self.redirect_response(req) {
             self.record_decision(

@@ -84,6 +84,7 @@ entrypoint: index.html
 base: "/"
 injectBase: true
 shellExcludes:
+  - cpanel
   - todos-shell-demo
 "#,
     )
@@ -94,6 +95,26 @@ shellExcludes:
     )
     .unwrap();
     fs::write(shell_dir.join("shell.js"), "globalThis.shellLoaded = true;").unwrap();
+}
+
+fn write_cpanel_fixture(root: &std::path::Path) {
+    let worker_dir = root.join("cpanel");
+    fs::create_dir_all(&worker_dir).unwrap();
+    fs::write(
+        worker_dir.join("manifest.yaml"),
+        r#"name: cpanel
+version: "0.1.0"
+entrypoint: index.html
+injectBase: true
+visibility: public
+"#,
+    )
+    .unwrap();
+    fs::write(
+        worker_dir.join("index.html"),
+        "<!doctype html><html><body><main>edger cPanel</main></body></html>",
+    )
+    .unwrap();
 }
 
 fn write_todos_fixture(root: &std::path::Path) {
@@ -122,6 +143,7 @@ kind: fetch
 fn app_with_shell() -> (Router, tempfile::TempDir) {
     let root = tempfile::tempdir().unwrap();
     write_shell_fixture(root.path());
+    write_cpanel_fixture(root.path());
     write_todos_fixture(root.path());
     let state = state_with_workers(root.path().to_path_buf());
     (build_pipeline(state), root)
@@ -170,6 +192,23 @@ async fn iframe_app_bypasses_shell_and_receives_worker_base() {
         String::from_utf8_lossy(&body)
     );
     assert_eq!(body.as_ref(), b"/list base=/todos-shell-demo");
+}
+
+#[tokio::test]
+async fn cpanel_app_bypasses_shell_as_own_frontend_module() {
+    let (app, _root) = app_with_shell();
+    let (status, body) = dispatch(app, "/cpanel", Some("document"), false).await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected body: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let html = String::from_utf8_lossy(&body);
+    assert!(html.contains("edger cPanel"));
+    assert!(html.contains(r#"<base href="/cpanel/" />"#));
+    assert!(!html.contains("shell-demo"));
 }
 
 #[tokio::test]

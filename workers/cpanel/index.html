@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>edger cPanel</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <aside class="sidebar" aria-label="Primary">
+        <div class="brand">
+          <span class="brand-mark">ed</span>
+          <span>
+            <strong>edger</strong>
+            <small>cPanel</small>
+          </span>
+        </div>
+        <nav class="nav">
+          <button class="nav-item active" data-view="overview" type="button">Overview</button>
+          <button class="nav-item" data-view="workers" type="button">Workers</button>
+          <button class="nav-item" data-view="modules" type="button">Modules</button>
+          <button class="nav-item" data-view="gateway" type="button">Gateway</button>
+          <button class="nav-item" data-view="keys" type="button">Keys</button>
+        </nav>
+      </aside>
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <h1>Operations</h1>
+            <p id="sessionLine">Waiting for operator key</p>
+          </div>
+          <form id="loginForm" class="login-form">
+            <label for="apiKey">Root key</label>
+            <input id="apiKey" autocomplete="off" name="apiKey" placeholder="ROOT_API_KEY" type="password" />
+            <button type="submit">Connect</button>
+            <button id="refreshButton" disabled type="button">Refresh</button>
+          </form>
+        </header>
+        <section id="alert" class="alert" hidden></section>
+        <section class="summary-grid" aria-label="Runtime summary">
+          <article class="metric">
+            <span>Workers</span>
+            <strong id="workersCount">-</strong>
+          </article>
+          <article class="metric">
+            <span>Modules</span>
+            <strong id="modulesCount">-</strong>
+          </article>
+          <article class="metric">
+            <span>Requests</span>
+            <strong id="gatewayRequests">-</strong>
+          </article>
+          <article class="metric">
+            <span>Keys</span>
+            <strong id="keysCount">-</strong>
+          </article>
+        </section>
+        <section id="overview" class="view active">
+          <div class="panel">
+            <div class="panel-heading">
+              <h2>Runtime status</h2>
+              <span id="principalBadge" class="badge">offline</span>
+            </div>
+            <div id="overviewContent" class="detail-grid"></div>
+          </div>
+        </section>
+        <section id="workers" class="view">
+          <div class="panel">
+            <div class="panel-heading">
+              <h2>Workers</h2>
+              <span class="badge">runtime inventory</span>
+            </div>
+            <div id="workersTable" class="table"></div>
+          </div>
+        </section>
+        <section id="modules" class="view">
+          <div class="panel">
+            <div class="panel-heading">
+              <h2>Modules</h2>
+              <span class="badge">capabilities</span>
+            </div>
+            <div id="modulesTable" class="table"></div>
+          </div>
+        </section>
+        <section id="gateway" class="view">
+          <div class="panel">
+            <div class="panel-heading">
+              <h2>Gateway</h2>
+              <span class="badge">local diagnostics</span>
+            </div>
+            <div id="gatewayContent" class="detail-grid"></div>
+          </div>
+        </section>
+        <section id="keys" class="view">
+          <div class="panel keys-panel">
+            <div class="panel-heading">
+              <h2>API keys</h2>
+              <span class="badge">root only</span>
+            </div>
+            <form id="keyForm" class="key-form">
+              <input name="name" placeholder="Name" required />
+              <select name="role">
+                <option value="viewer">viewer</option>
+                <option value="editor">editor</option>
+                <option value="admin">admin</option>
+              </select>
+              <input name="permissions" placeholder="permissions, comma-separated" />
+              <input name="namespaces" placeholder="namespaces, default *" />
+              <button type="submit">Create</button>
+            </form>
+            <div id="createdKey" class="created-key" hidden></div>
+            <div id="keysTable" class="table"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="app.js" type="module"></script>
+  </body>
+</html>

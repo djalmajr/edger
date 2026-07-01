@@ -1,0 +1,5 @@
+name: cpanel
+version: "0.1.0"
+entrypoint: index.html
+injectBase: true
+visibility: public

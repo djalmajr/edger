@@ -142,6 +142,7 @@ OK planning/edger/status/checkpoint-2026-06-29-story-07-01-wip.md
 OK planning/edger/status/checkpoint-2026-06-29-story-07-04-deno-cli-bridge.md
 OK planning/edger/status/checkpoint-2026-06-29-story-07-05-wip.md
 OK planning/edger/status/checkpoint-2026-06-29-story-09-03-provider-turso-remote-wip.md
+OK planning/edger/status/checkpoint-2026-06-30-modular-ai-native-delivery.md
 OK planning/edger/status/closure-2026-06-28-edger-func.md
 OK planning/edger/status/closure-2026-06-29-story-08-01-value-parity.md
 OK planning/edger/status/closure-2026-06-29-story-08-02-admin-api.md
@@ -177,6 +178,8 @@ OK planning/edger/status/closure-2026-06-29-story-09-04-provider-wiring.md
 OK planning/edger/status/closure-2026-06-29-story-09-05-consumer-proofs.md
 OK planning/edger/status/consolidation-2026-06-28.md
 OK planning/edger/status/consolidation-2026-06-29-backlog-ready.md
+OK planning/edger/status/evidence/cpanel-browser-2026-06-30.md
+OK planning/edger/status/evidence/mcp-stdio-2026-06-30.md
 ---
-Total refs: 179
+Total refs: 182
 Missing: 0

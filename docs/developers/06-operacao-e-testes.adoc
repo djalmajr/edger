@@ -147,6 +147,15 @@ Limites de segurança v1:
 * O inventário MCP não serializa `env` de manifests.
 * Validação é local; nenhuma tool realiza deploy remoto.
 
+Validação stdio real registrada:
+
+* `planning/edger/status/evidence/mcp-stdio-2026-06-30.md` confirma
+  `tools/list`, `edger.list_capabilities`, `edger.validate_local`,
+  `edger.inspect_worker`, `edger.write_worker_file` em `dryRun` e
+  `edger.prepare_commit` contra o workspace atual.
+* O dry-run de `edger.write_worker_file` não criou arquivo e
+  `edger.prepare_commit` não fez commit, push, PR ou deploy remoto.
+
 ==== Validação manual de lançamento
 
 [source,bash]
@@ -465,6 +474,37 @@ serviço Turso remoto real continua opt-in por depender de URL/token externos.
 SDK worker para chamar operações diretamente, retry/backoff/DLQ completos e
 coordenação multi-pod ficam fora desta fatia.
 
+==== cPanel/admin UI local
+
+O cPanel inicial do edger é um frontend modular servido como worker estático em
+`workers/cpanel`. Ele não faz parte do core, não lê arquivos internos e consome
+as Admin APIs existentes com credencial root informada em memória pelo operador.
+
+[source,bash]
+----
+ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers \
+  cargo run -p edger-orchestrator --bin edger
+----
+
+Abra no Browser ou navegador local:
+
+[source]
+----
+http://127.0.0.1:19080/cpanel
+----
+
+Checks manuais mínimos:
+
+* Informar a root key e confirmar sessão `root · admin`.
+* Ver overview com contagem de workers, módulos/extensões e requests de gateway.
+* Abrir Workers, Modules, Gateway e Keys sem erro de console.
+* Criar uma chave descartável e revogá-la em seguida.
+
+Evidência Browser versionada:
+
+* `planning/edger/status/evidence/cpanel-browser-2026-06-30.md`
+* `planning/edger/status/evidence/cpanel-browser-2026-06-30.png`
+
 ==== Shell e gateway v1
 
 Um worker com `base: "/"` no manifesto atua como shell central. Navegações de
@@ -479,6 +519,7 @@ entrypoint: index.html
 base: "/"
 injectBase: true
 shellExcludes:
+  - cpanel
   - todos-shell-demo
 ----
 
@@ -508,6 +549,11 @@ O `edger-ext-gateway` também aplica políticas de borda locais:
 * Redirect rules por prefixo: regras ordenadas podem short-circuitar requests
   com status `301`, `302`, `307` ou `308`, preservando o sufixo do path e a
   query string no header `Location`.
+* Proxy local por prefixo: `GatewayProxyRule` encaminha para upstreams
+  `http://localhost` ou `http://127.0.0.1`, preserva sufixo/query, aplica
+  timeout local, remove `Authorization`, cookies e headers hop-by-hop antes do
+  upstream e registra `proxied`/`proxyErrors` em diagnostics. Alvos externos
+  continuam bloqueados nesta fatia.
 * Rate limit local em memória: quando configurado, o gateway mantém um token
   bucket por cliente (`X-Forwarded-For`, depois `X-Real-IP`, senão `unknown`) e
   bloqueia excesso com `429`, `x-ratelimit-limit`,
@@ -551,10 +597,11 @@ agregadas do rate limit local (`enabled`, `activeBuckets`, `maxRequests`,
 `windowSeconds`, `scope`), sem listar buckets ou chaves de cliente. Todos os
 endpoints exigem credencial root e são somente leitura.
 
-Proxy externo, cache, rate-limit persistente/distribuído, listagem/reset de
-buckets, mutações dinâmicas de gateway, SSE e excludes dinâmicos ficam fora do
-v1. Histórico persistente já existe como capacidade de composição e prova de
-contrato, mas ainda não tem wiring operacional próprio no binário.
+Proxy para alvos externos, cache, rate-limit persistente/distribuído,
+listagem/reset de buckets, mutações dinâmicas de gateway, SSE, vhosts e
+excludes dinâmicos ficam fora do v1. Histórico persistente já existe como
+capacidade de composição e prova de contrato, mas ainda não tem wiring
+operacional próprio no binário.
 
 ==== Healthcheck
 

@@ -43,9 +43,9 @@
 | Fase 8: Valor Buntime | [`epics/08-valor-buntime/`](epics/08-valor-buntime/00-overview.md) | 29 | **completed as consolidation** (matriz/paridade observável; novas capacidades seguem em epics próprios) | Fase 7 baseline |
 | Fase 9: Providers Duráveis Externos | [`epics/09-providers-duraveis-externos/`](epics/09-providers-duraveis-externos/00-overview.md) | 5 | in-progress (provider crate, wiring and consumer evidence delivered; real Turso target remains opt-in) | Fase 8.04, Fase 8.06 |
 | Fase 10: Operação de Extensões e Plugins | [`epics/10-operacao-extensoes-plugins/`](epics/10-operacao-extensoes-plugins/00-overview.md) | 4 | planned | Fase 6, Fase 8.13, Fase 8.26 |
-| Fase 11: Gateway Operacional Avançado | [`epics/11-gateway-operacional-avancado/`](epics/11-gateway-operacional-avancado/00-overview.md) | 4 | planned | Fase 8.15-8.21, Fase 9 |
-| Fase 12: Frontends Modulares e cPanel | [`epics/12-frontends-modulares-cpanel/`](epics/12-frontends-modulares-cpanel/00-overview.md) | 4 | planned | Fase 8.05, Fase 10, Fase 11 |
-| Fase 13: MCP e Authoring AI-native Local | [`epics/13-mcp-authoring-ai-native/`](epics/13-mcp-authoring-ai-native/00-overview.md) | 5 | planned | Fase 8, Fase 10, Fase 12 |
+| Fase 11: Gateway Operacional Avançado | [`epics/11-gateway-operacional-avancado/`](epics/11-gateway-operacional-avancado/00-overview.md) | 4 | in-progress (11.01 local loopback proxy delivered) | Fase 8.15-8.21, Fase 9 |
+| Fase 12: Frontends Modulares e cPanel | [`epics/12-frontends-modulares-cpanel/`](epics/12-frontends-modulares-cpanel/00-overview.md) | 4 | in-progress (minimum cPanel worker + Browser validation delivered) | Fase 8.05, Fase 10, Fase 11 |
+| Fase 13: MCP e Authoring AI-native Local | [`epics/13-mcp-authoring-ai-native/`](epics/13-mcp-authoring-ai-native/00-overview.md) | 5 | **completed** | Fase 8, Fase 10, Fase 12 |
 
 ## Suggested sequence
 1. Fase 1 (Fundação) -- Alinha o skeleton real e estabelece cultura (AGENTS, testes, gate). Alta prioridade porque desbloqueia tudo e evita dívida técnica.
@@ -97,7 +97,7 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 - Fases 1–6 **delivered**. Ver `status/checkpoint-2026-06-29-epic-06-closure.md`.
 - Fase 8 tem **prova executável de paridade de valor** e agora está fechada como consolidação/matriz; ver `status/checkpoint-2026-06-29-epic-08-value-parity.md`.
 - Fase 9 entregou provider externo, wiring configurável e provas de consumidores reais; ver `epics/09-providers-duraveis-externos/00-overview.md`.
-- **Próxima execução técnica:** decompor e executar Fase 10, 11, 12 e 13 em stories pequenas, mantendo validação local e sem deploy remoto.
+- **Próxima execução técnica:** continuar Fase 10, 11 e 12 em stories pequenas. Fase 11 já tem proxy local loopback em 11.01; Fase 12 já tem cPanel/admin UI mínimo validado no Browser, mas shell/catalog e frontends derivados de contributions seguem abertos. Fase 13 está entregue como MCP local funcional.
 - **Próxima estrutura de valor:** cada lacuna `must partial` ou módulo de produto deve ter epic dono claro; se crescer além de uma fatia coesa, criar novo epic em vez de continuar somando stories ao mesmo epic.
 - **Plano ativo:** `runtime-functional-plan.md`.
 - Per-story: `/agile-status` checkpoint + `/agile-refinement` após cada story (evidence em `status/`).

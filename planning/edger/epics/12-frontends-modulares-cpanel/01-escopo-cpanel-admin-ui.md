@@ -28,8 +28,8 @@ O Buntime tem cPanel e outras superficies de operacao. O edger precisa de uma UI
 ### TO-BE
 
 - Escopo inicial lista telas, dados, endpoints e estados vazios/erro.
-- Telas minimas: dashboard operacional, workers, modulos/extensoes, gateway e chaves operacionais.
-- Cada tela tem contrato de API, criterio de auth e criterio de Browser validation.
+- Telas minimas entregues: dashboard operacional, workers, modulos/extensoes, gateway e chaves operacionais.
+- Cada tela usa Admin API existente, credencial root em memoria e criterio de Browser validation.
 
 ### Scope
 
@@ -38,17 +38,17 @@ O Buntime tem cPanel e outras superficies de operacao. O edger precisa de uma UI
 
 ### Critérios de aceite
 
-- [ ] Escopo inicial referencia apenas APIs existentes ou stories donas.
-- [ ] Cada tela tem estados de loading, vazio, erro e acesso negado.
-- [ ] Nenhuma tela exige acesso direto a arquivos internos do runtime.
-- [ ] A matriz aponta Epic 12 como owner da UI administrativa.
+- [x] Escopo inicial referencia apenas APIs existentes ou stories donas.
+- [x] Cada tela tem estados de loading, vazio, erro e acesso negado.
+- [x] Nenhuma tela exige acesso direto a arquivos internos do runtime.
+- [x] A matriz aponta Epic 12 como owner da UI administrativa.
 
 ## Tasks
 
-- [ ] Mapear telas e endpoints minimos.
-- [ ] Definir estados de UI e limites de auth.
-- [ ] Identificar lacunas de API que pertencem aos Epics 10, 11 ou 13.
-- [ ] Atualizar matriz e docs.
+- [x] Mapear telas e endpoints minimos.
+- [x] Definir estados de UI e limites de auth.
+- [x] Identificar lacunas de API que pertencem aos Epics 10, 11 ou 13.
+- [x] Atualizar matriz e docs.
 
 ## Verification
 
@@ -59,3 +59,6 @@ cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
 ```
 
+## Status
+
+completed (2026-06-30) - `workers/cpanel` entrega a primeira UI administrativa modular: overview operacional, workers, modulos/extensoes, gateway e chaves. A UI consome apenas Admin APIs root existentes, mantem a root key em memoria, nao acessa arquivos internos e deixa lacunas de catalogo/shell para 12.02 e operacao dinamica para Epics 10/11.

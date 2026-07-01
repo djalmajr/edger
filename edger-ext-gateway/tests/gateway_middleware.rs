@@ -1,15 +1,33 @@
 //! Gateway middleware tests (story 06.03).
 
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::sync::Arc;
+use std::thread;
 
 use edger_core::{
     DurableSqlProvider, Extension, Middleware, RequestContext, SerializedRequest,
     SerializedResponse, StateValue,
 };
 use edger_ext_gateway::{
-    GatewayCorsConfig, GatewayExtension, GatewayRateLimitConfig, GatewayRedirectRule,
+    GatewayCorsConfig, GatewayExtension, GatewayProxyRule, GatewayRateLimitConfig,
+    GatewayRedirectRule,
 };
 use edger_ext_turso_remote::RemoteTursoProvider;
+
+fn local_upstream(response: &'static str) -> (String, thread::JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buffer = [0_u8; 4096];
+        let read = stream.read(&mut buffer).unwrap();
+        let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+        stream.write_all(response.as_bytes()).unwrap();
+        request
+    });
+    (format!("http://{addr}"), handle)
+}
 
 #[test]
 fn on_request_returns_none_continue() {
@@ -171,6 +189,54 @@ fn cors_preflight_wins_over_redirect_rule() {
         .headers
         .iter()
         .all(|(name, _)| !name.eq_ignore_ascii_case("location")));
+}
+
+#[test]
+fn proxy_rule_forwards_to_local_upstream_without_sensitive_headers() {
+    let (target, handle) = local_upstream(
+        "HTTP/1.1 201 Created\r\ncontent-type: application/json\r\ncontent-length: 11\r\nconnection: close\r\n\r\n{\"ok\":true}",
+    );
+    let ext = GatewayExtension::new().with_proxy_rules(vec![GatewayProxyRule::try_new(
+        "/api",
+        format!("{target}/v1"),
+    )
+    .unwrap()]);
+    let mut req = SerializedRequest {
+        method: "GET".into(),
+        uri: "/api/users?active=1".into(),
+        headers: vec![
+            ("authorization".into(), "Bearer should-not-forward".into()),
+            ("x-request-id".into(), "proxy-test".into()),
+        ],
+        body: None,
+        request_id: "proxy-test".into(),
+        base_href: None,
+    };
+    let ctx = RequestContext::new("proxy-test");
+
+    let response = ext.on_request(&mut req, &ctx).unwrap().unwrap();
+    let upstream_request = handle.join().unwrap();
+
+    assert_eq!(response.status, 201);
+    assert_eq!(response.body.as_deref(), Some(&b"{\"ok\":true}"[..]));
+    assert!(response
+        .headers
+        .contains(&("content-type".into(), "application/json".into())));
+    assert!(upstream_request.starts_with("GET /v1/users?active=1 HTTP/1.1"));
+    assert!(upstream_request.contains("x-request-id: proxy-test"));
+    assert!(!upstream_request.contains("authorization"));
+    assert!(!upstream_request.contains("should-not-forward"));
+
+    let diagnostics = ext.diagnostics().unwrap();
+    assert_eq!(diagnostics["requests"]["proxied"], 1);
+    assert_eq!(diagnostics["config"]["proxyRules"]["count"], 1);
+}
+
+#[test]
+fn proxy_rule_rejects_non_local_targets() {
+    let err = GatewayProxyRule::try_new("/api", "http://example.com").unwrap_err();
+
+    assert_eq!(err.code, "GATEWAY_PROXY_TARGET_DENIED");
 }
 
 #[test]

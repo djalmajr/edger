@@ -19,7 +19,7 @@ Definir e entregar a primeira estrutura de frontends modulares do edger: cPanel/
 - Shell v1 e static SPA routing ja existem.
 - Workers demo validam document routing e `/todos`.
 - Menus de extensao existem como capability tipada.
-- UI administrativa final ainda esta fora do v1.
+- cPanel/admin UI minimo agora existe como worker modular; shell/catalogo derivado de contributions ainda esta fora do v1.
 
 ### TO-BE
 
@@ -39,21 +39,20 @@ Definir e entregar a primeira estrutura de frontends modulares do edger: cPanel/
 
 | Story | Arquivo | Objetivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|---|
-| 12.01 Escopo cPanel/admin UI | `01-escopo-cpanel-admin-ui.md` | Mapear telas e contratos minimos do cPanel/admin UI | medium | planned | Epic 08.02, Epic 10.01 |
+| 12.01 Escopo cPanel/admin UI | `01-escopo-cpanel-admin-ui.md` | Mapear telas e contratos minimos do cPanel/admin UI | medium | completed | Epic 08.02, Epic 10.01 |
 | 12.02 Shell e catalogo de modulos | `02-shell-catalogo-modulos.md` | Tornar shell/catalogo alimentado por menu/capability contributions | large | planned | 12.01, Epic 10.01 |
-| 12.03 Packaging de frontends | `03-packaging-frontends-workers.md` | Empacotar frontends como workers/apps versionados e isolados | medium | planned | 12.02 |
-| 12.04 Validacao Browser local | `04-validacao-browser-local.md` | Validar os fluxos front-end localmente com Browser/Playwright | medium | planned | 12.01, 12.02, 12.03 |
+| 12.03 Packaging de frontends | `03-packaging-frontends-workers.md` | Empacotar frontends como workers/apps versionados e isolados | medium | completed | 12.01 |
+| 12.04 Validacao Browser local | `04-validacao-browser-local.md` | Validar os fluxos front-end localmente com Browser/Playwright | medium | completed | 12.01, 12.03 |
 
 ## Epic acceptance criteria
 
-- [ ] cPanel/admin UI tem escopo inicial, telas e contratos vinculados a APIs existentes ou planejadas.
+- [x] cPanel/admin UI tem escopo inicial, telas e contratos vinculados a APIs existentes ou planejadas.
 - [ ] Shell/catalogo renderiza modulos a partir de contributions tipadas.
-- [ ] Frontends sao empacotados como workers/apps e nao como parte do core.
-- [ ] Browser validation local cobre pelo menos catalogo, detalhe de worker/modulo e erro operacional.
-- [ ] UI nao introduz bypass de auth, CSRF ou namespace.
+- [x] Frontends sao empacotados como workers/apps e nao como parte do core.
+- [x] Browser validation local cobre cPanel minimo, detalhe operacional e fluxo de erro/acesso controlado por root key.
+- [x] UI nao introduz bypass de auth, CSRF ou namespace.
 - [ ] Gate de planejamento fica verde: `SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh`.
 
 ## Status
 
-planned (2026-06-29) - criado para separar cPanel/admin UI, shell, catalogo e packaging de frontends do core e do Epic 08.
-
+in-progress (2026-06-30) - cPanel/admin UI minimo foi entregue em `workers/cpanel`, empacotado como Static SPA worker e validado no Browser in-app com login root e criacao/revogacao de chave descartavel. Shell/catalogo por `MenuContribution` segue aberto na Story 12.02.
