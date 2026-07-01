@@ -541,3 +541,57 @@ kind: wasm
         .unwrap();
     assert_eq!(body.as_ref(), b"wasm-hello");
 }
+
+#[tokio::test]
+async fn same_process_serves_deno_and_wasm_workers_from_one_pool() {
+    let root = tempfile::tempdir().unwrap();
+    let js_dir = root.path().join("js-hello");
+    let wasm_dir = root.path().join("wasm-hello");
+    fs::create_dir_all(&js_dir).unwrap();
+    fs::create_dir_all(&wasm_dir).unwrap();
+    fs::write(
+        js_dir.join("manifest.yaml"),
+        r#"name: js-hello
+version: "1.0.0"
+entrypoint: index.ts
+kind: fetch
+"#,
+    )
+    .unwrap();
+    fs::write(
+        js_dir.join("index.ts"),
+        r#"Deno.serve(() => new Response("js-ok", {
+  headers: { "content-type": "text/plain" },
+}));
+"#,
+    )
+    .unwrap();
+    fs::write(
+        wasm_dir.join("manifest.yaml"),
+        r#"name: wasm-hello
+version: "1.0.0"
+entrypoint: index.wat
+kind: wasm
+"#,
+    )
+    .unwrap();
+    fs::write(
+        wasm_dir.join("index.wat"),
+        r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 0) "wasm-ok")
+  (func (export "http_status") (result i32) i32.const 200)
+  (func (export "http_body_len") (result i32) i32.const 7)
+)"#,
+    )
+    .unwrap();
+
+    let app = build_pipeline(state_with_workers(root.path().to_path_buf()));
+    let (js_status, js_body) = dispatch(app.clone(), "GET", "/js-hello", Body::empty()).await;
+    let (wasm_status, wasm_body) = dispatch(app, "GET", "/wasm-hello", Body::empty()).await;
+
+    assert_eq!(js_status, StatusCode::OK);
+    assert_eq!(js_body.as_ref(), b"js-ok");
+    assert_eq!(wasm_status, StatusCode::OK);
+    assert_eq!(wasm_body.as_ref(), b"wasm-ok");
+}

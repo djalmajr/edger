@@ -35,7 +35,7 @@ Documento dedicado para itens não resolvidos durante execução da Fase 7.
 - [x] `serve_static_spa` v1 com path traversal/base injection.
 - [ ] Harden de permissões/sandbox/erros de filesystem da Deno CLI bridge.
 
-### 07.05 Wasm execution — **in progress (v1)**
+### 07.05 Wasm execution — **completed (standalone wasmtime v1)**
 
 - [x] ABI mínima `http_status` + `http_body_len` + testes
 - [x] Load from worker dir + pool E2E
@@ -43,9 +43,13 @@ Documento dedicado para itens não resolvidos durante execução da Fase 7.
 - [x] Env filter em `WasiConfig` (`AWS_*`, `DB_*`, `*_KEY`, `*_SECRET`)
 - [x] `WorkerPool::fetch` usa `WorkerConfig.kind` quando `kind_hint` não é passado
 - [x] Factory dinâmica do orquestrador Rust escolhe `WasmIsolate` por kind
+- [x] Coexistência JS/TS + Wasm no mesmo processo/pool coberta por integração
+- [x] Fixture `workers/wasm-hello/index.wat` documenta materialização opcional de `index.wasm`
 - [ ] Host WASI real: preopen apenas worker root + env inject permitido
 - [ ] ABI request/response em linear memory
-- Ver `status/checkpoint-2026-06-29-story-07-05-wip.md`
+- Ver `status/checkpoint-2026-06-29-story-07-05-wip.md`,
+  `status/evidence/story-07-05-runtime.txt` e
+  `status/closure-2026-07-01-story-07-05-wasm-execution.md`
 
 ### 07.01 Manifests + kinds — **in progress**
 

@@ -21,6 +21,7 @@ Paridade de valor fica em `planning/edger/docs/value-parity-matrix.md`. Esta mat
 | CommonJS Node server examples | Node `http.createServer` adapter | partial | Simple `commonjs` tested; Buntime-compatible mounted paths strip worker base and expose `x-base`, so standalone Hono route `/commonjs-hono` resolves at `/commonjs-hono/commonjs-hono` |
 | Mounted worker base path | Relative request path + `x-base` | tested | Mirrors Buntime `createWorkerRequest`; namespaced worker test asserts `/api/ping` + `x-base: /@team/checkout` |
 | `routes` export | isolation | pending | E2E 07.04 |
+| Wasm standalone worker | wasmtime `WasmIsolate` | tested | `edger-isolation/tests/wasm_integration.rs`; `edger-worker/tests/wasm_pool_integration.rs`; `edger-orchestrator/tests/kind_dispatch_integration.rs`; ABI v1 reads response body from `memory` offset `0` using `http_status` and `http_body_len`, rejects host/WASI imports by default, and coexists with Deno workers in the same pool |
 | Static file read from JS worker | Deno CLI bridge | tested | `serve-html` E2E |
 | Static SPA (`entrypoint: index.html`) | Rust `serve_static_spa` | tested | `edger-orchestrator/tests/manifest_loader.rs`; `workers` fixture + manual `buntime/apps/todos` HTTP validation: manifest-less discovery, index/assets/favicon/fallback + `<base href="/todos/">` |
 | `visibility: public` worker access | auth pipeline bypass | tested | `todos` manual no-auth HTTP validation + `public_visibility_worker_bypasses_auth` |

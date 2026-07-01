@@ -66,7 +66,7 @@ Consolidar o runtime para uso real e migração Buntime: execução production-p
 | 07.02 Shell routing | `02-shell-routing.md` | medium | not started | 07.01 |
 | 07.03 Cron nativo | `03-native-cron.md` | medium | **completed** (tokio scheduler v1) | 07.01, Epic 05 |
 | 07.04 Execução JS real | `04-real-js-execution.md` | large | in progress (Deno CLI bridge v1) | Epic 03 (spike), Epic 04, Epic 05 |
-| 07.05 Execução Wasm | `05-wasm-execution.md` | large | **in progress** (v1 ABI) | Epic 03 (spike), Epic 04, Epic 05 |
+| 07.05 Execução Wasm | `05-wasm-execution.md` | large | **completed** (standalone wasmtime v1; ABI/WASI host follow-ups) | Epic 03 (spike), Epic 04, Epic 05 |
 | 07.06 Observabilidade OTEL | `06-observability-otel.md` | medium | **completed** (observability v1; OTLP exporter pending) | 07.01, 07.04, 07.05 |
 | 07.07 Hardening + matriz compat | `07-hardening-compat-matrix.md` | large | not started | 07.02, 07.03, 07.06 |
 
@@ -100,7 +100,7 @@ flowchart LR
 
 ## Epic acceptance criteria
 - [ ] `load_manifests_from_dirs` carrega workers de `RUNTIME_WORKER_DIRS` (`:`) com inferência de `ExecutionKind` e colisão detectada.
-- [ ] Todos os variants de `ExecutionKind` despacham para backend correto (JS via deno_core facade; Wasm via wasmtime; StaticSpa com `inject_base`).
+- [ ] Todos os variants de `ExecutionKind` despacham para backend correto (JS via Deno CLI bridge/deno_core target; Wasm via wasmtime; StaticSpa com `inject_base`).
 - [ ] Shell routing serve HTML com `<base href>` quando `inject_base: true`; notas de protocolo evoluído documentadas.
 - [x] Cron nativo dispara requisições internas conforme `manifest.cron[]`; testes cobrem schedule v1 + auth interna.
 - [x] Tracing estruturado com `request_id` em orchestrator -> pool -> isolate;
@@ -128,6 +128,6 @@ flowchart LR
 - Ao fechar o épico: `/agile-refinement` + atualizar `planning/edger/roadmap.md` (Fase 7 → done).
 
 ## Status
-**in-progress** (2026-07-01) — Epic 06 done; 07.05 v1 slice delivered; 07.04 Deno CLI bridge v1 delivered; 07.03 cron scheduler v1 delivered; 07.06 observability v1 delivered; `deno_core` embedded boot and OTLP exporter layer remain pending. Pendências: `docs/pendencies-epic-07.md`
+**in-progress** (2026-07-01) — Epic 06 done; 07.05 standalone wasmtime v1 delivered; 07.04 Deno CLI bridge v1 delivered; 07.03 cron scheduler v1 delivered; 07.06 observability v1 delivered; `deno_core` embedded boot, full Wasm request-memory ABI, host WASI and OTLP exporter layer remain pending. Pendências: `docs/pendencies-epic-07.md`
 
 Plano funcional ativo: `planning/edger/runtime-functional-plan.md`.
