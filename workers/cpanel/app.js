@@ -173,7 +173,7 @@ function renderWorkers() {
     state.workers.map((worker) => [
       code(worker.name),
       text(worker.version),
-      text(worker.kind),
+      text(kindLabel(worker.kind)),
       status(worker.visibility),
       status(worker.status),
       text(worker.source),
@@ -186,7 +186,7 @@ function renderModules() {
     ["Name", "Kind", "Status", "Capabilities", "Priority"],
     state.modules.map((mod) => [
       code(mod.name),
-      text(mod.kind),
+      text(kindLabel(mod.kind)),
       status(mod.status),
       listText(mod.capabilities),
       text(mod.priority),
@@ -270,6 +270,18 @@ function text(value) {
 
 function listText(value) {
   return text(Array.isArray(value) && value.length ? value.join(", ") : "-");
+}
+
+// ExecutionKind serializes unit variants as strings ("FetchHandler") and
+// data-carrying variants as objects ({ StaticSpa: {...} }); surface the variant name.
+function kindLabel(kind) {
+  if (kind == null) return "-";
+  if (typeof kind === "string") return kind;
+  if (typeof kind === "object") {
+    const keys = Object.keys(kind);
+    return keys.length ? keys[0] : "-";
+  }
+  return String(kind);
 }
 
 function splitCsv(value) {
