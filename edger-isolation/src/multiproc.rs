@@ -66,6 +66,7 @@ impl DenoWorkerProcess {
         entrypoint: Option<&str>,
         timeout: Duration,
         env: &std::collections::HashMap<String, String>,
+        memory_mb: Option<u32>,
     ) -> Result<Self, IsolationError> {
         let worker_dir = worker_dir.canonicalize().map_err(|err| {
             IsolationError::new("UDS_WORKER_DIR", format!("invalid worker_dir: {err}"))
@@ -104,6 +105,14 @@ impl DenoWorkerProcess {
             // node/npm frameworks (express etc.) may query os/sys info.
             .arg("--allow-sys")
             .env_clear();
+        // Memory cap via the V8 heap limit — the correct, portable enforcement
+        // for a V8 process (RLIMIT_AS is unusable: V8 reserves a huge virtual
+        // address space and would be killed at boot). A worker that leaks past
+        // the heap cap is aborted by V8 with a fatal OOM; the pool then recycles
+        // it. On Linux, cgroup `memory.max` is the production-grade RSS backstop.
+        if let Some(mb) = memory_mb {
+            command.arg(format!("--v8-flags=--max-old-space-size={mb}"));
+        }
         inject_runtime_env(&mut command);
         inject_manifest_env(&mut command, env);
         if let Some(config_path) = deno_config_path(&worker_dir) {
@@ -353,11 +362,13 @@ impl DenoProcessIsolate {
                 IsolationError::new("UDS_WORKER_DIR", "worker_dir is required for Deno process")
             })?;
             let timeout = Duration::from_millis(config.timeout_ms.max(1));
+            let limits = crate::limits::ResourceLimits::from_config(config);
             let process = DenoWorkerProcess::spawn(
                 worker_dir,
                 config.entrypoint.as_deref(),
                 timeout,
                 &config.env,
+                limits.memory_mb,
             )
             .await?;
             self.process = Some(process);

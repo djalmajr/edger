@@ -17,7 +17,7 @@ fn request(method: &str, uri: &str, body: Option<&[u8]>) -> SerializedRequest {
         method: method.into(),
         uri: uri.into(),
         headers: vec![],
-        body: body.map(|b| bytes::Bytes::copy_from_slice(b)),
+        body: body.map(bytes::Bytes::copy_from_slice),
         request_id: "uds-test".into(),
         base_href: None,
     }
@@ -47,6 +47,7 @@ Deno.serve(async (req: Request) => {
         Some("index.ts"),
         Duration::from_secs(20),
         &HashMap::new(),
+        None,
     )
     .await
     .expect("worker should spawn and become ready");
@@ -85,6 +86,7 @@ async fn worker_that_throws_on_load_fails_spawn() {
         Some("index.ts"),
         Duration::from_secs(20),
         &HashMap::new(),
+        None,
     )
     .await;
     let err = match result {
@@ -110,6 +112,7 @@ async fn warm_worker_latency_probe() {
         Some("index.ts"),
         Duration::from_secs(20),
         &HashMap::new(),
+        None,
     )
     .await
     .unwrap();
