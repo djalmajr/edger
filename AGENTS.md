@@ -26,7 +26,8 @@
   - or `export default { fetch(req) {} }`
   - or `export default fetchFn`
 - Copy examples verbatim from edge-runtime/examples into workers/<name>/ (preserve index).
-- JS/TS workers currently execute via the Deno CLI bridge (`deno` on PATH or `EDGER_DENO_BIN`), sandboxed with `deno run --no-prompt`: read access limited to the worker dir, write/run/ffi/sys denied, network configurable via `EDGER_DENO_ALLOW_NET` (`false`/`0`/`none` denies; host list restricts; default allows). Embedded `deno_core` remains the production target; do not reintroduce a Bun adapter.
+- JS/TS workers execute by default on a **persistent Deno process** per worker over a Unix domain socket (Epic 15): the module is imported once and served across requests (warm p50 ~1.6ms end-to-end, ~25x vs v1). Per-worker heap cap via `--v8-flags=--max-old-space-size` (from `ResourceLimits::from_config`); response bodies read as bounded streams (`EDGER_STREAM_MAX_BYTES`/`EDGER_STREAM_IDLE_MS`) so infinite/SSE streams never hang the process. `deno` on PATH or `EDGER_DENO_BIN`; sandboxed with `deno run --no-prompt` (read limited to worker dir + Deno cache, write/run/ffi denied, `--allow-net`/`--allow-env`/`--allow-sys` for npm compat; network configurable via `EDGER_DENO_ALLOW_NET`).
+- **Legacy fallback:** `EDGER_JS_RUNTIME=bridge` forces the v1 per-request CLI bridge (`deno run` per request, bounded-first-chunk streaming). It is retained as an emergency fallback only; the persistent process is the supported path. Embedding `deno_core` was evaluated and rejected in favor of the durable multi-process design; do not reintroduce a Bun adapter.
 - Workers may export `routes` (Bun.serve-style: exact > `:param` > `*` wildcard, per-method maps, `fetch` fallback) in addition to `Deno.serve`/default fetch.
 
 ## Discipline

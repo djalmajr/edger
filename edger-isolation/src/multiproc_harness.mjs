@@ -321,11 +321,49 @@ function buildRequest(raw) {
   return new Request(url, init);
 }
 
+// Response body limits (story 15.E). The Isolate contract is buffered, so an
+// infinite stream (SSE, heartbeat) must not hang or desync the persistent
+// process. Read the body as a bounded stream: stop on end (finite), on the byte
+// cap, or when the stream idles past the deadline. Finite bodies come through
+// whole (multi-chunk, not bounded-first-chunk); infinite ones are bounded and
+// the connection stays framed-in-sync. True HTTP passthrough streaming is a
+// separate change to the Isolate contract.
+const STREAM_IDLE_SENTINEL = Symbol("idle");
+const STREAM_MAX_BYTES =
+  parseInt(Deno.env.get("EDGER_STREAM_MAX_BYTES") ?? "", 10) || 8 * 1024 * 1024;
+const STREAM_IDLE_MS =
+  parseInt(Deno.env.get("EDGER_STREAM_IDLE_MS") ?? "", 10) || 1000;
+
+async function drainBounded(body) {
+  const reader = body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (total < STREAM_MAX_BYTES) {
+      let timer;
+      const idle = new Promise((resolve) => {
+        timer = setTimeout(() => resolve(STREAM_IDLE_SENTINEL), STREAM_IDLE_MS);
+      });
+      const result = await Promise.race([reader.read(), idle]);
+      clearTimeout(timer);
+      if (result === STREAM_IDLE_SENTINEL || result.done) break;
+      const bytes = asUint8Array(result.value);
+      chunks.push(bytes);
+      total += bytes.length;
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch (_) {
+      // reader already released / stream errored — nothing to clean up.
+    }
+  }
+  return concatChunks(chunks, total);
+}
+
 async function respond(handler, raw) {
   const response = await handler(buildRequest(raw));
-  const bodyBytes = response.body
-    ? new Uint8Array(await response.arrayBuffer())
-    : new Uint8Array();
+  const bodyBytes = response.body ? await drainBounded(response.body) : new Uint8Array();
   return {
     status: response.status,
     headers: Array.from(response.headers.entries()),

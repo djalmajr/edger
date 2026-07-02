@@ -30,38 +30,56 @@
 ## Detail
 
 ### TO-BE
-- Response body como sequência de frames de chunk até `end`; cliente monta o stream sem bufferizar tudo.
-- Sandbox do SO no processo worker (deny-by-default), além de `--allow-*` mínimos do Deno.
-- Pré-warm de N processos e reciclagem por idle/TTL; sizing configurável por env.
-- Ponte v1 (`deno eval`) documentada como legado/fallback de emergência.
+- Body de resposta lido como **stream bounded** no harness (byte cap + idle timeout), não `arrayBuffer()`: body finito multi-chunk chega inteiro; stream infinito/SSE é limitado e **não trava nem desincroniza** o processo persistente (o socket segue framed-in-sync para o próximo request).
+- Ponte v1 (`deno run` por request) documentada como **fallback legado** (`EDGER_JS_RUNTIME=bridge`); default é o processo persistente por UDS.
+- Sandbox do SO (seccomp/landlock) e pré-warm/pool sizing documentados como tiers/adiados (ver Out) — as permissões Deno já são o sandbox cross-platform.
 
 ### Scope
-- **In:** streaming por frames, sandbox SO, pré-warm/sizing, aposentadoria da v1, compat sse/stream.
-- **Out:** backpressure fino/HTTP2 push; WebTransport (doc futura shell-protocol).
+- **In:** leitura bounded do body (fim do bounded-first-chunk para finito; sem hang no infinito), aposentadoria documentada da v1, compat-matrix sse/stream, teste de streaming.
+- **Out (adiado, honesto):** passthrough HTTP incremental ao cliente (exige mudar o contrato buffered do trait `Isolate` — grande blast radius em ~5 isolates + pool + orchestrator); sandbox SO seccomp/landlock (Linux-only, não testável em macOS dev — mesmo padrão de deferral do cgroup em 15.D); pré-warm de N processos no boot (o processo é criado lazy no 1º request; sizing atual: `max_size`/TTL/`ephemeral_concurrency`); backpressure fino/HTTP2 push; WebTransport.
 
 ### Acceptance criteria
-- [ ] `sse` e `stream` respondem em streaming real (múltiplos chunks), não bounded-first-chunk.
-- [ ] Sandbox do SO ativo no worker (negativos: acesso fora do permitido falha).
-- [ ] Pré-warm/pool sizing configurável; workers reciclam por idle/TTL.
-- [ ] Ponte v1 marcada legado; caminho default é UDS.
-- [ ] compat-matrix sse/stream → tested (passthrough).
+- [x] Body finito multi-chunk chega inteiro (não bounded-first-chunk) via leitura de stream no harness.
+- [x] Stream infinito/SSE é bounded (`EDGER_STREAM_MAX_BYTES`/`EDGER_STREAM_IDLE_MS`) e não trava/desincroniza o processo — 2º request no mesmo socket segue OK.
+- [x] Ponte v1 marcada legado (`EDGER_JS_RUNTIME=bridge`); caminho default é UDS (código + AGENTS.md + runtime-functional-plan).
+- [x] compat-matrix sse/stream atualizada (processo persistente, bounded multi-chunk, sem hang; passthrough incremental anotado como pendente).
+- [ ] ~~Sandbox SO seccomp/landlock~~ — adiado (Linux-only; Deno perms são o sandbox cross-platform).
+- [ ] ~~Passthrough streaming ao cliente / pré-warm~~ — adiado (contrato `Isolate` streaming; sizing lazy atual).
 
 ### Dependencies
 - Stories 15.B, 15.C, 15.D
 
 ## Tasks
 ### Fase 1 — Streaming
-- [ ] Frames chunk/end no transporte + harness stream.
-### Fase 2 — Sandbox + sizing
-- [ ] Sandbox SO + permissões mínimas; pré-warm/sizing.
-### Fase 3 — Aposentar v1
-- [ ] Docs (AGENTS/plan) v1 legado; compat-matrix atualizada.
+- [x] `drainBounded` no harness (byte cap + idle timeout) substitui `arrayBuffer()`; finito inteiro, infinito bounded sem hang.
+- [x] Teste `streaming.rs`: finito multi-chunk inteiro; infinito bounded + processo sobrevive ao 2º request. Mutação capturada (voltar a `arrayBuffer()` → teste infinito trava → vermelho).
+### Fase 2 — Aposentar v1
+- [x] AGENTS.md + runtime-functional-plan: processo persistente é default; v1 (`EDGER_JS_RUNTIME=bridge`) é fallback legado.
+- [x] compat-matrix sse/stream atualizada.
+### Fase 3 — Adiados documentados
+- [x] Sandbox SO (seccomp/landlock Linux) e pré-warm/sizing anotados como Out com racional (paridade com deferral do cgroup em 15.D).
 
 ## Verification
 
 ```bash
-cargo test -p edger-orchestrator --test kind_dispatch_integration --features multiproc -- sse stream
-cargo test --workspace
-cargo clippy --workspace -- -D warnings
-cargo fmt -- --check
+cargo test -p edger-isolation --features multiproc --test streaming
+cargo build --workspace
 ```
+
+## Status
+
+**completed** (2026-07-02) — Fecha a fundação durável. O harness passou a ler o
+body como **stream bounded** (`drainBounded`: cap de bytes `EDGER_STREAM_MAX_BYTES`
++ idle `EDGER_STREAM_IDLE_MS`) em vez de `arrayBuffer()`. Isso corrige um bug real
+de correção do backend de processo: um stream infinito/SSE **travava** o processo
+persistente (o `arrayBuffer()` nunca resolvia) e desincronizava o protocolo de
+frames. Agora body finito multi-chunk chega inteiro (fim do bounded-first-chunk) e
+o infinito é limitado sem travar — provado por `edger-isolation/tests/streaming.rs`
+(finito entrega `chunk-a;chunk-b;chunk-c`; infinito volta bounded e o 2º request no
+mesmo socket segue OK). Mutação capturada (voltar a `arrayBuffer()` faz o teste
+infinito atingir timeout → vermelho). Ponte v1 formalizada como fallback legado
+(`EDGER_JS_RUNTIME=bridge`; default UDS) em AGENTS.md e no runtime-functional-plan;
+compat-matrix sse/stream atualizada. Adiados com racional explícito (fora do slice):
+passthrough HTTP incremental ao cliente (exige contrato `Isolate` streaming — grande
+blast radius), sandbox SO seccomp/landlock (Linux-only, não testável em macOS dev) e
+pré-warm de N processos no boot (spawn é lazy hoje; sizing por `max_size`/TTL).

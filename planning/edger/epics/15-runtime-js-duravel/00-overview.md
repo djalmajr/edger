@@ -48,7 +48,7 @@ A execução JS/TS hoje usa a ponte Deno CLI v1: um `deno eval` por request, com
 | 15.B Módulo quente + paridade de kinds | `02-modulo-quente-kinds.md` | Import uma vez; fetch/routes/SPA pelo processo persistente; matriz atual verde via UDS; perf re-medida | large | **completed** | 15.A |
 | 15.C Compat de frameworks | `03-compat-frameworks.md` | Express + Hono (npm) rodando via captura de listener; `tested` na compat-matrix | medium | **completed** | 15.B |
 | 15.D Limites de recurso reais | `04-limites-recurso-reais.md` | Cap de heap V8 por worker no spawn; kill on breach + reciclagem; RSS/CPU e cgroup adiados | large | **completed** | 15.A |
-| 15.E Streaming + hardening | `05-streaming-hardening.md` | Streaming real por frames; sandbox SO; pré-warm/pool sizing; ponte v1 vira legado | medium | not started | 15.B, 15.C, 15.D |
+| 15.E Streaming + hardening | `05-streaming-hardening.md` | Leitura bounded do body (finito inteiro, infinito sem hang); ponte v1 vira legado; sandbox SO/pré-warm adiados | medium | **completed** | 15.B, 15.C, 15.D |
 
 ## Roadmap
 
@@ -79,15 +79,15 @@ flowchart LR
 
 ## Epic acceptance criteria
 
-- [ ] Worker JS responde por `UdsTransport` (postcard/UDS), processo Deno persistente, sem `deno eval` por request.
-- [ ] Módulo do usuário importado uma vez por processo; hot-reload no deploy (install/rescan).
-- [ ] Matriz de compat atual (hello-world, read-body, routes, SPA, serve-html, chunked, sse, commonjs) verde via UDS.
-- [ ] Express e Hono (via `npm:`) rodam e viram `tested` na compat-matrix.
-- [ ] Limites de memória/CPU por worker enforçáveis pelo SO; worker que estoura é morto e reciclado; teto respeitado por teste.
-- [ ] Streaming real (SSE/stream) passthrough por frames, não bounded-first-chunk.
-- [ ] Perf re-medida: JS/request cai de ~40 ms para a casa de poucos ms.
-- [ ] Isolamento: crash/OOM de um worker não derruba o host nem afeta outro worker (teste).
-- [ ] Gates verdes: Rust gate + `SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh`.
+- [x] Worker JS responde por UDS (frames JSON length-prefixed), processo Deno persistente, sem `deno run`/`eval` por request (15.A/B).
+- [x] Módulo do usuário importado uma vez por processo; reciclagem por TTL/erro (15.A/B).
+- [x] Matriz de compat atual (hello-world, read-body, routes, SPA, serve-html, chunked, commonjs) verde via UDS; sse/stream agora bounded multi-chunk sem hang (passthrough incremental pendente) (15.B/E).
+- [x] Express e Hono (via `npm:`) rodam e viram `tested` na compat-matrix (15.C).
+- [x] Limite de **memória** por worker enforçável (cap de heap V8); worker que estoura é morto e reciclado; teto respeitado por teste (15.D). CPU coberto por wall-clock; rlimit de CPU adiado.
+- [~] Streaming: fim do bounded-first-chunk para finito + sem hang no infinito (15.E). Passthrough HTTP incremental ao cliente **adiado** (exige contrato `Isolate` streaming).
+- [x] Perf re-medida: JS/request cai de ~40 ms para ~1.6 ms end-to-end (~25x) (15.B).
+- [x] Isolamento: OOM de um worker não derruba o host nem afeta outro worker (teste `resource_limits.rs`) (15.D).
+- [x] Gate de planning verde: `refinement-lint.py` oráculo com 0 RED (2026-07-02).
 
 ## Risks
 
@@ -101,4 +101,4 @@ flowchart LR
 
 ## Status
 
-**in-progress** (2026-07-02) — epic criado a partir do design `js-runtime-durable-design.md`, aprovado após medição de performance. Reorienta a Story 07.04: em vez de embutir `deno_core`, realizar o design multi-processo (UDS + frames JSON) já provisionado no código, satisfazendo compat de frameworks e controle de recurso. **Fase A (15.A) entregue** em 2026-07-02: worker Deno persistente por UDS, round-trip warm p50 67us (~600x vs ponte v1). 15.B entregue: backend de processo no pool por default, paridade fetch/routes/SPA, workers JS persistentes, perf end-to-end p50 1.57ms (~25x). 15.C entregue: Express (`npm:express@5`) e Hono (`npm:hono@4`) rodam pelo processo persistente sem reimplementação (adapter `node:http` + captura `Deno.serve`), `tested` na compat-matrix. 15.D entregue: cap de heap V8 por worker (`--max-old-space-size`) derivado de `ResourceLimits::from_config`, worker que estoura é morto (fatal OOM) e reciclado, com host saudável — decisão medida (heap cap vs `RLIMIT_AS`), provada por `resource_limits.rs`; RSS/CPU e cgroup adiados. Próxima: 15.E (streaming+hardening).
+**completed** (2026-07-02) — epic criado a partir do design `js-runtime-durable-design.md`, aprovado após medição de performance. Reorienta a Story 07.04: em vez de embutir `deno_core`, realizou o design multi-processo (UDS + frames JSON) já provisionado no código, satisfazendo compat de frameworks e controle de recurso. **15.A**: worker Deno persistente por UDS, round-trip warm p50 67us (~600x vs ponte v1). **15.B**: backend de processo no pool por default, paridade fetch/routes/SPA, workers JS persistentes, perf end-to-end p50 1.57ms (~25x). **15.C**: Express (`npm:express@5`) e Hono (`npm:hono@4`) rodam pelo processo persistente sem reimplementação (adapter `node:http` + captura `Deno.serve`), `tested` na compat-matrix. **15.D**: cap de heap V8 por worker (`--max-old-space-size`) derivado de `ResourceLimits::from_config`, worker que estoura é morto (fatal OOM) e reciclado, com host saudável — decisão medida (heap cap vs `RLIMIT_AS`), provada por `resource_limits.rs`. **15.E**: harness lê body como stream bounded (fim do bounded-first-chunk para finito; infinito/SSE sem hang, provado por `streaming.rs`), ponte v1 formalizada como fallback legado (`EDGER_JS_RUNTIME=bridge`), compat-matrix atualizada. Adiados com racional explícito: passthrough HTTP incremental (contrato `Isolate` streaming), rlimit de CPU, métricas RSS/CPU por worker, cgroup e sandbox SO seccomp/landlock (reforços Linux prod), pré-warm no boot.

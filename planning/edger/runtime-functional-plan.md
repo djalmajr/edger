@@ -1,7 +1,7 @@
 # Plano: edger funcional sem adapter Bun
 
 **Data:** 2026-06-29 (atualizado 2026-07-02)  
-**Status:** **MVP funcional entregue e validado ao vivo** (boot + curls, evidência em `status/evidence/`); V1 funcional usa Deno CLI bridge sandboxed  
+**Status:** **MVP funcional entregue e validado ao vivo** (boot + curls, evidência em `status/evidence/`). Runtime JS default: **processo Deno persistente por worker** (Epic 15, UDS + módulo quente, ~25x vs v1, cap de heap por worker, streaming bounded). A Deno CLI bridge v1 (`deno run` por request) fica como **fallback legado** via `EDGER_JS_RUNTIME=bridge`.  
 **Escopo:** transformar o edger em um runtime funcional pelo caminho Rust, sem fallback para adapter Bun.
 
 ## Objetivo
@@ -64,7 +64,7 @@ Depois do MVP, a foundation funcional exige:
 
 - `ExecutionKind::FetchHandler`, `RoutesTable`, `StaticSpa` e `WasmModule` com backends reais.
 - `Fullstack` documentado como unsupported/adapter-required com erro `501` claro, ou primeiro adapter mínimo.
-- `DenoIsolate` troca a bridge de processo por `deno_core` embutido ou actor equivalente.
+- ~~`DenoIsolate` troca a bridge de processo por `deno_core` embutido~~ → **entregue de outra forma** (Epic 15): processo Deno persistente por worker (UDS + módulo quente), não embedding `deno_core`. `EDGER_JS_RUNTIME=bridge` mantém a v1 como fallback legado.
 - Cron nativo dispara requisições internas autenticadas.
 - Shell/SPA injeta `<base href>` quando `inject_base` estiver habilitado.
 - Limites de body/header aplicados no ingress.
