@@ -21,7 +21,7 @@
 | Story | Arquivo | Objetivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|---|
 | 16.A Hono SSR+JSX first-class | `01-hono-ssr-jsx.md` | Fixture `.tsx` sem build via jsxRenderer; E2E + live; docs blessed path | small | **completed** | 15.C |
-| 16.B Spike SvelteKit | `02-spike-sveltekit.md` | Build real (adapter-deno/node) rodando pelo processo persistente; findings | medium | not started | 16.A |
+| 16.B Spike SvelteKit | `02-spike-sveltekit.md` | Build real (adapter-node) rodando pelo processo persistente; 2 gaps do harness corrigidos | medium | **completed** | 16.A |
 | 16.C Spike TanStack Start | `03-spike-tanstack-start.md` | Build com preset node/deno pela captura; findings honestos (best-effort) | medium | not started | 16.A |
 | 16.D Streaming passthrough | `04-streaming-passthrough.md` | Frames chunk/end no UDS; body incremental até o cliente; SSE real; cancel-safe | large | not started | 15.E |
 
@@ -42,7 +42,7 @@ flowchart LR
 ## Epic acceptance criteria
 
 - [x] Worker Hono SSR+JSX (`.tsx`, sem build) responde HTML renderado no servidor via processo persistente; documentado como caminho fullstack recomendado.
-- [ ] SvelteKit: build real testado; resultado (funciona/o que falta) registrado na compat-matrix.
+- [x] SvelteKit: build real testado (SSR+API+assets 200 ao vivo); registrado na compat-matrix como tested.
 - [ ] TanStack Start: idem, best-effort com findings honestos.
 - [ ] SSE/stream chegam **incrementais** ao cliente HTTP (passthrough), não snapshot bounded; worker `sse` emite eventos contínuos observáveis com `curl -N`.
 - [ ] Cancel-safe: disconnect do cliente mid-stream não wedgeia worker nem vaza processo.

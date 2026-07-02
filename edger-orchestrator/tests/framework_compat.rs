@@ -191,3 +191,51 @@ Deno.serve(app.fetch);
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("\"ssr\":\"hono/jsx\""), "api: {body}");
 }
+
+// Story 16.B: the SvelteKit adapter-node pattern — `createServer()` with NO
+// argument, the real handler registered later via `server.on("request", h)`,
+// PLUS a second tracking listener (adapter-node does both), and a handler that
+// requires the Host header to build its origin (SvelteKit's getRequest).
+// Mutations captured: keeping only the last "request" listener dispatches to
+// the tracker and the process exits cleanly mid-request (event loop drains);
+// dropping the Host default makes the origin reconstruction fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs deno + npm network (cold cache); run explicitly"]
+async fn polka_style_on_request_capture_and_host_header() {
+    let root = tempfile::tempdir().unwrap();
+    worker(
+        root.path(),
+        "polka-style",
+        r#"import http from "node:http";
+const server = http.createServer();
+let tracked = 0;
+server.on("request", (req, _res) => { tracked++; req.on("close", () => {}); });
+server.on("request", (req, res) => {
+  const host = req.headers.host;
+  if (!host) { res.writeHead(400); res.end("no host"); return; }
+  const origin = `http://${host}`;
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ origin, tracked, url: req.url }));
+});
+server.listen(3000);
+"#,
+    );
+
+    let app = build_pipeline(state(root.path().to_path_buf()));
+
+    let (status, body) = get(app.clone(), "/polka-style").await;
+    assert_eq!(status, StatusCode::OK, "polka-style: {body}");
+    assert!(
+        body.contains("\"origin\":\"http://"),
+        "host default: {body}"
+    );
+    assert!(
+        body.contains("\"tracked\":1"),
+        "all listeners invoked: {body}"
+    );
+
+    // Second request proves the process did not exit after the first dispatch.
+    let (status, body) = get(app, "/polka-style").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("\"tracked\":2"), "process survived: {body}");
+}

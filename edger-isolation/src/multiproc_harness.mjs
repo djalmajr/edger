@@ -64,7 +64,7 @@ function sendJson(obj) {
 // --- module load + handler capture (mirrors the v1 bridge conventions) ---
 
 let capturedHandler = null;
-let capturedNodeHandler = null;
+const capturedNodeHandlers = [];
 const originalServe = Deno.serve;
 Deno.serve = (arg) => {
   if (typeof arg === "function") {
@@ -90,7 +90,20 @@ async function installNodeHttpAdapter() {
     const http = nodeHttp.default ?? nodeHttp;
     http.createServer = (...args) => {
       const listener = args.find((arg) => typeof arg === "function");
-      if (listener) capturedNodeHandler = listener;
+      if (listener) capturedNodeHandlers.push(listener);
+      // Frameworks register handlers two ways: as the createServer argument
+      // (Express: `createServer(app)`) or later via the request event (polka /
+      // SvelteKit adapter-node: `createServer()` then `server.on("request", h)`).
+      // Node invokes EVERY "request" listener, and frameworks rely on that —
+      // adapter-node registers polka's handler AND a shutdown-tracking listener;
+      // keeping only the last one would dispatch to a listener that never
+      // responds (and the pending await would let the event loop drain, killing
+      // the process with exit 0). Capture them all.
+      const captureEvent = (event, handler) => {
+        if (event === "request" && typeof handler === "function") {
+          capturedNodeHandlers.push(handler);
+        }
+      };
       return {
         address() {
           return { address: "127.0.0.1", family: "IPv4", port: 0 };
@@ -104,10 +117,20 @@ async function installNodeHttpAdapter() {
           if (callback) callback();
           return this;
         },
-        on() { return this; },
-        once() { return this; },
-        addListener() { return this; },
+        on(event, handler) {
+          captureEvent(event, handler);
+          return this;
+        },
+        once(event, handler) {
+          captureEvent(event, handler);
+          return this;
+        },
+        addListener(event, handler) {
+          captureEvent(event, handler);
+          return this;
+        },
         removeListener() { return this; },
+        setTimeout() { return this; },
         ref() { return this; },
         unref() { return this; },
       };
@@ -136,6 +159,9 @@ async function createNodeRequest(request) {
   body.method = request.method;
   body.url = url.pathname + url.search;
   body.headers = Object.fromEntries(request.headers.entries());
+  // `Request` drops forbidden headers like Host, but node servers (e.g.
+  // SvelteKit's getRequest) need one to reconstruct the origin — 400 otherwise.
+  if (!body.headers.host) body.headers.host = url.host;
   body.rawHeaders = rawHeadersFrom(request.headers);
   body.socket = { encrypted: url.protocol === "https:", remoteAddress: "127.0.0.1" };
   body.connection = body.socket;
@@ -221,15 +247,17 @@ function createNodeResponse(resolve) {
   };
 }
 
-async function dispatchNodeHandler(nodeHandler, request) {
+async function dispatchNodeHandler(nodeHandlers, request) {
   const nodeRequest = await createNodeRequest(request);
   return await new Promise((resolve, reject) => {
     const nodeResponse = createNodeResponse(resolve);
-    try {
-      const result = nodeHandler(nodeRequest, nodeResponse);
-      if (result && typeof result.then === "function") result.catch(reject);
-    } catch (err) {
-      reject(err);
+    for (const nodeHandler of nodeHandlers) {
+      try {
+        const result = nodeHandler(nodeRequest, nodeResponse);
+        if (result && typeof result.then === "function") result.catch(reject);
+      } catch (err) {
+        reject(err);
+      }
     }
   });
 }
@@ -310,8 +338,9 @@ async function loadHandler() {
     }
   }
   // Express and other node:http servers: dispatch through the captured listener.
-  if (!handler && typeof capturedNodeHandler === "function") {
-    handler = (request) => dispatchNodeHandler(capturedNodeHandler, request);
+  if (!handler && capturedNodeHandlers.length > 0) {
+    const handlers = [...capturedNodeHandlers];
+    handler = (request) => dispatchNodeHandler(handlers, request);
   }
   const routesTable = (mod && ((mod.default && mod.default.routes) || mod.routes)) || null;
   if (routesTable) {

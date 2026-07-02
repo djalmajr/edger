@@ -1,0 +1,5 @@
+name: sveltekit-demo
+version: "1.0.0"
+entrypoint: index.js
+kind: fetch
+visibility: public

@@ -30,19 +30,44 @@
 - **Out:** compromisso de suporte; adapter declarativo; assets pelo caminho Rust.
 
 ### Acceptance criteria
-- [ ] Build real de SvelteKit executado contra o EdgeR (não simulação).
-- [ ] Finding registrado: rota SSR e rota de API respondem? Assets estáticos servem? O que falhou?
-- [ ] compat-matrix atualizada com status honesto (`tested`/`partial`/`gap`).
+- [x] Build real de SvelteKit executado contra o EdgeR (adapter-node 5.x, app `sv create` minimal + página SSR `load` + rota `+server.ts`).
+- [x] Finding registrado: SSR, API e assets estáticos respondem 200 pelo processo persistente (warm ~2.7ms); dois gaps do harness encontrados e corrigidos (ver Status).
+- [x] compat-matrix atualizada: SvelteKit `tested`.
 
 ### Dependencies
 - Story 16.A
 
 ## Tasks
-- [ ] App mínimo + build adapter-deno; rodar no EdgeR; se falhar, adapter-node.
-- [ ] Findings no Status + compat-matrix; fixture se couber.
+- [x] App mínimo (`sv create` minimal/ts) + build `@sveltejs/adapter-node` (config no `vite.config.ts` nas versões novas); sanity sob Deno puro (SSR+API+assets OK); rodar no EdgeR.
+- [x] Findings no Status + compat-matrix; fixture `workers/sveltekit-demo` (build self-contained, sem node_modules).
 
 ## Verification
 
 ```bash
 curl -H "Authorization: Bearer $KEY" http://127.0.0.1:3000/sveltekit-demo
 ```
+
+## Status
+
+**completed** (2026-07-02) — SvelteKit roda no EdgeR: fixture `workers/sveltekit-demo`
+(build real `@sveltejs/adapter-node`, self-contained, 1.6M) serve página SSR (`load`
+executado no servidor), rota de API `+server.ts` e assets `_app/immutable/*` — tudo 200
+ao vivo no preview, warm ~2.7ms, hidratação sem erros de console. O spike encontrou e
+corrigiu **dois gaps reais do harness** (ambos capturados por mutação no E2E
+`polka_style_on_request_capture_and_host_header`):
+
+1. **Captura de um único listener `request`:** o adapter-node cria `createServer()`
+   sem argumento e registra o handler do polka **e** um listener de tracking de
+   shutdown via `server.on("request", ...)`. O harness guardava só o último — o
+   dispatch ia para o tracker, que nunca responde, e o await pendente deixava o event
+   loop drenar: o processo saía **limpo (exit 0)** no meio do request. Agora captura
+   TODOS os listeners e invoca todos (semântica Node real).
+2. **Host header ausente:** o construtor `Request` descarta `Host` (forbidden header)
+   e o `getRequest` do SvelteKit responde 400 sem ele. O adapter node do harness agora
+   defaulta `headers.host` a partir da URL.
+
+Sanity prévia: o mesmo build roda 100% sob Deno puro (`deno run -A build/index.js`) —
+num container, o servidor do próprio framework dispensa adapter; a captura existe
+porque no EdgeR o ingress é do orquestrador. Nota de versão: nos templates novos do
+`sv create`, a config do adapter fica no `vite.config.ts` (plugin `sveltekit()`), não
+em `svelte.config.js`.
