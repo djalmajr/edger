@@ -92,6 +92,9 @@ pub fn infer_execution_kind(manifest: &WorkerManifest) -> ExecutionKind {
                 ExecutionKind::WasmModule { entry: None } => ExecutionKind::WasmModule {
                     entry: manifest.entrypoint.clone(),
                 },
+                ExecutionKind::StaticSpa { .. } => ExecutionKind::StaticSpa {
+                    inject_base: manifest.inject_base.unwrap_or(true),
+                },
                 other => other,
             };
         }
@@ -111,13 +114,29 @@ pub fn infer_execution_kind(manifest: &WorkerManifest) -> ExecutionKind {
     ExecutionKind::FetchHandler
 }
 
+/// JS/TS and SPA workers default to a sliding TTL (persistent) instead of
+/// ephemeral. A StaticSpa is a pure file server; a FetchHandler/RoutesTable is
+/// backed by a persistent Deno process (Epic 15) whose whole value is being
+/// reused across requests — an ephemeral default would kill the warm process
+/// after every request. Ephemeral stays opt-in via an explicit `ttl: 0`.
+const WARM_WORKER_DEFAULT_TTL_MS: u64 = 300_000;
+
 /// Normalize manifest into runtime `WorkerConfig`.
 pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
+    let kind = infer_execution_kind(manifest);
+    let default_ttl_ms = if matches!(
+        kind,
+        ExecutionKind::StaticSpa { .. } | ExecutionKind::FetchHandler | ExecutionKind::RoutesTable
+    ) {
+        WARM_WORKER_DEFAULT_TTL_MS
+    } else {
+        0
+    };
     let ttl_ms = manifest
         .ttl
         .as_ref()
         .and_then(parse_duration_to_ms)
-        .unwrap_or(0);
+        .unwrap_or(default_ttl_ms);
 
     let timeout_ms = manifest
         .timeout
@@ -156,7 +175,7 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
             .unwrap_or_else(|| "protected".into()),
         public_routes: manifest.public_routes.clone(),
         cron: manifest.cron.clone().unwrap_or_default(),
-        kind: Some(infer_execution_kind(manifest)),
+        kind: Some(kind),
         bindings: manifest.bindings.clone(),
         shell_excludes: manifest.shell_excludes.clone(),
     }

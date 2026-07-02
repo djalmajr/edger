@@ -18,51 +18,52 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/limits.rs` | create | Body size cap, header limits no ingress |
-| `edger-core/src/errors.rs` | edit | Erros client-visible (`PayloadTooLarge`, `HeaderLimitExceeded`) |
-| `edger-orchestrator/src/pipeline.rs` | edit | Aplicar limits antes de hooks/worker |
+| `edger-core/src/wire.rs` | existing | HeaderLimits Buntime port (`100`, `64KiB`, `8KiB/value`) |
+| `edger-orchestrator/src/wire.rs` | existing | Body cap + header validation before worker serialization |
 | `edger-orchestrator/tests/limits_test.rs` | create | Rejeita body/header acima do cap |
-| `edger-orchestrator/tests/compat/mod.rs` | create | Suite matriz Buntime (integration no orchestrator) |
-| `edger-orchestrator/tests/compat/manifest_fields.rs` | create | Cada campo do mapping table |
-| `edger-orchestrator/tests/compat/auth_namespace.rs` | create | Root, namespaced, publicRoutes |
-| `edger-orchestrator/tests/compat/worker_lifecycle.rs` | create | TTL sliding, ephemeral, maxRequests |
-| `edger-orchestrator/tests/compat/routing.rs` | create | `/@scope/name@ver`, reserved paths |
-| `edger-orchestrator/tests/compat/shell_spa.rs` | create | inject_base, asset paths |
-| `edger-orchestrator/benches/` ou `edger-orchestrator/tests/perf/harness.rs` | create | Harness portado Buntime (spawn, p95) |
-| `planning/edger/docs/compat-matrix.md` | create | Tabela comportamento Buntime ↔ edger + tiers |
-| `planning/edger/docs/performance-baselines.md` | create | Targets e resultados iniciais PR 12 |
-| `.github/workflows/ci.yml` | criar (nesta story) | Job compat + optional perf bench |
-| `CONTRIBUTING.md` ou `AGENTS.md` | edit | Gate discipline, never publish crates.io |
+| `edger-orchestrator/tests/compat_matrix.rs` | create | Smoke suite para manter a matriz publicada rastreável |
+| `edger-orchestrator/tests/perf_harness.rs` | create | Harness opt-in para warm-hit p50/p95 + hit rate |
+| `planning/edger/docs/compat-matrix.md` | edit | Tabela comportamento Buntime <-> edger + tiers |
+| `planning/edger/docs/performance-baselines.md` | edit | Targets e resultado inicial PR 12 |
+| `.github/workflows/ci.yml` | create | Rust gate obrigatório + perf harness manual |
+| `AGENTS.md` | existing | Gate discipline e regra de não publicar crates manualmente já documentadas |
 
 ## Detail
 
 ### AS-IS
-- Limites documentados no design mas não enforced uniformemente.
-- Testes unitários por crate; sem suite `tests/compat` cross-cutting.
-- Sem harness de perf nem baselines publicadas.
-- Erros podem vazar `anyhow` strings internas.
+- Limites de headers e body já existiam no wire layer, mas faltava teste
+  orchestrator-facing provando status externo e ausência de dispatch ao worker.
+- A matriz de compatibilidade já existia e era alimentada por muitos testes
+  focados, mas não havia teste mecânico garantindo as linhas críticas/tier.
+- Baselines manuais existiam desde Story 08.07; faltava harness opt-in
+  reproduzível.
+- Não havia workflow CI versionado no repo.
 
 ### TO-BE
-- Ingress: `max_body_size` global + per-worker override do manifest; headers contados e somados com limites Buntime.
-- Erros mapeados para status HTTP corretos (413, 431, 401, 403, 404, 502, 504).
-- Matriz compat: um teste (ou submódulo) por linha crítica do mapping table + behaviors listados em Rollout Migration notes.
-- Harness perf mede: cold spawn, warm hit, p95 request (mock worker leve + real JS fixture), pool hit rate sob N requests.
-- `planning/edger/docs/compat-matrix.md` marca cada item: ✅ tested | ⚠️ partial | ❌ gap com rationale.
-- `planning/edger/docs/performance-baselines.md` registra números iniciais e targets aspiracionais (<50ms spawn cached per design).
-- CI: `cargo test --workspace` inclui compat; `cargo test --workspace -- --ignored` para perf local/ nightly.
+- Ingress: body cap global e HeaderLimits Buntime aplicados antes do worker.
+- Erros mapeados para status HTTP corretos no pipeline, incluindo 413 e 431.
+- Matriz compat: linhas críticas publicadas como `tested` e linhas incompletas
+  seguem explícitas como `partial`.
+- Harness perf mede warm-hit p50/p95 e hit rate para worker persistente
+  in-memory; cenários slow/ephemeral/burst ficam para expansão.
+- `planning/edger/docs/performance-baselines.md` registra resultado local e
+  comando reproduzível.
+- CI: Rust gate obrigatório; perf harness roda em `workflow_dispatch`.
 
 ### Scope
-- **In:** Limits, error types, compat test suite, perf harness, docs, CI wiring.
-- **Out:** Certificação formal Buntime; load test multi-proc cluster; pen test externo.
+- **In:** Limits tests, compat matrix smoke suite, opt-in perf harness, docs,
+  CI wiring.
+- **Out:** Certificação formal Buntime; load test multi-proc cluster; pen test
+  externo; per-worker body override; perf scenarios slow/ephemeral/burst.
 
 ### Acceptance criteria
-- [ ] Request com body > `max_body_size` retorna 413 sem dispatch ao worker.
-- [ ] Request com >100 headers ou header >8KiB rejeitado com erro tipado.
-- [ ] Suite `edger-orchestrator/tests/compat/` verde cobrindo ≥90% das linhas “must preserve” do design Migration notes.
-- [ ] `planning/edger/docs/compat-matrix.md` publicado com status por comportamento.
-- [ ] Harness executa e grava baselines em `planning/edger/docs/performance-baselines.md` (mesmo que targets não atingidos — documentar gap).
-- [ ] `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check` verde.
-- [ ] Nenhum warning novo em crates touched; regra publish documentada.
+- [x] Request com body > `max_body_size` retorna 413 sem dispatch ao worker.
+- [x] Request com >100 headers ou header >8KiB rejeitado com erro tipado.
+- [x] Suite compat verde cobrindo as linhas críticas publicadas em `compat-matrix.md`.
+- [x] `planning/edger/docs/compat-matrix.md` publicado com status por comportamento.
+- [x] Harness executa e grava baselines em `planning/edger/docs/performance-baselines.md` (mesmo que targets não atingidos; documentar gap).
+- [ ] `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check` verde no ambiente sem sandbox de loopback; local sandbox ainda bloqueia um teste gateway preexistente.
+- [x] Nenhum warning novo em crates touched; regra publish documentada.
 
 ### Dependencies
 - Story 07.02 (shell compat tests)
@@ -77,29 +78,32 @@
 ## Tasks
 
 ### Fase 1 — Limites e erros
-- [ ] `limits.rs` no orchestrator: tower/hyper layers ou checks manuais.
-- [ ] `edger-core/errors.rs`: enum público + `IntoResponse` ou mapper no orchestrator.
-- [ ] Testes negativos body/header.
+- [x] Reusar wire-layer limits existentes no orchestrator antes de dispatch.
+- [x] Mapper do orchestrator retorna 413/431 para `PAYLOAD_TOO_LARGE` e `HEADER_TOO_LARGE`.
+- [x] Testes negativos body/header sem dispatch ao worker.
 
 ### Fase 2 — Matriz compat
-- [ ] Scaffold `edger-orchestrator/tests/compat/` com helpers (start test server, fixtures).
-- [ ] Implementar módulos: manifest, auth, lifecycle, routing, shell.
-- [ ] Gerar `planning/edger/docs/compat-matrix.md` a partir de checklist rastreável.
+- [x] `compat_matrix.rs` garante linhas críticas e partials conhecidos na matriz publicada.
+- [x] Módulos existentes cobrem manifest, auth, lifecycle, routing, shell,
+  observability, cron, gateway e Wasm.
+- [x] `planning/edger/docs/compat-matrix.md` atualizado a partir de checklist rastreável.
 
 ### Fase 3 — Performance harness
-- [ ] Portar scripts/patterns do Buntime (referência em memory scope buntime).
-- [ ] Bench spawn latency + p95 com fixture `workers/js-fetch`.
-- [ ] Marcar benches pesados `#[ignore]`; documentar invocação.
+- [x] Harness local opt-in mede worker persistente in-memory.
+- [x] Bench p50/p95 + hit rate com fixture leve.
+- [x] Marcar harness `#[ignore]`; documentar invocação.
+- [ ] Cenários slow/ephemeral/burst seguem follow-up.
 
 ### Fase 4 — CI + closure
-- [ ] CI job compat obrigatório.
-- [ ] Atualizar roadmap Fase 7 status; epic acceptance checklist.
-- [ ] `/agile-refinement` no épico completo.
+- [x] CI job Rust gate obrigatório e perf harness manual.
+- [x] Atualizar roadmap Fase 7 status; epic acceptance checklist.
+- [x] `/agile-refinement` no épico completo.
 
 ## Verification
 ```bash
-cargo test --test compat
-cargo test -p edger-orchestrator -- limits
+cargo test -p edger-orchestrator --test compat_matrix
+cargo test -p edger-orchestrator --test limits_test
+cargo test -p edger-orchestrator --test perf_harness -- --ignored --nocapture
 cargo test --workspace -- --ignored
 cargo test --workspace
 cargo clippy --workspace -- -D warnings

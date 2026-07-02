@@ -1,15 +1,15 @@
 # Performance baselines
 
-**Status:** first local baseline captured in Story 08.07
-**Origin:** `planning/edger/design.md` (Measurement), Story 08.07 runtime evidence
+**Status:** local baselines captured in Story 08.07 and Story 07.07
+**Origin:** `planning/edger/design.md` (Measurement), Story 08.07 runtime evidence, Story 07.07 perf harness
 
 ## Targets aspiracionais
 
 | Métrica | Target | Status |
 |---|---|---|
-| Worker spawn cached/persistent | < 50ms | instrumented via `edger_pool_spawn_latency_ms_*`; persistent worker benchmark still needed |
-| p95 request mock worker | pending | local single-request samples captured; harness still needed |
-| Pool hit rate sob carga | pending | `/metrics` exposes hit/miss counters; load scenario still needed |
+| Worker spawn cached/persistent | < 50ms | instrumented via `edger_pool_spawn_latency_ms_*`; persistent warm-hit harness added |
+| p95 request mock worker | track trend | `perf_harness` captures local p50/p95 for persistent in-memory worker |
+| Pool hit rate sob carga | > 95% for warm persistent worker | `perf_harness` captured 49 hits / 1 miss over 50 requests |
 | Memória por isolate | cap enforceable | pending |
 
 ## Baseline local atual
@@ -23,6 +23,7 @@ Ambiente: macOS local, `cargo run -p edger-orchestrator --bin edger`,
 | 2026-06-29 | `/hello-world` primeira chamada | `200`, `0.215365s` | Worker JS/TS via Deno CLI bridge |
 | 2026-06-29 | `/hello-world` segunda chamada | `200`, `0.037221s` | `hello-world` não tem TTL persistente; não é cache hit de pool |
 | 2026-06-29 | `/metrics` | `200`, `0.000929s`, `text/plain; version=0.0.4` | Scrape read-only de `WorkerPool::get_metrics()` |
+| 2026-07-01 | `perf_harness` persistent worker warm hit | p50 `52us`, p95 `92us`, `49` cache hits, `1` cache miss | `cargo test -p edger-orchestrator --test perf_harness -- --ignored --nocapture`; in-memory fixture, not Deno |
 
 Snapshot de métricas após duas chamadas a `hello-world` efêmero:
 
@@ -66,10 +67,12 @@ curl -sS -H 'authorization: Bearer test-root' \
 curl -sS -D - -o /dev/null \
   -w "status=%{http_code} time=%{time_total}\n" \
   http://127.0.0.1:19084/metrics
+
+cargo test -p edger-orchestrator --test perf_harness -- --ignored --nocapture
 ```
 
 ## Próximo baseline
 
-Adicionar harness dedicado com worker persistente, worker efêmero, worker lento
-e cenário de burst. O objetivo é medir p50/p95/p99, hit rate e rejeições sem
-depender de amostras manuais de uma única execução.
+Expandir o harness dedicado com worker efêmero, worker lento e cenário de burst.
+O objetivo é medir p50/p95/p99, hit rate e rejeições sem depender de amostras
+manuais de uma única execução.

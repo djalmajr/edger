@@ -1,0 +1,114 @@
+# Evidência — Epic 14 fatia vertical (install API + rescan) — 2026-07-02
+
+## Deploy live via curl (servidor do preview, sem restart)
+
+POST /api/admin/workers/install (application/zip, Bearer root)
+  -> 201 {"name":"live-deploy-demo","version":"1.0.0","url":"/live-deploy-demo",
+          "kind":"FetchHandler","visibility":"protected","source":".../workers/live-deploy-demo"}
+
+GET /live-deploy-demo (Sec-Fetch-Dest: iframe, Bearer root)
+  -> 200 {"app":"live-deploy-demo","deployedWithoutRestart":true}
+  (GET single-segment sem header caiu no shell-demo — comportamento shell conhecido;
+   workers instalados que devem ser navegáveis por document precisam de shellExcludes
+   ou shell ausente — já registrado como candidato a refinamento)
+
+POST /api/admin/workers/rescan {} -> {"dryRun":true,"added":[],"removed":[],"unchanged":22}
+rm -rf workers/live-deploy-demo
+POST /api/admin/workers/rescan {"dryRun":false} -> {"removed":["live-deploy-demo@1.0.0"],"unchanged":21}
+GET /live-deploy-demo -> 404
+
+## Testes
+
+edger-orchestrator/tests/deploy_install.rs: 7 testes (install feliz sem restart,
+zip-slip negado sem resíduo, pacote sem manifest negado, 401/403 por permissão
+workers:install, colisão 409 + v2 coexiste com latest correto, rescan
+added/removed/apply, dry-run idempotente) — todos com mutação nomeada.
+
+## Gate Rust (2026-07-02)
+
+cargo test --workspace: 67 suítes / 337 passed / 0 failed
+cargo clippy --workspace -- -D warnings: ok
+cargo fmt -- --check: ok
+
+## Adendo — 14.03 Deploy DnD no cPanel (validação preview, 2026-07-02)
+
+- Drop programático de zip (File + DataTransfer no dropzone real):
+  preview "dnd-demo v1.0.0 · FetchHandler · entrypoint index.ts · 2 file(s) · protected"
+- Deploy -> "dnd-demo@1.0.0 is live" com URL /dnd-demo, badges kind/visibility,
+  "requests need an API key" e atalho See workers (screenshots capturados)
+- GET /dnd-demo/ping (x-api-key) -> 200 {"app":"dnd-demo","via":"drag-and-drop"}
+- Zip inválido (sem manifest) -> "Package rejected: Package must include
+  manifest.yaml (or package.json) with a worker name." (client-side, sem tocar a API)
+- rm -rf workers/dnd-demo -> botão Dry-run: "0 added, 1 removed (dnd-demo@1.0.0),
+  21 unchanged" -> Apply changes -> aplicado -> GET 404
+- Console sem erros; network sem falhas além do 404 esperado pós-remoção
+
+## Adendo 2 — Deploy consolidado em Workers como modal (2026-07-02)
+
+Feedback do operador: deploy e workers são a mesma área; deploy vira modal.
+- Sidebar sem item "Deploy" (5 itens: Overview, Workers, Modules, Gateway, API Keys).
+- Botão "Deploy app" no header da tabela de Workers abre modal #deploy-app-dialog
+  (Dialog shadcn, backdrop escurecido).
+- Modal: drop de zip -> preview "modal-demo v1.0.0 · FetchHandler · 2 file(s)" ->
+  Deploy -> "modal-demo@1.0.0 is live" (URL + badges + Deploy another) ->
+  worker aparece na tabela ATRÁS da modal (refresh) -> Close fecha o dialog.
+- Rescan e Close no rodapé da modal. Console sem erros.
+
+## Adendo 3 — Rescan na listagem + limpeza de header (2026-07-02)
+
+Feedback do operador: Rescan é sobre apps que já existem no disco -> pertence à
+listagem de Workers, não à modal; remover badge "root".
+- Header da view Workers: [Rescan disk] [Deploy app]. Modal de deploy só com
+  upload + Close (sem Rescan dentro).
+- Refresh (topo) re-lê o índice; Rescan reconcilia disco->índice (distintos).
+- Fluxo validado: worker copiado no disco (workers/disk-copied) -> "Rescan disk"
+  (dry-run) -> "Disk check: 1 to add (disk-copied@1.0.0), 0 to remove, 21 unchanged.
+  Click Apply rescan to commit." -> botão vira "Apply rescan" -> aplica ->
+  "Reconciled: 1 to add..." -> disk-copied aparece na tabela.
+- Badge "root" removida do header (principal/role já no rodapé da sidebar).
+- Console sem erros.
+
+## Adendo 4 — Simplificação: Rescan dobrado no Refresh (2026-07-02)
+
+Feedback do operador: "quero simplificado".
+- Botão Rescan separado REMOVIDO. Header da view Workers só com [Refresh] [Deploy app].
+- Refresh agora reconcilia disco->índice (POST rescan dryRun=false, falha ignorada)
+  e recarrega. Um botão = "sincroniza com a realidade do disco".
+- Validado: workers/refresh-sync copiado no disco -> Refresh -> aparece na tabela;
+  removido do disco -> Refresh -> some da tabela e GET -> 404. Console sem erros.
+
+## Adendo 5 — 14.04 versões coexistentes + rollback (2026-07-02)
+
+Backend:
+- ManifestIndex::set_worker_enabled(name, version: Option<&str>, enabled) —
+  targeting exato por versão; rotas admin enable/disable?version=.
+- resolve_worker já resolvia latest só entre habilitadas.
+E2E (deploy_install.rs):
+- deploy_v2_then_rollback_to_v1: instala v1+v2 (latest=v2), pinned /zip-app@1.0.0
+  e @2.0.0 corretos, disable v2 -> latest=v1, enable v2 -> latest=v2,
+  disable da versão MAIS ANTIGA (v1) -> latest continua v2 e /zip-app@1.0.0=404.
+  Mutação provada: disable ignorando version -> vermelho.
+- admin_lists_each_version_with_its_state: 1.0.0=loaded, 2.0.0=disabled.
+UI (preview): tabela Workers com coluna Actions; ver-demo v1/v2 instalados via API;
+badge "serving" em v2; clicar Disable na v2 -> v1 vira serving e /ver-demo/api={"v":"1.0.0"};
+clicar Enable na v2 -> v2 volta a serving e {"v":"2.0.0"}. Workers de versão única: "—".
+Console sem erros. Screenshot capturado.
+
+## Adendo 6 — 14.05 transparência pós-deploy (2026-07-02)
+
+Decisão de UX (operador): modal de deploy exclusiva do ato de deploy; estado de
+erro/saúde vai para a LISTAGEM de Workers.
+Backend:
+- WorkerErrorLog (ring buffer por worker em ServerState, cap 20, ANSI-stripped);
+  pipeline registra no erro de dispatch (worker, requestId, status, code, message).
+- InstalledWorker.authRequired = visibility != public.
+- Rotas GET /api/admin/workers/{name}/errors e /error-summary (workers:read).
+E2E (deploy_install.rs):
+- install_response_reports_auth_required_from_visibility (protected=true, public=false).
+- worker_first_request_error_is_visible_via_admin_api: install worker público que
+  lança -> GET dispara 5xx -> /errors mostra 1 WORKER_ERROR (status>=500, requestId,
+  message SEM ANSI) -> /error-summary boom-app.count=1. Mutações provadas
+  (não-registrar erro; não-strip ANSI).
+UI (preview): modal SEM bloco de health, Close outlined; listagem de Workers com
+badge destrutivo "1 error" em boom-live; dialog "Recent errors" com 500/WORKER_ERROR/
+requestId/mensagem limpa. Console sem erros.

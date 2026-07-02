@@ -26,8 +26,8 @@ O gateway atual cobre redirects e rate limit local, mas ainda nao encaminha requ
 
 ### TO-BE
 
-- Regra de proxy define upstream permitido, metodos, headers repassados, timeout e limites.
-- SSRF guard bloqueia localhost, link-local, IP privado ou esquemas nao permitidos quando a politica exigir.
+- Regra de proxy define upstream loopback permitido, headers repassados, timeout e limites globais herdados do runtime.
+- SSRF guard bloqueia esquemas nao permitidos e destinos nao-loopback nesta fatia local.
 - Logs nao expõem Authorization, cookies, query sensivel ou body.
 
 ### Scope
@@ -37,17 +37,17 @@ O gateway atual cobre redirects e rate limit local, mas ainda nao encaminha requ
 
 ### Critérios de aceite
 
-- [ ] Request para upstream permitido retorna status/body esperados.
-- [ ] Upstream nao permitido falha com erro operacional claro.
-- [ ] SSRF guard bloqueia destinos inseguros conforme politica.
-- [ ] Logs e diagnostics nao vazam segredos de request.
+- [x] Request para upstream permitido retorna status/body esperados.
+- [x] Upstream nao permitido falha com erro operacional claro.
+- [x] SSRF guard bloqueia destinos inseguros conforme politica local loopback.
+- [x] Logs e diagnostics nao vazam segredos de request.
 
 ## Tasks
 
-- [ ] Definir contrato de regra de proxy e politica de upstream.
-- [ ] Implementar forwarding com limites e timeout.
-- [ ] Implementar SSRF guard e redaction.
-- [ ] Adicionar testes locais com upstream controlado.
+- [x] Definir contrato de regra de proxy e politica de upstream.
+- [x] Implementar forwarding com limites e timeout.
+- [x] Implementar SSRF guard e redaction.
+- [x] Adicionar testes locais com upstream controlado.
 
 ## Verification
 
@@ -60,3 +60,6 @@ cargo fmt -- --check
 SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
 ```
 
+## Status
+
+completed (2026-06-30) - `GatewayProxyRule::try_new` aceita apenas `http://localhost` e `http://127.0.0.1`, preserva suffix/query, aplica timeout local, remove headers sensiveis antes do upstream, retorna `502` operacional sem vazar erro bruto e expõe diagnostics `proxied`/`proxyErrors`. `edger-ext-gateway/tests/gateway_middleware.rs` cobre upstream loopback controlado e rejeicao de destino nao local. Proxy externo amplo, cache, vhosts, SSE e mutacoes dinamicas continuam no Epic 11.

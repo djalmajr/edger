@@ -7,8 +7,11 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use edger_core::ExecutionKind;
+use edger_core::{
+    DurableSqlProvider, ExecutionKind, Middleware, RequestContext, SerializedRequest, StateValue,
+};
 use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
+use edger_ext_gateway::{GatewayExtension, GatewayRateLimitConfig};
 use edger_ext_keyval::SqlKeyValueProvider;
 use edger_ext_turso::LocalSqliteProvider;
 use edger_ext_turso_remote::RemoteTursoProvider;
@@ -93,6 +96,73 @@ fn registry_with_external_state_providers(root: &Path) -> ExtensionRegistry {
         .unwrap();
     registry.register_queue_provider(keyval_provider).unwrap();
     registry
+}
+
+#[test]
+fn gateway_persistent_rate_limit_uses_configurable_durable_sql_provider() {
+    let state = tempfile::tempdir().unwrap();
+    let sql_provider = Arc::new(
+        RemoteTursoProvider::new_local_for_tests(vec![(
+            "@gateway".to_string(),
+            state.path().join("gateway-state.db"),
+        )])
+        .unwrap(),
+    );
+    let keyval_provider = Arc::new(SqlKeyValueProvider::new(sql_provider.clone()));
+    let mut registry = ExtensionRegistry::new();
+    registry
+        .register_durable_sql_provider(sql_provider.clone())
+        .unwrap();
+    registry
+        .register_key_value_provider(keyval_provider.clone())
+        .unwrap();
+    registry.register_queue_provider(keyval_provider).unwrap();
+
+    let config = GatewayRateLimitConfig::new(1, 60).with_key_header("x-client-id");
+    let first_gateway = GatewayExtension::new().with_persistent_rate_limit_store(
+        config.clone(),
+        sql_provider.clone(),
+        "@gateway",
+    );
+    let second_gateway = GatewayExtension::new().with_persistent_rate_limit_store(
+        config,
+        sql_provider.clone(),
+        "@gateway",
+    );
+    let mut first = SerializedRequest {
+        method: "GET".into(),
+        uri: "/api/users".into(),
+        headers: vec![("x-client-id".into(), "team-a".into())],
+        body: None,
+        request_id: "gw-configurable-rl-1".into(),
+        base_href: None,
+    };
+    let mut second = first.clone();
+    second.request_id = "gw-configurable-rl-2".into();
+
+    assert!(first_gateway
+        .on_request(&mut first, &RequestContext::new("gw-configurable-rl-1"))
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        second_gateway
+            .on_request(&mut second, &RequestContext::new("gw-configurable-rl-2"))
+            .unwrap()
+            .unwrap()
+            .status,
+        429
+    );
+
+    let rows = sql_provider
+        .query(
+            "@gateway",
+            "select request_count from gateway_rate_limit_buckets",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].values[0], StateValue::Integer(1));
+    assert!(registry.admin_extension("keyval").is_some());
 }
 
 async fn dispatch(app: Router, uri: &str, authenticated: bool) -> (StatusCode, bytes::Bytes) {

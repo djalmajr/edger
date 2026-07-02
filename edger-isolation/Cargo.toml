@@ -15,13 +15,16 @@ serde.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tempfile = "3"
 wasmtime = { workspace = true, optional = true }
 wasmtime-wasi = { workspace = true, optional = true }
 wat = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "process"] }
 tempfile = "3"
+bytes.workspace = true
+serde_json.workspace = true
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
 wat.workspace = true
@@ -39,4 +42,6 @@ default = []
 # Skeleton backends — no V8/wasmtime engine link in default CI build.
 deno = []
 wasm = ["dep:wasmtime", "dep:wasmtime-wasi", "dep:wat"]
-multiproc = []
+# Persistent Deno worker processes over UDS (Epic 15). Enables the tokio
+# surface needed for Unix sockets, child processes and async IO.
+multiproc = ["tokio/net", "tokio/io-util", "tokio/process", "tokio/rt-multi-thread"]

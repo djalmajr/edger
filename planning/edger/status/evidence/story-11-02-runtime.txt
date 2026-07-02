@@ -1,0 +1,68 @@
+# Story 11.02 runtime evidence
+
+Date: 2026-07-01
+
+## Targeted passing tests
+
+```text
+cargo test -p edger-ext-gateway durable_cache_records_hit_miss_and_redacts_cache_key
+test durable_cache_records_hit_miss_and_redacts_cache_key ... ok
+
+cargo test -p edger-ext-gateway durable_cache_ttl_expiry_is_observable
+test durable_cache_ttl_expiry_is_observable ... ok
+
+cargo test -p edger-ext-gateway durable_cache_skips_sensitive_requests
+test durable_cache_skips_sensitive_requests ... ok
+
+cargo test -p edger-ext-gateway persistent_rate_limit_survives_gateway_reconstruction
+test persistent_rate_limit_survives_gateway_reconstruction ... ok
+
+cargo test -p edger-ext-gateway memory_rate_limit_remains_local_without_provider
+test memory_rate_limit_remains_local_without_provider ... ok
+
+cargo test -p edger-orchestrator --test state_services
+test gateway_persistent_rate_limit_uses_configurable_durable_sql_provider ... ok
+test public_worker_with_bindings_is_forbidden_before_dispatch ... ok
+test worker_without_bindings_receives_no_binding_header ... ok
+test worker_receives_service_binding_descriptors ... ok
+test worker_receives_service_binding_descriptors_with_external_durable_sql_provider ... ok
+
+cargo test -p edger-orchestrator --test admin_workers_plugins gateway_admin_rate_limit_metrics_api_exposes_local_bucket_summary
+test gateway_admin_rate_limit_metrics_api_exposes_local_bucket_summary ... ok
+
+cargo fmt -- --check
+passed
+
+cargo clippy --workspace -- -D warnings
+passed
+
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+ALL PLANNING GATES PASS
+```
+
+## Full gateway suite caveat
+
+```text
+cargo test -p edger-ext-gateway
+22 passed; 1 failed
+failed: proxy_rule_forwards_to_local_upstream_without_sensitive_headers
+error: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+cargo test --workspace
+blocked at the same pre-existing gateway TCP bind test after prior workspace
+crates passed
+```
+
+The failing test is the pre-existing loopback proxy test that binds
+`127.0.0.1:0`; the sandbox denies that bind. The test was left unchanged.
+
+## Behavior covered
+
+- Durable cache hit/miss and TTL diagnostics.
+- Cache key redaction: persisted key is a stable hash and does not store raw
+  path/query/host.
+- Sensitive requests with Authorization/Cookie/API key headers skip cache.
+- Persistent rate limit survives gateway reconstruction with the same provider.
+- Memory rate limit remains local without a provider.
+- The configurable provider path is covered through orchestrator state service
+  tests.

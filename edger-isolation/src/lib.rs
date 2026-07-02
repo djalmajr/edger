@@ -10,11 +10,15 @@ pub mod isolate;
 pub mod kinds;
 pub mod limits;
 pub mod mock;
+pub mod static_spa;
 pub mod transport;
 pub mod wire;
 
 #[cfg(feature = "deno")]
 pub mod deno;
+
+#[cfg(feature = "multiproc")]
+pub mod multiproc;
 
 #[cfg(feature = "wasm")]
 pub mod wasm;
@@ -30,6 +34,9 @@ pub use wire::{decode_frame, encode_frame, validate_request};
 
 #[cfg(feature = "deno")]
 pub use deno::{DenoFacade, DenoIsolate};
+
+#[cfg(feature = "multiproc")]
+pub use multiproc::{DenoProcessIsolate, DenoWorkerProcess};
 
 #[cfg(feature = "wasm")]
 pub use wasm::{WasiConfig, WasmHttpHandler, WasmIsolate};

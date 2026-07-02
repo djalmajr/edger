@@ -14,6 +14,7 @@ use crate::worker_ref::WorkerRef;
 pub enum ExtensionCapability {
     ApiKeys,
     AuthProvider,
+    HostRouting,
     LifecycleHook { hook: ExtensionHook },
     MenuContribution { name: String },
     Middleware,
@@ -32,6 +33,7 @@ impl ExtensionCapability {
         match self {
             Self::ApiKeys => "apiKeys".into(),
             Self::AuthProvider => "authProvider".into(),
+            Self::HostRouting => "hostRouting".into(),
             Self::LifecycleHook { hook } => hook.label().into(),
             Self::MenuContribution { name } => format!("menu:{name}"),
             Self::Middleware => "middleware".into(),

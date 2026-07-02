@@ -46,12 +46,12 @@
 - **Out:** Implementação WebTransport real; cpanel; marketplace UI plugins.
 
 ### Acceptance criteria
-- [ ] Worker SPA com `inject_base: true` retorna HTML contendo `<base href="...">` correto para path namespaced.
-- [ ] Asset relativo referenciado no HTML é servível via mesma worker route (teste integração).
-- [ ] Shell não captura `/api/*` nem health endpoints.
-- [ ] `base_href` propagado em `SerializedRequest` para handlers que precisam gerar URLs absolutas.
-- [ ] Documento `planning/edger/docs/shell-protocol.md` (ou seção design) descreve compat atual + evolução planejada.
-- [ ] Com `inject_base: false`, HTML servido sem modificação de `<base>`.
+- [x] Worker SPA com `inject_base: true` retorna HTML contendo `<base href="...">` correto para path namespaced. (`shell_routing_test.rs::namespaced_spa_receives_injected_base_href`)
+- [x] Asset relativo referenciado no HTML é servível via mesma worker route (teste integração). (`/@team/panel/app.js` no mesmo teste)
+- [x] Shell não captura `/api/*` nem health endpoints. (`shell_gateway.rs::reserved_admin_path_is_not_intercepted_by_shell`, entregue na 08.05)
+- [x] `base_href` propagado em `SerializedRequest` para handlers que precisam gerar URLs absolutas. (`pipeline.rs::dispatch_worker` + `x-base`)
+- [x] Documento `planning/edger/docs/shell-protocol.md` (ou seção design) descreve compat atual + evolução planejada. (seção "Evolução planejada": z-frame compat, WebTransport, base_href)
+- [x] Com `inject_base: false`, HTML servido sem modificação de `<base>`. (`shell_routing_test.rs::spa_with_inject_base_false_serves_untouched_html`; exigiu fix em `infer_execution_kind` que ignorava `injectBase` com `kind: spa` explícito)
 
 ### Dependencies
 - Story 07.01 (manifests + StaticSpa dispatch)
@@ -65,23 +65,23 @@
 ## Tasks
 
 ### Fase 1 — Base href pipeline
-- [ ] Implementar cálculo de `base_href` no orchestrator (port lógica Buntime path + scope).
-- [ ] Preencher `SerializedRequest.base_href` antes do dispatch.
-- [ ] Teste unitário: paths `/@acme/checkout`, `/checkout`, plugin `base` precedence.
+- [x] Implementar cálculo de `base_href` no orchestrator (port lógica Buntime path + scope). (`pipeline.rs::base_href`, entregue na 07.04/08.05)
+- [x] Preencher `SerializedRequest.base_href` antes do dispatch. (`pipeline.rs::dispatch_worker`)
+- [x] Teste unitário: paths `/@acme/checkout`, `/checkout`, plugin `base` precedence. (`kind_dispatch_integration.rs::namespaced_worker_receives_relative_path_and_base_header` + `shell_routing_test.rs`)
 
 ### Fase 2 — Shell module
-- [ ] Criar `shell.rs` com regras de quando aplicar shell wrapper vs dispatch direto.
-- [ ] Integrar no router: homepage fallback, worker UI flags.
-- [ ] Conectar `serve_static_spa` no isolate com injeção condicional.
+- [x] Criar `shell.rs` com regras de quando aplicar shell wrapper vs dispatch direto. (entregue como `shell_gateway.rs` na 08.05; módulo separado desnecessário)
+- [x] Integrar no router: homepage fallback, worker UI flags. (`shell_gateway.rs` + `shellExcludes`)
+- [x] Conectar `serve_static_spa` no isolate com injeção condicional. (`edger-isolation/src/deno/mod.rs::serve_static_spa`; `injectBase: false` respeitado via fix em `infer_execution_kind`)
 
 ### Fase 3 — Integração e documentação
-- [ ] Fixture `workers/shell-spa/` + teste E2E.
-- [ ] Escrever `planning/edger/docs/shell-protocol.md`: z-frame compat, MessageChannel legado, roadmap WebTransport.
-- [ ] Cross-ref em `00-overview.md` epic status.
+- [x] Fixture + teste E2E. (temp-dir em `shell_routing_test.rs`; fixtures repo `workers/shell-demo`, `workers/todos-shell-demo`)
+- [x] Escrever `planning/edger/docs/shell-protocol.md`: z-frame compat, MessageChannel legado, roadmap WebTransport. (seção "Evolução planejada")
+- [x] Cross-ref em `00-overview.md` epic status.
 
 ### Fase 4 — Verificação
-- [ ] `cargo test -p edger-orchestrator -- shell`
-- [ ] Gate workspace completo.
+- [x] `cargo test -p edger-orchestrator -- shell`
+- [x] Gate workspace completo. (ver evidência do gate na validação final)
 
 ## Verification
 ```bash
@@ -91,3 +91,17 @@ cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
 ```
+
+## Status
+
+**completed** (2026-07-02) — A decisão de shell routing (document vs iframe,
+excludes, reserved paths, homepage) foi entregue pela Story 08.05 em
+`edger-orchestrator/src/shell_gateway.rs`; esta story fechou os gaps de SPA
+namespaced: base injection sob `/@scope/app`, asset relativo pela mesma rota,
+`injectBase: false` respeitado (fix em `edger-core::infer_execution_kind`, que
+fixava `inject_base: true` para `kind: spa` explícito) e a seção "Evolução
+planejada" (z-frame compat + WebTransport) em
+`planning/edger/docs/shell-protocol.md`. Módulo `shell.rs` dedicado não foi
+necessário; a fixture usada nos testes é temp-dir (`shell_routing_test.rs`) e
+as fixtures de shell do repo seguem `workers/shell-demo` e
+`workers/todos-shell-demo`.

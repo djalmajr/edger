@@ -22,10 +22,18 @@ runtime sem vertical slice real por mais tempo.
 
 Usar Deno CLI bridge v1 para executar JS/TS real pelo pipeline Rust:
 
-- `DenoIsolate` chama `deno eval --no-check`;
+- `DenoIsolate` chama `deno run --no-check --no-prompt` sobre um script de
+  bridge efêmero escrito no diretório do worker (atualização 2026-07-02;
+  originalmente `deno eval`, que concede permissão total);
+- sandbox por flags explícitas: `--allow-read=<worker_dir>`, `--allow-env`
+  sobre env limpo/filtrado e `--allow-net` configurável via
+  `EDGER_DENO_ALLOW_NET` (`false`/`0`/`none` nega; lista de hosts restringe);
+  write/run/ffi/sys ficam negados;
 - o processo roda no diretório do worker;
 - `deno.json` / `deno.jsonc` local é carregado quando existe;
-- suporta `Deno.serve(handler)` e `export default { fetch }`;
+- suporta `Deno.serve(handler)`, `export default { fetch }` e `routes` export
+  (estilo Bun.serve: exact > `:param` > `*`, method map com 405, fallback
+  `fetch`, 404 sem fallback);
 - converte `SerializedRequest` e `SerializedResponse` por JSON;
 - aplica timeout por request.
 

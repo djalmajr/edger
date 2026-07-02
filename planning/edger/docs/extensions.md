@@ -175,7 +175,7 @@ let auth = AuthGate::new(AuthGateConfig::default(), auth_ext);
 
 | Componente | Papel |
 |---|---|
-| `GatewayExtension` | CORS, redirect, rate limit local, diagnostics e histórico persistente opcional |
+| `GatewayExtension` | CORS, redirect, proxy loopback, cache durável opcional, rate limit local/persistente, diagnostics e histórico persistente opcional |
 | `middleware()` | Factory para registro no bin |
 | `priority()` | `0` (auth usa `-100`) |
 | `README.md` | Passo-a-passo copy-paste |

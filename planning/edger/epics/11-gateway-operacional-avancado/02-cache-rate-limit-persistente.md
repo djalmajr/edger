@@ -2,6 +2,8 @@
 
 **Origin:** `planning/edger/epics/11-gateway-operacional-avancado/00-overview.md`
 
+**Status:** completed
+
 ## Context
 
 Rate limit local em memoria ja existe, mas Buntime entrega valor operacional quando regras podem sobreviver a restart e quando cache reduz custo de upstream. No edger isso deve ficar atras de provider duravel e nao em logica espalhada.
@@ -38,17 +40,17 @@ Rate limit local em memoria ja existe, mas Buntime entrega valor operacional qua
 
 ### Critérios de aceite
 
-- [ ] Cache hit/miss e TTL sao observaveis em teste local.
-- [ ] Rate limit persistente sobrevive a reconstrução do modulo quando provider estiver configurado.
-- [ ] Sem provider, gateway continua usando memoria local.
-- [ ] Provider remoto especifico nao aparece em `edger-core`.
+- [x] Cache hit/miss e TTL sao observaveis em teste local.
+- [x] Rate limit persistente sobrevive a reconstrução do modulo quando provider estiver configurado.
+- [x] Sem provider, gateway continua usando memoria local.
+- [x] Provider remoto especifico nao aparece em `edger-core`.
 
 ## Tasks
 
-- [ ] Definir keys e schema sobre `DurableSqlProvider` ou provider apropriado.
-- [ ] Implementar cache com TTL e redaction.
-- [ ] Implementar rate limit persistente opcional.
-- [ ] Cobrir fallback sem provider e persistencia com provider.
+- [x] Definir keys e schema sobre `DurableSqlProvider` ou provider apropriado.
+- [x] Implementar cache com TTL e redaction.
+- [x] Implementar rate limit persistente opcional.
+- [x] Cobrir fallback sem provider e persistencia com provider.
 
 ## Verification
 
@@ -61,3 +63,21 @@ cargo fmt -- --check
 SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
 ```
 
+## Closure
+
+completed (2026-07-01) - `edger-ext-gateway` adicionou
+`GatewayCacheConfig`, `with_cache_store` e
+`with_persistent_rate_limit_store`, ambos sobre `Arc<dyn DurableSqlProvider>`.
+O cache persiste respostas publicas `GET`/`HEAD` status `200` com TTL,
+observa hit/miss via `x-edger-cache` e `diagnostics.cache`, e grava somente
+hash estavel de metodo/host/URI como chave. O rate limit persistente usa janela
+fixa em `gateway_rate_limit_buckets`, persiste somente hash da chave do bucket
+e bloqueia apos reconstruir o modulo com o mesmo provider; sem provider, o
+token bucket em memoria continua local ao modulo. O binario `edger` liga cache,
+historico e rate limit persistente por env usando o provider duravel ja
+selecionado no composition root. Evidencia local: novos testes direcionados de
+cache TTL/hit/miss/redaction e rate limit persistente passaram; o suite completo
+`cargo test -p edger-ext-gateway` continua bloqueado no sandbox pelo teste
+preexistente de TCP loopback
+`proxy_rule_forwards_to_local_upstream_without_sensitive_headers` com
+`PermissionDenied`.

@@ -40,15 +40,28 @@ pub fn parse_runtime_worker_dirs(raw: &str) -> Vec<PathBuf> {
 pub fn load_manifests_from_dirs(paths: &[PathBuf]) -> Result<ManifestIndex, CoreError> {
     let mut index = ManifestIndex::new();
 
+    for (worker_dir, manifest) in scan_worker_manifests(paths)? {
+        index.insert(worker_dir, manifest)?;
+    }
+
+    index.set_roots(paths.to_vec());
+    Ok(index)
+}
+
+/// Scan worker roots and parse every enabled worker manifest, without
+/// touching an index. Shared by boot loading and runtime rescan.
+pub fn scan_worker_manifests(
+    paths: &[PathBuf],
+) -> Result<Vec<(PathBuf, WorkerManifest)>, CoreError> {
+    let mut manifests = Vec::new();
     for worker_dir in discover_worker_dirs(paths)? {
         let manifest = load_worker_manifest(&worker_dir)?;
         if manifest.enabled == Some(false) {
             continue;
         }
-        index.insert(worker_dir, manifest)?;
+        manifests.push((worker_dir, manifest));
     }
-
-    Ok(index)
+    Ok(manifests)
 }
 
 fn discover_worker_dirs(paths: &[PathBuf]) -> Result<Vec<PathBuf>, CoreError> {
@@ -90,7 +103,7 @@ fn is_worker_dir(path: &Path) -> bool {
             .any(|entry| path.join(entry).is_file())
 }
 
-fn load_worker_manifest(worker_dir: &Path) -> Result<WorkerManifest, CoreError> {
+pub(crate) fn load_worker_manifest(worker_dir: &Path) -> Result<WorkerManifest, CoreError> {
     for manifest_name in MANIFEST_CANDIDATES {
         let path = worker_dir.join(manifest_name);
         if path.is_file() {

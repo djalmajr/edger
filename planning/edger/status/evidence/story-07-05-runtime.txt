@@ -1,0 +1,74 @@
+# Story 07.05 runtime evidence
+
+Date: 2026-07-01
+
+## Passing tests
+
+```text
+cargo test -p edger-isolation --features wasm
+10 lib tests, 3 backend factory tests, 1 limits test, 7 mock tests,
+2 wasm integration tests, 4 wire limit tests and doc-tests passed
+
+cargo test -p edger-worker --test wasm_pool_integration
+2 passed; 0 failed
+
+cargo test -p edger-orchestrator --test kind_dispatch_integration wasm
+2 passed; 0 failed
+
+cargo fmt -- --check
+passed
+
+cargo clippy --workspace -- -D warnings
+passed
+```
+
+## Planning gate
+
+```text
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+ALL PLANNING GATES PASS
+```
+
+## Workspace test caveat
+
+```text
+cargo test --workspace
+edger-core: 22 passed before gateway suite
+edger-ext-auth: 6 passed
+edger-ext-gateway/tests/gateway_middleware.rs: 22 passed; 1 failed
+```
+
+The single failure is the known sandbox loopback bind failure in
+`edger-ext-gateway/tests/gateway_middleware.rs`:
+
+```text
+proxy_rule_forwards_to_local_upstream_without_sensitive_headers
+called `Result::unwrap()` on an `Err` value:
+Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+```
+
+The failing test binds `127.0.0.1:0`; the sandbox denies that bind. The test was
+left unchanged.
+
+## Behavior covered
+
+- `WasmIsolate::execute_wasm` loads `.wasm`/`.wat` from the worker directory and
+  rejects entrypoints that escape the worker root.
+- Wasm module bytes must have Wasm magic bytes and stay under the configured
+  module size cap.
+- ABI v1 reads response body bytes from exported `memory` offset `0` using
+  `http_status()` and `http_body_len()`.
+- Host imports are rejected with `WASM_IMPORT_DENIED`.
+- WASI imports are rejected with `WASI_IMPORT_DENIED` under deny-all sandbox
+  mode.
+- `WasiConfig::from_worker_config` filters sensitive env keys before future env
+  injection.
+- `WorkerPool::fetch_worker` dispatches Wasm through `WorkerConfig.kind` even
+  without a caller-provided kind hint.
+- The orchestrator runtime factory selects `WasmIsolate` for `WasmModule`.
+- A single process/pool can serve a Deno JS worker and a Wasm worker without
+  shared mutable backend state.
+- `workers/wasm-hello/index.wat` is the source fixture and documents optional
+  materialization of `index.wasm`.
+- Host WASI preopens and request/response linear-memory ABI remain explicit
+  follow-ups.

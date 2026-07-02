@@ -49,6 +49,8 @@ pub struct WorkerManifest {
     pub cron: Option<Vec<CronJob>>,
     pub kind: Option<String>,
     pub base: Option<String>,
+    #[serde(default)]
+    pub hosts: Vec<String>,
     pub dependencies: Option<Vec<String>>,
     #[serde(default)]
     pub shell_excludes: Vec<String>,

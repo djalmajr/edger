@@ -1,0 +1,60 @@
+Story 12.02 runtime verification - 2026-07-01
+
+Commands run:
+
+1. cargo fmt -- --check
+   Result: passed.
+
+2. cargo test -p edger-orchestrator --test shell_gateway
+   Result: passed.
+   Evidence: 7 tests passed, including:
+   - admin_catalog_derives_shell_workers_and_module_menus
+   - document_navigation_serves_shell_with_root_base
+   - shell_single_segment_asset_is_served_by_shell_worker
+   - cpanel_app_bypasses_shell_as_own_frontend_module
+
+3. cargo test -p edger-orchestrator --test admin_workers_plugins
+   Result: passed.
+   Evidence: 21 tests passed, including:
+   - root_catalog_derives_workers_and_module_menu_contributions
+   - local_extension_validation_contract_reports_manifest_status_diagnostics_and_redaction
+
+4. cargo test -p edger-orchestrator --test registry_providers
+   Result: passed.
+   Evidence: 7 tests passed, including:
+   - middleware_manifest_groups_gateway_hooks_and_safe_config
+
+5. cargo clippy --workspace -- -D warnings
+   Result: passed.
+
+6. cargo test --workspace
+   Result: blocked by sandbox TCP bind permission in pre-existing gateway proxy test.
+   Failing test:
+   - edger-ext-gateway/tests/gateway_middleware.rs::proxy_rule_forwards_to_local_upstream_without_sensitive_headers
+   Error:
+   - PermissionDenied / Operation not permitted while binding a local upstream socket.
+   Notes:
+   - This is the known sandbox limitation called out by the objective.
+   - The test was not weakened, skipped or changed.
+   - The workspace run passed all tests reached before that host socket failure.
+
+7. SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+   Result: passed.
+   Evidence:
+   - PASS /agile-refinement Mode 1
+   - PASS refinement-lint.py oracle
+   - PASS path-preflight
+   - PASS deploy-layout-check
+   - PASS extension-validation
+   - PASS artifact inspection
+   - SKIP bun test: no root JS/TS test suite exists after Bun adapter removal
+   - PASS cargo check
+   - ALL PLANNING GATES PASS
+
+Behavior covered:
+
+- `GET /api/admin/catalog` is root-only and derives catalog items from worker inventory plus extension `MenuContribution` capabilities.
+- Worker catalog items include route, source, status and visibility derived from runtime metadata.
+- Module menu catalog items include owner, owner kind, root-only visibility and status derived from extension metadata.
+- `workers/shell-demo` loads `/api/admin/catalog`, keeps the root key in memory only, handles missing credentials explicitly and renders disabled catalog entries as non-actionable.
+- The gateway manifest now exposes the `Gateway` menu contribution through the extension capability list.

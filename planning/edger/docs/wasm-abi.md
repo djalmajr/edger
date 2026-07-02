@@ -9,6 +9,8 @@
 - Entrypoint via `manifest.yaml` (`entrypoint: index.wasm` ou `index.wat`) ou bytes pré-carregados em teste
 - ABI v1 não recebe request em linear memory; retorna uma resposta estática do módulo
 - Imports de host e WASI são negados por default no ABI v1
+- O mesmo processo pode servir workers JS/TS e Wasm; a factory escolhe
+  `DenoIsolate` ou `WasmIsolate` por `ExecutionKind`
 
 ## ABI / exports
 
@@ -35,6 +37,13 @@ Limites e validações:
 - `WasiConfig::from_worker_config` filtra env sensível antes de qualquer futura injeção.
 - Padrões bloqueados nesta fase: `AWS_*`, `DB_*`, `*_KEY`, `*_SECRET`.
 - Host WASI real com preopen de worker root ainda é pendência; até lá, imports WASI são bloqueados.
+
+## Fixture local
+
+`workers/wasm-hello/index.wat` é a fonte versionada do fixture. O runtime
+compila `.wat` para bytes Wasm antes da validação, o que mantém o exemplo
+auditável sem exigir toolchain Wasm no checkout. Para materializar `index.wasm`
+manualmente, veja `workers/wasm-hello/README.md`.
 
 ## Versionamento
 

@@ -94,3 +94,15 @@ planning/edger/epics/13-mcp-authoring-ai-native/02-mcp-server-control-plane.md
 planning/edger/epics/13-mcp-authoring-ai-native/03-authoring-worker-local.md
 planning/edger/epics/13-mcp-authoring-ai-native/04-validacao-local-worker.md
 planning/edger/epics/13-mcp-authoring-ai-native/05-preparacao-commit-pr.md
+planning/edger/epics/14-deploy-apps/00-overview.md
+planning/edger/epics/14-deploy-apps/01-install-api.md
+planning/edger/epics/14-deploy-apps/02-rescan-workers.md
+planning/edger/epics/14-deploy-apps/03-deploy-dnd-cpanel.md
+planning/edger/epics/14-deploy-apps/04-versoes-rollback.md
+planning/edger/epics/14-deploy-apps/05-transparencia-pos-deploy.md
+planning/edger/epics/15-runtime-js-duravel/00-overview.md
+planning/edger/epics/15-runtime-js-duravel/01-transporte-uds-minimo.md
+planning/edger/epics/15-runtime-js-duravel/02-modulo-quente-kinds.md
+planning/edger/epics/15-runtime-js-duravel/03-compat-frameworks.md
+planning/edger/epics/15-runtime-js-duravel/04-limites-recurso-reais.md
+planning/edger/epics/15-runtime-js-duravel/05-streaming-hardening.md

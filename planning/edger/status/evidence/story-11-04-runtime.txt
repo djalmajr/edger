@@ -1,0 +1,70 @@
+Story 11.04 runtime verification - 2026-07-01
+
+Commands run:
+
+1. cargo fmt -- --check
+   Result: passed.
+
+2. cargo test -p edger-orchestrator --test routing_resolution
+   Result: passed.
+   Evidence: 25 tests passed, including:
+   - known_host_resolves_to_configured_worker_before_path_routing
+   - unknown_host_keeps_existing_path_fallback
+   - reserved_path_wins_over_known_host
+   - disabled_host_worker_is_not_resolved_by_host_alias
+   - duplicate_host_alias_is_a_collision
+
+3. cargo test -p edger-orchestrator --test value_parity
+   Result: passed.
+   Evidence: 7 tests passed, including:
+   - vhost_routes_host_to_namespaced_worker_without_hijacking_reserved_paths
+
+4. cargo test -p edger-orchestrator --test admin_workers_plugins
+   Result: passed.
+   Evidence: 21 tests passed, including gateway inventory and local extension validation with `hostRouting`.
+
+5. cargo test -p edger-orchestrator --test registry_providers
+   Result: passed.
+   Evidence: 7 tests passed, including gateway manifest capability/provides checks with `hostRouting`.
+
+6. cargo test -p edger-orchestrator --test shell_gateway
+   Result: passed.
+   Evidence: 7 tests passed; shell fallback and reserved admin paths still behave as expected.
+
+7. cargo clippy --workspace -- -D warnings
+   Result: passed.
+
+8. cargo test --workspace
+   Result: blocked by sandbox TCP bind permission in pre-existing gateway proxy test.
+   Failing test:
+   - edger-ext-gateway/tests/gateway_middleware.rs::proxy_rule_forwards_to_local_upstream_without_sensitive_headers
+   Error:
+   - PermissionDenied / Operation not permitted while binding a local upstream socket.
+   Notes:
+   - This is the known sandbox limitation called out by the objective.
+   - The test was not weakened, skipped or changed.
+   - The workspace run passed all tests reached before that host socket failure.
+
+9. SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+   Result: passed.
+   Evidence:
+   - PASS /agile-refinement Mode 1
+   - PASS refinement-lint.py oracle
+   - PASS path-preflight
+   - PASS deploy-layout-check
+   - PASS extension-validation
+   - PASS artifact inspection
+   - SKIP bun test: no root JS/TS test suite exists after Bun adapter removal
+   - PASS cargo check
+   - ALL PLANNING GATES PASS
+
+Behavior covered:
+
+- Worker manifests can declare exact `hosts` aliases.
+- Host aliases normalize lowercase and strip request ports before matching.
+- Invalid host aliases with wildcard, scheme, path, whitespace or bracket syntax are rejected.
+- Duplicate normalized host aliases fail manifest insertion with `COLLISION`.
+- Known hosts resolve before shell fallback, while reserved paths still win.
+- Unknown hosts fall back to existing path routing behavior.
+- Disabled workers are not resolved by host alias.
+- Gateway operational inventory exposes the `hostRouting` capability.

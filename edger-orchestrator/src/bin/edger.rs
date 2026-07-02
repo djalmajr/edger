@@ -8,27 +8,45 @@
 //! - `EDGER_DURABLE_SQL_PROVIDER` — `local` (default), `turso-remote`, or `turso-sync`
 //! - `EDGER_STATE_DIR` — directory for local SQL/KV/queue state (default in-memory if unset)
 //! - `EDGER_EXTENSION_STATUS_FILE` — JSON overlay for runtime extension enable/disable status
+//! - `EDGER_GATEWAY_CACHE_TTL_SECONDS` — enable gateway durable response cache with this TTL
+//! - `EDGER_GATEWAY_RATE_LIMIT_MAX_REQUESTS` — enable gateway rate limit with this capacity
+//! - `EDGER_GATEWAY_RATE_LIMIT_PERSISTENT` — persist gateway rate counters when true
+//! - `EDGER_GATEWAY_STATE_NAMESPACE` — durable SQL namespace for gateway state (default `@gateway`)
+//! - `EDGER_CRON_ENABLED` — enable manifest `cron[]` jobs (default true)
 //! - `EDGER_TURSO_*` — remote/sync Turso provider settings when selected
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use edger_core::{DurableSqlProvider, ExecutionKind, ExtensionContext};
+use edger_core::{DurableSqlProvider, ExecutionKind, ExtensionContext, Middleware};
 use edger_ext_auth::AuthExtension;
-use edger_ext_gateway::GatewayExtension;
+use edger_ext_gateway::{GatewayCacheConfig, GatewayExtension, GatewayRateLimitConfig};
 use edger_ext_keyval::SqlKeyValueProvider;
 use edger_ext_turso::LocalSqliteProvider;
 use edger_ext_turso_remote::RemoteTursoProvider;
-use edger_isolation::{DenoFacade, DenoIsolate, WasiConfig, WasmIsolate};
+use edger_isolation::{DenoFacade, DenoIsolate, DenoProcessIsolate, WasiConfig, WasmIsolate};
 use edger_orchestrator::{
-    build_pipeline, collect_extensions, load_manifests_from_dirs, parse_runtime_worker_dirs,
-    port_from_env, run_on_init, run_on_server_start, run_on_shutdown, serve, AuthGate,
-    AuthGateConfig, ExtensionRegistry, OrchestratorState, ServerConfig, ServerState,
+    build_pipeline, collect_cron_registrations, collect_extensions, init_tracing_from_env,
+    load_manifests_from_dirs, parse_runtime_worker_dirs, port_from_env, run_on_init,
+    run_on_server_start, run_on_shutdown, serve, AuthGate, AuthGateConfig, CronScheduler,
+    CronSchedulerConfig, ExtensionRegistry, OrchestratorState, ServerConfig, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
-use tracing_subscriber::EnvFilter;
 
-struct RuntimeIsolateFactory;
+/// Selects the JS/TS backend. Default is the durable persistent-process runtime
+/// (Epic 15); `EDGER_JS_RUNTIME=bridge` forces the legacy per-request CLI bridge.
+struct RuntimeIsolateFactory {
+    js_uses_process: bool,
+}
+
+impl RuntimeIsolateFactory {
+    fn from_env() -> Self {
+        let js_uses_process = std::env::var("EDGER_JS_RUNTIME")
+            .map(|value| !value.trim().eq_ignore_ascii_case("bridge"))
+            .unwrap_or(true);
+        Self { js_uses_process }
+    }
+}
 
 impl IsolateFactory for RuntimeIsolateFactory {
     fn create_isolate(&self, worker_ref: &edger_core::WorkerRef) -> Box<dyn edger_core::Isolate> {
@@ -36,6 +54,7 @@ impl IsolateFactory for RuntimeIsolateFactory {
             ExecutionKind::WasmModule { .. } => Box::new(WasmIsolate::new(
                 WasiConfig::from_worker_config(&worker_ref.config),
             )),
+            _ if self.js_uses_process => Box::new(DenoProcessIsolate::new()),
             _ => Box::new(DenoIsolate::new(DenoFacade::new())),
         }
     }
@@ -43,24 +62,25 @@ impl IsolateFactory for RuntimeIsolateFactory {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env().add_directive("edger_orchestrator=info".parse()?),
-        )
-        .init();
+    let _tracing = init_tracing_from_env()?;
 
     let port = port_from_env();
     let config = ServerConfig::from_port(port);
     let server = ServerState::new_unready();
-    let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(RuntimeIsolateFactory));
+    let pool = WorkerPool::with_factory(
+        PoolConfig::default(),
+        Arc::new(RuntimeIsolateFactory::from_env()),
+    );
     server.mark_ready(pool.clone());
     let worker_dirs = worker_dirs_from_env();
     let index = load_manifests_from_dirs(&worker_dirs)?;
 
     let auth_ext = AuthExtension::from_env()?.into_arc();
-    let mut registry = collect_extensions(vec![GatewayExtension::middleware()])?;
-    registry.register_auth_provider(auth_ext.clone())?;
     let sql_provider = durable_sql_provider_from_env()?;
+    let gateway_ext: Arc<dyn Middleware> =
+        Arc::new(gateway_extension_from_env(sql_provider.clone())?);
+    let mut registry = collect_extensions(vec![gateway_ext])?;
+    registry.register_auth_provider(auth_ext.clone())?;
     let keyval_provider = Arc::new(SqlKeyValueProvider::new(sql_provider.clone()));
     registry.register_durable_sql_provider(sql_provider)?;
     registry.register_key_value_provider(keyval_provider.clone())?;
@@ -76,18 +96,31 @@ async fn main() -> anyhow::Result<()> {
         registry,
         auth: AuthGate::new(AuthGateConfig::default(), auth_ext),
     };
+    let app = build_pipeline(state.clone());
+    let cron_registrations = if env_flag_default_true("EDGER_CRON_ENABLED") {
+        collect_cron_registrations(&state.index)?
+    } else {
+        Vec::new()
+    };
+    let cron_scheduler = CronScheduler::start(
+        CronSchedulerConfig::new(root_api_key_from_env()),
+        cron_registrations,
+        app.clone(),
+        state.server.cron_metrics(),
+    )?;
 
     let shutdown_registry = state.registry.clone();
     let shutdown_server = server.clone();
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             tracing::info!("shutdown signal received");
+            cron_scheduler.shutdown().await;
             let _ = run_on_shutdown(&shutdown_registry);
             shutdown_server.shutdown_pool();
         }
     });
 
-    serve(config, build_pipeline(state)).await
+    serve(config, app).await
 }
 
 fn worker_dirs_from_env() -> Vec<PathBuf> {
@@ -132,6 +165,96 @@ fn local_sql_provider_from_env() -> anyhow::Result<Arc<dyn DurableSqlProvider>> 
         _ => LocalSqliteProvider::in_memory(),
     };
     Ok(Arc::new(provider) as Arc<dyn DurableSqlProvider>)
+}
+
+fn gateway_extension_from_env(
+    sql_provider: Arc<dyn DurableSqlProvider>,
+) -> anyhow::Result<GatewayExtension> {
+    let namespace = gateway_state_namespace_from_env();
+    let mut gateway = GatewayExtension::new();
+
+    if env_flag("EDGER_GATEWAY_HISTORY") {
+        gateway = gateway.with_history_store(sql_provider.clone(), namespace.clone());
+    }
+    if let Some(ttl_seconds) = optional_env_u64("EDGER_GATEWAY_CACHE_TTL_SECONDS")? {
+        gateway = gateway.with_cache_store(
+            GatewayCacheConfig::new(ttl_seconds),
+            sql_provider.clone(),
+            namespace.clone(),
+        );
+    }
+    if let Some(max_requests) = optional_env_u32("EDGER_GATEWAY_RATE_LIMIT_MAX_REQUESTS")? {
+        let window_seconds =
+            optional_env_u64("EDGER_GATEWAY_RATE_LIMIT_WINDOW_SECONDS")?.unwrap_or(60);
+        let mut config = GatewayRateLimitConfig::new(max_requests, window_seconds);
+        if let Some(header) = non_empty_env("EDGER_GATEWAY_RATE_LIMIT_KEY_HEADER") {
+            config = config.with_key_header(header);
+        }
+        gateway = if env_flag("EDGER_GATEWAY_RATE_LIMIT_PERSISTENT") {
+            gateway.with_persistent_rate_limit_store(config, sql_provider.clone(), namespace)
+        } else {
+            gateway.with_rate_limit(config)
+        };
+    }
+
+    Ok(gateway)
+}
+
+fn gateway_state_namespace_from_env() -> String {
+    non_empty_env("EDGER_GATEWAY_STATE_NAMESPACE").unwrap_or_else(|| "@gateway".into())
+}
+
+fn optional_env_u64(name: &str) -> anyhow::Result<Option<u64>> {
+    non_empty_env(name)
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!("{name} must be an unsigned integer; got {value}"))
+        })
+        .transpose()
+}
+
+fn optional_env_u32(name: &str) -> anyhow::Result<Option<u32>> {
+    non_empty_env(name)
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .map_err(|_| anyhow::anyhow!("{name} must be an unsigned integer; got {value}"))
+        })
+        .transpose()
+}
+
+fn env_flag(name: &str) -> bool {
+    non_empty_env(name)
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn env_flag_default_true(name: &str) -> bool {
+    non_empty_env(name)
+        .map(|value| {
+            !matches!(
+                value.to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(true)
+}
+
+fn root_api_key_from_env() -> Option<String> {
+    non_empty_env("ROOT_API_KEY")
+}
+
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn load_extension_status_store_from_env(registry: &ExtensionRegistry) -> anyhow::Result<()> {

@@ -4,6 +4,11 @@ entrypoint: index.html
 base: "/"
 injectBase: true
 shellExcludes:
+  - cpanel
+  - cron-worker
+  - fullstack-demo
+  - routes-demo
+  - todos
   - chunked-text
   - commonjs
   - commonjs-hono

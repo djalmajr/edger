@@ -54,9 +54,21 @@
 | `EDGER_DENO_BIN`
 | Caminho do binário Deno usado pela Deno CLI bridge. Default: `deno`.
 
+| `EDGER_LOG`
+| Filtro principal de logs/tracing para o binário `edger`. Quando definido,
+  tem precedência sobre `RUST_LOG`.
+
 | `RUST_LOG`
-| Controle de logs/tracing. O bin adiciona `edger_orchestrator=info` por
-  default.
+| Filtro fallback de logs/tracing. Quando `EDGER_LOG` e `RUST_LOG` estão
+  ausentes, o default é
+  `edger_orchestrator=info,edger_worker=info,edger_isolation=info`.
+
+| `OTEL_EXPORTER_OTLP_ENDPOINT`
+| Endpoint OTLP opcional. O build atual reconhece a variável e continua com
+  tracing fmt sem falhar; o exporter OTLP real ainda não está linkado.
+
+| `OTEL_TRACES_SAMPLER`
+| Sampling OTEL opcional, reservado para o exporter OTLP futuro.
 |===
 
 ==== Gates locais
@@ -147,6 +159,15 @@ Limites de segurança v1:
 * O inventário MCP não serializa `env` de manifests.
 * Validação é local; nenhuma tool realiza deploy remoto.
 
+Validação stdio real registrada:
+
+* `planning/edger/status/evidence/mcp-stdio-2026-06-30.md` confirma
+  `tools/list`, `edger.list_capabilities`, `edger.validate_local`,
+  `edger.inspect_worker`, `edger.write_worker_file` em `dryRun` e
+  `edger.prepare_commit` contra o workspace atual.
+* O dry-run de `edger.write_worker_file` não criou arquivo e
+  `edger.prepare_commit` não fez commit, push, PR ou deploy remoto.
+
 ==== Validação manual de lançamento
 
 [source,bash]
@@ -188,7 +209,8 @@ liveness para supervisores externos.
 | `200 {"status":"live"}` enquanto o processo estiver vivo.
 
 | `/metrics`
-| Prometheus text format com snapshot read-only do `WorkerPool`.
+| Prometheus text format com counters HTTP, snapshot read-only do `WorkerPool`
+  e métricas de cron.
 |===
 
 [source,bash]
@@ -203,6 +225,8 @@ curl http://127.0.0.1:19080/metrics
 configuração, headers de autenticação, API keys ou variáveis de ambiente.
 Métricas v1:
 
+* `edger_http_requests_total`
+* `edger_http_request_duration_ms_last`
 * `edger_pool_workers`
 * `edger_pool_idle_workers`
 * `edger_pool_active_requests`
@@ -215,11 +239,19 @@ Métricas v1:
 * `edger_ephemeral_inflight`
 * `edger_ephemeral_queued`
 * `edger_ephemeral_rejected_total`
+* `edger_cron_executions_total`
+* `edger_cron_failures_total`
 
 O middleware preserva `x-request-id` quando enviado pelo cliente e gera um UUID
 quando ausente. O mesmo ID é propagado para o worker via header antes do
 dispatch, permitindo correlação entre resposta, logs do orchestrator e logs do
 worker.
+
+Logs de dispatch incluem `request_id`, `worker_name`, versão e namespace sem
+serializar headers de autenticação, API keys ou body. Quando
+`OTEL_EXPORTER_OTLP_ENDPOINT` está configurado, o processo não falha no startup,
+mas registra que continua usando tracing fmt porque o exporter OTLP ainda não
+está linkado neste build.
 
 ==== Backup local
 
@@ -287,7 +319,7 @@ A API administrativa fica reservada sob `/api/admin/*` para evitar colisão com
 workers. `GET /api/admin/session` aceita qualquer API key válida e retorna o
 principal autenticado. `GET /api/admin/workers` aceita root ou uma key com
 `workers:read`; keys não-root veem somente workers dentro dos seus namespaces.
-Os endpoints de extensões, keys e mutações v1 exigem root.
+O catálogo de módulos, endpoints de extensões, keys e mutações v1 exigem root.
 
 [cols="1,1,3",options="header"]
 |===
@@ -302,6 +334,11 @@ Os endpoints de extensões, keys e mutações v1 exigem root.
 | Lista workers descobertos com nome, namespace, versão, kind, source, status e rotas públicas. Keys não-root são filtradas por namespace.
 
 | `GET`
+| `/api/admin/catalog`
+| Lista itens navegáveis do shell a partir do inventário de workers e de
+  `MenuContribution` declarada por extensões. Root-only.
+
+| `GET`
 | `/api/admin/extensions`
 | Lista middleware/extensions e auth providers registrados, incluindo status e
   diagnostics seguros quando disponíveis.
@@ -309,6 +346,12 @@ Os endpoints de extensões, keys e mutações v1 exigem root.
 | `GET`
 | `/api/admin/keys`
 | Lista metadata de chaves persistidas, sem raw key ou hash.
+
+| `POST`
+| `/api/admin/extensions/reconcile`
+| Mutação protegida. Compara o status store persistido com o registry em memória,
+  retorna plano `runtime`/`restartRequired` e aplica somente enable/disable de
+  extensões já registradas quando `dryRun` é `false`.
 
 | `POST`
 | `/api/admin/workers/{name}/enable`
@@ -327,6 +370,7 @@ Os endpoints de extensões, keys e mutações v1 exigem root.
 | `/api/admin/extensions/{name}/disable`
 | Mutação protegida. Remove extensão ativa de hooks/providers e persiste status
   quando o status store está configurado.
+
 |===
 
 Exemplos:
@@ -340,6 +384,9 @@ curl -H 'authorization: Bearer test-root' \
   http://127.0.0.1:19080/api/admin/workers
 
 curl -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/catalog
+
+curl -H 'authorization: Bearer test-root' \
   http://127.0.0.1:19080/api/admin/extensions
 
 curl -H 'authorization: Bearer test-root' \
@@ -351,6 +398,161 @@ curl -i -X POST -H 'authorization: Bearer test-root' \
 curl -i -X POST -H 'authorization: Bearer test-root' \
   http://127.0.0.1:19080/api/admin/extensions/gateway/disable
 ----
+
+==== Reconcile controlado de extensões
+
+O reconcile local é root-only. O estado desejado vem do status store persistido
+(`EDGER_EXTENSION_STATUS_FILE` ou o fallback em `EDGER_STATE_DIR`), e o estado
+efetivo é o registry em memória do processo atual. Com `dryRun: true`, o runtime
+só calcula o plano. Com `dryRun: false`, ações `runtime` atualizam o overlay em
+memória para refletir o arquivo desejado. O reconcile não regrava o arquivo de
+status; ele trata o arquivo como fonte desejada auditável.
+
+[source,bash]
+----
+curl -s -X POST \
+  -H 'authorization: Bearer test-root' \
+  -H 'content-type: application/json' \
+  -H 'x-request-id: local-reconcile-001' \
+  --data '{"dryRun":true}' \
+  http://127.0.0.1:19080/api/admin/extensions/reconcile
+----
+
+Resposta típica de dry-run:
+
+[source,json]
+----
+{
+  "actions": [
+    {
+      "action": "disable",
+      "applied": false,
+      "classification": "runtime",
+      "from": true,
+      "name": "gateway",
+      "to": false
+    }
+  ],
+  "diagnostics": {
+    "desiredSource": "extensionStatusFile",
+    "dryRun": true,
+    "dynamicLoading": false,
+    "effectiveSource": "inMemoryRegistry",
+    "mode": "dryRun",
+    "statusStore": "configured"
+  },
+  "requestId": "local-reconcile-001",
+  "summary": {
+    "applied": 0,
+    "noop": 0,
+    "restartRequired": 0,
+    "runtime": 1,
+    "total": 1
+  }
+}
+----
+
+Classificações:
+
+[cols="1,3",options="header"]
+|===
+| Classificação | Semântica
+
+| `runtime`
+| A mudança é suportada no processo atual. Com `dryRun: false`, o orchestrator
+  aplica somente enable/disable de extensão já registrada.
+
+| `restartRequired`
+| O estado desejado referencia uma extensão que não existe no registry efetivo.
+  Isso representa novo binário, nova crate ou nova dependência fora do registro
+  estático carregado. O reconcile não tenta hot-load nem download remoto.
+|===
+
+Diagnostics do reconcile não incluem API keys, tokens, paths locais sensíveis ou
+conteúdo bruto do status store. Ações `restartRequired` nunca tentam hot-load
+de crate, download remoto, deploy ou alteração do composition root em runtime.
+
+==== Validação local de extensões
+
+Antes de commitar mudanças em uma extensão ou no contrato operacional de módulos,
+rode a validação local de extensões. Ela não acessa rede externa nem faz deploy;
+o script executa um teste Rust alvo que valida inventário, manifesto, status,
+diagnostics e redaction para uma extensão real registrada no composition root.
+
+[source,bash]
+----
+python3 planning/edger/scripts/extension-validation.py --repo . --module gateway
+----
+
+O gate de planejamento também roda essa validação e grava evidência versionada:
+
+[source,bash]
+----
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+----
+
+A validação local de extensão complementa, mas não substitui, o Rust gate
+completo exigido para fechar uma story:
+
+[source,bash]
+----
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+----
+
+Cada item de `/api/admin/extensions` mantém os campos operacionais legados
+(`capabilities`, `dependencies`, `configSource`, `diagnostics`) e adiciona um
+`manifest` estruturado para UI, MCP e validação local. O manifesto é derivado
+das capabilities/dependencies tipadas declaradas pela extensão no registro
+estático v1; ele não carrega arquivos remotos nem lê valores de configuração.
+
+[source,json]
+----
+{
+  "manifest": {
+    "config": {
+      "keys": [],
+      "redacted": true,
+      "source": "staticRegistration"
+    },
+    "hooks": ["onRequest", "onResponse"],
+    "menus": [],
+    "provides": ["middleware"],
+    "requirements": []
+  }
+}
+----
+
+Campos do manifesto:
+
+[cols="1,3",options="header"]
+|===
+| Campo | Semântica
+
+| `menus`
+| Contribuições de menu declaradas por `ExtensionCapability::MenuContribution`,
+  expondo somente `name`.
+
+| `hooks`
+| Hooks declarados por capabilities de request/response/lifecycle, como
+  `onRequest`, `onResponse` e `onInit`.
+
+| `provides`
+| Capabilities fornecidas que não são menus nem hooks, como `middleware`,
+  `authProvider`, `apiKeys`, `provider:durableSql`, `provider:keyValue` e
+  `provider:queue`.
+
+| `requirements`
+| Dependências declaradas por `ExtensionDependency`, no mesmo label de
+  capability usado pelo inventário operacional.
+
+| `config`
+| Origem segura de configuração. No registro estático v1, `source` é
+  `staticRegistration`, `keys` lista apenas nomes de env/secret conhecidos
+  pelo contrato e atualmente fica vazio, e `redacted: true` indica que valores
+  brutos nunca são serializados.
+|===
 
 Sem key válida, a API retorna `401`. Com key válida sem permissão suficiente,
 endpoints administrativos retornam `403`. A resposta de keys expõe somente
@@ -465,7 +667,38 @@ serviço Turso remoto real continua opt-in por depender de URL/token externos.
 SDK worker para chamar operações diretamente, retry/backoff/DLQ completos e
 coordenação multi-pod ficam fora desta fatia.
 
-==== Shell e gateway v1
+==== cPanel/admin UI local
+
+O cPanel inicial do edger é um frontend modular servido como worker estático em
+`workers/cpanel`. Ele não faz parte do core, não lê arquivos internos e consome
+as Admin APIs existentes com credencial root informada em memória pelo operador.
+
+[source,bash]
+----
+ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers \
+  cargo run -p edger-orchestrator --bin edger
+----
+
+Abra no Browser ou navegador local:
+
+[source]
+----
+http://127.0.0.1:19080/cpanel
+----
+
+Checks manuais mínimos:
+
+* Informar a root key e confirmar sessão `root · admin`.
+* Ver overview com contagem de workers, módulos/extensões e requests de gateway.
+* Abrir Workers, Modules, Gateway e Keys sem erro de console.
+* Criar uma chave descartável e revogá-la em seguida.
+
+Evidência Browser versionada:
+
+* `planning/edger/status/evidence/cpanel-browser-2026-06-30.md`
+* `planning/edger/status/evidence/cpanel-browser-2026-06-30.png`
+
+==== Shell, catálogo e gateway v1
 
 Um worker com `base: "/"` no manifesto atua como shell central. Navegações de
 documento (`Sec-Fetch-Dest: document`) e assets root-level de um único segmento
@@ -479,6 +712,7 @@ entrypoint: index.html
 base: "/"
 injectBase: true
 shellExcludes:
+  - cpanel
   - todos-shell-demo
 ----
 
@@ -487,10 +721,22 @@ normais e recebem seu próprio base path, por exemplo `x-base:
 /todos-shell-demo`. Paths reservados como `/api`, `/health`, `/ready` e
 `/.well-known` nunca são roteados para o shell.
 
+O shell local em `workers/shell-demo` renderiza o catálogo operacional de
+`GET /api/admin/catalog`. A resposta é derivada do `ManifestIndex` e das
+contribuições de menu expostas por `ExtensionCapability::MenuContribution`,
+sem lista fixa no frontend. Cada item inclui `id`, `title`, `route`, `owner`,
+`ownerKind`, `status`, `visibility` e `source`. Itens desabilitados aparecem de
+forma explícita e não são acionáveis. O frontend mantém a root key apenas em
+memória; sem root key, ele exibe o erro operacional em vez de renderizar
+módulos protegidos.
+
 Validação local:
 
 [source,bash]
 ----
+curl -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/catalog
+
 curl -H 'authorization: Bearer test-root' \
   -H 'sec-fetch-dest: document' \
   http://127.0.0.1:19080/reports/list
@@ -508,20 +754,67 @@ O `edger-ext-gateway` também aplica políticas de borda locais:
 * Redirect rules por prefixo: regras ordenadas podem short-circuitar requests
   com status `301`, `302`, `307` ou `308`, preservando o sufixo do path e a
   query string no header `Location`.
-* Rate limit local em memória: quando configurado, o gateway mantém um token
-  bucket por cliente (`X-Forwarded-For`, depois `X-Real-IP`, senão `unknown`) e
-  bloqueia excesso com `429`, `x-ratelimit-limit`,
-  `x-ratelimit-remaining: 0` e `retry-after`. Preflight CORS não consome bucket.
+* Proxy local por prefixo: `GatewayProxyRule` encaminha para upstreams
+  `http://localhost` ou `http://127.0.0.1`, preserva sufixo/query, aplica
+  timeout local, remove `Authorization`, cookies e headers hop-by-hop antes do
+  upstream e registra `proxied`/`proxyErrors` em diagnostics. Alvos externos
+  continuam bloqueados nesta fatia.
+* Vhosts/host routing local: um worker pode declarar `hosts` no manifesto para
+  receber requests por `Host` exato antes do shell fallback. O runtime normaliza
+  host para lowercase, ignora porta no match e rejeita aliases com wildcard,
+  caminho, esquema ou whitespace. Paths reservados (`/api`, `/health`, `/ready`,
+  `/.well-known`) continuam protegidos mesmo quando o host é conhecido.
++
+[source,yaml]
+----
+name: "@acme/hosted-app"
+version: "1.0.0"
+entrypoint: index.ts
+kind: fetch
+hosts:
+  - app.example.test
+----
++
+[source,bash]
+----
+curl -H 'authorization: Bearer test-root' \
+  -H 'host: app.example.test:19080' \
+  http://127.0.0.1:19080/dashboard
+----
+* Cache durável opcional: quando a composição cria
+  `GatewayExtension::with_cache_store(GatewayCacheConfig, provider, namespace)`
+  ou o binário recebe `EDGER_GATEWAY_CACHE_TTL_SECONDS`, o gateway usa
+  `DurableSqlProvider` para cachear respostas `GET`/`HEAD` públicas com status
+  `200`. Requests com `Authorization`, `Cookie`, `Proxy-Authorization` ou
+  `x-api-key` não entram no cache. A chave persistida é hash estável de método,
+  host normalizado e URI, sem gravar query string bruta; hits retornam
+  `x-edger-cache: hit`, misses graváveis retornam `x-edger-cache: miss`, e o
+  snapshot expõe `diagnostics.cache` com `hits`, `misses`, `expired`,
+  `writes`, `ttlSeconds` e `activeEntries`.
+* Rate limit local em memória: quando configurado sem provider persistente, o
+  gateway mantém um token bucket por cliente (`X-Forwarded-For`, depois
+  `X-Real-IP`, senão `unknown`) e bloqueia excesso com `429`,
+  `x-ratelimit-limit`, `x-ratelimit-remaining: 0` e `retry-after`. Preflight
+  CORS não consome bucket.
+* Rate limit persistente opcional: quando a composição cria
+  `GatewayExtension::with_persistent_rate_limit_store(config, provider,
+  namespace)`, ou quando o binário recebe
+  `EDGER_GATEWAY_RATE_LIMIT_MAX_REQUESTS` com
+  `EDGER_GATEWAY_RATE_LIMIT_PERSISTENT=true`, o gateway usa uma janela fixa em
+  `DurableSqlProvider` e persiste apenas hash da chave do bucket. Sem esse modo,
+  reconstruir o módulo não carrega contadores antigos.
 * Diagnóstico operacional local: `GET /api/admin/extensions` com credencial root
-  inclui `diagnostics` para o gateway, com contadores de `continue`, `preflight`,
-  `redirect` e `rate_limited`, além das últimas 100 decisões. O snapshot não
-  serializa headers, body, `Authorization`, `x-api-key` nem segredos brutos.
+  inclui `diagnostics` para o gateway, com contadores de `continue`,
+  `cache_hit`, `preflight`, `redirect` e `rate_limited`, além das últimas 100
+  decisões. O snapshot não serializa headers de request, body,
+  `Authorization`, `x-api-key` nem segredos brutos.
 * Histórico persistente opcional: quando a composição cria
   `GatewayExtension::with_history_store(provider, namespace)`, o gateway grava
   `gateway_decisions` via `DurableSqlProvider`, atualiza status/duração em
   `on_response` e expõe a contagem em `diagnostics.history.persistent`. O
-  binário `edger` ainda não liga esse histórico por env; a evidência atual é o
-  teste de contrato do gateway contra `edger-ext-turso-remote`.
+  binário `edger` liga esse histórico quando `EDGER_GATEWAY_HISTORY=true`.
+  `EDGER_GATEWAY_STATE_NAMESPACE` escolhe o namespace durável do gateway e usa
+  `@gateway` por padrão.
 * API admin read-only do gateway:
 +
 [source,bash]
@@ -535,6 +828,9 @@ curl -H 'authorization: Bearer test-root' \
 curl -H 'authorization: Bearer test-root' \
   'http://127.0.0.1:19080/api/admin/gateway/logs?rateLimited=true&limit=20'
 
+curl -N -H 'authorization: Bearer test-root' \
+  'http://127.0.0.1:19080/api/admin/gateway/logs/stream?decision=continue&limit=20'
+
 curl -H 'authorization: Bearer test-root' \
   http://127.0.0.1:19080/api/admin/gateway/logs/stats
 
@@ -543,18 +839,59 @@ curl -H 'authorization: Bearer test-root' \
 ----
 +
 `/api/admin/gateway/logs` aceita filtros `limit`, `rateLimited`, `status` e
-`decision`. `/api/admin/gateway/logs/stats` agrega `total`, `rateLimited`,
-`byStatus`, `byDecision`, `withoutStatus`, `duration.samples` e
-`duration.avgMs` sobre as decisões recentes retidas quando há amostras de
-duração. `/api/admin/gateway/rate-limit/metrics` expõe apenas métricas
-agregadas do rate limit local (`enabled`, `activeBuckets`, `maxRequests`,
-`windowSeconds`, `scope`), sem listar buckets ou chaves de cliente. Todos os
-endpoints exigem credencial root e são somente leitura.
+`decision`. `/api/admin/gateway/logs/stream` aceita os mesmos filtros e retorna
+`text/event-stream`, com eventos `gateway.decision` cujo `data` é o mesmo objeto
+JSON redigido usado pelo histórico. `/api/admin/gateway/logs/stats` agrega
+`total`, `rateLimited`, `byStatus`, `byDecision`, `withoutStatus`,
+`duration.samples` e `duration.avgMs` sobre as decisões recentes retidas quando
+há amostras de duração. `/api/admin/gateway/rate-limit/metrics` expõe apenas
+métricas agregadas do rate limit (`enabled`, `activeBuckets`, `maxRequests`,
+`windowSeconds`, `mode`, `scope`), sem listar buckets ou chaves de cliente. Em
+memória, `scope` é `local-memory`; com provider persistente, `scope` é
+`persistent-durable-sql`. Todos os endpoints exigem credencial root e são
+somente leitura.
 
-Proxy externo, cache, rate-limit persistente/distribuído, listagem/reset de
-buckets, mutações dinâmicas de gateway, SSE e excludes dinâmicos ficam fora do
-v1. Histórico persistente já existe como capacidade de composição e prova de
-contrato, mas ainda não tem wiring operacional próprio no binário.
+Proxy para alvos externos, cache distribuído multi-região, listagem/reset de
+buckets, mutações dinâmicas de gateway, streaming remoto, wildcard vhosts,
+DNS/certificados e excludes dinâmicos ficam fora do v1.
+
+==== Cron scheduler
+
+`manifest.yaml` pode declarar `cron[]`. O binário `edger` coleta jobs de
+workers habilitados no startup, valida o schedule e dispara requests internas
+in-process para o pipeline Axum. Jobs cron ficam habilitados por default; use
+`EDGER_CRON_ENABLED=false` para desativar o scheduler localmente.
+
+[source,yaml]
+----
+name: cron-worker
+version: "1.0.0"
+entrypoint: index.ts
+kind: fetch
+cron:
+  - schedule: "*/1 * * * *"
+    path: /tick
+    method: POST
+----
+
+Requisitos operacionais:
+
+* `ROOT_API_KEY` é obrigatório quando existir ao menos um job cron; ele é usado
+  no dispatch interno como `Authorization: Bearer ...` para passar pelo auth
+  gate. O pipeline remove essa credencial antes de entregar a request ao worker.
+* Cada dispatch inclui `x-edger-internal: true` e `x-request-id: cron-...` para
+  user code autorizado. Esse header sozinho não autentica requests públicas ou
+  admin, e headers `x-edger-internal` spoofados por requests públicas são
+  removidos antes do worker.
+* `enabled: false` remove jobs no startup. Reabilitar worker em runtime exige
+  reload/restart para registrar jobs no scheduler.
+* Schedules inválidos falham no startup com `CRON_SCHEDULE_INVALID`.
+* `/metrics` expõe `edger_cron_executions_total` e
+  `edger_cron_failures_total`.
+
+No v1, o parser aceita `@every <duration>` para testes/desenvolvimento e cron
+simples de minuto (`* * * * *`, `*/N * * * *` ou minuto fixo). Full cron grammar,
+timezones e leader election distribuído ficam fora desta fatia.
 
 ==== Healthcheck
 
@@ -580,3 +917,62 @@ Resposta esperada:
   permissões antes de alterar o contrato do worker.
 * Qualquer mudança em auth, manifests, routing ou worker lifecycle exige gate
   Rust completo.
+
+=== Deploy de apps (Epic 14 — install + rescan)
+
+O EdgeR aceita deploy de workers em runtime, sem restart, por duas vias:
+
+==== Install por zip
+
+[source,bash]
+----
+cd meu-app && zip -r ../meu-app.zip .
+curl -X POST http://127.0.0.1:19080/api/admin/workers/install \
+  -H "Authorization: Bearer $ROOT_API_KEY" \
+  -H "content-type: application/zip" \
+  --data-binary @../meu-app.zip
+----
+
+Resposta (`201`):
+
+[source,json]
+----
+{"name":"meu-app","version":"1.0.0","url":"/meu-app","kind":"FetchHandler","visibility":"protected","source":"workers/meu-app"}
+----
+
+Regras:
+
+* Exige permissão `workers:install` (root tem todas).
+* O pacote precisa de `manifest.yaml` (ou `package.json`) com `name` e um
+  entrypoint (`manifest.entrypoint` ou `index.{html,ts,js,mjs,wasm,wat}`).
+* Zip com uma única pasta top-level é desembrulhado automaticamente.
+* Zip-slip (`../`, paths absolutos) é rejeitado com `400 DEPLOY_PATH_DENIED`.
+* `name@version` já indexado responde `409 COLLISION`; instale uma nova
+  versão para coexistir (`latest` passa a resolver a maior habilitada).
+* Body acima de 4 MiB responde `413` (cap global v1).
+* O destino é o primeiro root de `RUNTIME_WORKER_DIRS`; a escrita é atômica
+  (staging + rename) e o worker é indexado imediatamente.
+
+==== Rescan (disco como fonte de verdade)
+
+Para workers copiados manualmente (cp, git pull, MCP):
+
+[source,bash]
+----
+# dry-run (default): mostra o diff sem aplicar
+curl -X POST http://127.0.0.1:19080/api/admin/workers/rescan \
+  -H "Authorization: Bearer $ROOT_API_KEY" -H "content-type: application/json" -d '{}'
+
+# aplicar
+curl -X POST http://127.0.0.1:19080/api/admin/workers/rescan \
+  -H "Authorization: Bearer $ROOT_API_KEY" -H "content-type: application/json" \
+  -d '{"dryRun":false}'
+----
+
+Resposta: `{"dryRun":...,"added":["nome@versao"],"removed":[...],"unchanged":N}`.
+Workers removidos do disco saem do índice no apply; overlay de
+enable/disable de workers não tocados é preservado.
+
+NOTE: Com um shell (`base: "/"`) protegido ativo, GET single-segment de um
+worker recém-instalado pode ser interceptado pelo shell a menos que o worker
+esteja em `shellExcludes` — ver `planning/edger/docs/shell-protocol.md`.

@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 
 use edger_core::{
     create_worker_ref, principal_can_access_optional_namespace, AdminWorkerInfo, ApiKeyPrincipal,
-    CoreError, WorkerManifest, WorkerRef,
+    CoreError, CronJob, WorkerManifest, WorkerRef,
 };
 
 use crate::router::PluginRef;
@@ -28,9 +28,12 @@ pub struct ManifestIndex {
 #[derive(Clone, Debug, Default)]
 struct ManifestIndexState {
     entries: HashMap<String, Vec<ManifestEntry>>,
+    host_routes: HashMap<String, WorkerRef>,
     plugins: Vec<PluginRef>,
     homepage: Option<WorkerRef>,
     shell: Option<WorkerRef>,
+    /// Worker roots this index was loaded from; install/rescan targets.
+    roots: Vec<PathBuf>,
 }
 
 impl ManifestIndex {
@@ -58,6 +61,16 @@ impl ManifestIndex {
             ));
         }
 
+        let host_aliases = normalize_host_aliases(&manifest.hosts)?;
+        for host in &host_aliases {
+            if state.host_routes.contains_key(host) {
+                return Err(CoreError::new(
+                    "COLLISION",
+                    format!("duplicate host route: {host}"),
+                ));
+            }
+        }
+
         let plugin_base = manifest.base.as_deref().and_then(normalize_base);
         if plugin_base.as_deref() == Some("/") {
             state.homepage = Some(worker.clone());
@@ -72,6 +85,9 @@ impl ManifestIndex {
             state
                 .plugins
                 .sort_by(|a, b| b.base.len().cmp(&a.base.len()));
+        }
+        for host in host_aliases {
+            state.host_routes.insert(host, worker.clone());
         }
 
         state.entries.entry(key).or_default().push(ManifestEntry {
@@ -137,6 +153,13 @@ impl ManifestIndex {
         None
     }
 
+    pub fn worker_for_host(&self, host: &str) -> Option<WorkerRef> {
+        let normalized = normalize_host_alias(host).ok()??;
+        let state = self.inner.read().ok()?;
+        let worker = state.host_routes.get(&normalized)?;
+        state.worker_ref_is_enabled(worker).then(|| worker.clone())
+    }
+
     pub fn homepage(&self) -> Option<WorkerRef> {
         let state = self.inner.read().ok()?;
         state
@@ -182,9 +205,90 @@ impl ManifestIndex {
             .collect()
     }
 
+    pub fn enabled_cron_jobs(&self) -> Vec<(WorkerRef, Vec<CronJob>)> {
+        let Ok(state) = self.inner.read() else {
+            return Vec::new();
+        };
+        state
+            .entries
+            .values()
+            .flat_map(|entries| {
+                entries.iter().filter_map(|entry| {
+                    if entry.worker.config.enabled && !entry.worker.config.cron.is_empty() {
+                        Some((entry.worker.clone(), entry.worker.config.cron.clone()))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect()
+    }
+
+    pub fn set_roots(&self, roots: Vec<PathBuf>) {
+        if let Ok(mut state) = self.inner.write() {
+            state.roots = roots;
+        }
+    }
+
+    pub fn roots(&self) -> Vec<PathBuf> {
+        self.inner
+            .read()
+            .map(|state| state.roots.clone())
+            .unwrap_or_default()
+    }
+
+    /// Remove one `name@version` entry (rescan of a worker deleted on disk).
+    pub fn remove_worker(&self, name: &str, version: &str) -> Result<(), CoreError> {
+        let mut state = self.inner.write().map_err(|_| lock_err())?;
+        let bucket = state
+            .entries
+            .get_mut(name)
+            .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
+        let Some(position) = bucket
+            .iter()
+            .position(|entry| entry.worker.version == version)
+        else {
+            return Err(CoreError::new(
+                "NOT_FOUND",
+                format!("worker {name}@{version} not found"),
+            ));
+        };
+        let removed = bucket.remove(position);
+        if bucket.is_empty() {
+            state.entries.remove(name);
+        }
+        let removed_dir = removed.worker.dir.clone();
+        state.host_routes.retain(|_, worker| {
+            !(worker.name == name && worker.version == version && worker.dir == removed_dir)
+        });
+        state
+            .plugins
+            .retain(|plugin| !(plugin.name == name && plugin.dir == removed_dir));
+        if state
+            .homepage
+            .as_ref()
+            .is_some_and(|worker| worker.name == name && worker.dir == removed_dir)
+        {
+            state.homepage = None;
+        }
+        if state
+            .shell
+            .as_ref()
+            .is_some_and(|worker| worker.name == name && worker.dir == removed_dir)
+        {
+            state.shell = None;
+        }
+        Ok(())
+    }
+
+    /// Toggle a worker's enabled flag. With `version = None` the latest version
+    /// in the bucket is targeted; with `Some(v)` that exact version is toggled,
+    /// which is how rollback disables a bad release while an older one keeps
+    /// serving `latest`.
     pub fn set_worker_enabled(
         &self,
         name: &str,
+        version: Option<&str>,
         enabled: bool,
     ) -> Result<AdminWorkerInfo, CoreError> {
         let mut state = self.inner.write().map_err(|_| lock_err())?;
@@ -192,17 +296,20 @@ impl ManifestIndex {
             .entries
             .get_mut(name)
             .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
-        let resolved_version = resolve_semver(
-            bucket.iter().map(|e| e.worker.version.as_str()).collect(),
-            None,
-        )?;
+        let target_version = match version {
+            Some(version) => version.to_string(),
+            None => resolve_semver(
+                bucket.iter().map(|e| e.worker.version.as_str()).collect(),
+                None,
+            )?,
+        };
         let entry = bucket
             .iter_mut()
-            .find(|entry| entry.worker.version == resolved_version)
+            .find(|entry| entry.worker.version == target_version)
             .ok_or_else(|| {
                 CoreError::new(
                     "NOT_FOUND",
-                    format!("worker {name}@{resolved_version} not found"),
+                    format!("worker {name}@{target_version} not found"),
                 )
             })?;
         entry.worker.config.enabled = enabled;
@@ -268,6 +375,55 @@ fn normalize_base(base: &str) -> Option<String> {
         format!("/{trimmed}")
     };
     Some(normalized)
+}
+
+fn normalize_host_aliases(hosts: &[String]) -> Result<Vec<String>, CoreError> {
+    let mut aliases = Vec::new();
+    for host in hosts {
+        let Some(alias) = normalize_host_alias(host)? else {
+            continue;
+        };
+        if !aliases.contains(&alias) {
+            aliases.push(alias);
+        }
+    }
+    Ok(aliases)
+}
+
+fn normalize_host_alias(host: &str) -> Result<Option<String>, CoreError> {
+    let trimmed = host.trim().trim_end_matches('.');
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.contains("://")
+        || trimmed
+            .chars()
+            .any(|ch| ch.is_whitespace() || matches!(ch, '/' | '\\' | '*' | '[' | ']' | '@'))
+    {
+        return Err(CoreError::new(
+            "VALIDATION_ERROR",
+            format!("invalid host route: {host}"),
+        ));
+    }
+    let without_port = strip_host_port(trimmed);
+    if without_port.is_empty() || without_port.contains(':') {
+        return Err(CoreError::new(
+            "VALIDATION_ERROR",
+            format!("invalid host route: {host}"),
+        ));
+    }
+    Ok(Some(without_port.to_ascii_lowercase()))
+}
+
+fn strip_host_port(host: &str) -> &str {
+    let Some((name, port)) = host.rsplit_once(':') else {
+        return host;
+    };
+    if !name.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) {
+        name
+    } else {
+        host
+    }
 }
 
 fn lock_err() -> CoreError {

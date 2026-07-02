@@ -2,31 +2,41 @@
 
 use std::collections::BTreeMap;
 
-use axum::extract::{Path, Query, State};
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use edger_core::{
-    principal_has_permission, AdminApiKeysResponse, AdminCreateApiKeyRequest,
-    AdminCreateApiKeyResponse, AdminErrorResponse, AdminExtensionsResponse, AdminMutationResponse,
-    AdminRevokeApiKeyResponse, AdminSessionResponse, AdminWorkersResponse, ApiKeyPrincipal,
-    CoreError,
+    principal_has_permission, AdminApiKeysResponse, AdminCatalogItem, AdminCatalogResponse,
+    AdminCreateApiKeyRequest, AdminCreateApiKeyResponse, AdminErrorResponse, AdminExtensionInfo,
+    AdminExtensionReconcileRequest, AdminExtensionsResponse, AdminMutationResponse,
+    AdminRevokeApiKeyResponse, AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse,
+    ApiKeyPrincipal, CoreError,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::deploy::{install_worker_from_zip, rescan_workers};
 use crate::operational_log::log_operational_error;
 use crate::pipeline::OrchestratorState;
 use crate::security::validate_admin_mutation_security;
 use crate::server::request_id_from_headers;
+use crate::wire::MAX_BODY_BYTES;
 
 pub fn router() -> Router<OrchestratorState> {
     Router::new()
         .route("/api/admin/session", get(session))
+        .route("/api/admin/catalog", get(catalog))
         .route("/api/admin/workers", get(list_workers))
         .route("/api/admin/extensions", get(list_extensions))
+        .route(
+            "/api/admin/extensions/reconcile",
+            post(reconcile_extensions),
+        )
         .route("/api/admin/gateway/stats", get(gateway_stats))
         .route(
             "/api/admin/gateway/rate-limit/metrics",
@@ -34,9 +44,20 @@ pub fn router() -> Router<OrchestratorState> {
         )
         .route("/api/admin/gateway/config", get(gateway_config))
         .route("/api/admin/gateway/logs/stats", get(gateway_logs_stats))
+        .route("/api/admin/gateway/logs/stream", get(gateway_logs_stream))
         .route("/api/admin/gateway/logs", get(gateway_logs))
         .route("/api/admin/keys", get(list_keys).post(create_key))
         .route("/api/admin/keys/{id}/revoke", post(revoke_key))
+        .route(
+            "/api/admin/workers/install",
+            post(install_worker).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
+        .route("/api/admin/workers/rescan", post(rescan_workers_route))
+        .route(
+            "/api/admin/workers/error-summary",
+            get(worker_error_summary),
+        )
+        .route("/api/admin/workers/{name}/errors", get(worker_errors))
         .route("/api/admin/workers/{name}/enable", post(enable_worker))
         .route("/api/admin/workers/{name}/disable", post(disable_worker))
         .route(
@@ -65,6 +86,19 @@ async fn session(State(state): State<OrchestratorState>, headers: HeaderMap) -> 
     }
 }
 
+async fn catalog(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
+    match require_root(&state, &headers) {
+        Ok(_) => Json(AdminCatalogResponse {
+            items: build_catalog(
+                state.index.admin_workers(),
+                state.registry.admin_extensions(),
+            ),
+        })
+        .into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
 async fn list_workers(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
     match authenticate(&state, &headers).and_then(|principal| {
         require_permission(&principal, "workers:read")?;
@@ -78,12 +112,105 @@ async fn list_workers(State(state): State<OrchestratorState>, headers: HeaderMap
     }
 }
 
+fn build_catalog(
+    workers: Vec<AdminWorkerInfo>,
+    extensions: Vec<AdminExtensionInfo>,
+) -> Vec<AdminCatalogItem> {
+    let mut items = Vec::new();
+    for worker in workers {
+        items.push(worker_catalog_item(&worker));
+    }
+    for extension in extensions {
+        for menu in &extension.manifest.menus {
+            items.push(module_catalog_item(&extension, &menu.name));
+        }
+    }
+    items.sort_by(|a, b| {
+        a.title
+            .cmp(&b.title)
+            .then_with(|| a.owner.cmp(&b.owner))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    items
+}
+
+fn worker_catalog_item(worker: &AdminWorkerInfo) -> AdminCatalogItem {
+    AdminCatalogItem {
+        id: format!("worker:{}", worker.name),
+        kind: "worker".into(),
+        owner: worker.name.clone(),
+        owner_kind: "worker".into(),
+        route: worker
+            .plugin_base
+            .clone()
+            .unwrap_or_else(|| format!("/{}", worker.name)),
+        source: worker.source.clone(),
+        status: worker.status.clone(),
+        title: worker.name.clone(),
+        visibility: worker.visibility.clone(),
+    }
+}
+
+fn module_catalog_item(extension: &AdminExtensionInfo, title: &str) -> AdminCatalogItem {
+    AdminCatalogItem {
+        id: format!("module:{}:{}", extension.name, catalog_slug(title)),
+        kind: "moduleMenu".into(),
+        owner: extension.name.clone(),
+        owner_kind: extension.kind.clone(),
+        route: format!("#module-{}", catalog_slug(title)),
+        source: "extensionManifest".into(),
+        status: extension.status.clone(),
+        title: title.into(),
+        visibility: "root".into(),
+    }
+}
+
+fn catalog_slug(value: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_separator = false;
+    for ch in value.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+            last_was_separator = false;
+        } else if !last_was_separator && !slug.is_empty() {
+            slug.push('-');
+            last_was_separator = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        "module".into()
+    } else {
+        slug
+    }
+}
+
 async fn list_extensions(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
     match require_root(&state, &headers) {
         Ok(_) => Json(AdminExtensionsResponse {
             extensions: state.registry.admin_extensions(),
         })
         .into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn reconcile_extensions(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Json(request): Json<AdminExtensionReconcileRequest>,
+) -> Response {
+    let request_id =
+        request_id_from_headers(&headers).unwrap_or_else(|| Uuid::new_v4().to_string());
+    match require_root(&state, &headers).and_then(|principal| {
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        state
+            .registry
+            .reconcile_extensions(request_id.clone(), &request)
+    }) {
+        Ok(response) => Json(response).into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
 }
@@ -132,6 +259,27 @@ async fn gateway_logs(
         .and_then(|diagnostics| gateway_logs_response(&diagnostics, &query))
     {
         Ok(logs) => Json(logs).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn gateway_logs_stream(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Query(query): Query<GatewayLogsQuery>,
+) -> Response {
+    match require_root(&state, &headers)
+        .and_then(|_| gateway_diagnostics(&state))
+        .and_then(|diagnostics| gateway_logs_sse_response(&diagnostics, &query))
+    {
+        Ok(body) => (
+            [
+                (CONTENT_TYPE, "text/event-stream"),
+                (CACHE_CONTROL, "no-cache"),
+            ],
+            body,
+        )
+            .into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
 }
@@ -196,20 +344,106 @@ async fn revoke_key(
     }
 }
 
+async fn install_worker(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    match authenticate(&state, &headers).and_then(|principal| {
+        require_permission(&principal, "workers:install")?;
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        install_worker_from_zip(&state.index, &principal, &body)
+    }) {
+        Ok(installed) => (StatusCode::CREATED, Json(installed)).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RescanRequest {
+    dry_run: Option<bool>,
+}
+
+async fn rescan_workers_route(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let dry_run = serde_json::from_slice::<RescanRequest>(&body)
+        .ok()
+        .and_then(|request| request.dry_run)
+        .unwrap_or(true);
+    match authenticate(&state, &headers).and_then(|principal| {
+        require_permission(&principal, "workers:install")?;
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        rescan_workers(&state.index, dry_run)
+    }) {
+        Ok(report) => Json(report).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerVersionQuery {
+    version: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerErrorsQuery {
+    limit: Option<usize>,
+}
+
+async fn worker_error_summary(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+) -> Response {
+    match authenticate(&state, &headers).and_then(|principal| {
+        require_permission(&principal, "workers:read")?;
+        Ok(principal)
+    }) {
+        Ok(_) => Json(json!({ "summary": state.server.worker_errors().summary() })).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn worker_errors(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(query): Query<WorkerErrorsQuery>,
+) -> Response {
+    match authenticate(&state, &headers).and_then(|principal| {
+        require_permission(&principal, "workers:read")?;
+        Ok(principal)
+    }) {
+        Ok(_) => {
+            let limit = query.limit.unwrap_or(10).min(20);
+            let errors = state.server.worker_errors().recent(&name, limit);
+            Json(json!({ "worker": name, "errors": errors })).into_response()
+        }
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
 async fn enable_worker(
     State(state): State<OrchestratorState>,
     headers: HeaderMap,
     Path(name): Path<String>,
+    Query(query): Query<WorkerVersionQuery>,
 ) -> Response {
-    worker_mutation(state, headers, name, true)
+    worker_mutation(state, headers, name, query.version, true)
 }
 
 async fn disable_worker(
     State(state): State<OrchestratorState>,
     headers: HeaderMap,
     Path(name): Path<String>,
+    Query(query): Query<WorkerVersionQuery>,
 ) -> Response {
-    worker_mutation(state, headers, name, false)
+    worker_mutation(state, headers, name, query.version, false)
 }
 
 async fn enable_extension(
@@ -232,15 +466,21 @@ fn worker_mutation(
     state: OrchestratorState,
     headers: HeaderMap,
     name: String,
+    version: Option<String>,
     enabled: bool,
 ) -> Response {
     match require_root(&state, &headers).and_then(|principal| {
         validate_admin_mutation_security("POST", &headers, &principal)?;
-        state.index.set_worker_enabled(&name, enabled)
+        state
+            .index
+            .set_worker_enabled(&name, version.as_deref(), enabled)
     }) {
         Ok(worker) => Json(AdminMutationResponse {
             code: "OK".into(),
-            message: format!("worker {} {}", worker.name, worker.status),
+            message: format!(
+                "worker {}@{} {}",
+                worker.name, worker.version, worker.status
+            ),
             status: worker.status,
         })
         .into_response(),
@@ -280,19 +520,9 @@ fn gateway_logs_response(
     diagnostics: &Value,
     query: &GatewayLogsQuery,
 ) -> Result<Value, CoreError> {
-    let decisions = diagnostics
-        .get("recentDecisions")
-        .and_then(Value::as_array)
-        .ok_or_else(|| CoreError::new("NOT_FOUND", "gateway logs unavailable"))?;
-    let total = decisions.len();
-    let limit = query.limit.unwrap_or(50).min(100);
-    let logs = decisions
-        .iter()
-        .filter(|entry| gateway_log_matches(entry, query))
-        .take(limit)
-        .cloned()
-        .collect::<Vec<_>>();
+    let (total, logs) = gateway_filtered_logs(diagnostics, query)?;
     let returned = logs.len();
+    let limit = query.limit.unwrap_or(50).min(100);
     Ok(json!({
         "filters": {
             "decision": &query.decision,
@@ -306,6 +536,43 @@ fn gateway_logs_response(
     }))
 }
 
+fn gateway_logs_sse_response(
+    diagnostics: &Value,
+    query: &GatewayLogsQuery,
+) -> Result<String, CoreError> {
+    let (_, logs) = gateway_filtered_logs(diagnostics, query)?;
+    let mut body = String::new();
+    for event in logs {
+        body.push_str("event: gateway.decision\n");
+        body.push_str("data: ");
+        body.push_str(&event.to_string());
+        body.push_str("\n\n");
+    }
+    if body.is_empty() {
+        body.push_str(": gateway.decision keepalive\n\n");
+    }
+    Ok(body)
+}
+
+fn gateway_filtered_logs(
+    diagnostics: &Value,
+    query: &GatewayLogsQuery,
+) -> Result<(usize, Vec<Value>), CoreError> {
+    let decisions = diagnostics
+        .get("recentDecisions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| CoreError::new("NOT_FOUND", "gateway logs unavailable"))?;
+    let total = decisions.len();
+    let limit = query.limit.unwrap_or(50).min(100);
+    let logs = decisions
+        .iter()
+        .filter(|entry| gateway_log_matches(entry, query))
+        .take(limit)
+        .cloned()
+        .collect::<Vec<_>>();
+    Ok((total, logs))
+}
+
 fn gateway_rate_limit_metrics_response(diagnostics: &Value) -> Result<Value, CoreError> {
     let rate_limit = diagnostics
         .get("rateLimit")
@@ -317,7 +584,11 @@ fn gateway_rate_limit_metrics_response(diagnostics: &Value) -> Result<Value, Cor
             "gateway rate limit metrics unavailable",
         ));
     };
-    metrics.insert("scope".into(), Value::String("local-memory".into()));
+    let scope = match metrics.get("mode").and_then(Value::as_str) {
+        Some("persistent") => "persistent-durable-sql",
+        _ => "local-memory",
+    };
+    metrics.insert("scope".into(), Value::String(scope.into()));
     Ok(Value::Object(metrics))
 }
 
@@ -461,10 +732,11 @@ fn generate_api_key() -> String {
 
 fn map_error_status(err: &CoreError) -> StatusCode {
     match err.code.as_str() {
-        "BAD_REQUEST" => StatusCode::BAD_REQUEST,
+        "BAD_REQUEST" | "DEPLOY_INVALID_PACKAGE" | "DEPLOY_PATH_DENIED" => StatusCode::BAD_REQUEST,
         "UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
         "CSRF_DENIED" | "FORBIDDEN" => StatusCode::FORBIDDEN,
+        "COLLISION" | "DEPLOY_TARGET_EXISTS" => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

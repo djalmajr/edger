@@ -17,34 +17,44 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/wasm.rs` | create | `WasmIsolate` impl `Isolate::execute_wasm` |
-| `edger-isolation/src/wasm/wasi.rs` | create | Config WASI: stdin/stdout/env caps limitados |
-| `edger-isolation/src/wasm/handler.rs` | create | Convenção entry export + request/response ABI |
+| `edger-isolation/src/wasm/mod.rs` | edit | `WasmIsolate` impl `Isolate::execute_wasm` |
+| `edger-isolation/src/wasm/wasi.rs` | edit | Config WASI deny-by-default + env filter |
+| `edger-isolation/src/wasm/handler.rs` | edit | Convenção ABI v1 `http_status` + `http_body_len` |
+| `edger-isolation/src/wasm/load.rs` | edit | Load seguro `.wasm`/`.wat` dentro do worker dir |
 | `edger-isolation/src/lib.rs` | edit | Registrar backend Wasm; feature `wasm` |
-| `edger-isolation/Cargo.toml` | edit | deps `wasmtime`, `wasmtime-wasi` |
-| `edger-worker/src/instance.rs` | edit | Selecionar `WasmIsolate` quando kind `WasmModule` |
-| `edger-isolation/tests/wasm_integration.rs` | create | Módulo mínimo responde HTTP |
-| `workers/wasm-hello/` | create | `manifest.yaml` kind wasm + `index.wasm` ou build script |
-| `workers/wasm-hello/build.rs` ou `Makefile` | create | Compilar fixture Rust→wasm para testes |
+| `edger-isolation/Cargo.toml` | edit | deps `wasmtime`, `wasmtime-wasi`, `wat` |
+| `edger-orchestrator/src/bin/edger.rs` | edit | Factory runtime seleciona `WasmIsolate` para `WasmModule` |
+| `edger-worker/tests/wasm_pool_integration.rs` | edit | Pool dispatch real para Wasm |
+| `edger-orchestrator/tests/kind_dispatch_integration.rs` | edit | Pipeline real e coexistência JS/Wasm |
+| `workers/wasm-hello/` | edit | `manifest.yaml`, `index.wat` e README de fixture |
 
 ## Detail
 
 ### AS-IS
-- `execute_wasm` no mock retorna resposta sintética fixa.
-- Spike pode ter comparado wasmtime mas sem integração pool.
-- Sem validação de capabilities WASI.
+- Antes da fatia v1, `execute_wasm` no mock retornava resposta sintética fixa.
+- Spike comparava wasmtime, mas não havia integração pool/pipeline real.
+- Sem validação de módulo, path ou capabilities WASI no caminho de runtime.
 
 ### TO-BE
-- Entrypoint `.wasm` do manifest carregado em wasmtime Engine com config determinística.
-- WASI: apenas dirs/files do worker sandbox; env filtrado (mesmos padrões sensíveis Buntime).
-- Handler: convenção documentada — ex. export `handle_request(ptr, len)` ou WASI HTTP preview; adapter traduz `SerializedRequest` → Wasm → `SerializedResponse`.
-- `WasmModule { entry: Option<String> }` no `ExecutionKind` honrado.
-- Supervisor trata Wasm instance lifecycle separado de V8 (memória contabilizada por engine).
-- Teste integração com módulo compilado em CI (tiny wasm from Rust `cdylib`).
+- Entrypoint `.wasm` ou `.wat` do manifest carregado em wasmtime Engine com
+  config determinística e validação de path sob worker dir.
+- WASI v1 deny-by-default: imports WASI/host são rejeitados; env sensível é
+  filtrado antes de qualquer futura injeção.
+- Handler ABI v1 documentado: `memory`, `http_status()` e `http_body_len()`;
+  response body é lido do offset `0`.
+- `WasmModule { entry: Option<String> }` no `ExecutionKind` é honrado pelo pool
+  e pela factory dinâmica do binário.
+- Processo/pool consegue servir workers JS/TS e Wasm no mesmo runtime sem estado
+  mutável compartilhado entre backends.
+- Fixture `workers/wasm-hello` usa `index.wat` versionado e documenta como
+  materializar `index.wasm`.
 
 ### Scope
-- **In:** wasmtime standalone, WASI sandbox, execute_wasm, pool wiring, fixture + testes.
-- **Out:** Wasm dentro do deno isolate; component model avançado; hot reload de módulos.
+- **In:** wasmtime standalone, WASI deny-by-default, execute_wasm, pool/bin
+  wiring, fixture + testes, coexistência JS/Wasm.
+- **Out:** Wasm dentro do deno isolate; component model avançado; hot reload de
+  módulos; host WASI real com preopen; request/response ABI completa via
+  linear memory.
 
 ### Acceptance criteria
 - [x] Módulo WAT mínimo responde via `WasmIsolate::execute_wasm` (ABI v1: `http_status` + `http_body_len`)
@@ -52,7 +62,7 @@
 - [x] Módulo malformado ou path fora do dir falha com `IsolationError` claro.
 - [x] WASI não concede acesso a filesystem fora do worker dir (imports WASI bloqueados no ABI v1).
 - [x] Env vars `*_SECRET` não passam para Wasm (`WasiConfig` filtra env antes de futura injeção).
-- [ ] Coexistência: processo pode ter isolates V8 e Wasm simultâneos sem shared mutable state.
+- [x] Coexistência: processo pode ter isolates V8 e Wasm simultâneos sem shared mutable state.
 - [x] `cargo test -p edger-isolation --features wasm` verde.
 
 ### Dependencies
@@ -76,22 +86,24 @@
 ### Fase 2 — WASI sandbox
 - [x] `wasi.rs`: deny-by-default + imports WASI/host bloqueados no ABI v1.
 - [x] Env filter: apenas keys não sensíveis ficam em `WasiConfig`.
-- [ ] Host WASI real: preopen apenas worker root; cap net desabilitada por default.
-- [ ] Env inject no host WASI: apenas keys permitidas pelo manifest após sensitive filter.
+- [ ] Host WASI real: preopen apenas worker root; cap net desabilitada por default (follow-up pós-ABI v1).
+- [ ] Env inject no host WASI: apenas keys permitidas pelo manifest após sensitive filter (follow-up pós-ABI v1).
 
 ### Fase 3 — Request ABI
-- [ ] `handler.rs`: serialize request para linear memory; invoke export; deserialize response.
+- [ ] `handler.rs`: serialize request para linear memory; invoke export; deserialize response (follow-up ABI v2).
 - [x] Documentar ABI v1 em `planning/edger/docs/wasm-abi.md` (curto, versionado).
 
 ### Fase 4 — Integração
 - [x] `WorkerPool::fetch` respeita `WorkerConfig.kind` quando `kind_hint` não é informado.
-- [ ] Factory dinâmica do orquestrador Rust seleciona `WasmIsolate` para `WasmModule`.
-- [ ] Build fixture wasm em `workers/wasm-hello/` (script documentado).
+- [x] Factory dinâmica do orquestrador Rust seleciona `WasmIsolate` para `WasmModule`.
+- [x] Build fixture wasm em `workers/wasm-hello/` documentado.
 - [x] Integration test `wasm_pool_integration.rs` verde.
 
 ## Verification
 ```bash
 cargo test -p edger-isolation --features wasm
+cargo test -p edger-worker --test wasm_pool_integration
+cargo test -p edger-orchestrator --test kind_dispatch_integration wasm
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check

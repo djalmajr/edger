@@ -38,24 +38,31 @@ O projeto precisa ser modular e amigavel a agentes. Para extensoes, isso signifi
 
 ### Critérios de aceite
 
-- [ ] Validacao local falha se manifesto/status/diagnostics de modulo estiverem inconsistentes.
-- [ ] Evidencia versionada registra comandos e resultado.
-- [ ] Fluxo nao exige rede externa.
-- [ ] Documentacao deixa claro quando rodar Rust gate completo.
+- [x] Validacao local falha se manifesto/status/diagnostics de modulo estiverem inconsistentes.
+- [x] Evidencia versionada registra comandos e resultado.
+- [x] Fluxo nao exige rede externa.
+- [x] Documentacao deixa claro quando rodar Rust gate completo.
 
 ## Tasks
 
-- [ ] Definir entrada do check local de modulo.
-- [ ] Implementar validacao de manifesto e inventario.
-- [ ] Registrar evidencia em scratch/status sem vazar segredos.
-- [ ] Atualizar docs de operacao.
+- [x] Definir entrada do check local de modulo.
+- [x] Implementar validacao de manifesto e inventario.
+- [x] Registrar evidencia em scratch/status sem vazar segredos.
+- [x] Atualizar docs de operacao.
 
 ## Verification
 
 ```bash
+python3 planning/edger/scripts/extension-validation.py --repo . --module gateway
 SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
 ```
 
+## Status
+
+completed (2026-07-01) - O gate local `extension-validation.py` roda teste Rust
+alvo de inventario/manifest/status/diagnostics/redaction para `gateway`, e o
+`run-gates.sh` grava `planning/edger/status/evidence/extension-validation.txt`.
+O fluxo nao acessa rede externa nem substitui o Rust gate completo.

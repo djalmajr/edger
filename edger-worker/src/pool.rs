@@ -11,6 +11,7 @@ use edger_core::{
     create_worker_ref, ExecutionKind, Isolate, SerializedRequest, SerializedResponse, WorkerConfig,
     WorkerManifest, WorkerRef,
 };
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::ephemeral::EphemeralGate;
@@ -185,6 +186,24 @@ impl WorkerPool {
         req: SerializedRequest,
         kind_hint: Option<ExecutionKind>,
     ) -> Result<SerializedResponse, WorkerError> {
+        let span = tracing::info_span!(
+            "pool.fetch",
+            request_id = %req.request_id,
+            worker_name = %worker_ref.name,
+            worker_version = %worker_ref.version,
+            worker_namespace = worker_ref.namespace.as_deref().unwrap_or("")
+        );
+        self.fetch_worker_inner(worker_ref, req, kind_hint)
+            .instrument(span)
+            .await
+    }
+
+    async fn fetch_worker_inner(
+        &self,
+        worker_ref: &WorkerRef,
+        req: SerializedRequest,
+        kind_hint: Option<ExecutionKind>,
+    ) -> Result<SerializedResponse, WorkerError> {
         self.ensure_active()?;
         let started = Instant::now();
 
@@ -199,19 +218,63 @@ impl WorkerPool {
         };
         worker_ref.config = config.clone();
 
-        let instance = self.get_or_create(&worker_ref).await?;
-        let dispatch_lock = instance.dispatch_lock();
-        let _dispatch_guard = dispatch_lock.lock().await;
+        // Concurrent requests to the same worker share one cached instance and
+        // queue on its dispatch lock. An ephemeral instance (ttl_ms == 0) is
+        // terminated after each request, so a queued dispatcher can wake up
+        // holding a lock on an already-terminated instance. When that happens,
+        // re-resolve a fresh instance instead of failing the request.
+        const MAX_RESOLVE_ATTEMPTS: usize = 32;
+        let mut attempt = 0;
+        let (instance, dispatch_guard) = loop {
+            attempt += 1;
+            let instance = match self.get_or_create(&worker_ref).await {
+                Ok(instance) => instance,
+                Err(WorkerError::Retired | WorkerError::Evicted)
+                    if attempt < MAX_RESOLVE_ATTEMPTS =>
+                {
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            let dispatch_guard = instance.dispatch_lock().lock_owned().await;
 
-        if instance.state() == WorkerState::Creating {
-            let spawn_start = Instant::now();
-            Supervisor::spawn(&instance).await?;
-            self.inner
-                .metrics
-                .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
-        }
+            if instance.state() == WorkerState::Creating {
+                let spawn_start = Instant::now();
+                Supervisor::spawn(&instance).await?;
+                self.inner
+                    .metrics
+                    .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
+            }
+
+            if crate::state::accepts_dispatch(instance.state()) {
+                break (instance, dispatch_guard);
+            }
+
+            // A concurrent ephemeral dispatch terminated this shared instance
+            // while we waited on its lock; drop it and resolve a fresh one.
+            drop(dispatch_guard);
+            if attempt >= MAX_RESOLVE_ATTEMPTS {
+                return Err(WorkerError::NotReady);
+            }
+            tokio::task::yield_now().await;
+        };
+        let _dispatch_guard = dispatch_guard;
 
         Supervisor::on_request_start(&instance).await?;
+
+        // Cancellation-safety: if this future is dropped while a dispatch is in
+        // flight (e.g. the HTTP client disconnected mid-request — easy to hit
+        // with a multi-second streaming response), `on_request_complete` never
+        // runs and the instance would be stuck `Active` forever, wedging the
+        // worker so every later request fails with `NotReady`. This guard
+        // recycles the instance on any unclean exit; it is disarmed once we
+        // reach a normal completion or the explicit error path below.
+        let mut cancel_guard = DispatchCancelGuard {
+            pool: self,
+            instance: instance.clone(),
+            armed: true,
+        };
 
         let kind = kind_hint
             .or(config.kind.clone())
@@ -220,18 +283,38 @@ impl WorkerPool {
 
         let isolate_arc = instance.isolate();
         let mut isolate = isolate_arc.lock().await;
-        let res = dispatch_to_isolate(isolate.as_mut(), kind, req, &config)
-            .await
-            .map_err(WorkerError::Isolation)?;
+        let res = dispatch_to_isolate(isolate.as_mut(), kind, req, &config).await;
         drop(isolate);
 
+        let res = match res {
+            Ok(res) => res,
+            Err(err) => {
+                cancel_guard.armed = false;
+                // An isolate failure must not leave the instance stuck in
+                // `Active`: recycle it so the next dispatch gets a fresh worker.
+                let _ = Supervisor::on_critical_error(&instance).await;
+                self.remove_instance(&instance);
+                self.sync_worker_counts();
+                return Err(WorkerError::Isolation(err));
+            }
+        };
+
         Supervisor::on_request_complete(instance, &config, self).await?;
+        cancel_guard.armed = false;
 
         self.inner
             .metrics
             .record_request_duration(started.elapsed().as_millis() as u64);
         self.sync_worker_counts();
         Ok(res)
+    }
+
+    /// Force-recycle a worker whose dispatch was cancelled mid-flight: mark it
+    /// non-dispatchable and evict it so a fresh instance (and process) is
+    /// spawned next time, instead of leaving it wedged in `Active`.
+    fn recycle_cancelled(&self, instance: &Arc<WorkerInstance>) {
+        instance.set_state(WorkerState::Terminated);
+        self.remove_instance(instance);
     }
 
     /// Remove a terminated/ephemeral worker from the LRU cache.
@@ -308,22 +391,60 @@ async fn dispatch_to_isolate<I: Isolate + ?Sized>(
     req: SerializedRequest,
     config: &WorkerConfig,
 ) -> Result<SerializedResponse, edger_core::IsolationError> {
-    match kind {
-        ExecutionKind::FetchHandler => isolate.execute_fetch(req, config).await,
-        ExecutionKind::RoutesTable => isolate.execute_routes(req, config).await,
-        ExecutionKind::StaticSpa { inject_base } => {
-            let base = if inject_base {
-                Some(req.base_href.as_deref().unwrap_or("/"))
-            } else {
-                None
-            };
-            isolate.serve_static_spa(&req.uri, base, config).await
+    let execution_kind = execution_kind_label(&kind).to_string();
+    let request_id = req.request_id.clone();
+    async move {
+        match kind {
+            ExecutionKind::FetchHandler => isolate.execute_fetch(req, config).await,
+            ExecutionKind::RoutesTable => isolate.execute_routes(req, config).await,
+            ExecutionKind::StaticSpa { inject_base } => {
+                let base = if inject_base {
+                    Some(req.base_href.as_deref().unwrap_or("/"))
+                } else {
+                    None
+                };
+                isolate.serve_static_spa(&req.uri, base, config).await
+            }
+            ExecutionKind::WasmModule { .. } => isolate.execute_wasm(req, config).await,
+            ExecutionKind::Fullstack { adapter } => Ok(SerializedResponse {
+                status: 501,
+                headers: vec![("x-adapter".into(), adapter)],
+                body: Some(Bytes::from_static(b"fullstack not implemented")),
+            }),
         }
-        ExecutionKind::WasmModule { .. } => isolate.execute_wasm(req, config).await,
-        ExecutionKind::Fullstack { adapter } => Ok(SerializedResponse {
-            status: 501,
-            headers: vec![("x-adapter".into(), adapter)],
-            body: Some(Bytes::from_static(b"fullstack not implemented")),
-        }),
+    }
+    .instrument(tracing::debug_span!(
+        "isolate.execute",
+        request_id = %request_id,
+        execution_kind = %execution_kind
+    ))
+    .await
+}
+
+fn execution_kind_label(kind: &ExecutionKind) -> &'static str {
+    match kind {
+        ExecutionKind::FetchHandler => "fetch",
+        ExecutionKind::RoutesTable => "routes",
+        ExecutionKind::StaticSpa { .. } => "static_spa",
+        ExecutionKind::WasmModule { .. } => "wasm",
+        ExecutionKind::Fullstack { .. } => "fullstack",
+    }
+}
+
+/// RAII guard that recycles an `Active` instance if the dispatch future is
+/// dropped before it completes (cancellation, e.g. an HTTP client disconnect).
+/// Disarmed on the normal completion and explicit-error paths, so it only fires
+/// on an otherwise-silent cancellation.
+struct DispatchCancelGuard<'a> {
+    pool: &'a WorkerPool,
+    instance: Arc<WorkerInstance>,
+    armed: bool,
+}
+
+impl Drop for DispatchCancelGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.pool.recycle_cancelled(&self.instance);
+        }
     }
 }

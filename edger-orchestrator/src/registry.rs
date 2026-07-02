@@ -7,10 +7,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use edger_core::{
-    AdminExtensionInfo, AuthProvider, BindingKind, CoreError, DurableSqlProvider,
+    AdminExtensionInfo, AdminExtensionManifest, AdminExtensionManifestConfig,
+    AdminExtensionManifestMenu, AdminExtensionReconcileAction, AdminExtensionReconcileActionKind,
+    AdminExtensionReconcileClassification, AdminExtensionReconcileDiagnostics,
+    AdminExtensionReconcileRequest, AdminExtensionReconcileResponse,
+    AdminExtensionReconcileSummary, AuthProvider, BindingKind, CoreError, DurableSqlProvider,
     ExtensionCapability, ExtensionDependency, KeyValueProvider, Middleware, QueueProvider,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 /// Registry of middleware extensions sorted by `priority()` (lower runs first).
 #[derive(Clone, Default)]
@@ -29,6 +34,37 @@ pub struct ExtensionRegistry {
 struct ExtensionStatusDocument {
     extensions: BTreeMap<String, bool>,
 }
+
+struct ReconcileStatusStore {
+    desired_source: &'static str,
+    label: &'static str,
+}
+
+impl ReconcileStatusStore {
+    fn extension_status_file() -> Self {
+        Self {
+            desired_source: "extensionStatusFile",
+            label: "configured",
+        }
+    }
+
+    fn in_memory_overlay() -> Self {
+        Self {
+            desired_source: "inMemoryOverlay",
+            label: "notConfigured",
+        }
+    }
+
+    fn desired_source(&self) -> &str {
+        self.desired_source
+    }
+
+    fn label(&self) -> &str {
+        self.label
+    }
+}
+
+const STATIC_REGISTRATION_CONFIG_SOURCE: &str = "staticRegistration";
 
 impl ExtensionRegistry {
     pub fn new() -> Self {
@@ -258,56 +294,71 @@ impl ExtensionRegistry {
         for middleware in self.middlewares() {
             upsert_admin_extension(
                 &mut by_name,
-                middleware.name(),
-                "middleware",
-                middleware.priority(),
-                middleware.capabilities(),
-                status_label(self.is_extension_enabled(middleware.name())),
-                middleware.diagnostics(),
+                AdminExtensionRegistration {
+                    capabilities: middleware.capabilities(),
+                    dependencies: middleware.dependencies(),
+                    diagnostics: middleware.diagnostics(),
+                    kind: "middleware",
+                    name: middleware.name(),
+                    priority: middleware.priority(),
+                    status: status_label(self.is_extension_enabled(middleware.name())),
+                },
             );
         }
         if let Some(provider) = self.registered_auth_provider() {
             upsert_admin_extension(
                 &mut by_name,
-                provider.name(),
-                "authProvider",
-                provider.priority(),
-                provider.capabilities(),
-                status_label(self.is_extension_enabled(provider.name())),
-                provider.diagnostics(),
+                AdminExtensionRegistration {
+                    capabilities: provider.capabilities(),
+                    dependencies: provider.dependencies(),
+                    diagnostics: provider.diagnostics(),
+                    kind: "authProvider",
+                    name: provider.name(),
+                    priority: provider.priority(),
+                    status: status_label(self.is_extension_enabled(provider.name())),
+                },
             );
         }
         if let Some(provider) = self.registered_durable_sql_provider() {
             upsert_admin_extension(
                 &mut by_name,
-                provider.name(),
-                "serviceProvider",
-                provider.priority(),
-                provider.capabilities(),
-                status_label(self.is_extension_enabled(provider.name())),
-                provider.diagnostics(),
+                AdminExtensionRegistration {
+                    capabilities: provider.capabilities(),
+                    dependencies: provider.dependencies(),
+                    diagnostics: provider.diagnostics(),
+                    kind: "serviceProvider",
+                    name: provider.name(),
+                    priority: provider.priority(),
+                    status: status_label(self.is_extension_enabled(provider.name())),
+                },
             );
         }
         if let Some(provider) = self.registered_key_value_provider() {
             upsert_admin_extension(
                 &mut by_name,
-                provider.name(),
-                "serviceProvider",
-                provider.priority(),
-                provider.capabilities(),
-                status_label(self.is_extension_enabled(provider.name())),
-                provider.diagnostics(),
+                AdminExtensionRegistration {
+                    capabilities: provider.capabilities(),
+                    dependencies: provider.dependencies(),
+                    diagnostics: provider.diagnostics(),
+                    kind: "serviceProvider",
+                    name: provider.name(),
+                    priority: provider.priority(),
+                    status: status_label(self.is_extension_enabled(provider.name())),
+                },
             );
         }
         if let Some(provider) = self.registered_queue_provider() {
             upsert_admin_extension(
                 &mut by_name,
-                provider.name(),
-                "serviceProvider",
-                provider.priority(),
-                provider.capabilities(),
-                status_label(self.is_extension_enabled(provider.name())),
-                provider.diagnostics(),
+                AdminExtensionRegistration {
+                    capabilities: provider.capabilities(),
+                    dependencies: provider.dependencies(),
+                    diagnostics: provider.diagnostics(),
+                    kind: "serviceProvider",
+                    name: provider.name(),
+                    priority: provider.priority(),
+                    status: status_label(self.is_extension_enabled(provider.name())),
+                },
             );
         }
 
@@ -319,6 +370,93 @@ impl ExtensionRegistry {
                 .then_with(|| a.name.cmp(&b.name))
         });
         extensions
+    }
+
+    pub fn reconcile_extensions(
+        &self,
+        request_id: String,
+        request: &AdminExtensionReconcileRequest,
+    ) -> Result<AdminExtensionReconcileResponse, CoreError> {
+        let (desired, status_store) = self.desired_extension_statuses()?;
+        let registered = self
+            .admin_extensions()
+            .into_iter()
+            .map(|extension| extension.name)
+            .collect::<BTreeSet<_>>();
+        let mut actions = Vec::with_capacity(desired.len());
+
+        for (name, desired_enabled) in desired {
+            if registered.contains(&name) {
+                let effective = self.is_extension_enabled(&name);
+                let action = reconcile_action_kind(effective, desired_enabled);
+                let applied = !request.dry_run && action != AdminExtensionReconcileActionKind::Noop;
+                if applied {
+                    self.set_extension_enabled_in_memory(&name, desired_enabled);
+                }
+                actions.push(AdminExtensionReconcileAction {
+                    action,
+                    applied,
+                    classification: AdminExtensionReconcileClassification::Runtime,
+                    from_enabled: Some(effective),
+                    name: name.clone(),
+                    to_enabled: Some(desired_enabled),
+                });
+            } else {
+                actions.push(AdminExtensionReconcileAction {
+                    action: desired_action_kind(desired_enabled),
+                    applied: false,
+                    classification: AdminExtensionReconcileClassification::RestartRequired,
+                    from_enabled: None,
+                    name: name.clone(),
+                    to_enabled: Some(desired_enabled),
+                });
+            }
+        }
+
+        let summary = summarize_reconcile_actions(&actions);
+        Ok(AdminExtensionReconcileResponse {
+            actions,
+            diagnostics: AdminExtensionReconcileDiagnostics {
+                desired_source: status_store.desired_source().into(),
+                dry_run: request.dry_run,
+                dynamic_loading: false,
+                effective_source: "inMemoryRegistry".into(),
+                mode: if request.dry_run { "dryRun" } else { "apply" }.into(),
+                status_store: status_store.label().into(),
+            },
+            request_id,
+            summary,
+        })
+    }
+
+    fn desired_extension_statuses(
+        &self,
+    ) -> Result<(BTreeMap<String, bool>, ReconcileStatusStore), CoreError> {
+        let path = self
+            .extension_status_store
+            .read()
+            .expect("extension status store lock")
+            .clone();
+        if let Some(path) = path {
+            let statuses = read_extension_status_document(&path)?
+                .map(|document| document.extensions)
+                .unwrap_or_default();
+            return Ok((statuses, ReconcileStatusStore::extension_status_file()));
+        }
+
+        let statuses = self
+            .extension_status
+            .read()
+            .expect("extension status lock")
+            .clone();
+        Ok((statuses, ReconcileStatusStore::in_memory_overlay()))
+    }
+
+    fn set_extension_enabled_in_memory(&self, name: &str, enabled: bool) {
+        self.extension_status
+            .write()
+            .expect("extension status lock")
+            .insert(name.to_string(), enabled);
     }
 
     fn ensure_status(&self, name: &str) {
@@ -544,43 +682,266 @@ fn duplicate_provider_error(capability: &ExtensionCapability) -> CoreError {
     )
 }
 
+fn reconcile_action_kind(effective: bool, desired: bool) -> AdminExtensionReconcileActionKind {
+    if effective == desired {
+        AdminExtensionReconcileActionKind::Noop
+    } else {
+        desired_action_kind(desired)
+    }
+}
+
+fn desired_action_kind(desired: bool) -> AdminExtensionReconcileActionKind {
+    if desired {
+        AdminExtensionReconcileActionKind::Enable
+    } else {
+        AdminExtensionReconcileActionKind::Disable
+    }
+}
+
+fn summarize_reconcile_actions(
+    actions: &[AdminExtensionReconcileAction],
+) -> AdminExtensionReconcileSummary {
+    let mut summary = AdminExtensionReconcileSummary {
+        total: actions.len() as u64,
+        ..Default::default()
+    };
+    for action in actions {
+        if action.applied {
+            summary.applied += 1;
+        }
+        if action.action == AdminExtensionReconcileActionKind::Noop {
+            summary.noop += 1;
+        }
+        match action.classification {
+            AdminExtensionReconcileClassification::RestartRequired => {
+                summary.restart_required += 1;
+            }
+            AdminExtensionReconcileClassification::Runtime => {
+                summary.runtime += 1;
+            }
+        }
+    }
+    summary
+}
+
+struct AdminExtensionRegistration {
+    capabilities: Vec<ExtensionCapability>,
+    dependencies: Vec<ExtensionDependency>,
+    diagnostics: Option<Value>,
+    kind: &'static str,
+    name: &'static str,
+    priority: i32,
+    status: &'static str,
+}
+
 fn upsert_admin_extension(
     by_name: &mut BTreeMap<String, AdminExtensionInfo>,
-    name: &str,
-    kind: &str,
-    priority: i32,
-    capabilities: Vec<ExtensionCapability>,
-    status: &str,
-    diagnostics: Option<serde_json::Value>,
+    extension: AdminExtensionRegistration,
 ) {
-    let labels = capabilities
-        .into_iter()
+    let labels = extension
+        .capabilities
+        .iter()
         .map(|capability| capability.label())
         .collect::<Vec<_>>();
+    let dependency_labels = extension
+        .dependencies
+        .iter()
+        .map(|dependency| dependency.capability.label())
+        .collect::<Vec<_>>();
+    let manifest = admin_extension_manifest(&extension.capabilities, &extension.dependencies);
     let entry = by_name
-        .entry(name.to_string())
+        .entry(extension.name.to_string())
         .or_insert_with(|| AdminExtensionInfo {
             capabilities: vec![],
+            config_source: STATIC_REGISTRATION_CONFIG_SOURCE.into(),
+            dependencies: vec![],
             diagnostics: None,
-            kind: kind.into(),
-            name: name.into(),
-            priority,
-            status: status.into(),
+            id: format!("extension:{}", extension.name),
+            kind: extension.kind.into(),
+            manifest: empty_admin_extension_manifest(),
+            name: extension.name.into(),
+            priority: extension.priority,
+            status: extension.status.into(),
+            version: env!("CARGO_PKG_VERSION").into(),
         });
-    if entry.kind != kind {
+    if entry.kind != extension.kind {
         entry.kind = "mixed".into();
     }
-    entry.priority = entry.priority.min(priority);
-    entry.status = status.into();
+    entry.priority = entry.priority.min(extension.priority);
+    entry.status = extension.status.into();
     if entry.diagnostics.is_none() {
-        entry.diagnostics = diagnostics;
+        entry.diagnostics = extension.diagnostics.map(sanitize_diagnostics);
     }
+    merge_admin_extension_manifest(&mut entry.manifest, manifest);
     for label in labels {
         if !entry.capabilities.contains(&label) {
             entry.capabilities.push(label);
         }
     }
     entry.capabilities.sort();
+    for label in dependency_labels {
+        if !entry.dependencies.contains(&label) {
+            entry.dependencies.push(label);
+        }
+    }
+    entry.dependencies.sort();
+}
+
+fn admin_extension_manifest(
+    capabilities: &[ExtensionCapability],
+    dependencies: &[ExtensionDependency],
+) -> AdminExtensionManifest {
+    let mut manifest = empty_admin_extension_manifest();
+    for capability in capabilities {
+        match capability {
+            ExtensionCapability::LifecycleHook { hook } => {
+                push_unique_string(&mut manifest.hooks, hook.label().into());
+            }
+            ExtensionCapability::MenuContribution { name } => {
+                push_unique_menu(&mut manifest.menus, name.clone());
+            }
+            ExtensionCapability::RequestHook => {
+                push_unique_string(&mut manifest.hooks, capability.label());
+            }
+            ExtensionCapability::ResponseHook => {
+                push_unique_string(&mut manifest.hooks, capability.label());
+            }
+            ExtensionCapability::ApiKeys
+            | ExtensionCapability::AuthProvider
+            | ExtensionCapability::HostRouting
+            | ExtensionCapability::Middleware
+            | ExtensionCapability::ServiceProvider { .. }
+            | ExtensionCapability::WorkerHandler => {
+                push_unique_string(&mut manifest.provides, capability.label());
+            }
+        }
+    }
+    for dependency in dependencies {
+        push_unique_string(&mut manifest.requirements, dependency.capability.label());
+    }
+    sort_admin_extension_manifest(&mut manifest);
+    manifest
+}
+
+fn empty_admin_extension_manifest() -> AdminExtensionManifest {
+    AdminExtensionManifest {
+        config: AdminExtensionManifestConfig {
+            keys: vec![],
+            redacted: true,
+            source: STATIC_REGISTRATION_CONFIG_SOURCE.into(),
+        },
+        hooks: vec![],
+        menus: vec![],
+        provides: vec![],
+        requirements: vec![],
+    }
+}
+
+fn merge_admin_extension_manifest(
+    entry: &mut AdminExtensionManifest,
+    manifest: AdminExtensionManifest,
+) {
+    for key in manifest.config.keys {
+        push_unique_string(&mut entry.config.keys, key);
+    }
+    entry.config.redacted |= manifest.config.redacted;
+    for hook in manifest.hooks {
+        push_unique_string(&mut entry.hooks, hook);
+    }
+    for menu in manifest.menus {
+        push_unique_menu(&mut entry.menus, menu.name);
+    }
+    for capability in manifest.provides {
+        push_unique_string(&mut entry.provides, capability);
+    }
+    for requirement in manifest.requirements {
+        push_unique_string(&mut entry.requirements, requirement);
+    }
+    sort_admin_extension_manifest(entry);
+}
+
+fn sort_admin_extension_manifest(manifest: &mut AdminExtensionManifest) {
+    manifest.config.keys.sort();
+    manifest.hooks.sort();
+    manifest.menus.sort_by(|a, b| a.name.cmp(&b.name));
+    manifest.provides.sort();
+    manifest.requirements.sort();
+}
+
+fn push_unique_menu(menus: &mut Vec<AdminExtensionManifestMenu>, name: String) {
+    if !menus.iter().any(|menu| menu.name == name) {
+        menus.push(AdminExtensionManifestMenu { name });
+    }
+}
+
+fn push_unique_string(values: &mut Vec<String>, value: String) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
+}
+
+fn sanitize_diagnostics(value: Value) -> Value {
+    match value {
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(sanitize_diagnostics).collect())
+        }
+        Value::Object(values) => Value::Object(sanitize_diagnostic_object(values)),
+        Value::String(value) if is_sensitive_diagnostic_value(&value) => "[redacted]".into(),
+        value => value,
+    }
+}
+
+fn sanitize_diagnostic_object(values: Map<String, Value>) -> Map<String, Value> {
+    values
+        .into_iter()
+        .map(|(key, value)| {
+            if is_sensitive_diagnostic_key(&key) {
+                (key, "[redacted]".into())
+            } else {
+                (key, sanitize_diagnostics(value))
+            }
+        })
+        .collect()
+}
+
+fn is_sensitive_diagnostic_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    normalized.contains("authorization")
+        || normalized.contains("cookie")
+        || normalized.contains("credential")
+        || normalized.contains("header")
+        || normalized.contains("password")
+        || normalized.contains("path")
+        || normalized.contains("secret")
+        || normalized.contains("token")
+}
+
+fn is_sensitive_diagnostic_value(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("authorization")
+        || lower.contains("bearer ")
+        || lower.contains("token=")
+        || lower.contains("api_key=")
+        || lower.contains("apikey=")
+        || lower.contains("secret=")
+        || looks_like_sensitive_filesystem_path(value)
+}
+
+fn looks_like_sensitive_filesystem_path(value: &str) -> bool {
+    value.starts_with("/Users/")
+        || value.starts_with("/home/")
+        || value.starts_with("/private/")
+        || value.starts_with("/root/")
+        || value.starts_with("/tmp/")
+        || value.starts_with("/var/")
+        || value.starts_with("~/")
+        || value
+            .get(1..3)
+            .is_some_and(|prefix| prefix == ":/" || prefix == ":\\")
 }
 
 fn status_label(enabled: bool) -> &'static str {

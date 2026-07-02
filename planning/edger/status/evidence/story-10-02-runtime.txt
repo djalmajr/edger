@@ -1,0 +1,55 @@
+Story 10.02 runtime verification - 2026-07-01
+
+Commands run:
+
+1. cargo check -p edger-orchestrator --tests
+   Result: passed.
+
+2. cargo test -p edger-orchestrator --test admin_workers_plugins extension_reconcile
+   Result: passed.
+   Evidence: 4 reconcile tests passed:
+   - extension_reconcile_requires_root_before_exposing_plan
+   - extension_reconcile_dry_run_does_not_change_effective_state
+   - extension_reconcile_applies_runtime_supported_enable_disable
+   - extension_reconcile_marks_unknown_desired_extension_restart_required
+
+3. cargo test -p edger-orchestrator --test admin_workers_plugins
+   Result: passed.
+   Evidence: 19 tests passed.
+
+4. cargo test --workspace
+   Result: blocked by sandbox TCP bind permission in pre-existing gateway proxy test.
+   Failing test:
+   - edger-ext-gateway/tests/gateway_middleware.rs::proxy_rule_forwards_to_local_upstream_without_sensitive_headers
+   Error:
+   - PermissionDenied / Operation not permitted while binding a local upstream socket.
+   Notes:
+   - This is the known sandbox limitation called out by the objective.
+   - The test was not weakened, skipped or changed.
+   - The workspace run passed all tests reached before that host socket failure.
+
+5. cargo clippy --workspace -- -D warnings
+   Result: passed.
+
+6. cargo fmt -- --check
+   Result: passed.
+
+7. SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+   Result: passed.
+   Evidence:
+   - PASS /agile-refinement Mode 1
+   - PASS refinement-lint.py oracle
+   - PASS path-preflight
+   - PASS deploy-layout-check
+   - PASS artifact inspection
+   - SKIP bun test: no root JS/TS test suite exists after Bun adapter removal
+   - PASS cargo check
+   - ALL PLANNING GATES PASS
+
+Behavior covered:
+
+- Reconcile is root-only and runs through the existing mutation guard.
+- Dry-run compares desired status from the persisted status store with the effective in-memory registry without side effects.
+- Apply updates only runtime-supported enable/disable changes in the in-memory overlay.
+- Unknown desired extension names are classified as restartRequired and are not hot-loaded.
+- Responses preserve requestId and diagnostics do not include root keys, raw tokens or local status file paths.

@@ -1,0 +1,4 @@
+name: hono-demo
+version: "1.0.0"
+entrypoint: index.ts
+kind: fetch

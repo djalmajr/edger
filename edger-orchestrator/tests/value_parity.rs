@@ -260,6 +260,78 @@ kind: fetch
 }
 
 #[tokio::test]
+async fn vhost_routes_host_to_namespaced_worker_without_hijacking_reserved_paths() {
+    // Mutation captured: running shell/path routing before vhost resolution would
+    // send host-bound document navigations to the wrong app.
+    let root = tempfile::tempdir().unwrap();
+    write_fetch_worker(
+        root.path(),
+        "hosted-app",
+        r#"name: "@acme/hosted-app"
+version: "1.0.0"
+entrypoint: index.ts
+kind: fetch
+hosts:
+  - App.Example.test
+"#,
+        r#"Deno.serve((req: Request) => {
+  const url = new URL(req.url);
+  return new Response(JSON.stringify({
+    host: req.headers.get("host"),
+    path: url.pathname,
+    base: req.headers.get("x-base")
+  }), { headers: { "content-type": "application/json" } });
+});
+"#,
+    );
+
+    let app = app_with_worker_dirs(vec![root.path().to_path_buf()], ExtensionRegistry::new());
+    let hosted = send(
+        app.clone(),
+        "GET",
+        "/dashboard",
+        true,
+        &[("host", "app.example.test:19080")],
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(
+        hosted.status,
+        StatusCode::OK,
+        "unexpected body: {}",
+        String::from_utf8_lossy(&hosted.body)
+    );
+    let body: Value = serde_json::from_slice(&hosted.body).unwrap();
+    assert_eq!(body["host"], "app.example.test:19080");
+    assert_eq!(body["path"], "/dashboard");
+    assert_eq!(body["base"], "/");
+
+    let unknown = send(
+        app.clone(),
+        "GET",
+        "/",
+        true,
+        &[("host", "unknown.example.test")],
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+
+    let reserved = send(
+        app,
+        "GET",
+        "/api/not-configured",
+        true,
+        &[("host", "app.example.test")],
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(reserved.status, StatusCode::NOT_FOUND);
+    let reserved_body = String::from_utf8_lossy(&reserved.body);
+    assert!(reserved_body.contains("API_STUB"));
+}
+
+#[tokio::test]
 async fn stateful_app_receives_sql_kv_and_queue_bindings() {
     // Mutation captured: resolving bindings from a static registry instead of
     // the authenticated worker context would drop namespace-scoped descriptors.

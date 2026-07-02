@@ -63,6 +63,14 @@ set -e
 [[ "$DL_EXIT" -eq 0 ]] || { log "FAIL deploy-layout-check"; exit 1; }
 log "PASS deploy-layout-check"
 
+# --- local extension/module validation ---
+set +e
+python3 planning/edger/scripts/extension-validation.py --repo . --module gateway 2>&1 | tee "$SCRATCH/extension-validation.txt"
+EXT_EXIT=${PIPESTATUS[0]}
+set -e
+[[ "$EXT_EXIT" -eq 0 ]] || { log "FAIL extension-validation"; exit 1; }
+log "PASS extension-validation"
+
 # --- story section inspection ---
 python3 - <<'PY' | tee "$SCRATCH/artifact-inspection.txt"
 import pathlib, re, sys
@@ -138,6 +146,7 @@ print(json.dumps({
     "oracle": "refinement-lint.py"
   },
   "path_preflight": {"missing": 0},
+  "extension_validation": {"status": "passed", "module": "gateway"},
   "bun_test": $BUN_STATUS,
   "memory_lint": {"excluded": True, "reason": "server stability — operator directive 2026-06-29"}
 }, indent=2))

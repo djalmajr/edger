@@ -1,0 +1,65 @@
+# Story 07.07 runtime evidence
+
+Date: 2026-07-01
+
+## Passing tests
+
+```text
+cargo test -p edger-orchestrator --test limits_test
+3 passed; 0 failed
+
+cargo test -p edger-orchestrator --test compat_matrix
+2 passed; 0 failed
+
+cargo test -p edger-orchestrator --test perf_harness -- --ignored --nocapture
+1 passed; 0 failed
+perf_harness scenario=persistent_worker_warm_hit requests=50 p50_us=52 p95_us=92 cache_hits=49 cache_misses=1 active_workers=1
+
+cargo fmt -- --check
+passed
+
+cargo clippy --workspace -- -D warnings
+passed
+
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+ALL PLANNING GATES PASS
+
+cargo test --workspace -- --ignored
+passed; ignored perf harness executed
+```
+
+## Workspace test caveat
+
+```text
+cargo test --workspace
+edger-core: 22 passed before gateway suite
+edger-ext-auth: 6 passed
+edger-ext-gateway/tests/gateway_middleware.rs: 22 passed; 1 failed
+```
+
+The single failure is the known sandbox loopback bind failure in
+`edger-ext-gateway/tests/gateway_middleware.rs`:
+
+```text
+proxy_rule_forwards_to_local_upstream_without_sensitive_headers
+called `Result::unwrap()` on an `Err` value:
+Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+```
+
+The failing test binds `127.0.0.1:0`; the sandbox denies that bind. The test was
+left unchanged.
+
+## Behavior covered
+
+- Oversized request bodies return 413 before worker dispatch.
+- More than 100 headers return 431 before worker dispatch.
+- A header value above 8KiB returns 431 before worker dispatch.
+- `compat_matrix.rs` keeps critical `compat-matrix.md` rows marked `tested`
+  and known incomplete rows marked `partial`.
+- The ignored perf harness measures persistent warm-hit p50/p95 and cache hit
+  rate without depending on Deno or network.
+- `performance-baselines.md` records the 2026-07-01 local perf harness result.
+- `.github/workflows/ci.yml` runs the Rust gate on push/PR and exposes the perf
+  harness as manual `workflow_dispatch`.
+- Existing AGENTS discipline already documents the Rust gate and never-publish
+  rule for extension crates.

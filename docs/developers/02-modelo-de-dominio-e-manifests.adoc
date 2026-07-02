@@ -44,7 +44,8 @@ entrypoints convencionais na ordem `index.html`, `index.ts`, `index.js`,
 | Bypass de auth/hooks para rotas públicas do worker.
 
 | `cron`
-| Jobs planejados para scheduler nativo. Ainda pendente.
+| Jobs planejados para o scheduler nativo. Cada item usa `schedule`, `path` e
+  `method` opcional.
 
 | `base`
 | Base de plugin/micro-frontend, usada para precedência de roteamento.
@@ -90,6 +91,37 @@ entrypoints convencionais na ordem `index.html`, `index.ts`, `index.js`,
 | `kind`
 | Inferido por `kind`, extensão do entrypoint ou `FetchHandler`.
 |===
+
+==== Cron
+
+O scheduler nativo lê `cron[]` no startup e dispara requests internas para o
+worker resolvido. O `path` é relativo ao worker, mas deve começar com `/`.
+`method` usa `GET` por default.
+
+[source,yaml]
+----
+name: cron-worker
+version: "1.0.0"
+entrypoint: index.ts
+kind: fetch
+cron:
+  - schedule: "*/1 * * * *"
+    path: /tick
+    method: POST
+----
+
+No v1, `schedule` aceita `@every <duration>` para intervalos curtos locais e
+testes (`@every 25ms`, `@every 5s`) e cron simples de minuto (`* * * * *`,
+`*/N * * * *` ou minuto fixo). Schedules inválidos falham no startup com erro
+`CRON_SCHEDULE_INVALID`.
+
+Requests cron entram no pipeline com `x-edger-internal: true`,
+`Authorization: Bearer $ROOT_API_KEY` e `x-request-id: cron-...`. A credencial
+root é removida antes de serializar a request para o worker; user code recebe o
+marcador interno, mas não recebe o bearer root. Se houver jobs cron e
+`ROOT_API_KEY` não estiver configurado, o servidor falha no startup com
+`CRON_AUTH_MISSING`. Workers `enabled: false` não registram jobs; habilitar um
+worker em runtime exige reload/restart para entrar no scheduler.
 
 ==== ExecutionKind
 

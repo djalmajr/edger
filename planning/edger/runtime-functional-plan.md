@@ -1,7 +1,7 @@
 # Plano: edger funcional sem adapter Bun
 
-**Data:** 2026-06-29  
-**Status:** direção técnica ativa após remoção de `edger.ts` e `edger.test.ts`; V1 funcional usa Deno CLI bridge  
+**Data:** 2026-06-29 (atualizado 2026-07-02)  
+**Status:** **MVP funcional entregue e validado ao vivo** (boot + curls, evidência em `status/evidence/`). Runtime JS default: **processo Deno persistente por worker** (Epic 15, UDS + módulo quente, ~25x vs v1, cap de heap por worker, streaming bounded). A Deno CLI bridge v1 (`deno run` por request) fica como **fallback legado** via `EDGER_JS_RUNTIME=bridge`.  
 **Escopo:** transformar o edger em um runtime funcional pelo caminho Rust, sem fallback para adapter Bun.
 
 ## Objetivo
@@ -64,7 +64,7 @@ Depois do MVP, a foundation funcional exige:
 
 - `ExecutionKind::FetchHandler`, `RoutesTable`, `StaticSpa` e `WasmModule` com backends reais.
 - `Fullstack` documentado como unsupported/adapter-required com erro `501` claro, ou primeiro adapter mínimo.
-- `DenoIsolate` troca a bridge de processo por `deno_core` embutido ou actor equivalente.
+- ~~`DenoIsolate` troca a bridge de processo por `deno_core` embutido~~ → **entregue de outra forma** (Epic 15): processo Deno persistente por worker (UDS + módulo quente), não embedding `deno_core`. `EDGER_JS_RUNTIME=bridge` mantém a v1 como fallback legado.
 - Cron nativo dispara requisições internas autenticadas.
 - Shell/SPA injeta `<base href>` quando `inject_base` estiver habilitado.
 - Limites de body/header aplicados no ingress.
@@ -83,17 +83,21 @@ Depois do MVP, a foundation funcional exige:
 - `RUNTIME_WORKER_DIRS`: loader de roots/dirs diretos com `manifest.yaml`, `package.json` e `index.*`.
 - Wasm v1: `workers/wasm-hello/index.wat` executa via wasmtime pelo pipeline Rust.
 - JS/TS v1: `DenoIsolate` executa `Deno.serve` e default fetch via Deno CLI bridge pelo pipeline Rust.
+- Sandbox v1 (2026-07-02): bridge migrada de `deno eval` para `deno run --no-prompt` com `--allow-read=<worker_dir>`, `--allow-env` sobre env limpo/filtrado, `--allow-net` configurável (`EDGER_DENO_ALLOW_NET`); write/run/ffi/sys negados (`edger-isolation/tests/deno_sandbox.rs`).
+- `routes` export v1 (2026-07-02): dispatch por path/método com `:param`, `*` wildcard, method map (405), fallback `fetch` e 404 sem fallback (`workers/routes-demo` + E2E).
+- Resiliência de pool (2026-07-02): erro de isolate recicla o worker em vez de deixá-lo preso em `Active` (`pool_error_recovery.rs`).
+- `injectBase: false` respeitado com `kind: spa` explícito (fix `infer_execution_kind`).
 
 ### Bloqueadores
 
 | ID | Bloqueador | Impacto | Destino |
 |---|---|---|---|
-| B1 | `deno_core` boot real | backend embutido de produção | 07.04 follow-up |
+| B1 | `deno_core` boot real | backend embutido de produção | 07.04 follow-up (aguarda aprovação explícita) |
 | B2 | Bridge request/response JS | **Concluído v1** | Deno CLI bridge |
 | B3 | Convenções `Deno.serve` e default export | **Concluído v1** | Deno CLI bridge |
-| B4 | StaticSpa/base injection | UI/shell não funcional | 07.02 / 07.04 |
-| B5 | ABI Wasm request/response | Wasm atual só cobre body estático mínimo | 07.05 |
-| B6 | Gates ainda carregavam resíduo Bun | falso caminho de execução | Fase 0 deste plano |
+| B4 | StaticSpa/base injection | **Concluído v1** (2026-07-02: namespaced + `injectBase: false`) | 07.02 |
+| B5 | ABI Wasm request/response | Wasm atual só cobre body estático mínimo | 07.05 follow-up |
+| B6 | Gates ainda carregavam resíduo Bun | falso caminho de execução | Fase 0 deste plano (**concluído**) |
 
 ## Sequência de execução
 
@@ -297,11 +301,12 @@ git diff --check
 
 ## Ordem recomendada imediata
 
-1. Harden da bridge Deno CLI: path/permission tightening e erros de sandbox.
-2. Fechar os gaps de `execute_routes` e `StaticSpa` explícitos.
-3. Fazer spike implementation curta da Fase 1B, sem desmontar a bridge funcional.
+1. ~~Harden da bridge Deno CLI: path/permission tightening e erros de sandbox.~~ **Entregue 2026-07-02.**
+2. ~~Fechar os gaps de `execute_routes` e `StaticSpa` explícitos.~~ **Entregue 2026-07-02.**
+3. Fazer spike implementation curta da Fase 1B (`deno_core` boot), sem desmontar a bridge funcional — aguarda aprovação explícita.
 4. Migrar internamente de bridge CLI para `deno_core` quando o boot e a API Web mínima estiverem provados.
-5. Atualizar matriz JS conforme novos exemplos forem promovidos de `pending` para `tested`.
+5. Completar Wasm foundation (host WASI real + ABI request/response em linear memory, Fase 6).
+6. Streaming passthrough real para `stream`/`sse` (hoje bounded-first-chunk).
 
 ## Stop rules
 

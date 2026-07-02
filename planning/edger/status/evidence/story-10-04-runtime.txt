@@ -1,0 +1,51 @@
+Story 10.04 runtime verification - 2026-07-01
+
+Commands run:
+
+1. python3 planning/edger/scripts/extension-validation.py --repo . --module gateway
+   Result: passed.
+   Evidence:
+   - Runs cargo test -p edger-orchestrator --test admin_workers_plugins local_extension_validation_contract_reports_manifest_status_diagnostics_and_redaction -- --exact
+   - Validates extension inventory, manifest, status, diagnostics and redaction locally.
+   - Does not use external network, deploy or marketplace access.
+
+2. cargo test -p edger-orchestrator --test admin_workers_plugins
+   Result: passed.
+   Evidence: 20 tests passed, including local_extension_validation_contract_reports_manifest_status_diagnostics_and_redaction.
+
+3. cargo test --workspace
+   Result: blocked by sandbox TCP bind permission in pre-existing gateway proxy test.
+   Failing test:
+   - edger-ext-gateway/tests/gateway_middleware.rs::proxy_rule_forwards_to_local_upstream_without_sensitive_headers
+   Error:
+   - PermissionDenied / Operation not permitted while binding a local upstream socket.
+   Notes:
+   - This is the known sandbox limitation called out by the objective.
+   - The test was not weakened, skipped or changed.
+   - The workspace run passed all tests reached before that host socket failure.
+
+4. cargo clippy --workspace -- -D warnings
+   Result: passed.
+
+5. cargo fmt -- --check
+   Result: passed after applying cargo fmt to the new test.
+
+6. SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+   Result: passed.
+   Evidence:
+   - PASS /agile-refinement Mode 1
+   - PASS refinement-lint.py oracle
+   - PASS path-preflight
+   - PASS deploy-layout-check
+   - PASS extension-validation
+   - PASS artifact inspection
+   - SKIP bun test: no root JS/TS test suite exists after Bun adapter removal
+   - PASS cargo check
+   - ALL PLANNING GATES PASS
+
+Behavior covered:
+
+- `planning/edger/scripts/extension-validation.py` is the local module validation entrypoint.
+- `run-gates.sh` invokes the extension validation and writes `planning/edger/status/evidence/extension-validation.txt`.
+- The validation fails if the Admin API extension inventory no longer exposes safe id, version, kind, status, capabilities, dependencies, manifest config, hooks/provides/requirements, gateway diagnostics or redaction.
+- Documentation states that local extension validation complements, but does not replace, the full Rust gate.

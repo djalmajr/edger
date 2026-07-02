@@ -1,0 +1,72 @@
+# Story 07.06 runtime evidence
+
+Date: 2026-07-01
+
+## Passing tests
+
+```text
+cargo test -p edger-orchestrator --test metrics_endpoint
+7 passed; 0 failed
+
+cargo test -p edger-orchestrator tracing_init
+2 passed; 0 failed; filtered integration binaries passed
+
+cargo test -p edger-worker --test metrics_ephemeral
+7 passed; 0 failed
+
+cargo fmt -- --check
+passed
+
+cargo clippy --workspace -- -D warnings
+passed
+```
+
+## Planning gate
+
+```text
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+ALL PLANNING GATES PASS
+```
+
+## Workspace test caveat
+
+```text
+cargo test --workspace
+edger-core: 22 passed before gateway suite
+edger-ext-auth: 6 passed
+edger-ext-gateway/tests/gateway_middleware.rs: 22 passed; 1 failed
+```
+
+The single failure is the known sandbox loopback bind failure in
+`edger-ext-gateway/tests/gateway_middleware.rs`:
+
+```text
+proxy_rule_forwards_to_local_upstream_without_sensitive_headers
+called `Result::unwrap()` on an `Err` value:
+Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+```
+
+The failing test binds `127.0.0.1:0`; the sandbox denies that bind. The test was
+left unchanged.
+
+## Behavior covered
+
+- Requests without `x-request-id` receive a generated UUID before worker
+  dispatch.
+- The generated request id is echoed in the response and observed by the worker
+  through both the serialized request field and request header.
+- Worker dispatch logs include `request_id`, `worker_name`, version and
+  namespace.
+- Dispatch logs do not include Authorization headers, the root key or request
+  body content.
+- `/metrics` exposes `edger_http_requests_total` and
+  `edger_http_request_duration_ms_last`.
+- `/metrics` still exposes pool/cache/spawn/request duration, ephemeral and cron
+  counters without secrets.
+- `TracingInitConfig` prefers `EDGER_LOG`, falls back to `RUST_LOG`, has a safe
+  default filter and parses `OTEL_EXPORTER_OTLP_ENDPOINT` plus
+  `OTEL_TRACES_SAMPLER`.
+- Startup with OTEL env configured is non-fatal; actual OTLP export remains a
+  follow-up because the exporter layer is not linked in this build.
+- `WorkerPool::fetch_worker` and isolate execution dispatch are instrumented
+  with spans carrying request/worker/kind context.

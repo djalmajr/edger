@@ -6,7 +6,7 @@
 
 Para manter o projeto modular, frontends devem ser apps/workers versionados e isolados. Isso evita que cPanel, shell e futuras interfaces virem dependencia do core ou do binario principal.
 
-**Depende de:** Story 12.02
+**Depende de:** Story 12.01 para a fatia cPanel minima. Story 12.02 continua dona do shell/catalogo completo.
 
 ## Files
 
@@ -27,7 +27,7 @@ Para manter o projeto modular, frontends devem ser apps/workers versionados e is
 
 ### TO-BE
 
-- Frontend modular tem layout previsivel, manifest opcional, base path seguro e versionamento.
+- Frontend modular tem layout previsivel, manifest, base path seguro e versionamento.
 - Build artefact pode ser servido pelo runtime sem acoplar framework ao core.
 - cPanel/shell/webide futuros seguem a mesma convencao.
 
@@ -38,17 +38,17 @@ Para manter o projeto modular, frontends devem ser apps/workers versionados e is
 
 ### Critérios de aceite
 
-- [ ] Frontend modular e descoberto como worker/app.
-- [ ] Base path nao permite hijack de `/api`, `/health` ou `/.well-known`.
-- [ ] Versionamento e namespace seguem regras de workers.
-- [ ] Docs explicam como rodar localmente.
+- [x] Frontend modular e descoberto como worker/app.
+- [x] Base path nao permite hijack de `/api`, `/health` ou `/.well-known`.
+- [x] Versionamento e namespace seguem regras de workers.
+- [x] Docs explicam como rodar localmente.
 
 ## Tasks
 
-- [ ] Definir convencao de layout para frontends.
-- [ ] Provar autodiscovery/manifest em teste.
-- [ ] Adicionar exemplo local minimo se necessario.
-- [ ] Atualizar docs de operacao.
+- [x] Definir convencao de layout para frontends.
+- [x] Provar autodiscovery/manifest em teste.
+- [x] Adicionar exemplo local minimo se necessario.
+- [x] Atualizar docs de operacao.
 
 ## Verification
 
@@ -61,3 +61,6 @@ cargo fmt -- --check
 SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
 ```
 
+## Status
+
+completed (2026-06-30) - `workers/cpanel/manifest.yaml` define `name`, `version`, `entrypoint`, `injectBase` e `visibility`, e o worker e servido como Static SPA sob `/cpanel`. `workers/shell-demo/manifest.yaml` exclui `cpanel`, e `edger-orchestrator/tests/shell_gateway.rs` prova que a rota do cPanel bypassa o shell e recebe `<base href="/cpanel/" />`. Shell/catalogo completo continua na Story 12.02.

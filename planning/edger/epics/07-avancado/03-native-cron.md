@@ -19,40 +19,56 @@
 | Path | Action | Reason |
 |---|---|---|
 | `edger-orchestrator/src/cron.rs` | create | `CronScheduler`, registro de jobs, tick → internal HTTP |
-| `edger-orchestrator/src/pipeline.rs` | edit | Hook para rotas internas cron (`X-Edger-Internal` / compat Buntime) |
-| `edger-orchestrator/src/manifest_loader.rs` | edit | Extrair `cron[]` de cada `WorkerRef` habilitado |
-| `edger-core/src/manifest.rs` | edit | Tipo `CronJob` completo (schedule, method, path, headers) |
+| `edger-orchestrator/src/pipeline.rs` | edit | Métrica Prometheus inclui contador do scheduler |
+| `edger-orchestrator/src/manifest_index_stub.rs` | edit | Extrair `cron[]` de cada `WorkerRef` habilitado |
+| `edger-core/src/manifest.rs` | no-op | Tipo `CronJob` já existia com `schedule`, `method`, `path` |
 | `edger-orchestrator/src/bin/edger.rs` ou `main.rs` | edit | Start/stop scheduler no lifecycle do servidor |
-| `edger-orchestrator/Cargo.toml` | edit | Dep `tokio-cron-scheduler` ou `cron` + tokio timer |
+| `edger-orchestrator/Cargo.toml` | no-op | Scheduler usa `tokio::time` já disponível |
 | `edger-orchestrator/tests/cron_scheduler_test.rs` | create | Job dispara request; disabled worker skip |
 | `workers/cron-worker/` | create | Manifest com cron + handler que incrementa contador |
 
 ## Detail
 
 ### AS-IS
-- Campo `cron` pode existir em tipos core sem scheduler ativo.
+- Campo `cron` existia em tipos core sem scheduler ativo.
 - Nenhum disparo periódico no processo edger.
-- Buntime usa internal HTTP com credencial — não portado.
+- Buntime usava internal HTTP com credencial — não portado.
 
 ### TO-BE
-- No startup, após `load_manifests_from_dirs`, registrar cada `CronJob` válido no scheduler.
-- Tick executa request HTTP in-process (hyper client ou chamada direta ao `Service`) para path/method do job.
-- Header interno autenticado (equivalente `X-Buntime-Internal`) bypassa auth pública mas respeita namespace do worker.
-- Worker `enabled: false` remove jobs do scheduler (sem restart — watcher ou reload manual documentado).
-- `ctrl_c`/shutdown: `scheduler.shutdown().await` antes de pool shutdown.
-- Logs estruturados: `cron_job_id`, `worker_name`, `schedule`, `request_id` correlacionado.
+- No startup, após `load_manifests_from_dirs`, `collect_cron_registrations`
+  valida e registra cada `CronJob` de workers habilitados.
+- Tick executa request HTTP in-process chamando o `Router` Axum clonado, sem
+  loop externo.
+- Request entra no pipeline com `x-edger-internal: true`, `Authorization:
+  Bearer $ROOT_API_KEY` e `x-request-id: cron-...`; a credencial root é
+  removida antes da serialização para user code.
+- Worker `enabled: false` não registra jobs. Re-enable via overlay runtime exige
+  reload/restart para entrar no scheduler porque os jobs são snapshot de
+  startup.
+- `ctrl_c` chama `scheduler.shutdown().await` antes de `run_on_shutdown` e
+  `shutdown_pool`.
+- Métricas Prometheus expõem `edger_cron_executions_total` e
+  `edger_cron_failures_total`.
 
 ### Scope
-- **In:** Parser cron schedule, scheduler tokio, internal dispatch, testes, shutdown graceful.
+- **In:** Parser schedule v1, scheduler tokio, internal dispatch, testes,
+  shutdown graceful.
 - **Out:** Cron distribuído multi-proc (leader election); UI de gestão de jobs; persistência de last-run em DB (futuro ext).
+  Full cron grammar permanece para hardening futuro; v1 suporta `@every <duration>`
+  para testes/dev e cron de minuto simples (`* * * * *`, `*/N * * * *`, ou
+  minuto fixo).
 
 ### Acceptance criteria
-- [ ] Manifest com `cron: [{ schedule: "*/1 * * * *", path: "/tick", method: "GET" }]` dispara handler dentro de tolerância de 2s em teste (clock mock ou interval curto).
-- [ ] Request interno carrega header de credencial interna; não exposto em rotas públicas.
-- [ ] Worker disabled não registra jobs; re-enable requer reload documentado.
-- [ ] Schedule inválido falha no startup com erro claro (não panic silencioso).
-- [ ] Shutdown cancela jobs pendentes sem leak de tasks tokio.
-- [ ] Métrica/contador de execuções cron exposto (prep para 07.06).
+- [x] Manifest com `cron[]` dispara handler dentro de tolerância de 2s em teste
+  usando intervalo curto `@every 25ms`; `*/1 * * * *` é aceito pelo parser como
+  intervalo de 1 minuto.
+- [x] Request interno carrega header de credencial interna; o bearer root não é
+  encaminhado ao worker e `x-edger-internal` continua sem autenticar sozinho em
+  rotas públicas/admin.
+- [x] Worker disabled não registra jobs; re-enable requer reload documentado.
+- [x] Schedule inválido falha no startup com erro claro (não panic silencioso).
+- [x] Shutdown cancela jobs pendentes sem leak de tasks tokio.
+- [x] Métrica/contador de execuções cron exposto (prep para 07.06).
 
 ### Dependencies
 - Story 07.01 (manifest loader com cron fields)
@@ -66,21 +82,21 @@
 ## Tasks
 
 ### Fase 1 — Tipos e parsing
-- [ ] Finalizar `CronJob` em `edger-core` com serde + validação de schedule (cron expression).
-- [ ] Testes unitários: parse manifest com múltiplos jobs, timezone UTC default documentado.
+- [x] Reusar `CronJob` em `edger-core` com serde existente.
+- [x] Testes unitários do parser schedule v1 (`@every`, `*/N`, rejeição clara).
 
 ### Fase 2 — Scheduler
-- [ ] Implementar `CronScheduler::register(worker_ref, jobs)` usando tokio-cron.
-- [ ] Internal HTTP client chamando pipeline local (evitar loop externo).
-- [ ] Credencial interna via env `RUNTIME_INTERNAL_SECRET` ou synthetic principal root-only.
+- [x] Implementar `CronScheduler::start` sobre `tokio::time`.
+- [x] Internal HTTP chamando pipeline local via `Router::oneshot`.
+- [x] Credencial interna via `ROOT_API_KEY` + `x-edger-internal: true`.
 
 ### Fase 3 — Lifecycle
-- [ ] Wire no binary: start após manifests loaded; stop no graceful shutdown.
-- [ ] Integrar com `ExtensionRegistry::on_shutdown` se extensões precisam flush.
+- [x] Wire no binary: start após manifests loaded; stop no graceful shutdown.
+- [x] Shutdown roda scheduler antes de `run_on_shutdown` e pool shutdown.
 
 ### Fase 4 — Testes
-- [ ] Fixture `workers/cron-worker/` + test com clock acelerado ou `tokio::time::pause`.
-- [ ] Teste: job não roda quando worker disabled.
+- [x] Fixture `workers/cron-worker/` + teste com intervalo curto.
+- [x] Teste: job não roda quando worker disabled.
 
 ## Verification
 ```bash
