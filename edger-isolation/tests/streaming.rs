@@ -158,7 +158,10 @@ async fn steady_sse_stream_is_bounded_by_total_time() {
     assert_eq!(res.status, 200);
     // A few ticks captured, then bounded — not empty, not runaway.
     let len = res.body.as_deref().map(<[u8]>::len).unwrap_or(0);
-    assert!((12..=1200).contains(&len), "bounded SSE snapshot, got {len} bytes");
+    assert!(
+        (12..=1200).contains(&len),
+        "bounded SSE snapshot, got {len} bytes"
+    );
     assert!(
         elapsed < Duration::from_secs(5),
         "must return near the 600ms budget, took {elapsed:?}"

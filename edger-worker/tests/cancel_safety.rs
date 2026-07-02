@@ -7,8 +7,8 @@ mod helpers;
 use std::sync::Arc;
 use std::time::Duration;
 
-use helpers::{default_pool_config, pool_with_factory, serialized_get, temp_worker_dir};
 use helpers::MockIsolateFactory;
+use helpers::{default_pool_config, pool_with_factory, serialized_get, temp_worker_dir};
 
 // Mutation captured: removing the `DispatchCancelGuard` (or its Drop body) from
 // `WorkerPool` leaves the cancelled instance stuck `Active`; the second dispatch
