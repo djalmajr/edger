@@ -218,17 +218,48 @@ impl WorkerPool {
         };
         worker_ref.config = config.clone();
 
-        let instance = self.get_or_create(&worker_ref).await?;
-        let dispatch_lock = instance.dispatch_lock();
-        let _dispatch_guard = dispatch_lock.lock().await;
+        // Concurrent requests to the same worker share one cached instance and
+        // queue on its dispatch lock. An ephemeral instance (ttl_ms == 0) is
+        // terminated after each request, so a queued dispatcher can wake up
+        // holding a lock on an already-terminated instance. When that happens,
+        // re-resolve a fresh instance instead of failing the request.
+        const MAX_RESOLVE_ATTEMPTS: usize = 32;
+        let mut attempt = 0;
+        let (instance, dispatch_guard) = loop {
+            attempt += 1;
+            let instance = match self.get_or_create(&worker_ref).await {
+                Ok(instance) => instance,
+                Err(WorkerError::Retired | WorkerError::Evicted)
+                    if attempt < MAX_RESOLVE_ATTEMPTS =>
+                {
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            let dispatch_guard = instance.dispatch_lock().lock_owned().await;
 
-        if instance.state() == WorkerState::Creating {
-            let spawn_start = Instant::now();
-            Supervisor::spawn(&instance).await?;
-            self.inner
-                .metrics
-                .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
-        }
+            if instance.state() == WorkerState::Creating {
+                let spawn_start = Instant::now();
+                Supervisor::spawn(&instance).await?;
+                self.inner
+                    .metrics
+                    .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
+            }
+
+            if crate::state::accepts_dispatch(instance.state()) {
+                break (instance, dispatch_guard);
+            }
+
+            // A concurrent ephemeral dispatch terminated this shared instance
+            // while we waited on its lock; drop it and resolve a fresh one.
+            drop(dispatch_guard);
+            if attempt >= MAX_RESOLVE_ATTEMPTS {
+                return Err(WorkerError::NotReady);
+            }
+            tokio::task::yield_now().await;
+        };
+        let _dispatch_guard = dispatch_guard;
 
         Supervisor::on_request_start(&instance).await?;
 
@@ -239,10 +270,20 @@ impl WorkerPool {
 
         let isolate_arc = instance.isolate();
         let mut isolate = isolate_arc.lock().await;
-        let res = dispatch_to_isolate(isolate.as_mut(), kind, req, &config)
-            .await
-            .map_err(WorkerError::Isolation)?;
+        let res = dispatch_to_isolate(isolate.as_mut(), kind, req, &config).await;
         drop(isolate);
+
+        let res = match res {
+            Ok(res) => res,
+            Err(err) => {
+                // An isolate failure must not leave the instance stuck in
+                // `Active`: recycle it so the next dispatch gets a fresh worker.
+                let _ = Supervisor::on_critical_error(&instance).await;
+                self.remove_instance(&instance);
+                self.sync_worker_counts();
+                return Err(WorkerError::Isolation(err));
+            }
+        };
 
         Supervisor::on_request_complete(instance, &config, self).await?;
 

@@ -1,0 +1,17 @@
+# Evidência MVP funcional — 2026-07-02
+# Launch: ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers cargo run -p edger-orchestrator --bin edger
+
+GET /ready -> 200
+GET /wasm-hello -> wasm-hello [200]
+POST /hello-world {"name":"Edger"} -> {"message":"Hello Edger from foo!"} [200]
+POST /read-body (8 bytes) -> {"totalSize":8} [200]
+GET /empty-response -> [204]
+GET /serve-html/foo -> <html>   <h1>Foo</h1> </html>  [200]
+GET /routes-demo/api/status -> {"ok":true} [200]
+GET /routes-demo/users/42 -> {"user":"42"} [200]
+POST /routes-demo/admin -> [405] (method map: 405)
+GET /routes-demo/unmatched -> fallback [200] (fallback fetch)
+GET /hello-world (GET sem body; worker lança em req.json) -> [500]
+POST /hello-world após erro (pool reciclado) -> {"message":"Hello Edger from foo!"} [200]
+
+# Gate Rust (2026-07-02): cargo test --workspace = 65 suites / 329 passed / 0 failed; clippy -D warnings = ok; cargo fmt --check = ok

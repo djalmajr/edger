@@ -1,7 +1,7 @@
 # Shell / micro-frontend protocol
 
-**Status:** v1 em implementação pela Story 08.05
-**Origin:** `planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md`
+**Status:** v1 entregue (Stories 08.05 + 07.02)
+**Origin:** `planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md`, `planning/edger/epics/07-avancado/02-shell-routing.md`
 
 ## Objetivo
 
@@ -76,6 +76,20 @@ e RPC) é compatível como direção arquitetural, mas não é requisito de exec
 do v1. A fronteira de segurança principal é o isolamento do iframe e a
 autorização normal do worker montado.
 
+## Evolução planejada
+
+- **Compat z-frame/MessageChannel (legado Buntime):** apps que dependem do
+  protocolo de mensagens legado continuam funcionando dentro do iframe sem
+  intervenção do runtime; o edger não intercepta `postMessage`.
+- **WebTransport:** direção para o protocolo shell<->app evoluído (streams
+  bidirecionais para eventos/RPC no lugar de `MessageChannel`). Não faz parte
+  do v1; requer decisão de contrato próprio (autenticação por sessão de
+  transporte e multiplexação por app montado) antes de implementação.
+- **`base_href` para handlers dinâmicos:** o orchestrator propaga
+  `SerializedRequest.base_href` (equivalente ao `X-Base` Buntime) em todo
+  dispatch, então workers fetch/routes podem gerar URLs absolutas sem ler
+  headers.
+
 ## Gateway v1
 
 O gateway middleware cobre CORS/preflight mínimo:
@@ -92,6 +106,9 @@ continua fora do v1 e exigirá allowlist explícita para não introduzir SSRF.
 ## Evidência
 
 - `edger-orchestrator/tests/shell_gateway.rs`
+- `edger-orchestrator/tests/shell_routing_test.rs` (SPA namespaced com
+  `<base href="/@team/panel/">`, asset relativo pela mesma rota e
+  `injectBase: false` servindo HTML intocado)
 - `edger-ext-gateway/tests/gateway_middleware.rs`
 - `workers/shell-demo`
 - `workers/todos-shell-demo`

@@ -1,7 +1,7 @@
 # Pendências Epic 07 — Fase 7 Avançado
 
 **Origin:** `planning/edger/epics/07-avancado/00-overview.md`  
-**Atualizado:** 2026-07-01
+**Atualizado:** 2026-07-02
 
 Documento dedicado para itens não resolvidos durante execução da Fase 7.
 
@@ -30,10 +30,11 @@ Documento dedicado para itens não resolvidos durante execução da Fase 7.
 - [x] Assets paralelos de SPA não falham mais por `WorkerPool` em estado `Active`; dispatches concorrentes do mesmo worker entram em fila.
 - [x] Validação manual com `cargo run -p edger-orchestrator --bin edger` + `curl`.
 - [x] Timeout/process kill por manifest no bridge Deno CLI.
-- [ ] V8 singleton + op registration embutido (`deno_core` facade Edge Runtime).
-- [ ] `execute_routes` production específico.
+- [ ] V8 singleton + op registration embutido (`deno_core` facade Edge Runtime) — aguarda aprovação explícita.
+- [x] `execute_routes` production: bridge despacha `routes` export (exact > `:param` > `*`, method map 405, fallback `fetch`, 404 sem fallback); fixture `workers/routes-demo` + E2E em `kind_dispatch_integration.rs`.
 - [x] `serve_static_spa` v1 com path traversal/base injection.
-- [ ] Harden de permissões/sandbox/erros de filesystem da Deno CLI bridge.
+- [x] Harden de permissões/sandbox da Deno CLI bridge: migrado de `deno eval` (permissão total) para `deno run --no-prompt` com `--allow-read=<worker_dir>`, `--allow-env` sobre env limpo/filtrado e `--allow-net` configurável via `EDGER_DENO_ALLOW_NET` (`false|hosts`); write/run/ffi/sys negados. Testes `edger-isolation/tests/deno_sandbox.rs`.
+- [x] Pool recicla worker após erro de isolate (antes ficava preso em `Active` e todo request seguinte falhava com `worker not ready for dispatch`); regressão em `edger-worker/tests/pool_error_recovery.rs`.
 
 ### 07.05 Wasm execution — **completed (standalone wasmtime v1)**
 
@@ -51,14 +52,19 @@ Documento dedicado para itens não resolvidos durante execução da Fase 7.
   `status/evidence/story-07-05-runtime.txt` e
   `status/closure-2026-07-01-story-07-05-wasm-execution.md`
 
-### 07.01 Manifests + kinds — **in progress**
+### 07.01 Manifests + kinds — **completed**
 
 - [x] `load_manifests_from_dirs` varre root/direct worker dirs e carrega `manifest.yaml`, `package.json` ou `index.*`
 - [x] `RUNTIME_WORKER_DIRS` (`:`) integrado no bin Rust; default local `workers`
 - [x] `enabled: false` ignorado; `latest` único resolve
-- [ ] Integração E2E por todos os `ExecutionKind` ainda depende 07.04 para JS real
+- [x] Integração E2E por todos os `ExecutionKind`: fetch, routes, spa, wasm e fullstack (501) em `kind_dispatch_integration.rs` + `shell_routing_test.rs`
 
-### 07.02 Shell routing — **not started**
+### 07.02 Shell routing — **completed**
+
+- [x] Decisão de shell (document vs iframe, excludes, reserved paths) entregue na 08.05 (`shell_gateway.rs`)
+- [x] SPA namespaced `/@scope/app` com `<base href>` injetado + asset relativo pela mesma rota (`shell_routing_test.rs`)
+- [x] `injectBase: false` respeitado — fix em `edger-core::infer_execution_kind`, que fixava `inject_base: true` para `kind: spa` explícito
+- [x] `planning/edger/docs/shell-protocol.md` com seção "Evolução planejada" (z-frame compat, WebTransport, `base_href`)
 
 ### 07.03 Cron nativo — **completed (scheduler v1)**
 

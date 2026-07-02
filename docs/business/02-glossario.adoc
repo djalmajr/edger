@@ -28,9 +28,10 @@
   `DenoIsolate`, `WasmIsolate` e `MockIsolate` para testes.
 
 | Deno CLI bridge
-| Backend JS/TS funcional v1. Executa `deno eval --no-check` por request,
-  dentro do diretório do worker, usando `deno.json` / `deno.jsonc` local quando
-  presente.
+| Backend JS/TS funcional v1. Executa `deno run --no-check --no-prompt` por
+  request com sandbox explícito (`--allow-read=<worker_dir>`, net configurável
+  via `EDGER_DENO_ALLOW_NET`, write/run/ffi/sys negados), dentro do diretório
+  do worker, usando `deno.json` / `deno.jsonc` local quando presente.
 
 | deno_core
 | Alvo futuro de produção para JS/TS embutido. A bridge Deno CLI comprova o

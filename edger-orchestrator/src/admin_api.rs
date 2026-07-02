@@ -2,7 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use axum::extract::{Path, Query, State};
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -19,10 +20,12 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::deploy::{install_worker_from_zip, rescan_workers};
 use crate::operational_log::log_operational_error;
 use crate::pipeline::OrchestratorState;
 use crate::security::validate_admin_mutation_security;
 use crate::server::request_id_from_headers;
+use crate::wire::MAX_BODY_BYTES;
 
 pub fn router() -> Router<OrchestratorState> {
     Router::new()
@@ -45,6 +48,16 @@ pub fn router() -> Router<OrchestratorState> {
         .route("/api/admin/gateway/logs", get(gateway_logs))
         .route("/api/admin/keys", get(list_keys).post(create_key))
         .route("/api/admin/keys/{id}/revoke", post(revoke_key))
+        .route(
+            "/api/admin/workers/install",
+            post(install_worker).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
+        .route("/api/admin/workers/rescan", post(rescan_workers_route))
+        .route(
+            "/api/admin/workers/error-summary",
+            get(worker_error_summary),
+        )
+        .route("/api/admin/workers/{name}/errors", get(worker_errors))
         .route("/api/admin/workers/{name}/enable", post(enable_worker))
         .route("/api/admin/workers/{name}/disable", post(disable_worker))
         .route(
@@ -331,20 +344,106 @@ async fn revoke_key(
     }
 }
 
+async fn install_worker(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    match authenticate(&state, &headers).and_then(|principal| {
+        require_permission(&principal, "workers:install")?;
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        install_worker_from_zip(&state.index, &principal, &body)
+    }) {
+        Ok(installed) => (StatusCode::CREATED, Json(installed)).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RescanRequest {
+    dry_run: Option<bool>,
+}
+
+async fn rescan_workers_route(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let dry_run = serde_json::from_slice::<RescanRequest>(&body)
+        .ok()
+        .and_then(|request| request.dry_run)
+        .unwrap_or(true);
+    match authenticate(&state, &headers).and_then(|principal| {
+        require_permission(&principal, "workers:install")?;
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        rescan_workers(&state.index, dry_run)
+    }) {
+        Ok(report) => Json(report).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerVersionQuery {
+    version: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerErrorsQuery {
+    limit: Option<usize>,
+}
+
+async fn worker_error_summary(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+) -> Response {
+    match authenticate(&state, &headers).and_then(|principal| {
+        require_permission(&principal, "workers:read")?;
+        Ok(principal)
+    }) {
+        Ok(_) => Json(json!({ "summary": state.server.worker_errors().summary() })).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn worker_errors(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(query): Query<WorkerErrorsQuery>,
+) -> Response {
+    match authenticate(&state, &headers).and_then(|principal| {
+        require_permission(&principal, "workers:read")?;
+        Ok(principal)
+    }) {
+        Ok(_) => {
+            let limit = query.limit.unwrap_or(10).min(20);
+            let errors = state.server.worker_errors().recent(&name, limit);
+            Json(json!({ "worker": name, "errors": errors })).into_response()
+        }
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
 async fn enable_worker(
     State(state): State<OrchestratorState>,
     headers: HeaderMap,
     Path(name): Path<String>,
+    Query(query): Query<WorkerVersionQuery>,
 ) -> Response {
-    worker_mutation(state, headers, name, true)
+    worker_mutation(state, headers, name, query.version, true)
 }
 
 async fn disable_worker(
     State(state): State<OrchestratorState>,
     headers: HeaderMap,
     Path(name): Path<String>,
+    Query(query): Query<WorkerVersionQuery>,
 ) -> Response {
-    worker_mutation(state, headers, name, false)
+    worker_mutation(state, headers, name, query.version, false)
 }
 
 async fn enable_extension(
@@ -367,15 +466,21 @@ fn worker_mutation(
     state: OrchestratorState,
     headers: HeaderMap,
     name: String,
+    version: Option<String>,
     enabled: bool,
 ) -> Response {
     match require_root(&state, &headers).and_then(|principal| {
         validate_admin_mutation_security("POST", &headers, &principal)?;
-        state.index.set_worker_enabled(&name, enabled)
+        state
+            .index
+            .set_worker_enabled(&name, version.as_deref(), enabled)
     }) {
         Ok(worker) => Json(AdminMutationResponse {
             code: "OK".into(),
-            message: format!("worker {} {}", worker.name, worker.status),
+            message: format!(
+                "worker {}@{} {}",
+                worker.name, worker.version, worker.status
+            ),
             status: worker.status,
         })
         .into_response(),
@@ -627,10 +732,11 @@ fn generate_api_key() -> String {
 
 fn map_error_status(err: &CoreError) -> StatusCode {
     match err.code.as_str() {
-        "BAD_REQUEST" => StatusCode::BAD_REQUEST,
+        "BAD_REQUEST" | "DEPLOY_INVALID_PACKAGE" | "DEPLOY_PATH_DENIED" => StatusCode::BAD_REQUEST,
         "UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
         "CSRF_DENIED" | "FORBIDDEN" => StatusCode::FORBIDDEN,
+        "COLLISION" | "DEPLOY_TARGET_EXISTS" => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

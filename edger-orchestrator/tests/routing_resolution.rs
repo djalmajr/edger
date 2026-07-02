@@ -257,7 +257,7 @@ fn disabled_host_worker_is_not_resolved_by_host_alias() {
             host_manifest("hosted", "1.0.0", vec!["app.example.test"]),
         )
         .unwrap();
-    index.set_worker_enabled("hosted", false).unwrap();
+    index.set_worker_enabled("hosted", None, false).unwrap();
 
     let route = resolve_host_route("/", Some("app.example.test"), &index).unwrap();
     assert_eq!(route, None);
@@ -426,7 +426,7 @@ fn unknown_worker_returns_not_found() {
 #[test]
 fn disabled_worker_is_removed_from_route_resolution_and_inventory() {
     let index = build_index();
-    let disabled = index.set_worker_enabled("hello", false).unwrap();
+    let disabled = index.set_worker_enabled("hello", None, false).unwrap();
     assert_eq!(disabled.name, "hello");
     assert_eq!(disabled.status, "disabled");
 
@@ -439,7 +439,7 @@ fn disabled_worker_is_removed_from_route_resolution_and_inventory() {
         .unwrap();
     assert_eq!(hello.status, "disabled");
 
-    let enabled = index.set_worker_enabled("hello", true).unwrap();
+    let enabled = index.set_worker_enabled("hello", None, true).unwrap();
     assert_eq!(enabled.status, "loaded");
     let route = resolve_route("/hello", None, &index).unwrap();
     match route {

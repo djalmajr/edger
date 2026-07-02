@@ -17,10 +17,10 @@ Paridade de valor fica em `planning/edger/docs/value-parity-matrix.md`. Esta mat
 | Worker-local `deno.json` / import map | Deno CLI bridge cwd + `--config` | tested | `deno_backend_loads_worker_deno_config_import_map`; `serve` manual curl |
 | Response body finite stream | Deno CLI bridge buffers response | tested | `chunked-text` E2E |
 | Infinite/SSE stream | Deno CLI bounded first chunk | partial | `stream` and `sse` return first chunk; true streaming passthrough still pending |
-| Remote `https://` imports | Deno CLI bridge | tested | `logger-stdout` manual curl returned 200; cache/network policy hardening still pending |
+| Remote `https://` imports | Deno CLI bridge | tested | `logger-stdout` manual curl returned 200; sandbox 2026-07-02: `deno run` com allowlist default de import hosts (deno.land/jsr) e `--allow-net` configurável via `EDGER_DENO_ALLOW_NET` |
 | CommonJS Node server examples | Node `http.createServer` adapter | partial | Simple `commonjs` tested; Buntime-compatible mounted paths strip worker base and expose `x-base`, so standalone Hono route `/commonjs-hono` resolves at `/commonjs-hono/commonjs-hono` |
 | Mounted worker base path | Relative request path + `x-base` | tested | Mirrors Buntime `createWorkerRequest`; namespaced worker test asserts `/api/ping` + `x-base: /@team/checkout` |
-| `routes` export | isolation | pending | E2E 07.04 |
+| `routes` export | Deno CLI bridge routes dispatch | tested | `routes_table_worker_dispatches_by_path_method_and_params` + `routes_table_without_fallback_returns_404_for_unmatched` em `kind_dispatch_integration.rs`; exact > `:param` > `*` wildcard, method map (405), fallback `fetch`, 404 sem fallback; fixture `workers/routes-demo` |
 | Wasm standalone worker | wasmtime `WasmIsolate` | tested | `edger-isolation/tests/wasm_integration.rs`; `edger-worker/tests/wasm_pool_integration.rs`; `edger-orchestrator/tests/kind_dispatch_integration.rs`; ABI v1 reads response body from `memory` offset `0` using `http_status` and `http_body_len`, rejects host/WASI imports by default, and coexists with Deno workers in the same pool |
 | Static file read from JS worker | Deno CLI bridge | tested | `serve-html` E2E |
 | Static SPA (`entrypoint: index.html`) | Rust `serve_static_spa` | tested | `edger-orchestrator/tests/manifest_loader.rs`; `workers` fixture + manual `buntime/apps/todos` HTTP validation: manifest-less discovery, index/assets/favicon/fallback + `<base href="/todos/">` |

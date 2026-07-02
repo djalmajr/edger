@@ -3,6 +3,7 @@
 **Single canonical rules for edger development.** (root; planning/edger/AGENTS.md mirrors for reference)
 
 ## Core
+- Product label is **"EdgeR"** in user-facing surfaces (UI titles, brand text, docs prose). Technical identifiers stay lowercase `edger` (crates, binary, env vars, paths, URLs).
 - Core (edger-core or lib) is pure vocabulary: no I/O.
 - Always run the Rust gate before claiming complete: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`.
 - Run `bun test` only if a root JS/TS test suite exists; the historical Bun adapter is removed.
@@ -25,7 +26,8 @@
   - or `export default { fetch(req) {} }`
   - or `export default fetchFn`
 - Copy examples verbatim from edge-runtime/examples into workers/<name>/ (preserve index).
-- JS/TS workers currently execute via the Deno CLI bridge (`deno` on PATH or `EDGER_DENO_BIN`). Embedded `deno_core` remains the production target; do not reintroduce a Bun adapter.
+- JS/TS workers currently execute via the Deno CLI bridge (`deno` on PATH or `EDGER_DENO_BIN`), sandboxed with `deno run --no-prompt`: read access limited to the worker dir, write/run/ffi/sys denied, network configurable via `EDGER_DENO_ALLOW_NET` (`false`/`0`/`none` denies; host list restricts; default allows). Embedded `deno_core` remains the production target; do not reintroduce a Bun adapter.
+- Workers may export `routes` (Bun.serve-style: exact > `:param` > `*` wildcard, per-method maps, `fetch` fallback) in addition to `Deno.serve`/default fetch.
 
 ## Discipline
 - Planning maturity: `/agile-refinement` Mode 1 on `planning/edger/` + `refinement-lint.py` (see `planning/edger/scripts/run-gates.sh`). Only the orchestrator agent calls ai-memory tools; subagents must not.

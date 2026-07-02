@@ -166,7 +166,7 @@ async fn document_navigation_serves_shell_with_root_base() {
         String::from_utf8_lossy(&body)
     );
     let html = String::from_utf8_lossy(&body);
-    assert!(html.contains("edger shell"));
+    assert!(html.contains("EdgeR shell"));
     assert!(html.contains(r#"<base href="/" />"#));
     assert!(html.contains(r#"data-catalog-source="/api/admin/catalog""#));
 }

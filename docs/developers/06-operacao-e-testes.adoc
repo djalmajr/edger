@@ -917,3 +917,62 @@ Resposta esperada:
   permissões antes de alterar o contrato do worker.
 * Qualquer mudança em auth, manifests, routing ou worker lifecycle exige gate
   Rust completo.
+
+=== Deploy de apps (Epic 14 — install + rescan)
+
+O EdgeR aceita deploy de workers em runtime, sem restart, por duas vias:
+
+==== Install por zip
+
+[source,bash]
+----
+cd meu-app && zip -r ../meu-app.zip .
+curl -X POST http://127.0.0.1:19080/api/admin/workers/install \
+  -H "Authorization: Bearer $ROOT_API_KEY" \
+  -H "content-type: application/zip" \
+  --data-binary @../meu-app.zip
+----
+
+Resposta (`201`):
+
+[source,json]
+----
+{"name":"meu-app","version":"1.0.0","url":"/meu-app","kind":"FetchHandler","visibility":"protected","source":"workers/meu-app"}
+----
+
+Regras:
+
+* Exige permissão `workers:install` (root tem todas).
+* O pacote precisa de `manifest.yaml` (ou `package.json`) com `name` e um
+  entrypoint (`manifest.entrypoint` ou `index.{html,ts,js,mjs,wasm,wat}`).
+* Zip com uma única pasta top-level é desembrulhado automaticamente.
+* Zip-slip (`../`, paths absolutos) é rejeitado com `400 DEPLOY_PATH_DENIED`.
+* `name@version` já indexado responde `409 COLLISION`; instale uma nova
+  versão para coexistir (`latest` passa a resolver a maior habilitada).
+* Body acima de 4 MiB responde `413` (cap global v1).
+* O destino é o primeiro root de `RUNTIME_WORKER_DIRS`; a escrita é atômica
+  (staging + rename) e o worker é indexado imediatamente.
+
+==== Rescan (disco como fonte de verdade)
+
+Para workers copiados manualmente (cp, git pull, MCP):
+
+[source,bash]
+----
+# dry-run (default): mostra o diff sem aplicar
+curl -X POST http://127.0.0.1:19080/api/admin/workers/rescan \
+  -H "Authorization: Bearer $ROOT_API_KEY" -H "content-type: application/json" -d '{}'
+
+# aplicar
+curl -X POST http://127.0.0.1:19080/api/admin/workers/rescan \
+  -H "Authorization: Bearer $ROOT_API_KEY" -H "content-type: application/json" \
+  -d '{"dryRun":false}'
+----
+
+Resposta: `{"dryRun":...,"added":["nome@versao"],"removed":[...],"unchanged":N}`.
+Workers removidos do disco saem do índice no apply; overlay de
+enable/disable de workers não tocados é preservado.
+
+NOTE: Com um shell (`base: "/"`) protegido ativo, GET single-segment de um
+worker recém-instalado pode ser interceptado pelo shell a menos que o worker
+esteja em `shellExcludes` — ver `planning/edger/docs/shell-protocol.md`.

@@ -41,6 +41,7 @@ struct ServerStateInner {
     pool: std::sync::RwLock<Option<WorkerPool>>,
     cron_metrics: CronMetrics,
     http_metrics: HttpMetrics,
+    worker_errors: crate::worker_errors::WorkerErrorLog,
 }
 
 /// Shared application state for health/readiness and future pipeline wiring.
@@ -57,6 +58,7 @@ impl ServerState {
                 pool: std::sync::RwLock::new(None),
                 cron_metrics: CronMetrics::default(),
                 http_metrics: HttpMetrics::default(),
+                worker_errors: crate::worker_errors::WorkerErrorLog::default(),
             }),
         }
     }
@@ -92,6 +94,10 @@ impl ServerState {
 
     pub fn http_metrics(&self) -> HttpMetrics {
         self.inner.http_metrics.clone()
+    }
+
+    pub fn worker_errors(&self) -> crate::worker_errors::WorkerErrorLog {
+        self.inner.worker_errors.clone()
     }
 }
 

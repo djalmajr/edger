@@ -337,6 +337,13 @@ async fn dispatch_worker(
     {
         Ok(response) => response,
         Err(err) => {
+            state.server.worker_errors().record(
+                &worker.name,
+                &ctx.request_id,
+                map_error_status(&err).as_u16(),
+                &err.code,
+                &err.message,
+            );
             if !skip_hooks {
                 let error = err.to_string();
                 run_on_worker_error(&state.registry, &error, &ctx);

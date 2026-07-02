@@ -11,3 +11,5 @@
 11-gateway-operacional-avancado: 5 stories
 12-frontends-modulares-cpanel: 5 stories
 13-mcp-authoring-ai-native: 6 stories
+14-deploy-apps: 6 stories
+15-runtime-js-duravel: 6 stories

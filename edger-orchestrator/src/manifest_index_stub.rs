@@ -32,6 +32,8 @@ struct ManifestIndexState {
     plugins: Vec<PluginRef>,
     homepage: Option<WorkerRef>,
     shell: Option<WorkerRef>,
+    /// Worker roots this index was loaded from; install/rescan targets.
+    roots: Vec<PathBuf>,
 }
 
 impl ManifestIndex {
@@ -222,9 +224,71 @@ impl ManifestIndex {
             .collect()
     }
 
+    pub fn set_roots(&self, roots: Vec<PathBuf>) {
+        if let Ok(mut state) = self.inner.write() {
+            state.roots = roots;
+        }
+    }
+
+    pub fn roots(&self) -> Vec<PathBuf> {
+        self.inner
+            .read()
+            .map(|state| state.roots.clone())
+            .unwrap_or_default()
+    }
+
+    /// Remove one `name@version` entry (rescan of a worker deleted on disk).
+    pub fn remove_worker(&self, name: &str, version: &str) -> Result<(), CoreError> {
+        let mut state = self.inner.write().map_err(|_| lock_err())?;
+        let bucket = state
+            .entries
+            .get_mut(name)
+            .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
+        let Some(position) = bucket
+            .iter()
+            .position(|entry| entry.worker.version == version)
+        else {
+            return Err(CoreError::new(
+                "NOT_FOUND",
+                format!("worker {name}@{version} not found"),
+            ));
+        };
+        let removed = bucket.remove(position);
+        if bucket.is_empty() {
+            state.entries.remove(name);
+        }
+        let removed_dir = removed.worker.dir.clone();
+        state.host_routes.retain(|_, worker| {
+            !(worker.name == name && worker.version == version && worker.dir == removed_dir)
+        });
+        state
+            .plugins
+            .retain(|plugin| !(plugin.name == name && plugin.dir == removed_dir));
+        if state
+            .homepage
+            .as_ref()
+            .is_some_and(|worker| worker.name == name && worker.dir == removed_dir)
+        {
+            state.homepage = None;
+        }
+        if state
+            .shell
+            .as_ref()
+            .is_some_and(|worker| worker.name == name && worker.dir == removed_dir)
+        {
+            state.shell = None;
+        }
+        Ok(())
+    }
+
+    /// Toggle a worker's enabled flag. With `version = None` the latest version
+    /// in the bucket is targeted; with `Some(v)` that exact version is toggled,
+    /// which is how rollback disables a bad release while an older one keeps
+    /// serving `latest`.
     pub fn set_worker_enabled(
         &self,
         name: &str,
+        version: Option<&str>,
         enabled: bool,
     ) -> Result<AdminWorkerInfo, CoreError> {
         let mut state = self.inner.write().map_err(|_| lock_err())?;
@@ -232,17 +296,20 @@ impl ManifestIndex {
             .entries
             .get_mut(name)
             .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
-        let resolved_version = resolve_semver(
-            bucket.iter().map(|e| e.worker.version.as_str()).collect(),
-            None,
-        )?;
+        let target_version = match version {
+            Some(version) => version.to_string(),
+            None => resolve_semver(
+                bucket.iter().map(|e| e.worker.version.as_str()).collect(),
+                None,
+            )?,
+        };
         let entry = bucket
             .iter_mut()
-            .find(|entry| entry.worker.version == resolved_version)
+            .find(|entry| entry.worker.version == target_version)
             .ok_or_else(|| {
                 CoreError::new(
                     "NOT_FOUND",
-                    format!("worker {name}@{resolved_version} not found"),
+                    format!("worker {name}@{target_version} not found"),
                 )
             })?;
         entry.worker.config.enabled = enabled;

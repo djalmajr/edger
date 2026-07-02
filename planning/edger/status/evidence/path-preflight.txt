@@ -5,6 +5,7 @@ OK planning/edger/docs/README.md
 OK planning/edger/docs/compat-matrix.md
 OK planning/edger/docs/durable-provider-contract.md
 OK planning/edger/docs/extensions.md
+OK planning/edger/docs/js-runtime-durable-design.md
 OK planning/edger/docs/pendencies-epic-07.md
 OK planning/edger/docs/performance-baselines.md
 OK planning/edger/docs/shell-protocol.md
@@ -106,6 +107,18 @@ OK planning/edger/epics/13-mcp-authoring-ai-native/02-mcp-server-control-plane.m
 OK planning/edger/epics/13-mcp-authoring-ai-native/03-authoring-worker-local.md
 OK planning/edger/epics/13-mcp-authoring-ai-native/04-validacao-local-worker.md
 OK planning/edger/epics/13-mcp-authoring-ai-native/05-preparacao-commit-pr.md
+OK planning/edger/epics/14-deploy-apps/00-overview.md
+OK planning/edger/epics/14-deploy-apps/01-install-api.md
+OK planning/edger/epics/14-deploy-apps/02-rescan-workers.md
+OK planning/edger/epics/14-deploy-apps/03-deploy-dnd-cpanel.md
+OK planning/edger/epics/14-deploy-apps/04-versoes-rollback.md
+OK planning/edger/epics/14-deploy-apps/05-transparencia-pos-deploy.md
+OK planning/edger/epics/15-runtime-js-duravel/00-overview.md
+OK planning/edger/epics/15-runtime-js-duravel/01-transporte-uds-minimo.md
+OK planning/edger/epics/15-runtime-js-duravel/02-modulo-quente-kinds.md
+OK planning/edger/epics/15-runtime-js-duravel/03-compat-frameworks.md
+OK planning/edger/epics/15-runtime-js-duravel/04-limites-recurso-reais.md
+OK planning/edger/epics/15-runtime-js-duravel/05-streaming-hardening.md
 OK planning/edger/intake.md
 OK planning/edger/roadmap.md
 OK planning/edger/runtime-functional-plan.md
@@ -186,10 +199,13 @@ OK planning/edger/status/closure-2026-07-01-story-11-02-cache-rate-limit-persist
 OK planning/edger/status/closure-2026-07-01-story-11-03-gateway-historico-sse.md
 OK planning/edger/status/closure-2026-07-01-story-11-04-vhosts-host-routing.md
 OK planning/edger/status/closure-2026-07-01-story-12-02-shell-catalog.md
+OK planning/edger/status/closure-2026-07-02-runtime-functional-mvp.md
 OK planning/edger/status/consolidation-2026-06-28.md
 OK planning/edger/status/consolidation-2026-06-29-backlog-ready.md
+OK planning/edger/status/evidence/browser-preview-2026-07-02.md
 OK planning/edger/status/evidence/cpanel-browser-2026-06-30.md
+OK planning/edger/status/evidence/js-runtime-perf-2026-07-02.md
 OK planning/edger/status/evidence/mcp-stdio-2026-06-30.md
 ---
-Total refs: 192
+Total refs: 208
 Missing: 0

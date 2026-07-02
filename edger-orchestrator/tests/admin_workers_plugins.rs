@@ -494,7 +494,10 @@ async fn local_extension_validation_contract_reports_manifest_status_diagnostics
 #[tokio::test]
 async fn root_catalog_derives_workers_and_module_menu_contributions() {
     let state = test_state();
-    state.index.set_worker_enabled("todos", false).unwrap();
+    state
+        .index
+        .set_worker_enabled("todos", None, false)
+        .unwrap();
     let app = build_pipeline(state);
 
     let (unauthorized_status, unauthorized_body) =

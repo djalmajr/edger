@@ -3,133 +3,65 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>edger cPanel</title>
-    <link rel="stylesheet" href="styles.css" />
+    <title>EdgeR cPanel</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/iconify-icon@2/dist/iconify-icon.min.js"></script>
+    <script type="importmap">
+      {
+        "imports": {
+          "~/": "./",
+          "fflate": "https://esm.sh/fflate@0.8",
+          "htm/preact": "https://esm.sh/htm@3/preact?external=preact",
+          "preact": "https://esm.sh/preact@10",
+          "preact/": "https://esm.sh/preact@10/"
+        }
+      }
+    </script>
+    <link rel="stylesheet" href="./index.css" />
+    <style type="text/tailwindcss">
+      @theme inline {
+        --font-sans: 'Inter', sans-serif;
+        --color-background: var(--background);
+        --color-foreground: var(--foreground);
+        --color-card: var(--card);
+        --color-card-foreground: var(--card-foreground);
+        --color-popover: var(--popover);
+        --color-popover-foreground: var(--popover-foreground);
+        --color-primary: var(--primary);
+        --color-primary-foreground: var(--primary-foreground);
+        --color-secondary: var(--secondary);
+        --color-secondary-foreground: var(--secondary-foreground);
+        --color-muted: var(--muted);
+        --color-muted-foreground: var(--muted-foreground);
+        --color-accent: var(--accent);
+        --color-accent-foreground: var(--accent-foreground);
+        --color-destructive: var(--destructive);
+        --color-destructive-foreground: var(--destructive-foreground);
+        --color-border: var(--border);
+        --color-input: var(--input);
+        --color-ring: var(--ring);
+        --radius-sm: calc(var(--radius) - 4px);
+        --radius-md: calc(var(--radius) - 2px);
+        --radius-lg: var(--radius);
+        --radius-xl: calc(var(--radius) + 4px);
+        --color-sidebar: var(--sidebar);
+        --color-sidebar-foreground: var(--sidebar-foreground);
+        --color-sidebar-primary: var(--sidebar-primary);
+        --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+        --color-sidebar-accent: var(--sidebar-accent);
+        --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+        --color-sidebar-border: var(--sidebar-border);
+        --color-sidebar-ring: var(--sidebar-ring);
+      }
+      @layer base {
+        * { @apply border-border; }
+        body { @apply bg-background text-foreground; }
+      }
+    </style>
   </head>
-  <body>
-    <div id="app" class="app-shell">
-      <aside class="sidebar" aria-label="Primary">
-        <div class="brand">
-          <span class="brand-mark">ed</span>
-          <span>
-            <strong>edger</strong>
-            <small>cPanel</small>
-          </span>
-        </div>
-        <nav class="nav">
-          <button class="nav-item active" data-view="overview" type="button">
-            <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" /></svg>
-            <span>Overview</span>
-          </button>
-          <button class="nav-item" data-view="workers" type="button">
-            <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" /><rect x="9" y="9" width="6" height="6" rx="1" /><path d="M15 2v2" /><path d="M15 20v2" /><path d="M2 15h2" /><path d="M2 9h2" /><path d="M20 15h2" /><path d="M20 9h2" /><path d="M9 2v2" /><path d="M9 20v2" /></svg>
-            <span>Workers</span>
-          </button>
-          <button class="nav-item" data-view="modules" type="button">
-            <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68L2.707 13.707a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68z" /></svg>
-            <span>Modules</span>
-          </button>
-          <button class="nav-item" data-view="gateway" type="button">
-            <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="16" y="16" width="6" height="6" rx="1" /><rect x="2" y="16" width="6" height="6" rx="1" /><rect x="9" y="2" width="6" height="6" rx="1" /><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" /><path d="M12 12V8" /></svg>
-            <span>Gateway</span>
-          </button>
-          <button class="nav-item" data-view="keys" type="button">
-            <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z" /><circle cx="16.5" cy="7.5" r=".5" fill="currentColor" /></svg>
-            <span>Keys</span>
-          </button>
-        </nav>
-      </aside>
-      <main class="workspace">
-        <header class="topbar">
-          <div>
-            <h1>Operations</h1>
-            <p id="sessionLine">Waiting for operator key</p>
-          </div>
-          <form id="loginForm" class="login-form">
-            <label for="apiKey">Root key</label>
-            <input id="apiKey" autocomplete="off" name="apiKey" placeholder="ROOT_API_KEY" type="password" />
-            <button type="submit">Connect</button>
-            <button id="refreshButton" disabled type="button">Refresh</button>
-          </form>
-        </header>
-        <section id="alert" class="alert" hidden></section>
-        <section class="summary-grid" aria-label="Runtime summary">
-          <article class="metric">
-            <span>Workers</span>
-            <strong id="workersCount">-</strong>
-          </article>
-          <article class="metric">
-            <span>Modules</span>
-            <strong id="modulesCount">-</strong>
-          </article>
-          <article class="metric">
-            <span>Requests</span>
-            <strong id="gatewayRequests">-</strong>
-          </article>
-          <article class="metric">
-            <span>Keys</span>
-            <strong id="keysCount">-</strong>
-          </article>
-        </section>
-        <section id="overview" class="view active">
-          <div class="panel">
-            <div class="panel-heading">
-              <h2>Runtime status</h2>
-              <span id="principalBadge" class="badge">offline</span>
-            </div>
-            <div id="overviewContent" class="detail-grid"></div>
-          </div>
-        </section>
-        <section id="workers" class="view">
-          <div class="panel">
-            <div class="panel-heading">
-              <h2>Workers</h2>
-              <span class="badge">runtime inventory</span>
-            </div>
-            <div id="workersTable" class="table"></div>
-          </div>
-        </section>
-        <section id="modules" class="view">
-          <div class="panel">
-            <div class="panel-heading">
-              <h2>Modules</h2>
-              <span class="badge">capabilities</span>
-            </div>
-            <div id="modulesTable" class="table"></div>
-          </div>
-        </section>
-        <section id="gateway" class="view">
-          <div class="panel">
-            <div class="panel-heading">
-              <h2>Gateway</h2>
-              <span class="badge">local diagnostics</span>
-            </div>
-            <div id="gatewayContent" class="detail-grid"></div>
-          </div>
-        </section>
-        <section id="keys" class="view">
-          <div class="panel keys-panel">
-            <div class="panel-heading">
-              <h2>API keys</h2>
-              <span class="badge">root only</span>
-            </div>
-            <form id="keyForm" class="key-form">
-              <input name="name" placeholder="Name" required />
-              <select name="role">
-                <option value="viewer">viewer</option>
-                <option value="editor">editor</option>
-                <option value="admin">admin</option>
-              </select>
-              <input name="permissions" placeholder="permissions, comma-separated" />
-              <input name="namespaces" placeholder="namespaces, default *" />
-              <button type="submit">Create</button>
-            </form>
-            <div id="createdKey" class="created-key" hidden></div>
-            <div id="keysTable" class="table"></div>
-          </div>
-        </section>
-      </main>
-    </div>
-    <script src="app.js" type="module"></script>
+  <body class="font-sans antialiased">
+    <div id="app" class="h-screen w-full overflow-hidden bg-background"></div>
+    <script type="module" src="./index.js"></script>
   </body>
 </html>

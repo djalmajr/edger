@@ -51,9 +51,9 @@
 
 ### Acceptance criteria
 - [x] `load_manifests_from_dirs(&[PathBuf])` retorna registry com workers namespaced (`@scope/name@ver`).
-- [ ] Inferência cobre todos os 5 passos do design; `kind` explícito sobrescreve inferência. Parcial: manifest/package/index + `.html`/`.wasm`/`.wat`.
-- [ ] Colisão de nome+namespace+versão retorna erro tipado (não sobrescreve silenciosamente).
-- [ ] Cada `ExecutionKind` tem teste de integração que retorna resposta HTTP válida (parcial: Wasm real coberto por `kind_dispatch_integration.rs`; JS aguarda 07.04).
+- [x] Inferência cobre todos os 5 passos do design; `kind` explícito sobrescreve inferência. Passos 1/2/4/5 no loader (`infer_execution_kind`); passo 3 (exports `fetch`/`routes`) é resolvido em execução pela bridge Deno, que prioriza `routes` export sobre `fetch` (semântica Bun.serve).
+- [x] Colisão de nome+namespace+versão retorna erro tipado (não sobrescreve silenciosamente). (`ManifestIndex::insert` → `COLLISION`; teste `insert_detects_collision`)
+- [x] Cada `ExecutionKind` tem teste de integração que retorna resposta HTTP válida: FetchHandler (`js_worker_dispatches_through_deno_backend`), RoutesTable (`routes_table_worker_dispatches_by_path_method_and_params`), StaticSpa (`shell_routing_test.rs` + `manifest_loader.rs`), WasmModule (`same_process_serves_deno_and_wasm_workers_from_one_pool`), Fullstack 501 (`fullstack_worker_returns_501_adapter_required`).
 - [x] `RUNTIME_WORKER_DIRS` com múltiplos paths (`dir1:dir2`) merge correto com precedência documentada.
 - [x] Worker com `enabled: false` não é despachado.
 
@@ -75,18 +75,18 @@
 - [x] Testes unitários: inferência por entrypoint, semver default `latest`, namespace parse.
 
 ### Fase 2 — Resolver + pipeline
-- [ ] `resolver.rs`: lookup por path (`/name`, `/@scope/name@ver`) usando registry.
+- [x] Lookup por path (`/name`, `/@scope/name@ver`) usando registry. (entregue em `router.rs`; módulo `resolver.rs` separado desnecessário — testes em `routing_resolution.rs`)
 - [x] Integrar loader no `main`/composition sketch do orchestrator (env `RUNTIME_WORKER_DIRS`, default `workers`).
-- [ ] Pipeline: após auth/hooks, resolver worker → `pool.fetch(..., kind_hint)`.
+- [x] Pipeline: após auth/hooks, resolver worker → `pool.fetch_worker(..., kind_hint)`. (`pipeline.rs::dispatch_worker`)
 
 ### Fase 3 — Dispatch exhaustivo
-- [ ] `edger-isolation/kinds.rs`: branch por `ExecutionKind` chamando trait methods corretas.
-- [ ] Fixtures em `workers/manifest-kinds/` (fetch, routes, spa, wasm, fullstack stub).
-- [ ] Integration tests E2E via tower/hyper test client (parcial: Wasm real verde).
+- [x] `edger-isolation/kinds.rs`: branch por `ExecutionKind` chamando trait methods corretas.
+- [x] Fixtures por kind. (repo: `workers/hello-world` fetch, `workers/routes-demo` routes, `workers/wasm-hello` wasm, `workers/cpanel` SPA; fullstack coberto por fixture temp-dir no teste 501)
+- [x] Integration tests E2E via tower/hyper test client. (`kind_dispatch_integration.rs`, `shell_routing_test.rs`)
 
 ### Fase 4 — Documentação e gate
-- [ ] Atualizar comentários em `design.md` mapping table se gaps encontrados.
-- [ ] `cargo test --workspace` + clippy verde.
+- [x] Compat matrix atualizada (`routes` export → tested); design mapping sem gaps novos.
+- [x] `cargo test --workspace` + clippy verde. (ver evidência do gate na validação final)
 
 ## Verification
 ```bash
@@ -97,3 +97,11 @@ cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
 ```
+
+## Status
+
+**completed** (2026-07-02) — loader multi-dir, inferência com `kind` explícito
+prioritário (incluindo respeito a `injectBase` no `kind: spa`), colisão tipada
+e dispatch E2E de todos os `ExecutionKind` com backends reais: JS/TS via Deno
+CLI bridge (fetch + routes), Wasm via wasmtime, Static SPA via
+`serve_static_spa` e Fullstack documentado como 501 adapter-required.

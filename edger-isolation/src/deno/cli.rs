@@ -99,16 +99,21 @@ impl DenoCliRunner {
         timeout: Duration,
         manifest_env: &std::collections::HashMap<String, String>,
     ) -> Result<String, IsolationError> {
-        let script = bridge_script(entry_url);
+        let script_file = write_bridge_script(worker_dir, entry_url)?;
         let mut command = Command::new(&self.executable);
-        command.arg("eval").arg("--no-check").env_clear();
+        command
+            .arg("run")
+            .arg("--no-check")
+            .arg("--no-prompt")
+            .env_clear();
+        apply_permission_flags(&mut command, worker_dir);
         inject_runtime_env(&mut command);
         inject_manifest_env(&mut command, manifest_env);
         if let Some(config_path) = deno_config_path(worker_dir) {
             command.arg("--config").arg(config_path);
         }
         let mut child = command
-            .arg(script)
+            .arg(script_file.path())
             .current_dir(worker_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -172,6 +177,61 @@ impl DenoCliRunner {
         }
 
         Ok(stdout)
+    }
+}
+
+/// Persist the bridge script so `deno run` can execute it with an explicit
+/// permission set (`deno eval` always grants full permissions).
+///
+/// The script lives inside the worker dir: Deno resolves `package.json`
+/// (CommonJS detection, `type: commonjs`) from the main module location, so a
+/// script under the system temp dir would silently disable the Node compat
+/// path. Falls back to the system temp dir for read-only worker dirs.
+fn write_bridge_script(
+    worker_dir: &Path,
+    entry_url: &str,
+) -> Result<tempfile::NamedTempFile, IsolationError> {
+    let script = bridge_script(entry_url);
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".edger-bridge-").suffix(".mjs");
+    let mut file = builder
+        .tempfile_in(worker_dir)
+        .or_else(|_| builder.tempfile())
+        .map_err(|err| {
+            IsolationError::new(
+                "DENO_BRIDGE_SCRIPT",
+                format!("failed to create bridge script: {err}"),
+            )
+        })?;
+    file.write_all(script.as_bytes()).map_err(|err| {
+        IsolationError::new(
+            "DENO_BRIDGE_SCRIPT",
+            format!("failed to write bridge script: {err}"),
+        )
+    })?;
+    Ok(file)
+}
+
+/// Sandbox policy for worker execution: read access to the worker dir only
+/// and network per `EDGER_DENO_ALLOW_NET` (default: allowed). Env access is
+/// unrestricted because the child environment is cleared and rebuilt from the
+/// filtered manifest keys — Buntime semantics expect a filtered variable to
+/// read as `undefined`, not to throw. Write, run, ffi and sys stay denied.
+fn apply_permission_flags(command: &mut Command, worker_dir: &Path) {
+    command.arg(format!("--allow-read={}", worker_dir.display()));
+    command.arg("--allow-env");
+
+    match std::env::var("EDGER_DENO_ALLOW_NET")
+        .map(|value| value.trim().to_string())
+        .as_deref()
+    {
+        Ok("false") | Ok("0") | Ok("none") => {}
+        Ok("") | Ok("true") | Ok("1") | Err(_) => {
+            command.arg("--allow-net");
+        }
+        Ok(hosts) => {
+            command.arg(format!("--allow-net={hosts}"));
+        }
     }
 }
 
@@ -371,8 +431,89 @@ if (!handler && mod) {{
 if (!handler && typeof capturedNodeHandler === "function") {{
   handler = (request) => dispatchNodeHandler(capturedNodeHandler, request);
 }}
+
+const routesTable = (mod && ((mod.default && mod.default.routes) || mod.routes)) || null;
+if (routesTable) {{
+  handler = makeRoutesHandler(routesTable, handler);
+}}
 if (typeof handler !== "function") {{
-  throw new Error("edger: no fetch handler found in module");
+  throw new Error("edger: no fetch handler or routes table found in module");
+}}
+
+function matchRoutePattern(pattern, pathname) {{
+  const patternParts = pattern.split("/");
+  const pathParts = pathname.split("/");
+  const params = {{}};
+  for (let index = 0; index < patternParts.length; index++) {{
+    const part = patternParts[index];
+    if (part === "*") {{
+      return index === patternParts.length - 1 ? params : null;
+    }}
+    if (part.startsWith(":")) {{
+      const value = pathParts[index];
+      if (value === undefined || value === "") {{
+        return null;
+      }}
+      params[part.slice(1)] = decodeURIComponent(value);
+      continue;
+    }}
+    if (part !== pathParts[index]) {{
+      return null;
+    }}
+  }}
+  return patternParts.length === pathParts.length ? params : null;
+}}
+
+function makeRoutesHandler(routes, fallback) {{
+  const entries = Object.entries(routes);
+  return async (request) => {{
+    const pathname = new URL(request.url).pathname;
+    let target = null;
+    let params = null;
+    for (const [pattern, value] of entries) {{
+      if (pattern === pathname) {{
+        target = value;
+        params = {{}};
+        break;
+      }}
+    }}
+    if (target === null) {{
+      for (const [pattern, value] of entries) {{
+        if (!pattern.includes(":") && !pattern.includes("*")) {{
+          continue;
+        }}
+        const matched = matchRoutePattern(pattern, pathname);
+        if (matched) {{
+          target = value;
+          params = matched;
+          break;
+        }}
+      }}
+    }}
+    if (target === null) {{
+      if (typeof fallback === "function") {{
+        return fallback(request);
+      }}
+      return new Response("route not found", {{ status: 404 }});
+    }}
+    if (target && typeof target === "object" && !(target instanceof Response)) {{
+      target = target[request.method.toUpperCase()];
+      if (target === undefined) {{
+        return new Response("method not allowed", {{ status: 405 }});
+      }}
+    }}
+    if (target instanceof Response) {{
+      return target.clone();
+    }}
+    if (typeof target !== "function") {{
+      throw new Error("edger: invalid routes table entry for " + pathname);
+    }}
+    Object.defineProperty(request, "params", {{
+      configurable: true,
+      value: params,
+    }});
+    return target(request);
+  }};
 }}
 
 function rawHeadersFrom(headers) {{

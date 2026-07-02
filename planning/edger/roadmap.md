@@ -39,13 +39,15 @@
 | Fase 4: Worker Management | [`epics/04-worker-management/`](epics/04-worker-management/00-overview.md) | 4 | **completed** | Fase 2, Fase 3 |
 | Fase 5: Orquestrador | [`epics/05-orquestrador/`](epics/05-orquestrador/00-overview.md) | 5 | **completed** | Fase 1-4 |
 | Fase 6: Extensibilidade | [`epics/06-extensibilidade/`](epics/06-extensibilidade/00-overview.md) | 3 | **completed** | Fase 5 |
-| Fase 7: Avançado | [`epics/07-avancado/`](epics/07-avancado/00-overview.md) | 7 | in-progress | Fase 5-6 |
+| Fase 7: Avançado | [`epics/07-avancado/`](epics/07-avancado/00-overview.md) | 7 | **functional-complete** (6/7 stories done; 07.04 segue como bridge v1 sandboxed até aprovação do `deno_core` embutido) | Fase 5-6 |
 | Fase 8: Valor Buntime | [`epics/08-valor-buntime/`](epics/08-valor-buntime/00-overview.md) | 29 | **completed as consolidation** (matriz/paridade observável; novas capacidades seguem em epics próprios) | Fase 7 baseline |
 | Fase 9: Providers Duráveis Externos | [`epics/09-providers-duraveis-externos/`](epics/09-providers-duraveis-externos/00-overview.md) | 5 | in-progress (provider crate, wiring and consumer evidence delivered; real Turso target remains opt-in) | Fase 8.04, Fase 8.06 |
 | Fase 10: Operação de Extensões e Plugins | [`epics/10-operacao-extensoes-plugins/`](epics/10-operacao-extensoes-plugins/00-overview.md) | 4 | **completed** | Fase 6, Fase 8.13, Fase 8.26 |
 | Fase 11: Gateway Operacional Avançado | [`epics/11-gateway-operacional-avancado/`](epics/11-gateway-operacional-avancado/00-overview.md) | 4 | **completed** (proxy, durable cache/rate limit, SSE logs and host routing delivered) | Fase 8.15-8.21, Fase 9 |
 | Fase 12: Frontends Modulares e cPanel | [`epics/12-frontends-modulares-cpanel/`](epics/12-frontends-modulares-cpanel/00-overview.md) | 4 | **completed** (minimum cPanel, shell catalog and Browser validation delivered) | Fase 8.05, Fase 10, Fase 11 |
 | Fase 13: MCP e Authoring AI-native Local | [`epics/13-mcp-authoring-ai-native/`](epics/13-mcp-authoring-ai-native/00-overview.md) | 5 | **completed** | Fase 8, Fase 10, Fase 12 |
+| Fase 14: Deploy de Apps (mini Vercel local) | [`epics/14-deploy-apps/`](epics/14-deploy-apps/00-overview.md) | 5 | **completed** (install + rescan + DnD + versões/rollback + transparência; validado no preview 2026-07-02) | Fase 8.02, Fase 10.02, Fase 12 |
+| Fase 15: Runtime JS Durável (multi-processo) | [`epics/15-runtime-js-duravel/`](epics/15-runtime-js-duravel/00-overview.md) | 5 | in-progress (design aprovado após medição de perf; reorienta 07.04 para UDS multi-processo; Fase A autorizada) | Fase 7.04, Fase 4, Fase 14 |
 
 ## Suggested sequence
 1. Fase 1 (Fundação) -- Alinha o skeleton real e estabelece cultura (AGENTS, testes, gate). Alta prioridade porque desbloqueia tudo e evita dívida técnica.
@@ -61,6 +63,7 @@
 11. Fase 11 (Gateway Operacional Avançado) -- Assume proxy externo, cache, vhosts, rate limit persistente/distribuído e histórico/SSE local.
 12. Fase 12 (Frontends Modulares e cPanel) -- Assume cPanel/admin UI, shell, catálogo de módulos, packaging de frontends e E2E local.
 13. Fase 13 (MCP e Authoring AI-native Local) -- Assume MCP/tools, contratos machine-readable e fluxo funcional local para agentes criarem/modificarem workers e prepararem commits/PRs.
+14. Fase 14 (Deploy de Apps) -- Materializa a promessa de produto "mini Vercel/Cloudflare local": install API (upload zip), rescan de workers em runtime, deploy drag-and-drop no cPanel, versões/rollback e transparência pós-deploy.
 
 Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador podem avançar com mocks. Extensões podem começar protótipos cedo.
 
@@ -97,7 +100,7 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 - Fases 1–6 **delivered**. Ver `status/checkpoint-2026-06-29-epic-06-closure.md`.
 - Fase 8 tem **prova executável de paridade de valor** e agora está fechada como consolidação/matriz; ver `status/checkpoint-2026-06-29-epic-08-value-parity.md`.
 - Fase 9 entregou provider externo, wiring configurável e provas de consumidores reais; ver `epics/09-providers-duraveis-externos/00-overview.md`.
-- **Próxima execução técnica:** sequência autorizada entregue: 10.02, 10.04, 12.02, 11.04, 11.02, 11.03, 07.03, 07.06, 07.05 e 07.07. Fase 7 tem cron, Wasm standalone, observabilidade e hardening/compat v1 entregues; 07.04 embedded `deno_core` e 09.03 Turso remoto real seguem dependentes de aprovação explícita. Fase 10 está entregue; Fase 11 está entregue com proxy local loopback, cache/rate limit duravel, SSE logs e host routing local; Fase 12 está entregue com cPanel/admin UI minimo, shell/catalogo derivado de contributions e validacao Browser local. Fase 13 está entregue como MCP local funcional.
+- **Próxima execução técnica:** sequência autorizada entregue: 10.02, 10.04, 12.02, 11.04, 11.02, 11.03, 07.03, 07.06, 07.05 e 07.07. Em 2026-07-02 a Fase 7 fechou também 07.01 (dispatch E2E por todos os `ExecutionKind`) e 07.02 (SPA namespaced + `injectBase: false` + doc de protocolo), além de: sandbox da bridge Deno CLI (`deno run` com permissões explícitas), dispatch real de `routes` export e fix de recuperação do pool após erro de isolate. **MVP funcional do `runtime-functional-plan.md` validado ao vivo** (boot + curls; evidência em `status/evidence/`). 07.04 embedded `deno_core` e 09.03 Turso remoto real seguem dependentes de aprovação explícita. Fase 10 está entregue; Fase 11 está entregue com proxy local loopback, cache/rate limit duravel, SSE logs e host routing local; Fase 12 está entregue com cPanel/admin UI minimo, shell/catalogo derivado de contributions e validacao Browser local. Fase 13 está entregue como MCP local funcional.
 - **Próxima estrutura de valor:** cada lacuna `must partial` ou módulo de produto deve ter epic dono claro; se crescer além de uma fatia coesa, criar novo epic em vez de continuar somando stories ao mesmo epic.
 - **Plano ativo:** `runtime-functional-plan.md`.
 - Per-story: `/agile-status` checkpoint + `/agile-refinement` após cada story (evidence em `status/`).

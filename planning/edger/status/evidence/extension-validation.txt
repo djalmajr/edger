@@ -2,12 +2,21 @@ extension-validation repo=/Users/djalmajr/Developer/djalmajr/edger
 extension-validation module=gateway
 extension-validation required contract files: ok
 extension-validation command: cargo test -p edger-orchestrator --test admin_workers_plugins local_extension_validation_contract_reports_manifest_status_diagnostics_and_redaction -- --exact
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
-     Running tests/admin_workers_plugins.rs (target/debug/deps/admin_workers_plugins-84de5e4887ac4b61)
+   Compiling edger-core v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-core)
+   Compiling edger-isolation v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-isolation)
+   Compiling edger-ext-keyval v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-ext-keyval)
+   Compiling edger-ext-turso v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-ext-turso)
+   Compiling edger-ext-turso-remote v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-ext-turso-remote)
+   Compiling edger-worker v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-worker)
+   Compiling edger-ext-gateway v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-ext-gateway)
+   Compiling edger-ext-auth v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-ext-auth)
+   Compiling edger-orchestrator v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-orchestrator)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.54s
+     Running tests/admin_workers_plugins.rs (target/debug/deps/admin_workers_plugins-a58538dac251e357)
 
 running 1 test
 test local_extension_validation_contract_reports_manifest_status_diagnostics_and_redaction ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.01s
 
 PASS extension validation: manifest/status/diagnostics/redaction are locally validated

@@ -24,7 +24,7 @@ use edger_ext_gateway::{GatewayCacheConfig, GatewayExtension, GatewayRateLimitCo
 use edger_ext_keyval::SqlKeyValueProvider;
 use edger_ext_turso::LocalSqliteProvider;
 use edger_ext_turso_remote::RemoteTursoProvider;
-use edger_isolation::{DenoFacade, DenoIsolate, WasiConfig, WasmIsolate};
+use edger_isolation::{DenoFacade, DenoIsolate, DenoProcessIsolate, WasiConfig, WasmIsolate};
 use edger_orchestrator::{
     build_pipeline, collect_cron_registrations, collect_extensions, init_tracing_from_env,
     load_manifests_from_dirs, parse_runtime_worker_dirs, port_from_env, run_on_init,
@@ -33,7 +33,20 @@ use edger_orchestrator::{
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 
-struct RuntimeIsolateFactory;
+/// Selects the JS/TS backend. Default is the durable persistent-process runtime
+/// (Epic 15); `EDGER_JS_RUNTIME=bridge` forces the legacy per-request CLI bridge.
+struct RuntimeIsolateFactory {
+    js_uses_process: bool,
+}
+
+impl RuntimeIsolateFactory {
+    fn from_env() -> Self {
+        let js_uses_process = std::env::var("EDGER_JS_RUNTIME")
+            .map(|value| !value.trim().eq_ignore_ascii_case("bridge"))
+            .unwrap_or(true);
+        Self { js_uses_process }
+    }
+}
 
 impl IsolateFactory for RuntimeIsolateFactory {
     fn create_isolate(&self, worker_ref: &edger_core::WorkerRef) -> Box<dyn edger_core::Isolate> {
@@ -41,6 +54,7 @@ impl IsolateFactory for RuntimeIsolateFactory {
             ExecutionKind::WasmModule { .. } => Box::new(WasmIsolate::new(
                 WasiConfig::from_worker_config(&worker_ref.config),
             )),
+            _ if self.js_uses_process => Box::new(DenoProcessIsolate::new()),
             _ => Box::new(DenoIsolate::new(DenoFacade::new())),
         }
     }
@@ -53,7 +67,10 @@ async fn main() -> anyhow::Result<()> {
     let port = port_from_env();
     let config = ServerConfig::from_port(port);
     let server = ServerState::new_unready();
-    let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(RuntimeIsolateFactory));
+    let pool = WorkerPool::with_factory(
+        PoolConfig::default(),
+        Arc::new(RuntimeIsolateFactory::from_env()),
+    );
     server.mark_ready(pool.clone());
     let worker_dirs = worker_dirs_from_env();
     let index = load_manifests_from_dirs(&worker_dirs)?;
