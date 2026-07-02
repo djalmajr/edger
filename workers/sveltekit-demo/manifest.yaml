@@ -1,5 +1,5 @@
 name: sveltekit-demo
 version: "1.0.0"
-entrypoint: index.js
+entrypoint: wrapper.mjs
 kind: fetch
 visibility: public

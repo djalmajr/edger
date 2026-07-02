@@ -71,3 +71,12 @@ num container, o servidor do próprio framework dispensa adapter; a captura exis
 porque no EdgeR o ingress é do orquestrador. Nota de versão: nos templates novos do
 `sv create`, a config do adapter fica no `vite.config.ts` (plugin `sveltekit()`), não
 em `svelte.config.js`.
+
+**Revisão pós-teste manual no browser (2026-07-02):** o DevTools do operador revelou
+que a hidratação quebrava na URL bare `/sveltekit-demo`: o build default usa paths
+RELATIVOS (`paths.relative: true`) e `./_app/...` resolve contra a raiz sem trailing
+slash → 404 em todos os chunks. Receita corrigida (mesma família da do TanStack):
+`paths: { base: '/sveltekit-demo', relative: false }` no build + `wrapper.mjs` que
+importa o `handler.js` exportado e restaura a base via `x-base` antes de delegar.
+Revalidado no browser: network e console limpos, hidratação completa. O `ssr-demo`
+ganhou o mesmo tratamento (links absolutos via `x-base` + favicon inline).
