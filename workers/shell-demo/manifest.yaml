@@ -4,6 +4,7 @@ entrypoint: index.html
 base: "/"
 injectBase: true
 shellExcludes:
+  - ssr-demo
   - cpanel
   - cron-worker
   - fullstack-demo

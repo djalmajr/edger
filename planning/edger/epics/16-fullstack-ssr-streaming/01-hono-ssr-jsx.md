@@ -36,21 +36,21 @@
 - **Out:** interatividade client-side (`hono/jsx/dom`)/islands; HonoX; template no botão Deploy do cPanel (follow-up de UX).
 
 ### Acceptance criteria
-- [ ] `GET /ssr-demo` retorna HTML renderado no servidor (200, `text/html`, conteúdo dinâmico do JSX) via processo persistente.
-- [ ] `GET /ssr-demo/api/info` retorna JSON — SSR e API no mesmo worker.
-- [ ] Fonte `.tsx` deployada diretamente, sem build step.
-- [ ] compat-matrix documenta o caminho como blessed path fullstack.
+- [x] `GET /ssr-demo` retorna HTML renderado no servidor (200, `text/html`, conteúdo dinâmico do JSX) via processo persistente — validado ao vivo (warm ~1.8ms).
+- [x] `GET /ssr-demo/api/info` retorna JSON — SSR e API no mesmo worker.
+- [x] Fonte `.tsx` deployada diretamente, sem build step (Deno transpila via `--config deno.json` já passado no spawn).
+- [x] compat-matrix documenta o caminho como blessed path fullstack.
 
 ### Dependencies
 - Story 15.C (captura `Deno.serve` + npm no processo persistente)
 
 ## Tasks
 ### Fase 1 — Fixture
-- [ ] `workers/ssr-demo` (index.tsx + deno.json + manifest).
+- [x] `workers/ssr-demo` (index.tsx + deno.json + manifest); `ssr-demo` adicionado ao `shellExcludes` do shell-demo (roots de segmento único são interceptados pelo shell gateway — convenção dos demos).
 ### Fase 2 — Prova
-- [ ] E2E em `framework_compat.rs`; validação live no preview.
+- [x] E2E `hono_ssr_jsx_renders_html_on_the_server` (layout jsxRenderer + expressão dinâmica + API JSON); validado live no preview (página + screenshot).
 ### Fase 3 — Doc
-- [ ] compat-matrix + nota de caminho recomendado.
+- [x] compat-matrix: linha "Fullstack blessed path: Hono SSR + JSX" (tested).
 
 ## Verification
 
@@ -58,3 +58,18 @@
 cargo test -p edger-orchestrator --test framework_compat -- --ignored
 curl -H "Authorization: Bearer $KEY" http://127.0.0.1:3000/ssr-demo
 ```
+
+## Status
+
+**completed** (2026-07-02) — Caminho fullstack blessed entregue com zero código novo
+de runtime: `workers/ssr-demo` deploya um `index.tsx` como FONTE (sem build) — o Deno
+transpila o JSX nativamente via `deno.json` (`jsx: precompile`, `jsxImportSource:
+hono/jsx`), que o spawn do processo persistente já passa por `--config`. O worker usa
+o middleware `jsxRenderer` (layout HTML) + página SSR com dados dinâmicos + rota de API
+JSON no mesmo worker. Provado por E2E (`hono_ssr_jsx_renders_html_on_the_server`,
+mutação: remover o pass-through do `--config` quebra o transform) e validado ao vivo
+no preview builtin (HTML renderado no servidor, warm ~1.8ms; screenshot no browser).
+Detalhe operacional descoberto: roots de segmento único (`/ssr-demo`) são interceptados
+pelo shell gateway (story 07.02) — `ssr-demo` entrou no `shellExcludes` do `shell-demo`,
+como os demais demos. Interatividade client-side (`hono/jsx/dom`)/HonoX e template no
+botão Deploy do cPanel ficam como follow-ups.
