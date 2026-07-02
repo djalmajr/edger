@@ -46,7 +46,7 @@ A execução JS/TS hoje usa a ponte Deno CLI v1: um `deno eval` por request, com
 |---|---|---|---|---|---|
 | 15.A Transporte UDS mínimo | `01-transporte-uds-minimo.md` | Worker Deno persistente; round-trip por UDS (JSON frames); módulo importado uma vez | large | **completed** | 07.04, Epic 04 |
 | 15.B Módulo quente + paridade de kinds | `02-modulo-quente-kinds.md` | Import uma vez; fetch/routes/SPA pelo processo persistente; matriz atual verde via UDS; perf re-medida | large | **completed** | 15.A |
-| 15.C Compat de frameworks | `03-compat-frameworks.md` | Express + Hono (npm) rodando via captura de listener; `tested` na compat-matrix | medium | not started | 15.B |
+| 15.C Compat de frameworks | `03-compat-frameworks.md` | Express + Hono (npm) rodando via captura de listener; `tested` na compat-matrix | medium | **completed** | 15.B |
 | 15.D Limites de recurso reais | `04-limites-recurso-reais.md` | rlimit/cgroup no spawn; kill on breach; métricas RSS/CPU por worker | large | not started | 15.A |
 | 15.E Streaming + hardening | `05-streaming-hardening.md` | Streaming real por frames; sandbox SO; pré-warm/pool sizing; ponte v1 vira legado | medium | not started | 15.B, 15.C, 15.D |
 

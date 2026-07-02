@@ -94,14 +94,15 @@ impl DenoWorkerProcess {
             .arg("--no-check")
             .arg("--no-prompt")
             .arg(format!(
-                "--allow-read={},{}",
-                worker_dir.display(),
-                workdir.path().display()
+                "--allow-read={}",
+                read_allowlist(&worker_dir, workdir.path())
             ))
             // Connecting a unix socket needs write on the socket dir.
             .arg(format!("--allow-write={}", workdir.path().display()))
             .arg("--allow-net")
             .arg("--allow-env")
+            // node/npm frameworks (express etc.) may query os/sys info.
+            .arg("--allow-sys")
             .env_clear();
         inject_runtime_env(&mut command);
         inject_manifest_env(&mut command, env);
@@ -281,6 +282,26 @@ fn deno_config_path(worker_dir: &Path) -> Option<PathBuf> {
         .iter()
         .map(|name| worker_dir.join(name))
         .find(|path| path.is_file())
+}
+
+/// Read sandbox for the worker process: its own dir + the ephemeral socket dir,
+/// plus the Deno module cache (`DENO_DIR` or platform default) so `npm:`/`jsr:`
+/// packages resolve. The cache is read-only shared runtime data, not tenant data.
+fn read_allowlist(worker_dir: &Path, workdir: &Path) -> String {
+    let mut paths = vec![
+        worker_dir.display().to_string(),
+        workdir.display().to_string(),
+    ];
+    if let Ok(deno_dir) = std::env::var("DENO_DIR") {
+        if !deno_dir.trim().is_empty() {
+            paths.push(deno_dir);
+        }
+    } else if let Ok(home) = std::env::var("HOME") {
+        paths.push(format!("{home}/Library/Caches/deno")); // macOS
+        paths.push(format!("{home}/.cache/deno")); // Linux
+        paths.push(format!("{home}/.deno"));
+    }
+    paths.join(",")
 }
 
 fn inject_runtime_env(command: &mut Command) {

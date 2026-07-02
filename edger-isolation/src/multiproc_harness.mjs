@@ -48,6 +48,7 @@ function sendJson(obj) {
 // --- module load + handler capture (mirrors the v1 bridge conventions) ---
 
 let capturedHandler = null;
+let capturedNodeHandler = null;
 const originalServe = Deno.serve;
 Deno.serve = (arg) => {
   if (typeof arg === "function") {
@@ -64,6 +65,158 @@ Deno.serve = (arg) => {
     unref() {},
   };
 };
+
+// Node compat: capture a framework's `http.createServer(app).listen()` so
+// Express (and other node:http servers) run without actually binding a port.
+async function installNodeHttpAdapter() {
+  try {
+    const nodeHttp = await import("node:http");
+    const http = nodeHttp.default ?? nodeHttp;
+    http.createServer = (...args) => {
+      const listener = args.find((arg) => typeof arg === "function");
+      if (listener) capturedNodeHandler = listener;
+      return {
+        address() {
+          return { address: "127.0.0.1", family: "IPv4", port: 0 };
+        },
+        close(callback) {
+          if (typeof callback === "function") callback();
+          return this;
+        },
+        listen(...listenArgs) {
+          const callback = listenArgs.find((arg) => typeof arg === "function");
+          if (callback) callback();
+          return this;
+        },
+        on() { return this; },
+        once() { return this; },
+        addListener() { return this; },
+        removeListener() { return this; },
+        ref() { return this; },
+        unref() { return this; },
+      };
+    };
+  } catch (_) {
+    // Non-Node workers do not need the server-listen adapter.
+  }
+}
+
+function asUint8Array(chunk) {
+  if (chunk instanceof Uint8Array) return chunk;
+  if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
+  return new TextEncoder().encode(String(chunk));
+}
+
+function rawHeadersFrom(headers) {
+  const rawHeaders = [];
+  for (const [name, value] of headers.entries()) rawHeaders.push(name, value);
+  return rawHeaders;
+}
+
+async function createNodeRequest(request) {
+  const { Readable } = await import("node:stream");
+  const url = new URL(request.url);
+  const body = request.body ? Readable.fromWeb(request.body) : Readable.from([]);
+  body.method = request.method;
+  body.url = url.pathname + url.search;
+  body.headers = Object.fromEntries(request.headers.entries());
+  body.rawHeaders = rawHeadersFrom(request.headers);
+  body.socket = { encrypted: url.protocol === "https:", remoteAddress: "127.0.0.1" };
+  body.connection = body.socket;
+  return body;
+}
+
+function applyNodeHeaders(target, headers) {
+  if (!headers) return;
+  if (headers instanceof Headers) {
+    for (const [name, value] of headers.entries()) target.set(name, value);
+    return;
+  }
+  if (Array.isArray(headers)) {
+    for (let index = 0; index < headers.length; index += 2) {
+      target.set(String(headers[index]), String(headers[index + 1] ?? ""));
+    }
+    return;
+  }
+  for (const [name, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) target.set(name, value.map(String).join(", "));
+    else if (value !== undefined) target.set(name, String(value));
+  }
+}
+
+function concatChunks(chunks, total) {
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
+}
+
+function createNodeResponse(resolve) {
+  const headers = new Headers();
+  const chunks = [];
+  let total = 0;
+  return {
+    statusCode: 200,
+    statusMessage: "OK",
+    headersSent: false,
+    writableEnded: false,
+    setHeader(name, value) {
+      applyNodeHeaders(headers, { [name]: value });
+      return this;
+    },
+    getHeader(name) { return headers.get(String(name)); },
+    hasHeader(name) { return headers.has(String(name)); },
+    removeHeader(name) { headers.delete(String(name)); return this; },
+    writeHead(statusCode, reasonOrHeaders, maybeHeaders) {
+      this.statusCode = statusCode;
+      if (typeof reasonOrHeaders === "string") {
+        this.statusMessage = reasonOrHeaders;
+        applyNodeHeaders(headers, maybeHeaders);
+      } else {
+        applyNodeHeaders(headers, reasonOrHeaders);
+      }
+      this.headersSent = true;
+      return this;
+    },
+    write(chunk) {
+      const bytes = asUint8Array(chunk);
+      chunks.push(bytes);
+      total += bytes.length;
+      return true;
+    },
+    end(chunk) {
+      if (chunk !== undefined) this.write(chunk);
+      this.writableEnded = true;
+      this.headersSent = true;
+      resolve(new Response(concatChunks(chunks, total), { headers, status: this.statusCode }));
+      return this;
+    },
+    flushHeaders() { this.headersSent = true; },
+    cork() {},
+    uncork() {},
+    on() { return this; },
+    once() { return this; },
+    addListener() { return this; },
+    removeListener() { return this; },
+    emit() { return false; },
+  };
+}
+
+async function dispatchNodeHandler(nodeHandler, request) {
+  const nodeRequest = await createNodeRequest(request);
+  return await new Promise((resolve, reject) => {
+    const nodeResponse = createNodeResponse(resolve);
+    try {
+      const result = nodeHandler(nodeRequest, nodeResponse);
+      if (result && typeof result.then === "function") result.catch(reject);
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
 
 function matchRoutePattern(pattern, pathname) {
   const patternParts = pattern.split("/");
@@ -127,6 +280,7 @@ function makeRoutesHandler(routes, fallback) {
 }
 
 async function loadHandler() {
+  await installNodeHttpAdapter();
   const mod = await import(entryUrl);
   Deno.serve = originalServe;
   let handler = capturedHandler;
@@ -138,6 +292,10 @@ async function loadHandler() {
     } else if (typeof mod.fetch === "function") {
       handler = mod.fetch;
     }
+  }
+  // Express and other node:http servers: dispatch through the captured listener.
+  if (!handler && typeof capturedNodeHandler === "function") {
+    handler = (request) => dispatchNodeHandler(capturedNodeHandler, request);
   }
   const routesTable = (mod && ((mod.default && mod.default.routes) || mod.routes)) || null;
   if (routesTable) {

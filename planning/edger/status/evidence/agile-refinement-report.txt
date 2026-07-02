@@ -1,7 +1,7 @@
 ========================================================================
 AGILE REFINEMENT LINT — planning/edger
-Round: story-15-B
-Generated: 2026-07-02T20:13:18Z
+Round: story-15-C
+Generated: 2026-07-02T20:32:06Z
 Files in scope: 208
 ========================================================================
 
@@ -15,84 +15,84 @@ Files in scope: 208
   [OK] [Cross-references] planning/edger/docs/extensions.md — Origin → planning/edger/epics/06-extensibilidade/00-overview.md
   [OK] [Cross-references] planning/edger/docs/extensions.md — ref → planning/edger/epics/06-extensibilidade/00-overview.md
   [OK] [Cross-references] planning/edger/docs/pendencies-epic-07.md — Origin → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/docs/pendencies-epic-07.md — ref → planning/edger/docs/shell-protocol.md
   [OK] [Cross-references] planning/edger/docs/pendencies-epic-07.md — ref → planning/edger/epics/07-avancado/00-overview.md
+  [OK] [Cross-references] planning/edger/docs/pendencies-epic-07.md — ref → planning/edger/docs/shell-protocol.md
   [OK] [Cross-references] planning/edger/docs/performance-baselines.md — Origin → planning/edger/design.md
   [OK] [Cross-references] planning/edger/docs/performance-baselines.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/docs/shell-protocol.md — Origin → planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md
-  [OK] [Cross-references] planning/edger/docs/shell-protocol.md — ref → planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md
   [OK] [Cross-references] planning/edger/docs/shell-protocol.md — ref → planning/edger/epics/07-avancado/02-shell-routing.md
+  [OK] [Cross-references] planning/edger/docs/shell-protocol.md — ref → planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md
   [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/status/evidence/cpanel-browser-2026-06-30.png
+  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/status/evidence/story-08-08-runtime.txt
+  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/docs/wasm-abi.md
+  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/docs/compat-matrix.md
   [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/scripts/extension-validation.py
-  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/status/evidence/story-07-06-runtime.txt
+  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/status/evidence/story-08-12-runtime.txt
+  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/status/evidence/story-08-07-runtime.txt
   [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/docs/shell-protocol.md
   [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/scripts/deploy-layout-check.py
-  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/status/evidence/story-08-08-runtime.txt
-  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/status/evidence/cpanel-browser-2026-06-30.png
-  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/status/evidence/story-08-07-runtime.txt
-  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/status/evidence/mcp-stdio-2026-06-30.md
-  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/status/evidence/story-08-12-runtime.txt
-  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/docs/performance-baselines.md
-  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/docs/wasm-abi.md
   [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/status/evidence/story-07-06-runtime.txt
+  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/status/evidence/mcp-stdio-2026-06-30.md
+  [OK] [Cross-references] planning/edger/docs/value-parity-matrix.md — ref → planning/edger/docs/performance-baselines.md
   [OK] [Cross-references] planning/edger/docs/wasm-abi.md — Origin → planning/edger/design.md
   [OK] [Cross-references] planning/edger/docs/wasm-abi.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — Origin → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — ref → planning/edger/intake.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — ref → planning/edger/analysis-synthesis.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — ref → planning/edger/status/closure-2026-06-28-edger-func.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — ref → planning/edger/status/closure-2026-06-28-edger-func.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/00-overview.md — ref → planning/edger/intake.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — Origin → planning/edger/epics/01-fundacao/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — ref → planning/edger/intake.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — ref → planning/edger/analysis-synthesis.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — ref → planning/edger/epics/01-fundacao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — ref → planning/edger/AGENTS.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/01-setup-discipline.md — ref → planning/edger/intake.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/02-implement-loader.md — Origin → planning/edger/epics/01-fundacao/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/02-implement-loader.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/02-implement-loader.md — ref → planning/edger/epics/01-fundacao/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/02-implement-loader.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/03-copy-examples.md — Origin → planning/edger/epics/01-fundacao/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/03-copy-examples.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/03-copy-examples.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/03-copy-examples.md — ref → planning/edger/status/closure-2026-06-28-edger-func.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/03-copy-examples.md — ref → planning/edger/epics/01-fundacao/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/03-copy-examples.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/04-closure-evidence.md — Origin → planning/edger/epics/01-fundacao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/04-closure-evidence.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/01-fundacao/04-closure-evidence.md — ref → planning/edger/status/consolidation-2026-06-28.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/04-closure-evidence.md — ref → planning/edger/status/closure-2026-06-28-edger-func.md
   [OK] [Cross-references] planning/edger/epics/01-fundacao/04-closure-evidence.md — ref → planning/edger/epics/01-fundacao/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/01-fundacao/04-closure-evidence.md — ref → planning/edger/status/consolidation-2026-06-28.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — Origin → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/analysis-synthesis.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md
-  [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/analysis-synthesis.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/epics/01-fundacao/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/00-overview.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/01-setup-core-crate.md — Origin → planning/edger/epics/02-edger-core/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/02-edger-core/01-setup-core-crate.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/01-setup-core-crate.md — ref → planning/edger/analysis-synthesis.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/01-setup-core-crate.md — ref → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/01-setup-core-crate.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/02-core-models.md — Origin → planning/edger/epics/02-edger-core/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/02-edger-core/02-core-models.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/02-core-models.md — ref → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/02-core-models.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/03-errors-wire.md — Origin → planning/edger/epics/02-edger-core/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/02-edger-core/03-errors-wire.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/03-errors-wire.md — ref → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/03-errors-wire.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/04-core-traits.md — Origin → planning/edger/epics/02-edger-core/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/02-edger-core/04-core-traits.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/02-edger-core/04-core-traits.md — ref → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/02-edger-core/04-core-traits.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — Origin → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — ref → planning/edger/analysis-synthesis.md
-  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — ref → planning/edger/epics/02-edger-core/00-overview.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — ref → planning/edger/epics/03-isolacao-execucao/spike.md
-  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — ref → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/00-overview.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md — Origin → planning/edger/epics/03-isolacao-execucao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md — ref → planning/edger/epics/03-isolacao-execucao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md — ref → planning/edger/epics/03-isolacao-execucao/spike.md
-  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/02-isolate-trait-impl.md — Origin → planning/edger/epics/03-isolacao-execucao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/02-isolate-trait-impl.md — ref → planning/edger/epics/03-isolacao-execucao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/02-isolate-trait-impl.md — ref → planning/edger/design.md
@@ -100,18 +100,18 @@ Files in scope: 208
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/03-wire-limits.md — ref → planning/edger/epics/03-isolacao-execucao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/03-wire-limits.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/04-dual-backend-prep.md — Origin → planning/edger/epics/03-isolacao-execucao/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/04-dual-backend-prep.md — ref → planning/edger/epics/03-isolacao-execucao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/04-dual-backend-prep.md — ref → planning/edger/epics/03-isolacao-execucao/spike.md
+  [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/04-dual-backend-prep.md — ref → planning/edger/epics/03-isolacao-execucao/00-overview.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/04-dual-backend-prep.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/spike.md — Origin → planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/spike.md — ref → planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md
   [OK] [Cross-references] planning/edger/epics/03-isolacao-execucao/spike.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — Origin → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — ref → planning/edger/analysis-synthesis.md
-  [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — ref → planning/edger/design.md
-  [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — ref → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — ref → planning/edger/epics/03-isolacao-execucao/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/04-worker-management/00-overview.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/01-worker-pool-lru.md — Origin → planning/edger/epics/04-worker-management/00-overview.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/01-worker-pool-lru.md — ref → planning/edger/epics/04-worker-management/00-overview.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/01-worker-pool-lru.md — ref → planning/edger/design.md
@@ -122,36 +122,36 @@ Files in scope: 208
   [OK] [Cross-references] planning/edger/epics/04-worker-management/03-metrics-ephemeral.md — ref → planning/edger/epics/04-worker-management/00-overview.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/03-metrics-ephemeral.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/04-pool-integration-tests.md — Origin → planning/edger/epics/04-worker-management/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/04-worker-management/04-pool-integration-tests.md — ref → planning/edger/epics/04-worker-management/00-overview.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/04-pool-integration-tests.md — ref → planning/edger/analysis-synthesis.md
+  [OK] [Cross-references] planning/edger/epics/04-worker-management/04-pool-integration-tests.md — ref → planning/edger/epics/04-worker-management/00-overview.md
   [OK] [Cross-references] planning/edger/epics/04-worker-management/04-pool-integration-tests.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — Origin → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/epics/04-worker-management/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/intake.md
-  [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/design.md
-  [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/epics/02-edger-core/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/epics/03-isolacao-execucao/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/intake.md
+  [OK] [Cross-references] planning/edger/epics/05-orquestrador/00-overview.md — ref → planning/edger/epics/04-worker-management/00-overview.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/01-http-server-health.md — Origin → planning/edger/epics/05-orquestrador/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/05-orquestrador/01-http-server-health.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/01-http-server-health.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/05-orquestrador/01-http-server-health.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/02-routing-resolution.md — Origin → planning/edger/epics/05-orquestrador/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/05-orquestrador/02-routing-resolution.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/02-routing-resolution.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/05-orquestrador/02-routing-resolution.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/03-request-pipeline.md — Origin → planning/edger/epics/05-orquestrador/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/05-orquestrador/03-request-pipeline.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/03-request-pipeline.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/05-orquestrador/03-request-pipeline.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/04-auth-namespace-gate.md — Origin → planning/edger/epics/05-orquestrador/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/05-orquestrador/04-auth-namespace-gate.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/04-auth-namespace-gate.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/05-orquestrador/04-auth-namespace-gate.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/05-extension-registry.md — Origin → planning/edger/epics/05-orquestrador/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/05-orquestrador/05-extension-registry.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/05-orquestrador/05-extension-registry.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/05-orquestrador/05-extension-registry.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/00-overview.md — Origin → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/00-overview.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/06-extensibilidade/00-overview.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/00-overview.md — ref → planning/edger/docs/extensions.md
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/00-overview.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/06-extensibilidade/00-overview.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/01-static-registration.md — Origin → planning/edger/epics/06-extensibilidade/00-overview.md
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/01-static-registration.md — ref → planning/edger/epics/06-extensibilidade/00-overview.md
   [OK] [Cross-references] planning/edger/epics/06-extensibilidade/01-static-registration.md — ref → planning/edger/docs/extensions.md
@@ -167,267 +167,267 @@ Files in scope: 208
   [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — Origin → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/analysis-synthesis.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/epics/05-orquestrador/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/runtime-functional-plan.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/epics/06-extensibilidade/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/runtime-functional-plan.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/00-overview.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/01-full-manifests-kinds.md — Origin → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/01-full-manifests-kinds.md — ref → planning/edger/epics/07-avancado/00-overview.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/01-full-manifests-kinds.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/01-full-manifests-kinds.md — ref → planning/edger/epics/07-avancado/00-overview.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/02-shell-routing.md — Origin → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/02-shell-routing.md — ref → planning/edger/docs/shell-protocol.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/02-shell-routing.md — ref → planning/edger/epics/07-avancado/00-overview.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/02-shell-routing.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/02-shell-routing.md — ref → planning/edger/epics/07-avancado/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/02-shell-routing.md — ref → planning/edger/docs/shell-protocol.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/03-native-cron.md — Origin → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/03-native-cron.md — ref → planning/edger/epics/07-avancado/00-overview.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/03-native-cron.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/03-native-cron.md — ref → planning/edger/epics/07-avancado/00-overview.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/04-real-js-execution.md — Origin → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/04-real-js-execution.md — ref → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/04-real-js-execution.md — ref → planning/edger/epics/03-isolacao-execucao/spike.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/04-real-js-execution.md — ref → planning/edger/runtime-functional-plan.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/04-real-js-execution.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/04-real-js-execution.md — ref → planning/edger/epics/03-isolacao-execucao/spike.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/04-real-js-execution.md — ref → planning/edger/epics/07-avancado/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/04-real-js-execution.md — ref → planning/edger/runtime-functional-plan.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/05-wasm-execution.md — Origin → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/05-wasm-execution.md — ref → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/05-wasm-execution.md — ref → planning/edger/docs/wasm-abi.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/05-wasm-execution.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/05-wasm-execution.md — ref → planning/edger/docs/wasm-abi.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/05-wasm-execution.md — ref → planning/edger/epics/07-avancado/00-overview.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/06-observability-otel.md — Origin → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/06-observability-otel.md — ref → planning/edger/epics/07-avancado/00-overview.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/06-observability-otel.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/06-observability-otel.md — ref → planning/edger/epics/07-avancado/00-overview.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — Origin → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — ref → planning/edger/epics/07-avancado/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — ref → planning/edger/design.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — ref → planning/edger/docs/compat-matrix.md
   [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — ref → planning/edger/docs/performance-baselines.md
-  [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/epics/07-avancado/07-hardening-compat-matrix.md — ref → planning/edger/epics/07-avancado/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/00-overview.md — Origin → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/00-overview.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/00-overview.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/00-overview.md — ref → planning/edger/docs/pendencies-epic-07.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/00-overview.md — ref → planning/edger/epics/07-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/00-overview.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/00-overview.md — ref → planning/edger/runtime-functional-plan.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/00-overview.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/00-overview.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/00-overview.md — ref → planning/edger/docs/pendencies-epic-07.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/01-define-valor-e-contratos.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/01-define-valor-e-contratos.md — ref → planning/edger/docs/compat-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/01-define-valor-e-contratos.md — ref → planning/edger/runtime-functional-plan.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/01-define-valor-e-contratos.md — ref → planning/edger/scripts/run-gates.sh
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/01-define-valor-e-contratos.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/01-define-valor-e-contratos.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/01-define-valor-e-contratos.md — ref → planning/edger/docs/pendencies-epic-07.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/01-define-valor-e-contratos.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/01-define-valor-e-contratos.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/01-define-valor-e-contratos.md — ref → planning/edger/runtime-functional-plan.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md — ref → planning/edger/epics/07-avancado/01-full-manifests-kinds.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/03-seguranca-e-identidade-operacional.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/03-seguranca-e-identidade-operacional.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/03-seguranca-e-identidade-operacional.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/03-seguranca-e-identidade-operacional.md — ref → planning/edger/epics/07-avancado/07-hardening-compat-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/03-seguranca-e-identidade-operacional.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/04-servicos-de-estado-turso-kv-queue.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/04-servicos-de-estado-turso-kv-queue.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/04-servicos-de-estado-turso-kv-queue.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/04-servicos-de-estado-turso-kv-queue.md — ref → planning/edger/docs/extensions.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/04-servicos-de-estado-turso-kv-queue.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md — ref → planning/edger/docs/shell-protocol.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md — ref → planning/edger/epics/07-avancado/02-shell-routing.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md — ref → planning/edger/docs/shell-protocol.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/06-modelo-de-extensoes-e-bindings.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/06-modelo-de-extensoes-e-bindings.md — ref → planning/edger/epics/06-extensibilidade/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/06-modelo-de-extensoes-e-bindings.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/06-modelo-de-extensoes-e-bindings.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/06-modelo-de-extensoes-e-bindings.md — ref → planning/edger/docs/extensions.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/06-modelo-de-extensoes-e-bindings.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md — ref → planning/edger/status/evidence/story-08-07-runtime.txt
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md — ref → planning/edger/docs/performance-baselines.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md — ref → planning/edger/epics/07-avancado/06-observability-otel.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md — ref → planning/edger/docs/performance-baselines.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/08-provas-de-migracao-e-matriz-de-valor.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/08-provas-de-migracao-e-matriz-de-valor.md — ref → planning/edger/status/evidence/story-08-08-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/08-provas-de-migracao-e-matriz-de-valor.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/08-provas-de-migracao-e-matriz-de-valor.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/08-provas-de-migracao-e-matriz-de-valor.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/08-provas-de-migracao-e-matriz-de-valor.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/08-provas-de-migracao-e-matriz-de-valor.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/08-provas-de-migracao-e-matriz-de-valor.md — ref → planning/edger/status/evidence/story-08-08-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/08-provas-de-migracao-e-matriz-de-valor.md — ref → planning/edger/runtime-functional-plan.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/08-provas-de-migracao-e-matriz-de-valor.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/08-provas-de-migracao-e-matriz-de-valor.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/08-provas-de-migracao-e-matriz-de-valor.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/08-provas-de-migracao-e-matriz-de-valor.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/09-api-keys-operacionais.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/09-api-keys-operacionais.md — ref → planning/edger/epics/08-valor-buntime/03-seguranca-e-identidade-operacional.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/09-api-keys-operacionais.md — ref → planning/edger/status/evidence/story-08-09-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/09-api-keys-operacionais.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/09-api-keys-operacionais.md — ref → planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/09-api-keys-operacionais.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/09-api-keys-operacionais.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/09-api-keys-operacionais.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/09-api-keys-operacionais.md — ref → planning/edger/status/evidence/story-08-09-runtime.txt
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/09-api-keys-operacionais.md — ref → planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/10-env-filtering-deno.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/10-env-filtering-deno.md — ref → planning/edger/epics/08-valor-buntime/03-seguranca-e-identidade-operacional.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/10-env-filtering-deno.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/10-env-filtering-deno.md — ref → planning/edger/status/evidence/story-08-10-runtime.txt
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/10-env-filtering-deno.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/10-env-filtering-deno.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/10-env-filtering-deno.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/10-env-filtering-deno.md — ref → planning/edger/status/evidence/story-08-10-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/11-worker-enable-disable-runtime.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/11-worker-enable-disable-runtime.md — ref → planning/edger/epics/08-valor-buntime/03-seguranca-e-identidade-operacional.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/11-worker-enable-disable-runtime.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/11-worker-enable-disable-runtime.md — ref → planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/11-worker-enable-disable-runtime.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/11-worker-enable-disable-runtime.md — ref → planning/edger/status/evidence/story-08-11-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/11-worker-enable-disable-runtime.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/11-worker-enable-disable-runtime.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/11-worker-enable-disable-runtime.md — ref → planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/12-worker-metrics-stats.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/12-worker-metrics-stats.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/12-worker-metrics-stats.md — ref → planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/12-worker-metrics-stats.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/12-worker-metrics-stats.md — ref → planning/edger/status/evidence/story-08-12-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/12-worker-metrics-stats.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/12-worker-metrics-stats.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/12-worker-metrics-stats.md — ref → planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/13-extension-enable-disable-runtime.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/13-extension-enable-disable-runtime.md — ref → planning/edger/docs/extensions.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/13-extension-enable-disable-runtime.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/13-extension-enable-disable-runtime.md — ref → planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/13-extension-enable-disable-runtime.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/13-extension-enable-disable-runtime.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/13-extension-enable-disable-runtime.md — ref → planning/edger/status/evidence/story-08-13-runtime.txt
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/13-extension-enable-disable-runtime.md — ref → planning/edger/docs/extensions.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/13-extension-enable-disable-runtime.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/13-extension-enable-disable-runtime.md — ref → planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/14-manifestless-index-html-autodiscovery.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/14-manifestless-index-html-autodiscovery.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/14-manifestless-index-html-autodiscovery.md — ref → planning/edger/epics/07-avancado/01-full-manifests-kinds.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/14-manifestless-index-html-autodiscovery.md — ref → planning/edger/status/evidence/story-08-14-runtime.txt
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/14-manifestless-index-html-autodiscovery.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/14-manifestless-index-html-autodiscovery.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/14-manifestless-index-html-autodiscovery.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/14-manifestless-index-html-autodiscovery.md — ref → planning/edger/status/evidence/story-08-14-runtime.txt
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/14-manifestless-index-html-autodiscovery.md — ref → planning/edger/epics/07-avancado/01-full-manifests-kinds.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/15-gateway-redirect-rules.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/15-gateway-redirect-rules.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/15-gateway-redirect-rules.md — ref → planning/edger/status/evidence/story-08-15-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/15-gateway-redirect-rules.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/15-gateway-redirect-rules.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/16-gateway-rate-limit.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/16-gateway-rate-limit.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/16-gateway-rate-limit.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/16-gateway-rate-limit.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/16-gateway-rate-limit.md — ref → planning/edger/docs/compat-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/16-gateway-rate-limit.md — ref → planning/edger/status/evidence/story-08-16-runtime.txt
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/16-gateway-rate-limit.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/17-gateway-operational-diagnostics.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/17-gateway-operational-diagnostics.md — ref → planning/edger/status/evidence/story-08-17-runtime.txt
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/17-gateway-operational-diagnostics.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/17-gateway-operational-diagnostics.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/17-gateway-operational-diagnostics.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/17-gateway-operational-diagnostics.md — ref → planning/edger/docs/compat-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/17-gateway-operational-diagnostics.md — ref → planning/edger/status/evidence/story-08-17-runtime.txt
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/17-gateway-operational-diagnostics.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/18-gateway-admin-readonly-api.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/18-gateway-admin-readonly-api.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/18-gateway-admin-readonly-api.md — ref → planning/edger/docs/compat-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/18-gateway-admin-readonly-api.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/18-gateway-admin-readonly-api.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/18-gateway-admin-readonly-api.md — ref → planning/edger/status/evidence/story-08-18-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/19-gateway-log-stats-api.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/19-gateway-log-stats-api.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/19-gateway-log-stats-api.md — ref → planning/edger/docs/compat-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/19-gateway-log-stats-api.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/19-gateway-log-stats-api.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/19-gateway-log-stats-api.md — ref → planning/edger/status/evidence/story-08-19-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/20-gateway-log-duration.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/20-gateway-log-duration.md — ref → planning/edger/status/evidence/story-08-20-runtime.txt
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/20-gateway-log-duration.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/20-gateway-log-duration.md — ref → planning/edger/docs/compat-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/20-gateway-log-duration.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/20-gateway-log-duration.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/20-gateway-log-duration.md — ref → planning/edger/status/evidence/story-08-20-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/21-gateway-rate-limit-metrics-api.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/21-gateway-rate-limit-metrics-api.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/21-gateway-rate-limit-metrics-api.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/21-gateway-rate-limit-metrics-api.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/21-gateway-rate-limit-metrics-api.md — ref → planning/edger/status/evidence/story-08-21-runtime.txt
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/21-gateway-rate-limit-metrics-api.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/21-gateway-rate-limit-metrics-api.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/21-gateway-rate-limit-metrics-api.md — ref → planning/edger/status/closure-2026-06-29-story-08-21-gateway-rate-limit-metrics-api.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/21-gateway-rate-limit-metrics-api.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/21-gateway-rate-limit-metrics-api.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/21-gateway-rate-limit-metrics-api.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/22-worker-semver-range-routing.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/22-worker-semver-range-routing.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/22-worker-semver-range-routing.md — ref → planning/edger/status/evidence/story-08-22-runtime.txt
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/22-worker-semver-range-routing.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/22-worker-semver-range-routing.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/22-worker-semver-range-routing.md — ref → planning/edger/docs/compat-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/22-worker-semver-range-routing.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/22-worker-semver-range-routing.md — ref → planning/edger/status/evidence/story-08-22-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/23-api-key-bootstrap-store.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/23-api-key-bootstrap-store.md — ref → planning/edger/docs/extensions.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/23-api-key-bootstrap-store.md — ref → planning/edger/docs/compat-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/23-api-key-bootstrap-store.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/23-api-key-bootstrap-store.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/23-api-key-bootstrap-store.md — ref → planning/edger/status/closure-2026-06-29-story-08-23-api-key-bootstrap-store.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/23-api-key-bootstrap-store.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/23-api-key-bootstrap-store.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/23-api-key-bootstrap-store.md — ref → planning/edger/status/evidence/story-08-23-runtime.txt
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/23-api-key-bootstrap-store.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/23-api-key-bootstrap-store.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/23-api-key-bootstrap-store.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/23-api-key-bootstrap-store.md — ref → planning/edger/docs/extensions.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md — ref → planning/edger/epics/08-valor-buntime/03-seguranca-e-identidade-operacional.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md — ref → planning/edger/status/evidence/story-08-24-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md — ref → planning/edger/status/closure-2026-06-29-story-08-24-csrf-internal-calls.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md — ref → planning/edger/status/closure-2026-06-29-story-08-24-csrf-internal-calls.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md — ref → planning/edger/status/evidence/story-08-24-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — ref → planning/edger/status/evidence/story-08-25-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — ref → planning/edger/status/closure-2026-06-29-story-08-25-runtime-orchestration-boundary.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — ref → planning/edger/runtime-functional-plan.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — ref → planning/edger/status/evidence/story-08-25-runtime.txt
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — ref → planning/edger/status/closure-2026-06-29-story-08-25-runtime-orchestration-boundary.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/26-extension-status-persistence.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/26-extension-status-persistence.md — ref → planning/edger/epics/08-valor-buntime/13-extension-enable-disable-runtime.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/26-extension-status-persistence.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/26-extension-status-persistence.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/26-extension-status-persistence.md — ref → planning/edger/docs/extensions.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/26-extension-status-persistence.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/26-extension-status-persistence.md — ref → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/26-extension-status-persistence.md — ref → planning/edger/docs/extensions.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/26-extension-status-persistence.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/26-extension-status-persistence.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/epics/08-valor-buntime/26-extension-status-persistence.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/scripts/deploy-layout-check.py
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/status/evidence/story-08-27-runtime.txt
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/status/evidence/deploy-layout-check.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/scripts/run-gates.sh
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/status/evidence/story-08-27-runtime.txt
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/status/evidence/deploy-layout-check.txt
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/scripts/deploy-layout-check.py
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md — ref → planning/edger/epics/08-valor-buntime/26-extension-status-persistence.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/28-worker-lifecycle-hooks.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/28-worker-lifecycle-hooks.md — ref → planning/edger/epics/08-valor-buntime/13-extension-enable-disable-runtime.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/28-worker-lifecycle-hooks.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/28-worker-lifecycle-hooks.md — ref → planning/edger/epics/08-valor-buntime/06-modelo-de-extensoes-e-bindings.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/28-worker-lifecycle-hooks.md — ref → planning/edger/epics/08-valor-buntime/13-extension-enable-disable-runtime.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/28-worker-lifecycle-hooks.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/28-worker-lifecycle-hooks.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/28-worker-lifecycle-hooks.md — ref → planning/edger/status/evidence/story-08-28-runtime.txt
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/28-worker-lifecycle-hooks.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/28-worker-lifecycle-hooks.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/28-worker-lifecycle-hooks.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/29-operational-error-logs.md — Origin → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/29-operational-error-logs.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/29-operational-error-logs.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/29-operational-error-logs.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/29-operational-error-logs.md — ref → planning/edger/epics/08-valor-buntime/17-gateway-operational-diagnostics.md
+  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/29-operational-error-logs.md — ref → planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/29-operational-error-logs.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/epics/08-valor-buntime/29-operational-error-logs.md — ref → planning/edger/status/evidence/story-08-29-runtime.txt
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/29-operational-error-logs.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/29-operational-error-logs.md — ref → planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/29-operational-error-logs.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/08-valor-buntime/29-operational-error-logs.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/00-overview.md — Origin → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/00-overview.md — ref → planning/edger/docs/extensions.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/00-overview.md — ref → planning/edger/docs/durable-provider-contract.md
-  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/00-overview.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/00-overview.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/00-overview.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/00-overview.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/00-overview.md — ref → planning/edger/epics/08-valor-buntime/04-servicos-de-estado-turso-kv-queue.md
-  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/00-overview.md — ref → planning/edger/docs/extensions.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/01-contrato-provider-sql-remoto.md — Origin → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/01-contrato-provider-sql-remoto.md — ref → planning/edger/epics/08-valor-buntime/04-servicos-de-estado-turso-kv-queue.md
+  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/01-contrato-provider-sql-remoto.md — ref → planning/edger/docs/extensions.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/01-contrato-provider-sql-remoto.md — ref → planning/edger/docs/durable-provider-contract.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/01-contrato-provider-sql-remoto.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/01-contrato-provider-sql-remoto.md — ref → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/01-contrato-provider-sql-remoto.md — ref → planning/edger/docs/extensions.md
+  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/01-contrato-provider-sql-remoto.md — ref → planning/edger/epics/08-valor-buntime/04-servicos-de-estado-turso-kv-queue.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/02-provider-local-sqlite.md — Origin → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/02-provider-local-sqlite.md — ref → planning/edger/docs/durable-provider-contract.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/02-provider-local-sqlite.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/02-provider-local-sqlite.md — ref → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/02-provider-local-sqlite.md — ref → planning/edger/docs/extensions.md
+  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/02-provider-local-sqlite.md — ref → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/02-provider-local-sqlite.md — ref → planning/edger/docs/durable-provider-contract.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/03-provider-turso-remoto-sync.md — Origin → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/03-provider-turso-remoto-sync.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/03-provider-turso-remoto-sync.md — ref → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/03-provider-turso-remoto-sync.md — ref → planning/edger/docs/durable-provider-contract.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/04-wiring-provider-configuravel.md — Origin → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/04-wiring-provider-configuravel.md — ref → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/04-wiring-provider-configuravel.md — ref → planning/edger/docs/extensions.md
+  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/04-wiring-provider-configuravel.md — ref → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/05-provas-consumidores-duraveis.md — Origin → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/05-provas-consumidores-duraveis.md — ref → planning/edger/status/evidence
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/05-provas-consumidores-duraveis.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/05-provas-consumidores-duraveis.md — ref → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/09-providers-duraveis-externos/05-provas-consumidores-duraveis.md — ref → planning/edger/status/evidence
   [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md — Origin → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md — ref → planning/edger/epics/06-extensibilidade/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md — ref → planning/edger/status/evidence/extension-validation.txt
   [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md — ref → planning/edger/scripts/extension-validation.py
+  [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md — ref → planning/edger/status/evidence/extension-validation.txt
+  [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md — ref → planning/edger/epics/06-extensibilidade/00-overview.md
   [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/01-inventario-operacional-de-modulos.md — Origin → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/01-inventario-operacional-de-modulos.md — ref → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
   [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/01-inventario-operacional-de-modulos.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/01-inventario-operacional-de-modulos.md — ref → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
   [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/02-reconcile-reload-controlado.md — Origin → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
   [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/02-reconcile-reload-controlado.md — ref → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
   [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/03-manifesto-configuracao-modulo.md — Origin → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
@@ -435,9 +435,9 @@ Files in scope: 208
   [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/04-validacao-local-extensoes.md — Origin → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
   [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/04-validacao-local-extensoes.md — ref → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
   [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/04-validacao-local-extensoes.md — ref → planning/edger/scripts/run-gates.sh
+  [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/04-validacao-local-extensoes.md — ref → planning/edger/status/evidence
   [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/04-validacao-local-extensoes.md — ref → planning/edger/status/evidence/extension-validation.txt
   [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/04-validacao-local-extensoes.md — ref → planning/edger/scripts/refinement-lint.py
-  [OK] [Cross-references] planning/edger/epics/10-operacao-extensoes-plugins/04-validacao-local-extensoes.md — ref → planning/edger/status/evidence
   [OK] [Cross-references] planning/edger/epics/11-gateway-operacional-avancado/00-overview.md — Origin → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/11-gateway-operacional-avancado/00-overview.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/11-gateway-operacional-avancado/00-overview.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
@@ -448,28 +448,28 @@ Files in scope: 208
   [OK] [Cross-references] planning/edger/epics/11-gateway-operacional-avancado/03-historico-sse-operacional.md — Origin → planning/edger/epics/11-gateway-operacional-avancado/00-overview.md
   [OK] [Cross-references] planning/edger/epics/11-gateway-operacional-avancado/03-historico-sse-operacional.md — ref → planning/edger/epics/11-gateway-operacional-avancado/00-overview.md
   [OK] [Cross-references] planning/edger/epics/11-gateway-operacional-avancado/04-vhosts-host-routing.md — Origin → planning/edger/epics/11-gateway-operacional-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/11-gateway-operacional-avancado/04-vhosts-host-routing.md — ref → planning/edger/status/closure-2026-07-01-story-11-04-vhosts-host-routing.md
   [OK] [Cross-references] planning/edger/epics/11-gateway-operacional-avancado/04-vhosts-host-routing.md — ref → planning/edger/status/evidence/story-11-04-runtime.txt
   [OK] [Cross-references] planning/edger/epics/11-gateway-operacional-avancado/04-vhosts-host-routing.md — ref → planning/edger/epics/11-gateway-operacional-avancado/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/11-gateway-operacional-avancado/04-vhosts-host-routing.md — ref → planning/edger/status/closure-2026-07-01-story-11-04-vhosts-host-routing.md
   [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md — Origin → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md — ref → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
   [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md — ref → planning/edger/status/evidence/browser-preview-2026-07-02.md
   [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md — ref → planning/edger/status/evidence/run-gates.log
-  [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md — ref → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
   [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/01-escopo-cpanel-admin-ui.md — Origin → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/01-escopo-cpanel-admin-ui.md — ref → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/01-escopo-cpanel-admin-ui.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/01-escopo-cpanel-admin-ui.md — ref → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/02-shell-catalogo-modulos.md — Origin → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/02-shell-catalogo-modulos.md — ref → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/02-shell-catalogo-modulos.md — ref → planning/edger/status/evidence/story-12-02-runtime.txt
+  [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/02-shell-catalogo-modulos.md — ref → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/02-shell-catalogo-modulos.md — ref → planning/edger/status/closure-2026-07-01-story-12-02-shell-catalog.md
   [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/03-packaging-frontends-workers.md — Origin → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/03-packaging-frontends-workers.md — ref → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/04-validacao-browser-local.md — Origin → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/04-validacao-browser-local.md — ref → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/04-validacao-browser-local.md — ref → planning/edger/status/evidence
-  [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/04-validacao-browser-local.md — ref → planning/edger/status/evidence/cpanel-browser-2026-06-30.md
+  [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/04-validacao-browser-local.md — ref → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/04-validacao-browser-local.md — ref → planning/edger/status/evidence/cpanel-browser-2026-06-30.png
+  [OK] [Cross-references] planning/edger/epics/12-frontends-modulares-cpanel/04-validacao-browser-local.md — ref → planning/edger/status/evidence/cpanel-browser-2026-06-30.md
   [OK] [Cross-references] planning/edger/epics/13-mcp-authoring-ai-native/00-overview.md — Origin → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/13-mcp-authoring-ai-native/00-overview.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/13-mcp-authoring-ai-native/00-overview.md — ref → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
@@ -487,101 +487,101 @@ Files in scope: 208
   [OK] [Cross-references] planning/edger/epics/13-mcp-authoring-ai-native/05-preparacao-commit-pr.md — ref → planning/edger/epics/13-mcp-authoring-ai-native/00-overview.md
   [OK] [Cross-references] planning/edger/epics/14-deploy-apps/00-overview.md — Origin → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/epics/14-deploy-apps/00-overview.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/epics/14-deploy-apps/00-overview.md — ref → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
   [OK] [Cross-references] planning/edger/epics/14-deploy-apps/00-overview.md — ref → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/14-deploy-apps/00-overview.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/14-deploy-apps/00-overview.md — ref → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
   [OK] [Cross-references] planning/edger/epics/14-deploy-apps/01-install-api.md — Origin → planning/edger/epics/14-deploy-apps/00-overview.md
   [OK] [Cross-references] planning/edger/epics/14-deploy-apps/01-install-api.md — ref → planning/edger/epics/14-deploy-apps/00-overview.md
   [OK] [Cross-references] planning/edger/epics/14-deploy-apps/02-rescan-workers.md — Origin → planning/edger/epics/14-deploy-apps/00-overview.md
   [OK] [Cross-references] planning/edger/epics/14-deploy-apps/02-rescan-workers.md — ref → planning/edger/epics/14-deploy-apps/00-overview.md
   [OK] [Cross-references] planning/edger/epics/14-deploy-apps/03-deploy-dnd-cpanel.md — Origin → planning/edger/epics/14-deploy-apps/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/14-deploy-apps/03-deploy-dnd-cpanel.md — ref → planning/edger/epics/14-deploy-apps/00-overview.md
   [OK] [Cross-references] planning/edger/epics/14-deploy-apps/03-deploy-dnd-cpanel.md — ref → planning/edger/status/evidence
+  [OK] [Cross-references] planning/edger/epics/14-deploy-apps/03-deploy-dnd-cpanel.md — ref → planning/edger/epics/14-deploy-apps/00-overview.md
   [OK] [Cross-references] planning/edger/epics/14-deploy-apps/04-versoes-rollback.md — Origin → planning/edger/epics/14-deploy-apps/00-overview.md
   [OK] [Cross-references] planning/edger/epics/14-deploy-apps/04-versoes-rollback.md — ref → planning/edger/epics/14-deploy-apps/00-overview.md
   [OK] [Cross-references] planning/edger/epics/14-deploy-apps/05-transparencia-pos-deploy.md — Origin → planning/edger/epics/14-deploy-apps/00-overview.md
   [OK] [Cross-references] planning/edger/epics/14-deploy-apps/05-transparencia-pos-deploy.md — ref → planning/edger/epics/14-deploy-apps/00-overview.md
   [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/00-overview.md — Origin → planning/edger/docs/js-runtime-durable-design.md
-  [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/00-overview.md — ref → planning/edger/epics/04-worker-management/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/00-overview.md — ref → planning/edger/docs/js-runtime-durable-design.md
-  [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/00-overview.md — ref → planning/edger/epics/14-deploy-apps/00-overview.md
   [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/00-overview.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/00-overview.md — ref → planning/edger/status/evidence/js-runtime-perf-2026-07-02.md
   [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/00-overview.md — ref → planning/edger/epics/07-avancado/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/00-overview.md — ref → planning/edger/docs/js-runtime-durable-design.md
+  [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/00-overview.md — ref → planning/edger/status/evidence/js-runtime-perf-2026-07-02.md
+  [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/00-overview.md — ref → planning/edger/epics/04-worker-management/00-overview.md
+  [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/00-overview.md — ref → planning/edger/epics/14-deploy-apps/00-overview.md
   [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/01-transporte-uds-minimo.md — Origin → planning/edger/epics/15-runtime-js-duravel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/01-transporte-uds-minimo.md — ref → planning/edger/epics/15-runtime-js-duravel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/02-modulo-quente-kinds.md — Origin → planning/edger/epics/15-runtime-js-duravel/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/02-modulo-quente-kinds.md — ref → planning/edger/epics/15-runtime-js-duravel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/02-modulo-quente-kinds.md — ref → planning/edger/docs/compat-matrix.md
+  [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/02-modulo-quente-kinds.md — ref → planning/edger/epics/15-runtime-js-duravel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/03-compat-frameworks.md — Origin → planning/edger/epics/15-runtime-js-duravel/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/03-compat-frameworks.md — ref → planning/edger/epics/15-runtime-js-duravel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/03-compat-frameworks.md — ref → planning/edger/docs/compat-matrix.md
+  [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/03-compat-frameworks.md — ref → planning/edger/epics/15-runtime-js-duravel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/04-limites-recurso-reais.md — Origin → planning/edger/epics/15-runtime-js-duravel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/04-limites-recurso-reais.md — ref → planning/edger/epics/15-runtime-js-duravel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/05-streaming-hardening.md — Origin → planning/edger/epics/15-runtime-js-duravel/00-overview.md
-  [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/05-streaming-hardening.md — ref → planning/edger/epics/15-runtime-js-duravel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/05-streaming-hardening.md — ref → planning/edger/docs/compat-matrix.md
+  [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/05-streaming-hardening.md — ref → planning/edger/epics/15-runtime-js-duravel/00-overview.md
   [OK] [Cross-references] planning/edger/epics/15-runtime-js-duravel/05-streaming-hardening.md — ref → planning/edger/runtime-functional-plan.md
-  [OK] [Cross-references] planning/edger/intake.md — ref → planning/edger/intake.md
-  [OK] [Cross-references] planning/edger/intake.md — ref → planning/edger/epics/02-edger-core/01-setup-core-crate.md
   [OK] [Cross-references] planning/edger/intake.md — ref → planning/edger/design.md
+  [OK] [Cross-references] planning/edger/intake.md — ref → planning/edger/epics/02-edger-core/01-setup-core-crate.md
+  [OK] [Cross-references] planning/edger/intake.md — ref → planning/edger/intake.md
   [OK] [Cross-references] planning/edger/roadmap.md — Origin → planning/edger/intake.md
-  [OK] [Cross-references] planning/edger/roadmap.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/roadmap.md — ref → planning/edger/intake.md
   [OK] [Cross-references] planning/edger/roadmap.md — ref → planning/edger/analysis-synthesis.md
   [OK] [Cross-references] planning/edger/roadmap.md — ref → planning/edger/design.md
-  [OK] [Cross-references] planning/edger/runtime-functional-plan.md — ref → planning/edger/status
-  [OK] [Cross-references] planning/edger/runtime-functional-plan.md — ref → planning/edger/epics/07-avancado/04-real-js-execution.md
+  [OK] [Cross-references] planning/edger/roadmap.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/roadmap.md — ref → planning/edger/intake.md
   [OK] [Cross-references] planning/edger/runtime-functional-plan.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/runtime-functional-plan.md — ref → planning/edger/epics/07-avancado/07-hardening-compat-matrix.md
+  [OK] [Cross-references] planning/edger/runtime-functional-plan.md — ref → planning/edger/docs/wasm-abi.md
+  [OK] [Cross-references] planning/edger/runtime-functional-plan.md — ref → planning/edger/epics/07-avancado/04-real-js-execution.md
   [OK] [Cross-references] planning/edger/runtime-functional-plan.md — ref → planning/edger/scripts/run-gates.sh
+  [OK] [Cross-references] planning/edger/runtime-functional-plan.md — ref → planning/edger/epics/07-avancado/07-hardening-compat-matrix.md
   [OK] [Cross-references] planning/edger/runtime-functional-plan.md — ref → planning/edger/epics/03-isolacao-execucao/spike.md
   [OK] [Cross-references] planning/edger/runtime-functional-plan.md — ref → planning/edger/docs/pendencies-epic-07.md
-  [OK] [Cross-references] planning/edger/runtime-functional-plan.md — ref → planning/edger/docs/wasm-abi.md
+  [OK] [Cross-references] planning/edger/runtime-functional-plan.md — ref → planning/edger/status
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-02-closure.md — ref → planning/edger/epics/03-isolacao-execucao/01-embedding-spike.md
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-02-closure.md — ref → planning/edger/epics/02-edger-core/00-overview.md
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-08-runtime.txt
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-21-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-13-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-25-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-09-runtime.txt
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-27-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-12-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-26-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-17-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-24-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/docs/compat-matrix.md
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-28-runtime.txt
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-23-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-20-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-14-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-11-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-22-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-18-runtime.txt
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-19-runtime.txt
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-24-runtime.txt
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-09-runtime.txt
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-13-runtime.txt
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-18-runtime.txt
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-08-runtime.txt
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-20-runtime.txt
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-25-runtime.txt
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-26-runtime.txt
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-16-runtime.txt
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-14-runtime.txt
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-29-runtime.txt
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/docs/compat-matrix.md
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-12-runtime.txt
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-11-runtime.txt
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-10-runtime.txt
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-15-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-28-runtime.txt
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-09-provider-reclassification.md — ref → planning/edger/epics/09-providers-duraveis-externos/01-contrato-provider-sql-remoto.md
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-17-runtime.txt
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md — ref → planning/edger/status/evidence/story-08-22-runtime.txt
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-09-provider-reclassification.md — ref → planning/edger/docs/extensions.md
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-09-provider-reclassification.md — ref → planning/edger/docs/durable-provider-contract.md
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-09-provider-reclassification.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-09-provider-reclassification.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-09-provider-reclassification.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-09-provider-reclassification.md — ref → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-09-provider-reclassification.md — ref → planning/edger/docs/extensions.md
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-13-mcp-v1.md — ref → planning/edger/status/evidence/story-13-mcp-stdio.txt
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-09-provider-reclassification.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-09-provider-reclassification.md — ref → planning/edger/epics/09-providers-duraveis-externos/01-contrato-provider-sql-remoto.md
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-13-mcp-v1.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-modular-ai-native-roadmap.md — ref → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-modular-ai-native-roadmap.md — ref → planning/edger/epics/13-mcp-authoring-ai-native/00-overview.md
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-epic-13-mcp-v1.md — ref → planning/edger/status/evidence/story-13-mcp-stdio.txt
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-modular-ai-native-roadmap.md — ref → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-modular-ai-native-roadmap.md — ref → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-modular-ai-native-roadmap.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-modular-ai-native-roadmap.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-modular-ai-native-roadmap.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-modular-ai-native-roadmap.md — ref → planning/edger/epics/13-mcp-authoring-ai-native/00-overview.md
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-modular-ai-native-roadmap.md — ref → planning/edger/epics/11-gateway-operacional-avancado/00-overview.md
-  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-remove-bun-adapter-plan.md — ref → planning/edger/runtime-functional-plan.md
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-modular-ai-native-roadmap.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-remove-bun-adapter-plan.md — ref → planning/edger/epics/07-avancado/04-real-js-execution.md
+  [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-remove-bun-adapter-plan.md — ref → planning/edger/runtime-functional-plan.md
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-story-02-01.md — ref → planning/edger/epics/02-edger-core/01-setup-core-crate.md
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-story-02-02.md — ref → planning/edger/epics/02-edger-core/02-core-models.md
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-29-story-02-03.md — ref → planning/edger/epics/02-edger-core/03-errors-wire.md
@@ -596,37 +596,37 @@ Files in scope: 208
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-30-modular-ai-native-delivery.md — ref → planning/edger/status/evidence/cpanel-browser-2026-06-30.png
   [OK] [Cross-references] planning/edger/status/checkpoint-2026-06-30-modular-ai-native-delivery.md — ref → planning/edger/status/evidence/cpanel-browser-2026-06-30.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-01-value-parity.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-01-value-parity.md — ref → planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-01-value-parity.md — ref → planning/edger/epics/08-valor-buntime/01-define-valor-e-contratos.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-01-value-parity.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-01-value-parity.md — ref → planning/edger/status/evidence
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-01-value-parity.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-01-value-parity.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-02-admin-api.md — ref → planning/edger/epics/08-valor-buntime/03-seguranca-e-identidade-operacional.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-02-admin-api.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-01-value-parity.md — ref → planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-02-admin-api.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-02-admin-api.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-02-admin-api.md — ref → planning/edger/epics/08-valor-buntime/03-seguranca-e-identidade-operacional.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-02-admin-api.md — ref → planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-03-security.md — ref → planning/edger/epics/08-valor-buntime/04-servicos-de-estado-turso-kv-queue.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-03-security.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-03-security.md — ref → planning/edger/epics/08-valor-buntime/03-seguranca-e-identidade-operacional.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-03-security.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-03-security.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-04-state-services.md — ref → planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-04-state-services.md — ref → planning/edger/epics/08-valor-buntime/04-servicos-de-estado-turso-kv-queue.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-04-state-services.md — ref → planning/edger/epics/08-valor-buntime/06-modelo-de-extensoes-e-bindings.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-04-state-services.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-04-state-services.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-05-shell-gateway.md — ref → planning/edger/docs/shell-protocol.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-05-shell-gateway.md — ref → planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-05-shell-gateway.md — ref → planning/edger/status/evidence/story-08-05-runtime.txt
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-04-state-services.md — ref → planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-04-state-services.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-04-state-services.md — ref → planning/edger/epics/08-valor-buntime/04-servicos-de-estado-turso-kv-queue.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-05-shell-gateway.md — ref → planning/edger/epics/08-valor-buntime/06-modelo-de-extensoes-e-bindings.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-05-shell-gateway.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-05-shell-gateway.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-06-extension-providers.md — ref → planning/edger/status/evidence/story-08-06-runtime.txt
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-06-extension-providers.md — ref → planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-06-extension-providers.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-05-shell-gateway.md — ref → planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-05-shell-gateway.md — ref → planning/edger/docs/shell-protocol.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-05-shell-gateway.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-05-shell-gateway.md — ref → planning/edger/status/evidence/story-08-05-runtime.txt
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-06-extension-providers.md — ref → planning/edger/epics/08-valor-buntime/06-modelo-de-extensoes-e-bindings.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-07-observability-ops.md — ref → planning/edger/status/evidence/story-08-07-runtime.txt
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-07-observability-ops.md — ref → planning/edger/docs/performance-baselines.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-06-extension-providers.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-06-extension-providers.md — ref → planning/edger/epics/08-valor-buntime/07-observabilidade-operacao-e-deploy.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-06-extension-providers.md — ref → planning/edger/status/evidence/story-08-06-runtime.txt
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-07-observability-ops.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-07-observability-ops.md — ref → planning/edger/docs/performance-baselines.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-07-observability-ops.md — ref → planning/edger/status/evidence/story-08-07-runtime.txt
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-08-value-parity.md — ref → planning/edger/status/evidence/story-08-08-runtime.txt
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-08-value-parity.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-11-worker-enable-disable.md — ref → planning/edger/docs/value-parity-matrix.md
@@ -640,110 +640,110 @@ Files in scope: 208
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-19-gateway-log-stats-api.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-20-gateway-log-duration.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-21-gateway-rate-limit-metrics-api.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-21-gateway-rate-limit-metrics-api.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-21-gateway-rate-limit-metrics-api.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-21-gateway-rate-limit-metrics-api.md — ref → planning/edger/epics/08-valor-buntime/21-gateway-rate-limit-metrics-api.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-21-gateway-rate-limit-metrics-api.md — ref → planning/edger/status/evidence/story-08-21-runtime.txt
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-21-gateway-rate-limit-metrics-api.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-21-gateway-rate-limit-metrics-api.md — ref → planning/edger/epics/08-valor-buntime/21-gateway-rate-limit-metrics-api.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-21-gateway-rate-limit-metrics-api.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-21-gateway-rate-limit-metrics-api.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-22-worker-semver-range-routing.md — ref → planning/edger/epics/08-valor-buntime/22-worker-semver-range-routing.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-21-gateway-rate-limit-metrics-api.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-21-gateway-rate-limit-metrics-api.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-22-worker-semver-range-routing.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-22-worker-semver-range-routing.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-22-worker-semver-range-routing.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-22-worker-semver-range-routing.md — ref → planning/edger/status/evidence/story-08-22-runtime.txt
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-22-worker-semver-range-routing.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-22-worker-semver-range-routing.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-22-worker-semver-range-routing.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-22-worker-semver-range-routing.md — ref → planning/edger/epics/08-valor-buntime/22-worker-semver-range-routing.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-22-worker-semver-range-routing.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-22-worker-semver-range-routing.md — ref → planning/edger/status/evidence/story-08-22-runtime.txt
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-23-api-key-bootstrap-store.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-23-api-key-bootstrap-store.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-23-api-key-bootstrap-store.md — ref → planning/edger/status/evidence/story-08-23-runtime.txt
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-23-api-key-bootstrap-store.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-23-api-key-bootstrap-store.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-23-api-key-bootstrap-store.md — ref → planning/edger/epics/08-valor-buntime/23-api-key-bootstrap-store.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-23-api-key-bootstrap-store.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-23-api-key-bootstrap-store.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-24-csrf-internal-calls.md — ref → planning/edger/status/evidence/story-08-24-runtime.txt
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-23-api-key-bootstrap-store.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-23-api-key-bootstrap-store.md — ref → planning/edger/status/evidence/story-08-23-runtime.txt
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-24-csrf-internal-calls.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-24-csrf-internal-calls.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-24-csrf-internal-calls.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-24-csrf-internal-calls.md — ref → planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-24-csrf-internal-calls.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-24-csrf-internal-calls.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-25-runtime-orchestration-boundary.md — ref → planning/edger/status/evidence/story-08-25-runtime.txt
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-24-csrf-internal-calls.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-24-csrf-internal-calls.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-24-csrf-internal-calls.md — ref → planning/edger/status/evidence/story-08-24-runtime.txt
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-24-csrf-internal-calls.md — ref → planning/edger/epics/08-valor-buntime/24-csrf-internal-calls-contract.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-25-runtime-orchestration-boundary.md — ref → planning/edger/docs/compat-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-25-runtime-orchestration-boundary.md — ref → planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-25-runtime-orchestration-boundary.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-25-runtime-orchestration-boundary.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-25-runtime-orchestration-boundary.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-25-runtime-orchestration-boundary.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-26-extension-status-persistence.md — ref → planning/edger/epics/08-valor-buntime/26-extension-status-persistence.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-26-extension-status-persistence.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-26-extension-status-persistence.md — ref → planning/edger/status/evidence/story-08-26-runtime.txt
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-26-extension-status-persistence.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-26-extension-status-persistence.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-26-extension-status-persistence.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-25-runtime-orchestration-boundary.md — ref → planning/edger/status/evidence/story-08-25-runtime.txt
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-25-runtime-orchestration-boundary.md — ref → planning/edger/epics/08-valor-buntime/25-runtime-orchestration-boundary.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-25-runtime-orchestration-boundary.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-25-runtime-orchestration-boundary.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-26-extension-status-persistence.md — ref → planning/edger/docs/extensions.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/scripts/deploy-layout-check.py
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/status/evidence/deploy-layout-check.txt
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/status/evidence/story-08-27-runtime.txt
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-26-extension-status-persistence.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-26-extension-status-persistence.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-26-extension-status-persistence.md — ref → planning/edger/status/evidence/story-08-26-runtime.txt
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-26-extension-status-persistence.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-26-extension-status-persistence.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-26-extension-status-persistence.md — ref → planning/edger/epics/08-valor-buntime/26-extension-status-persistence.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/scripts/run-gates.sh
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/epics/08-valor-buntime/27-deploy-layout-check.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-28-worker-lifecycle-hooks.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-28-worker-lifecycle-hooks.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/status/evidence/deploy-layout-check.txt
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/status/evidence/story-08-27-runtime.txt
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/scripts/deploy-layout-check.py
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-27-deploy-layout-check.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-28-worker-lifecycle-hooks.md — ref → planning/edger/roadmap.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-28-worker-lifecycle-hooks.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-28-worker-lifecycle-hooks.md — ref → planning/edger/status/evidence/story-08-28-runtime.txt
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-28-worker-lifecycle-hooks.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-28-worker-lifecycle-hooks.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-28-worker-lifecycle-hooks.md — ref → planning/edger/epics/08-valor-buntime/28-worker-lifecycle-hooks.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-29-operational-error-logs.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-29-operational-error-logs.md — ref → planning/edger/status/evidence/story-08-29-runtime.txt
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-29-operational-error-logs.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-29-operational-error-logs.md — ref → planning/edger/epics/08-valor-buntime/29-operational-error-logs.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-29-operational-error-logs.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-29-operational-error-logs.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-02-provider-local-sqlite.md — ref → planning/edger/epics/09-providers-duraveis-externos/02-provider-local-sqlite.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-29-operational-error-logs.md — ref → planning/edger/epics/08-valor-buntime/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-29-operational-error-logs.md — ref → planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-29-operational-error-logs.md — ref → planning/edger/epics/08-valor-buntime/29-operational-error-logs.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-08-29-operational-error-logs.md — ref → planning/edger/status/evidence/story-08-29-runtime.txt
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-02-provider-local-sqlite.md — ref → planning/edger/docs/extensions.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-02-provider-local-sqlite.md — ref → planning/edger/docs/durable-provider-contract.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-02-provider-local-sqlite.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-02-provider-local-sqlite.md — ref → planning/edger/epics/08-valor-buntime/04-servicos-de-estado-turso-kv-queue.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-02-provider-local-sqlite.md — ref → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-02-provider-local-sqlite.md — ref → planning/edger/docs/extensions.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-02-provider-local-sqlite.md — ref → planning/edger/epics/09-providers-duraveis-externos/02-provider-local-sqlite.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-02-provider-local-sqlite.md — ref → planning/edger/epics/08-valor-buntime/04-servicos-de-estado-turso-kv-queue.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-04-provider-wiring.md — Origin → planning/edger/epics/09-providers-duraveis-externos/04-wiring-provider-configuravel.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-04-provider-wiring.md — ref → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-04-provider-wiring.md — ref → planning/edger/epics/09-providers-duraveis-externos/04-wiring-provider-configuravel.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-05-consumer-proofs.md — Origin → planning/edger/epics/09-providers-duraveis-externos/05-provas-consumidores-duraveis.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-05-consumer-proofs.md — ref → planning/edger/docs/extensions.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-05-consumer-proofs.md — ref → planning/edger/epics/09-providers-duraveis-externos/05-provas-consumidores-duraveis.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-05-consumer-proofs.md — ref → planning/edger/docs/durable-provider-contract.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-05-consumer-proofs.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-05-consumer-proofs.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-05-consumer-proofs.md — ref → planning/edger/epics/09-providers-duraveis-externos/00-overview.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-06-29-story-09-05-consumer-proofs.md — ref → planning/edger/docs/extensions.md
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-07-05-wasm-execution.md — ref → planning/edger/docs/wasm-abi.md
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-07-05-wasm-execution.md — ref → planning/edger/status/evidence/story-07-05-runtime.txt
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-07-06-observability-otel.md — ref → planning/edger/status/evidence/story-07-06-runtime.txt
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-07-07-hardening-compat.md — ref → planning/edger/status/evidence/story-07-07-runtime.txt
+  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-02-reconcile-reload.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-02-reconcile-reload.md — ref → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-02-reconcile-reload.md — ref → planning/edger/status/evidence/story-10-02-runtime.txt
-  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-02-reconcile-reload.md — ref → planning/edger/docs/value-parity-matrix.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md — ref → planning/edger/scripts/extension-validation.py
-  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md — ref → planning/edger/status/evidence/story-10-04-runtime.txt
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md — ref → planning/edger/epics/10-operacao-extensoes-plugins/00-overview.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md — ref → planning/edger/epics/10-operacao-extensoes-plugins/04-validacao-local-extensoes.md
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md — ref → planning/edger/scripts/run-gates.sh
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md — ref → planning/edger/status/evidence/extension-validation.txt
-  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md — ref → planning/edger/status/evidence
+  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md — ref → planning/edger/scripts/extension-validation.py
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md — ref → planning/edger/docs/value-parity-matrix.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md — ref → planning/edger/status/evidence
+  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md — ref → planning/edger/status/evidence/extension-validation.txt
+  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md — ref → planning/edger/status/evidence/story-10-04-runtime.txt
+  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-10-04-extension-validation.md — ref → planning/edger/epics/10-operacao-extensoes-plugins/04-validacao-local-extensoes.md
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-11-04-vhosts-host-routing.md — ref → planning/edger/status/evidence/story-11-04-runtime.txt
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-11-04-vhosts-host-routing.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-11-04-vhosts-host-routing.md — ref → planning/edger/epics/11-gateway-operacional-avancado/04-vhosts-host-routing.md
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-11-04-vhosts-host-routing.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-11-04-vhosts-host-routing.md — ref → planning/edger/epics/11-gateway-operacional-avancado/00-overview.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-11-04-vhosts-host-routing.md — ref → planning/edger/epics/11-gateway-operacional-avancado/04-vhosts-host-routing.md
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-12-02-shell-catalog.md — ref → planning/edger/epics/12-frontends-modulares-cpanel/00-overview.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-12-02-shell-catalog.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-12-02-shell-catalog.md — ref → planning/edger/roadmap.md
-  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-12-02-shell-catalog.md — ref → planning/edger/epics/12-frontends-modulares-cpanel/02-shell-catalogo-modulos.md
+  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-12-02-shell-catalog.md — ref → planning/edger/docs/value-parity-matrix.md
   [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-12-02-shell-catalog.md — ref → planning/edger/status/evidence/story-12-02-runtime.txt
+  [OK] [Cross-references] planning/edger/status/closure-2026-07-01-story-12-02-shell-catalog.md — ref → planning/edger/epics/12-frontends-modulares-cpanel/02-shell-catalogo-modulos.md
   [OK] [Cross-references] planning/edger/status/consolidation-2026-06-29-backlog-ready.md — ref → planning/edger/roadmap.md
   [OK] [Cross-references] planning/edger/status/consolidation-2026-06-29-backlog-ready.md — ref → planning/edger/docs/pendencies-epic-07.md
 
@@ -1681,7 +1681,7 @@ Files in scope: 208
   [OK] [Completeness] planning/edger/epics/15-runtime-js-duravel/03-compat-frameworks.md — section ## Tasks
   [OK] [Completeness] planning/edger/epics/15-runtime-js-duravel/03-compat-frameworks.md — section ## Verification
   [OK] [Completeness] planning/edger/epics/15-runtime-js-duravel/03-compat-frameworks.md — acceptance criteria present
-  [OK] [Completeness] planning/edger/epics/15-runtime-js-duravel/03-compat-frameworks.md — 7 actionable tasks
+  [OK] [Completeness] planning/edger/epics/15-runtime-js-duravel/03-compat-frameworks.md — completed story (7 tasks done)
   [OK] [Completeness] planning/edger/epics/15-runtime-js-duravel/03-compat-frameworks.md — verification commands
   [OK] [Completeness] planning/edger/epics/15-runtime-js-duravel/04-limites-recurso-reais.md — section ## Context
   [OK] [Completeness] planning/edger/epics/15-runtime-js-duravel/04-limites-recurso-reais.md — section ## Files
@@ -2743,7 +2743,7 @@ Files in scope: 208
   [OK] [Stale content] planning/edger/epics/11-gateway-operacional-avancado/01-proxy-forwarding-local.md — status not stale-in-progress
   [OK] [Stale content] planning/edger/epics/11-gateway-operacional-avancado/01-proxy-forwarding-local.md — age 2d
   [OK] [Stale content] planning/edger/epics/11-gateway-operacional-avancado/02-cache-rate-limit-persistente.md — status not stale-in-progress
-  [OK] [Stale content] planning/edger/epics/11-gateway-operacional-avancado/02-cache-rate-limit-persistente.md — age 0d
+  [OK] [Stale content] planning/edger/epics/11-gateway-operacional-avancado/02-cache-rate-limit-persistente.md — age 1d
   [OK] [Stale content] planning/edger/epics/11-gateway-operacional-avancado/03-historico-sse-operacional.md — status not stale-in-progress
   [OK] [Stale content] planning/edger/epics/11-gateway-operacional-avancado/03-historico-sse-operacional.md — age 0d
   [OK] [Stale content] planning/edger/epics/11-gateway-operacional-avancado/04-vhosts-host-routing.md — status not stale-in-progress
@@ -2819,4 +2819,4 @@ Files in scope: 208
   RED: 0  WARN: 12  INFO: 92  OK lines: 2688
 VERDICT: PASS — 0 RED findings (warnings may remain)
 
-NARRATIVE (2026-07-02): 15.B entregue — DenoProcessIsolate no pool (default), paridade fetch/routes/SPA, workers JS persistentes por default, perf end-to-end p50 1.57ms (~25x vs v1). static_spa.rs extraído (sem duplicação). Gate 345 + multiproc verdes. Sem novos RED.
+NARRATIVE (2026-07-02): 15.C entregue — Express (node:http listener) e Hono (Deno.serve) via processo persistente, sem reimpl node/npm. Fixtures + framework_compat.rs + compat-matrix tested. Gate 345 verdes. Sem novos RED.
