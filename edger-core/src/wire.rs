@@ -29,6 +29,39 @@ pub struct SerializedResponse {
     pub body: Option<Bytes>,
 }
 
+/// Boxed chunk stream for a streamed worker response body.
+pub type BodyStream = std::pin::Pin<
+    Box<dyn futures_core::Stream<Item = Result<Bytes, crate::error::IsolationError>> + Send>,
+>;
+
+/// A response whose body streams incrementally from the worker (SSE, chunked
+/// SSR). Status/headers are available up front; chunks arrive as the worker
+/// produces them.
+pub struct StreamedResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: BodyStream,
+}
+
+impl std::fmt::Debug for StreamedResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamedResponse")
+            .field("status", &self.status)
+            .field("headers", &self.headers)
+            .field("body", &"<stream>")
+            .finish()
+    }
+}
+
+/// Worker response: buffered (all current backends) or streamed (persistent
+/// process backend). Buffered is the trait default so existing isolates are
+/// untouched.
+#[derive(Debug)]
+pub enum WorkerResponse {
+    Buffered(SerializedResponse),
+    Streamed(StreamedResponse),
+}
+
 /// Validate header collection against core limits (pure).
 pub fn validate_headers(headers: &[(String, String)]) -> Result<(), crate::error::CoreError> {
     if headers.len() > MAX_HEADERS {

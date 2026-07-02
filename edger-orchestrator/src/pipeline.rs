@@ -329,9 +329,9 @@ async fn dispatch_worker(
             .map_err(|e| CoreError::new("HOOK_ERROR", e.to_string()))?;
     }
 
-    let mut response = match state
+    let worker_response = match state
         .pool
-        .fetch_worker(&worker, serialized, kind_hint)
+        .fetch_worker_stream(&worker, serialized, kind_hint)
         .await
         .map_err(worker_error_to_core)
     {
@@ -352,12 +352,32 @@ async fn dispatch_worker(
         }
     };
 
-    if !skip_hooks {
-        run_on_worker_complete(&state.registry, &response, &ctx);
-        run_on_response(&state.registry, &mut response, &ctx);
+    match worker_response {
+        edger_core::WorkerResponse::Buffered(mut response) => {
+            if !skip_hooks {
+                run_on_worker_complete(&state.registry, &response, &ctx);
+                run_on_response(&state.registry, &mut response, &ctx);
+            }
+            serialized_to_axum(response)
+        }
+        edger_core::WorkerResponse::Streamed(mut streamed) => {
+            // Hooks observe a headers-only view: the body streams straight to
+            // the client, so body-mutating hooks do not apply to streamed
+            // responses (status/header mutations DO propagate).
+            if !skip_hooks {
+                let mut view = edger_core::SerializedResponse {
+                    status: streamed.status,
+                    headers: streamed.headers.clone(),
+                    body: None,
+                };
+                run_on_worker_complete(&state.registry, &view, &ctx);
+                run_on_response(&state.registry, &mut view, &ctx);
+                streamed.status = view.status;
+                streamed.headers = view.headers;
+            }
+            crate::wire::streamed_to_axum(streamed)
+        }
     }
-
-    serialized_to_axum(response)
 }
 
 fn handle_reserved(kind: ReservedPath) -> Result<Response<Body>, CoreError> {

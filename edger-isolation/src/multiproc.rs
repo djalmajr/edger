@@ -14,13 +14,15 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use edger_core::{
     is_sensitive_env_key, Isolate, IsolationError, SerializedRequest, SerializedResponse,
-    WorkerConfig,
+    StreamedResponse, WorkerConfig, WorkerResponse,
 };
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::UnixListener;
 use tokio::process::{Child, Command};
+use tokio::sync::{mpsc, oneshot};
 
 const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
 
@@ -36,10 +38,28 @@ struct WireRequest {
 }
 
 #[derive(Deserialize)]
-struct WireResponse {
+struct WireResponseHeader {
     status: u16,
     headers: Vec<(String, String)>,
-    body: Option<Vec<u8>>,
+}
+
+#[derive(Deserialize, Default)]
+struct WireEndFrame {
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// Response frame tags (must match the harness).
+const TAG_HEADER: u8 = b'H';
+const TAG_CHUNK: u8 = b'C';
+const TAG_END: u8 = b'E';
+
+/// A streamed response from the worker process: status/headers up front, body
+/// chunks delivered through the channel as the worker produces them.
+pub struct ProcessStreamedResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub chunks: mpsc::Receiver<Result<Bytes, IsolationError>>,
 }
 
 #[derive(Deserialize)]
@@ -52,7 +72,13 @@ struct ReadyFrame {
 /// A spawned, connected, module-loaded Deno worker process.
 pub struct DenoWorkerProcess {
     child: Child,
-    stream: UnixStream,
+    write_half: OwnedWriteHalf,
+    // The read half is owned by the response pump while a request streams; it
+    // comes back through `restore_rx` on a CLEAN end-of-stream. An abnormal end
+    // (mid-stream error, consumer dropped) never restores it — the process is
+    // poisoned and the next request fails fast so the caller respawns.
+    read_half: Option<OwnedReadHalf>,
+    restore_rx: Option<oneshot::Receiver<OwnedReadHalf>>,
     timeout: Duration,
     // Keeps the socket/harness dir alive for the process lifetime.
     _workdir: TempDir,
@@ -143,14 +169,21 @@ impl DenoWorkerProcess {
             }
         };
 
+        let (read_half, write_half) = stream.into_split();
         let mut process = Self {
             child,
-            stream,
+            write_half,
+            read_half: Some(read_half),
+            restore_rx: None,
             timeout,
             _workdir: workdir,
         };
 
-        let ready_bytes = match tokio::time::timeout(timeout, read_frame(&mut process.stream)).await
+        let ready_bytes = match tokio::time::timeout(
+            timeout,
+            read_frame(process.read_half.as_mut().expect("read half present")),
+        )
+        .await
         {
             Ok(Ok(bytes)) => bytes,
             Ok(Err(err)) => return Err(process.fail(format!("ready read failed: {err}")).await),
@@ -168,12 +201,41 @@ impl DenoWorkerProcess {
         Ok(process)
     }
 
-    /// Send one request over the persistent connection and await the response.
-    /// The module is already loaded, so this is just IPC + handler execution.
-    pub async fn request(
+    /// Reclaim the read half: either it is resting between requests, or a prior
+    /// stream is finishing and will hand it back through `restore_rx`. An
+    /// abnormal previous stream never restores it — poisoned process.
+    async fn reclaim_read_half(&mut self) -> Result<OwnedReadHalf, IsolationError> {
+        if let Some(half) = self.read_half.take() {
+            return Ok(half);
+        }
+        if let Some(rx) = self.restore_rx.take() {
+            return match tokio::time::timeout(self.timeout, rx).await {
+                Ok(Ok(half)) => Ok(half),
+                Ok(Err(_)) => Err(IsolationError::new(
+                    "UDS_POISONED",
+                    "previous stream ended abnormally; process must be respawned",
+                )),
+                Err(_) => Err(IsolationError::new(
+                    "UDS_TIMEOUT",
+                    "previous stream still active; process must be respawned",
+                )),
+            };
+        }
+        Err(IsolationError::new(
+            "UDS_POISONED",
+            "read half lost; process must be respawned",
+        ))
+    }
+
+    /// Send one request and stream the response: status/headers resolve as soon
+    /// as the worker produced them; body chunks flow through the channel until
+    /// the end frame (story 16.D).
+    pub async fn request_stream(
         &mut self,
         req: SerializedRequest,
-    ) -> Result<SerializedResponse, IsolationError> {
+    ) -> Result<ProcessStreamedResponse, IsolationError> {
+        let mut read_half = self.reclaim_read_half().await?;
+
         let wire = WireRequest {
             method: req.method,
             uri: req.uri,
@@ -185,22 +247,118 @@ impl DenoWorkerProcess {
         let payload = serde_json::to_vec(&wire)
             .map_err(|err| IsolationError::new("UDS_ENCODE", err.to_string()))?;
 
-        tokio::time::timeout(self.timeout, write_frame(&mut self.stream, &payload))
-            .await
-            .map_err(|_| IsolationError::new("UDS_TIMEOUT", "request write timed out"))?
-            .map_err(|err| IsolationError::new("UDS_IO", format!("write failed: {err}")))?;
+        let write = async {
+            tokio::time::timeout(self.timeout, write_frame(&mut self.write_half, &payload))
+                .await
+                .map_err(|_| IsolationError::new("UDS_TIMEOUT", "request write timed out"))?
+                .map_err(|err| IsolationError::new("UDS_IO", format!("write failed: {err}")))
+        };
+        if let Err(err) = write.await {
+            // Keep the half so a respawning caller sees a consistent state.
+            self.read_half = Some(read_half);
+            return Err(err);
+        }
 
-        let response_bytes = tokio::time::timeout(self.timeout, read_frame(&mut self.stream))
-            .await
-            .map_err(|_| IsolationError::new("UDS_TIMEOUT", "response read timed out"))?
-            .map_err(|err| IsolationError::new("UDS_IO", format!("read failed: {err}")))?;
-
-        let wire: WireResponse = serde_json::from_slice(&response_bytes)
+        let header_frame =
+            match tokio::time::timeout(self.timeout, read_frame(&mut read_half)).await {
+                Ok(Ok(frame)) => frame,
+                Ok(Err(err)) => {
+                    return Err(IsolationError::new("UDS_IO", format!("read failed: {err}")))
+                }
+                Err(_) => {
+                    return Err(IsolationError::new(
+                        "UDS_TIMEOUT",
+                        "response read timed out",
+                    ))
+                }
+            };
+        let (tag, body) = split_tag(&header_frame)?;
+        if tag != TAG_HEADER {
+            return Err(IsolationError::new(
+                "UDS_PROTOCOL",
+                format!("expected header frame, got tag {tag:#x}"),
+            ));
+        }
+        let header: WireResponseHeader = serde_json::from_slice(body)
             .map_err(|err| IsolationError::new("UDS_DECODE", err.to_string()))?;
+
+        let (tx, rx) = mpsc::channel::<Result<Bytes, IsolationError>>(16);
+        let (restore_tx, restore_rx) = oneshot::channel();
+        self.restore_rx = Some(restore_rx);
+        let frame_timeout = self.timeout;
+
+        tokio::spawn(async move {
+            loop {
+                let frame =
+                    match tokio::time::timeout(frame_timeout, read_frame(&mut read_half)).await {
+                        Ok(Ok(frame)) => frame,
+                        Ok(Err(err)) => {
+                            let _ = tx
+                                .send(Err(IsolationError::new(
+                                    "UDS_IO",
+                                    format!("stream read failed: {err}"),
+                                )))
+                                .await;
+                            return; // abnormal: read half dropped, process poisoned
+                        }
+                        Err(_) => {
+                            let _ = tx
+                                .send(Err(IsolationError::new(
+                                    "UDS_TIMEOUT",
+                                    "stream stalled past the frame timeout",
+                                )))
+                                .await;
+                            return; // abnormal
+                        }
+                    };
+                let Ok((tag, body)) = split_tag(&frame) else {
+                    return; // abnormal: empty frame
+                };
+                match tag {
+                    TAG_CHUNK => {
+                        if tx.send(Ok(Bytes::copy_from_slice(body))).await.is_err() {
+                            // Consumer dropped mid-stream (client disconnect):
+                            // frames for THIS response are still in flight, so
+                            // the socket cannot be reused — do not restore.
+                            return;
+                        }
+                    }
+                    TAG_END => {
+                        let end: WireEndFrame = serde_json::from_slice(body).unwrap_or_default();
+                        if let Some(error) = end.error {
+                            let _ = tx.send(Err(IsolationError::new("UDS_STREAM", error))).await;
+                        }
+                        let _ = restore_tx.send(read_half); // clean end: reusable
+                        return;
+                    }
+                    _ => return, // abnormal: unknown tag
+                }
+            }
+        });
+
+        Ok(ProcessStreamedResponse {
+            status: header.status,
+            headers: header.headers,
+            chunks: rx,
+        })
+    }
+
+    /// Buffered request: streams internally and collects the whole body. Used
+    /// by tests and non-streaming callers; infinite streams are bounded by the
+    /// harness byte cap and the per-frame timeout.
+    pub async fn request(
+        &mut self,
+        req: SerializedRequest,
+    ) -> Result<SerializedResponse, IsolationError> {
+        let mut streamed = self.request_stream(req).await?;
+        let mut body = Vec::new();
+        while let Some(chunk) = streamed.chunks.recv().await {
+            body.extend_from_slice(&chunk?);
+        }
         Ok(SerializedResponse {
-            status: wire.status,
-            headers: wire.headers,
-            body: wire.body.filter(|body| !body.is_empty()).map(Bytes::from),
+            status: streamed.status,
+            headers: streamed.headers,
+            body: (!body.is_empty()).then(|| Bytes::from(body)),
         })
     }
 
@@ -227,7 +385,14 @@ async fn drain_stderr(child: &mut Child) -> String {
     String::from_utf8_lossy(&buf).trim().to_string()
 }
 
-async fn write_frame(stream: &mut UnixStream, payload: &[u8]) -> std::io::Result<()> {
+fn split_tag(frame: &[u8]) -> Result<(u8, &[u8]), IsolationError> {
+    match frame.split_first() {
+        Some((tag, body)) => Ok((*tag, body)),
+        None => Err(IsolationError::new("UDS_PROTOCOL", "empty response frame")),
+    }
+}
+
+async fn write_frame<W: AsyncWrite + Unpin>(stream: &mut W, payload: &[u8]) -> std::io::Result<()> {
     let len = u32::try_from(payload.len())
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "frame too large"))?;
     stream.write_all(&len.to_le_bytes()).await?;
@@ -235,7 +400,7 @@ async fn write_frame(stream: &mut UnixStream, payload: &[u8]) -> std::io::Result
     stream.flush().await
 }
 
-async fn read_frame(stream: &mut UnixStream) -> std::io::Result<Vec<u8>> {
+async fn read_frame<R: AsyncRead + Unpin>(stream: &mut R) -> std::io::Result<Vec<u8>> {
     let mut len_bytes = [0u8; 4];
     stream.read_exact(&mut len_bytes).await?;
     let len = u32::from_le_bytes(len_bytes);
@@ -352,11 +517,7 @@ impl DenoProcessIsolate {
         Self::default()
     }
 
-    async fn dispatch(
-        &mut self,
-        req: SerializedRequest,
-        config: &WorkerConfig,
-    ) -> Result<SerializedResponse, IsolationError> {
+    async fn ensure_process(&mut self, config: &WorkerConfig) -> Result<(), IsolationError> {
         if self.process.is_none() {
             let worker_dir = config.worker_dir.as_ref().ok_or_else(|| {
                 IsolationError::new("UDS_WORKER_DIR", "worker_dir is required for Deno process")
@@ -373,6 +534,15 @@ impl DenoProcessIsolate {
             .await?;
             self.process = Some(process);
         }
+        Ok(())
+    }
+
+    async fn dispatch(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.ensure_process(config).await?;
         let result = self
             .process
             .as_mut()
@@ -384,6 +554,48 @@ impl DenoProcessIsolate {
             self.process = None;
         }
         result
+    }
+
+    async fn dispatch_stream(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<WorkerResponse, IsolationError> {
+        self.ensure_process(config).await?;
+        let result = self
+            .process
+            .as_mut()
+            .expect("process just set")
+            .request_stream(req)
+            .await;
+        match result {
+            Ok(streamed) => Ok(WorkerResponse::Streamed(StreamedResponse {
+                status: streamed.status,
+                headers: streamed.headers,
+                body: Box::pin(ReceiverBody(streamed.chunks)),
+            })),
+            Err(err) => {
+                // Drop the (possibly dead/poisoned) process so the next request
+                // respawns. Mid-STREAM failures are handled by the pool, which
+                // recycles the whole instance.
+                self.process = None;
+                Err(err)
+            }
+        }
+    }
+}
+
+/// Adapts the pump channel into the core `BodyStream` contract.
+struct ReceiverBody(mpsc::Receiver<Result<Bytes, IsolationError>>);
+
+impl futures_core::Stream for ReceiverBody {
+    type Item = Result<Bytes, IsolationError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.0.poll_recv(cx)
     }
 }
 
@@ -423,6 +635,22 @@ impl Isolate for DenoProcessIsolate {
             "NOT_IMPLEMENTED",
             "DenoProcessIsolate does not run Wasm",
         ))
+    }
+
+    async fn execute_fetch_stream(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<WorkerResponse, IsolationError> {
+        self.dispatch_stream(req, config).await
+    }
+
+    async fn execute_routes_stream(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<WorkerResponse, IsolationError> {
+        self.dispatch_stream(req, config).await
     }
 
     async fn notify_idle(&mut self) -> Result<(), IsolationError> {

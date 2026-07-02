@@ -42,13 +42,35 @@ pub async fn axum_to_serialized(
 
 /// Convert isolate wire response into an HTTP response.
 pub fn serialized_to_axum(res: SerializedResponse) -> Result<Response<Body>, CoreError> {
-    validate_headers(&res.headers)?;
+    let body = match res.body {
+        Some(bytes) => Body::from(bytes),
+        None => Body::empty(),
+    };
+    response_with_headers(res.status, &res.headers, body)
+}
+
+/// Streamed worker response -> axum response whose body forwards chunks to the
+/// client as the worker produces them (story 16.D).
+pub fn streamed_to_axum(res: edger_core::StreamedResponse) -> Result<Response<Body>, CoreError> {
+    let status = res.status;
+    let headers = res.headers;
+    let body = Body::from_stream(res.body);
+    response_with_headers(status, &headers, body)
+}
+
+fn response_with_headers(
+    status: u16,
+    header_pairs: &[(String, String)],
+    body: Body,
+) -> Result<Response<Body>, CoreError> {
+    validate_headers(header_pairs)?;
     let mut builder =
-        Response::builder().status(StatusCode::from_u16(res.status).map_err(|_| {
-            CoreError::validation("status", format!("invalid status {}", res.status))
-        })?);
+        Response::builder()
+            .status(StatusCode::from_u16(status).map_err(|_| {
+                CoreError::validation("status", format!("invalid status {status}"))
+            })?);
     if let Some(headers) = builder.headers_mut() {
-        for (name, value) in &res.headers {
+        for (name, value) in header_pairs {
             headers.append(
                 name.parse::<axum::http::HeaderName>().map_err(|_| {
                     CoreError::validation("headers", format!("invalid name {name}"))
@@ -59,10 +81,6 @@ pub fn serialized_to_axum(res: SerializedResponse) -> Result<Response<Body>, Cor
             );
         }
     }
-    let body = match res.body {
-        Some(bytes) => Body::from(bytes),
-        None => Body::empty(),
-    };
     builder
         .body(body)
         .map_err(|e| CoreError::new("RESPONSE_ERROR", e.to_string()))

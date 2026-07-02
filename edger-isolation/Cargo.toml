@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 edger-core = { path = "../edger-core" }
+futures-core.workspace = true
 async-trait.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

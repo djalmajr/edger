@@ -43,22 +43,25 @@
 - **Out:** backpressure fino; HTTP/2 push; trailers; streaming de request body (upload) — resposta apenas.
 
 ### Acceptance criteria
-- [ ] Worker `sse` emite eventos que chegam **incrementalmente** ao cliente (E2E mede chegada de ≥2 chunks em instantes distintos).
-- [ ] Resposta não-streaming continua funcionando idêntica (paridade da matriz).
-- [ ] Disconnect do cliente mid-stream: worker reciclado, sem wedge nem vazamento (teste).
-- [ ] Erro do worker mid-stream fecha a resposta sem travar o cliente.
-- [ ] Gates verdes (workspace + multiproc).
+- [x] Worker `sse` emite eventos que chegam **incrementalmente** ao cliente — E2E `streaming_e2e.rs::sse_events_reach_the_http_client_incrementally` mede 2 chunks em instantes distintos (~200ms), e ao vivo `curl -N /sse` recebe 1 evento/s.
+- [x] Resposta não-streaming idêntica (paridade: `buffered_responses_unchanged_through_streaming_path` + suites express/hono/ssr/sveltekit/tanstack verdes).
+- [x] Disconnect do cliente mid-stream: worker reciclado (`client_disconnect_mid_stream_recycles_the_worker`; `GuardedBody::drop` → terminate + evict), sem wedge.
+- [x] Erro do worker mid-stream: frame `E` com erro → stream Rust encerra com `Err` → axum aborta o body sem travar; processo com stream anormal fica poisoned e o próximo request respawna.
+- [x] Gates verdes (workspace + multiproc + clippy + fmt + oráculo).
 
 ### Dependencies
 - Story 15.E (leitura bounded atual, cancel guard)
 
 ## Tasks
 ### Fase 1 — Protocolo
-- [ ] Frames tagueados no harness + `request_stream` no Rust; round-trip de chunks com timing.
-### Fase 2 — Pool + pipeline
-- [ ] `fetch_stream` com guard acompanhando o stream; axum `Body::from_stream`.
+- [x] Harness escreve frames tagueados `H` (header JSON) / `C` (chunk cru, fatiado ≤1MB) / `E` (end, erro opcional); byte cap alto (`EDGER_STREAM_MAX_BYTES`, default 256MB) como guarda de runaway com truncamento limpo.
+- [x] `DenoWorkerProcess`: socket split (read/write halves), `request_stream()` com pump task por request; read half volta por oneshot só em fim LIMPO (fim anormal = processo poisoned → próximo request falha rápido e o caller respawna). `request()` buffered reimplementado como collect do stream.
+### Fase 2 — Contrato + pool + pipeline
+- [x] `edger-core`: `WorkerResponse::{Buffered,Streamed}` + `BodyStream` (futures-core); trait `Isolate` ganha `execute_fetch_stream`/`execute_routes_stream` com **default buffered** (zero impacto nos demais isolates).
+- [x] Pool: `fetch_worker_stream` — para fetch/routes streamable, os guards (dispatch lock + isolate lock owned) viajam DENTRO do body (`GuardedBody`): fim limpo → `on_request_complete` (Active→Idle) + métricas; drop/erro mid-stream → terminate + recycle. Efêmeros (ttl 0) permanecem buffered (permit com lifetime).
+- [x] Pipeline: `fetch_worker_stream` + `streamed_to_axum` (`Body::from_stream`); hooks veem view headers-only em respostas streamed (mutação de status/headers propaga; body não é observável).
 ### Fase 3 — Prova
-- [ ] E2E SSE incremental; cancel mid-stream; paridade da matriz; docs/compat-matrix (sse/stream → tested passthrough).
+- [x] `streaming.rs::sse_stream_delivers_chunks_incrementally` (nível isolation, com poison assert); `streaming_e2e.rs` (3 E2E: incremental de ponta a ponta, disconnect recicla, paridade buffered); validação ao vivo no preview; compat-matrix sse/stream → tested passthrough.
 
 ## Verification
 
@@ -67,3 +70,23 @@ cargo test -p edger-isolation --features multiproc --test streaming
 cargo test --workspace
 curl -N -H "Authorization: Bearer $KEY" http://127.0.0.1:3000/sse   # eventos pingando a ~1/s
 ```
+
+## Status
+
+**completed** (2026-07-02) — Streaming passthrough real de ponta a ponta. O protocolo
+UDS ganhou frames tagueados (`H` header / `C` chunk / `E` end): o harness escreve o
+header assim que o handler retorna e bombeia os chunks conforme o worker os produz; no
+Rust, `request_stream()` entrega status/headers imediatamente e os chunks fluem por um
+pump task → mpsc → `BodyStream` → pool (`GuardedBody` carregando os locks de dispatch)
+→ axum `Body::from_stream` → cliente. Semântica de falha explícita: fim de stream limpo
+devolve o read half do socket (processo reutilizável, Active→Idle); disconnect do
+cliente ou erro mid-stream desincroniza o socket por definição → processo poisoned,
+instance reciclada, request seguinte ganha processo fresco. O trait `Isolate` ganhou
+variantes `*_stream` com default buffered — Wasm/SPA/mock/v1 intocados; workers
+efêmeros (ttl 0) seguem buffered. Provas: 4 testes de isolation (incremental com
+timing + poison), 3 E2E de orquestrador (SSE incremental através do pipeline completo,
+disconnect recicla, paridade buffered), suites de frameworks sem regressão, e validação
+ao vivo no preview: `curl -N /sse` recebe **1 evento por segundo, incrementalmente**
+(antes: snapshot único bounded após 2s) e `/stream` flui indefinidamente até o cliente
+desconectar. Fora do escopo (mantidos): backpressure fino/HTTP2, trailers, streaming de
+request body (upload).

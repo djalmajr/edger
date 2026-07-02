@@ -366,66 +366,85 @@ function buildRequest(raw) {
   return new Request(url, init);
 }
 
-// Response body limits (story 15.E). The Isolate contract is buffered, so an
-// infinite stream (SSE, heartbeat) must not hang or desync the persistent
-// process. Read the body as a bounded stream and stop on the FIRST of: end
-// (finite body), the byte cap, the total-time budget, or an idle gap. The
-// total-time budget is what bounds a *steady* infinite stream (e.g. an SSE
-// heartbeat every 1s): the per-gap idle timeout alone never fires for it, so
-// without a total deadline it would run until the byte cap (hours) and hang the
-// process. Finite bodies come through whole (multi-chunk, not bounded-first-
-// chunk); infinite ones return a bounded snapshot and the connection stays
-// framed-in-sync. True HTTP passthrough streaming is a separate change to the
-// Isolate contract.
-const STREAM_IDLE_SENTINEL = Symbol("idle");
+// Streaming passthrough (story 16.D). Responses are written as TAGGED frames:
+// `H` (header JSON {status, headers}), then zero or more `C` (raw body chunk),
+// then `E` (end; JSON {error} if the stream failed mid-way). Finite bodies come
+// through whole; infinite streams (SSE) flow chunk-by-chunk to the client. A
+// single high byte cap remains as a runaway guard (clean truncation: the reader
+// is cancelled and E is still written, so the connection stays framed-in-sync);
+// stall protection lives on the Rust side (per-frame read timeout).
 const STREAM_MAX_BYTES =
-  parseInt(Deno.env.get("EDGER_STREAM_MAX_BYTES") ?? "", 10) || 8 * 1024 * 1024;
-const STREAM_IDLE_MS =
-  parseInt(Deno.env.get("EDGER_STREAM_IDLE_MS") ?? "", 10) || 1000;
-const STREAM_MAX_MS =
-  parseInt(Deno.env.get("EDGER_STREAM_MAX_MS") ?? "", 10) || 2000;
+  parseInt(Deno.env.get("EDGER_STREAM_MAX_BYTES") ?? "", 10) || 256 * 1024 * 1024;
+const MAX_CHUNK_FRAME = 1024 * 1024;
 
-async function drainBounded(body) {
-  const reader = body.getReader();
-  const chunks = [];
-  let total = 0;
-  const startedAt = Date.now();
-  try {
-    while (total < STREAM_MAX_BYTES) {
-      const remaining = STREAM_MAX_MS - (Date.now() - startedAt);
-      if (remaining <= 0) break; // total-time budget spent (steady infinite stream)
-      let timer;
-      const idle = new Promise((resolve) => {
-        timer = setTimeout(
-          () => resolve(STREAM_IDLE_SENTINEL),
-          Math.min(STREAM_IDLE_MS, remaining),
-        );
-      });
-      const result = await Promise.race([reader.read(), idle]);
-      clearTimeout(timer);
-      if (result === STREAM_IDLE_SENTINEL || result.done) break;
-      const bytes = asUint8Array(result.value);
-      chunks.push(bytes);
-      total += bytes.length;
-    }
-  } finally {
-    try {
-      await reader.cancel();
-    } catch (_) {
-      // reader already released / stream errored — nothing to clean up.
-    }
-  }
-  return concatChunks(chunks, total);
+const FRAME_HEADER = "H".charCodeAt(0);
+const FRAME_CHUNK = "C".charCodeAt(0);
+const FRAME_END = "E".charCodeAt(0);
+
+async function writeTagged(tag, payload) {
+  const framed = new Uint8Array(1 + payload.length);
+  framed[0] = tag;
+  framed.set(payload, 1);
+  await writeFrame(framed);
 }
 
 async function respond(handler, raw) {
-  const response = await handler(buildRequest(raw));
-  const bodyBytes = response.body ? await drainBounded(response.body) : new Uint8Array();
-  return {
-    status: response.status,
-    headers: Array.from(response.headers.entries()),
-    body: Array.from(bodyBytes),
-  };
+  let response;
+  try {
+    response = await handler(buildRequest(raw));
+  } catch (err) {
+    const message = new TextEncoder().encode(String(err?.stack ?? err));
+    await writeTagged(
+      FRAME_HEADER,
+      new TextEncoder().encode(
+        JSON.stringify({ status: 500, headers: [["content-type", "text/plain"]] }),
+      ),
+    );
+    await writeTagged(FRAME_CHUNK, message);
+    await writeTagged(FRAME_END, new Uint8Array());
+    return;
+  }
+
+  await writeTagged(
+    FRAME_HEADER,
+    new TextEncoder().encode(
+      JSON.stringify({
+        status: response.status,
+        headers: Array.from(response.headers.entries()),
+      }),
+    ),
+  );
+
+  if (response.body) {
+    const reader = response.body.getReader();
+    let total = 0;
+    let endPayload = new Uint8Array();
+    try {
+      while (total < STREAM_MAX_BYTES) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const bytes = asUint8Array(value);
+        total += bytes.length;
+        for (let offset = 0; offset < bytes.length; offset += MAX_CHUNK_FRAME) {
+          await writeTagged(FRAME_CHUNK, bytes.subarray(offset, offset + MAX_CHUNK_FRAME));
+        }
+      }
+    } catch (err) {
+      endPayload = new TextEncoder().encode(
+        JSON.stringify({ error: String(err?.stack ?? err) }),
+      );
+    } finally {
+      try {
+        await reader.cancel();
+      } catch (_) {
+        // reader already released / stream errored — nothing to clean up.
+      }
+    }
+    await writeTagged(FRAME_END, endPayload);
+    return;
+  }
+
+  await writeTagged(FRAME_END, new Uint8Array());
 }
 
 async function main() {
@@ -444,17 +463,9 @@ async function main() {
     const frame = await readFrame();
     if (frame === null) break; // orchestrator closed the connection
     const raw = JSON.parse(new TextDecoder().decode(frame));
-    let out;
-    try {
-      out = await respond(handler, raw);
-    } catch (err) {
-      out = {
-        status: 500,
-        headers: [["content-type", "text/plain"]],
-        body: Array.from(new TextEncoder().encode(String(err?.stack ?? err))),
-      };
-    }
-    await writeFrame(new TextEncoder().encode(JSON.stringify(out)));
+    // respond() writes the tagged H/C.../E frames itself and never throws for
+    // handler errors; a throw here means the socket broke — exit the loop.
+    await respond(handler, raw);
   }
 }
 
