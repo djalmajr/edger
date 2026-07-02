@@ -263,6 +263,19 @@ impl WorkerPool {
 
         Supervisor::on_request_start(&instance).await?;
 
+        // Cancellation-safety: if this future is dropped while a dispatch is in
+        // flight (e.g. the HTTP client disconnected mid-request — easy to hit
+        // with a multi-second streaming response), `on_request_complete` never
+        // runs and the instance would be stuck `Active` forever, wedging the
+        // worker so every later request fails with `NotReady`. This guard
+        // recycles the instance on any unclean exit; it is disarmed once we
+        // reach a normal completion or the explicit error path below.
+        let mut cancel_guard = DispatchCancelGuard {
+            pool: self,
+            instance: instance.clone(),
+            armed: true,
+        };
+
         let kind = kind_hint
             .or(config.kind.clone())
             .or(Some(worker_ref.kind.clone()))
@@ -276,6 +289,7 @@ impl WorkerPool {
         let res = match res {
             Ok(res) => res,
             Err(err) => {
+                cancel_guard.armed = false;
                 // An isolate failure must not leave the instance stuck in
                 // `Active`: recycle it so the next dispatch gets a fresh worker.
                 let _ = Supervisor::on_critical_error(&instance).await;
@@ -286,12 +300,21 @@ impl WorkerPool {
         };
 
         Supervisor::on_request_complete(instance, &config, self).await?;
+        cancel_guard.armed = false;
 
         self.inner
             .metrics
             .record_request_duration(started.elapsed().as_millis() as u64);
         self.sync_worker_counts();
         Ok(res)
+    }
+
+    /// Force-recycle a worker whose dispatch was cancelled mid-flight: mark it
+    /// non-dispatchable and evict it so a fresh instance (and process) is
+    /// spawned next time, instead of leaving it wedged in `Active`.
+    fn recycle_cancelled(&self, instance: &Arc<WorkerInstance>) {
+        instance.set_state(WorkerState::Terminated);
+        self.remove_instance(instance);
     }
 
     /// Remove a terminated/ephemeral worker from the LRU cache.
@@ -405,5 +428,23 @@ fn execution_kind_label(kind: &ExecutionKind) -> &'static str {
         ExecutionKind::StaticSpa { .. } => "static_spa",
         ExecutionKind::WasmModule { .. } => "wasm",
         ExecutionKind::Fullstack { .. } => "fullstack",
+    }
+}
+
+/// RAII guard that recycles an `Active` instance if the dispatch future is
+/// dropped before it completes (cancellation, e.g. an HTTP client disconnect).
+/// Disarmed on the normal completion and explicit-error paths, so it only fires
+/// on an otherwise-silent cancellation.
+struct DispatchCancelGuard<'a> {
+    pool: &'a WorkerPool,
+    instance: Arc<WorkerInstance>,
+    armed: bool,
+}
+
+impl Drop for DispatchCancelGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.pool.recycle_cancelled(&self.instance);
+        }
     }
 }

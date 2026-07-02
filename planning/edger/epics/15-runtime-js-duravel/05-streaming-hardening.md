@@ -53,6 +53,7 @@
 ### Fase 1 — Streaming
 - [x] `drainBounded` no harness (byte cap + idle + **teto de tempo total** `EDGER_STREAM_MAX_MS`) substitui `arrayBuffer()`; finito inteiro, infinito bounded sem hang.
 - [x] Handlers globais `unhandledrejection`/`error` no harness: erro de background do worker pós-resposta não derruba o processo persistente.
+- [x] Cancellation-safety no pool (`DispatchCancelGuard`): request cancelado mid-dispatch (client disconnect durante resposta longa/streaming) recicla o instance em vez de deixá-lo preso em `Active` (que wedgeava o worker → `NotReady` em todos os requests seguintes). Revelado pelo preview; teste `edger-worker/tests/cancel_safety.rs`.
 - [x] Testes `streaming.rs` (4): finito inteiro; infinito por byte cap; SSE de cadência estável por tempo total; sobrevivência a erro de background. Mutações capturadas (voltar a `arrayBuffer()` → infinito trava; remover teto de tempo → SSE estável trava; remover handlers → `[UDS_IO] Broken pipe`).
 - [x] Validado ao vivo no preview builtin: `/sse` e `/stream` retornam bounded repetidamente (antes travavam/matavam o processo).
 ### Fase 2 — Aposentar v1
