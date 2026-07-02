@@ -112,3 +112,105 @@ async fn infinite_stream_is_bounded_and_process_survives() {
     let len2 = second.body.as_deref().map(<[u8]>::len).unwrap_or(0);
     assert!((4096..=16384).contains(&len2), "second bounded, got {len2}");
 }
+
+// Mutation captured: dropping the STREAM_MAX_MS total-time budget in
+// `drainBounded` lets this steady SSE-style stream (200 ms gaps, under the idle
+// timeout) run until the 8 MiB byte cap (~38 h), so the request read times out
+// (20 s) and this test goes red. This is the exact hang the builtin preview
+// surfaced on the real `sse` worker (setInterval every 1 s).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn steady_sse_stream_is_bounded_by_total_time() {
+    let dir = tempfile::tempdir().unwrap();
+    write_worker(
+        dir.path(),
+        r#"Deno.serve(() => {
+  const msg = new TextEncoder().encode("data: tick\n\n");
+  let id;
+  const stream = new ReadableStream({
+    start(c) { id = setInterval(() => c.enqueue(msg), 200); },
+    cancel() { clearInterval(id); },
+  });
+  return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+});
+"#,
+    );
+    // Idle high so it never fires; total-time low so IT is what bounds the read.
+    let mut env = HashMap::new();
+    env.insert("EDGER_STREAM_MAX_MS".to_string(), "600".to_string());
+    env.insert("EDGER_STREAM_IDLE_MS".to_string(), "5000".to_string());
+
+    let mut proc = DenoWorkerProcess::spawn(
+        dir.path(),
+        Some("index.ts"),
+        Duration::from_secs(20),
+        &env,
+        None,
+    )
+    .await
+    .expect("spawn");
+
+    let started = std::time::Instant::now();
+    let res = proc
+        .request(get())
+        .await
+        .expect("steady SSE stream returns within the total-time budget, no hang");
+    let elapsed = started.elapsed();
+    assert_eq!(res.status, 200);
+    // A few ticks captured, then bounded — not empty, not runaway.
+    let len = res.body.as_deref().map(<[u8]>::len).unwrap_or(0);
+    assert!((12..=1200).contains(&len), "bounded SSE snapshot, got {len} bytes");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "must return near the 600ms budget, took {elapsed:?}"
+    );
+
+    // Process is not stuck: it serves a second request.
+    let second = proc.request(get()).await.expect("process survives");
+    assert_eq!(second.status, 200);
+}
+
+// Mutation captured: removing the global `unhandledrejection`/`error` handlers
+// from the harness lets a background error thrown by user code AFTER a response
+// (here a `setTimeout` that throws + a floating rejection) terminate the
+// persistent Deno process, so the SECOND request fails with `[UDS_IO] Broken
+// pipe`. This is the root cause behind the preview's `/sse` crash — a cancelled
+// SSE stream's `setInterval` tick throwing into a closed controller is one such
+// background error. Deterministic via setTimeout so it does not hinge on a
+// stream-cancel timing race.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn background_error_after_response_keeps_process_alive() {
+    let dir = tempfile::tempdir().unwrap();
+    write_worker(
+        dir.path(),
+        r#"Deno.serve(() => {
+  setTimeout(() => { throw new Error("background boom"); }, 100);
+  Promise.reject(new Error("floating rejection"));
+  return new Response("handled");
+});
+"#,
+    );
+    let mut proc = DenoWorkerProcess::spawn(
+        dir.path(),
+        Some("index.ts"),
+        Duration::from_secs(20),
+        &HashMap::new(),
+        None,
+    )
+    .await
+    .expect("spawn");
+
+    let first = proc.request(get()).await.expect("first responds");
+    assert_eq!(first.status, 200);
+    assert_eq!(first.body.as_deref().unwrap(), b"handled");
+
+    // Let the scheduled background error fire before the next request.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // The process must survive the uncaught background error from user code.
+    let second = proc
+        .request(get())
+        .await
+        .expect("process survives a background error from user code");
+    assert_eq!(second.status, 200);
+    assert_eq!(second.body.as_deref().unwrap(), b"handled");
+}

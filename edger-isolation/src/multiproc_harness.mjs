@@ -7,6 +7,22 @@
 const socketPath = Deno.args[0];
 const entryUrl = Deno.args[1];
 
+// A durable per-worker process must survive background errors thrown by user
+// code AFTER a response was sent — a stray `setInterval` that enqueues into a
+// cancelled stream, a floating promise rejection, etc. Without these handlers
+// such an error is uncaught and Deno terminates the process, breaking the next
+// request with a broken-pipe write (surfaced live on the `sse` worker). We log
+// them to stderr for diagnostics but keep the process alive; a failing REQUEST
+// is still caught per-dispatch in `respond()` and returned as a 500.
+globalThis.addEventListener?.("unhandledrejection", (event) => {
+  event.preventDefault();
+  console.error("worker unhandledrejection:", event.reason);
+});
+globalThis.addEventListener?.("error", (event) => {
+  event.preventDefault?.();
+  console.error("worker uncaught error:", event.error ?? event.message);
+});
+
 let conn;
 
 async function writeFrame(payload) {
@@ -323,26 +339,38 @@ function buildRequest(raw) {
 
 // Response body limits (story 15.E). The Isolate contract is buffered, so an
 // infinite stream (SSE, heartbeat) must not hang or desync the persistent
-// process. Read the body as a bounded stream: stop on end (finite), on the byte
-// cap, or when the stream idles past the deadline. Finite bodies come through
-// whole (multi-chunk, not bounded-first-chunk); infinite ones are bounded and
-// the connection stays framed-in-sync. True HTTP passthrough streaming is a
-// separate change to the Isolate contract.
+// process. Read the body as a bounded stream and stop on the FIRST of: end
+// (finite body), the byte cap, the total-time budget, or an idle gap. The
+// total-time budget is what bounds a *steady* infinite stream (e.g. an SSE
+// heartbeat every 1s): the per-gap idle timeout alone never fires for it, so
+// without a total deadline it would run until the byte cap (hours) and hang the
+// process. Finite bodies come through whole (multi-chunk, not bounded-first-
+// chunk); infinite ones return a bounded snapshot and the connection stays
+// framed-in-sync. True HTTP passthrough streaming is a separate change to the
+// Isolate contract.
 const STREAM_IDLE_SENTINEL = Symbol("idle");
 const STREAM_MAX_BYTES =
   parseInt(Deno.env.get("EDGER_STREAM_MAX_BYTES") ?? "", 10) || 8 * 1024 * 1024;
 const STREAM_IDLE_MS =
   parseInt(Deno.env.get("EDGER_STREAM_IDLE_MS") ?? "", 10) || 1000;
+const STREAM_MAX_MS =
+  parseInt(Deno.env.get("EDGER_STREAM_MAX_MS") ?? "", 10) || 2000;
 
 async function drainBounded(body) {
   const reader = body.getReader();
   const chunks = [];
   let total = 0;
+  const startedAt = Date.now();
   try {
     while (total < STREAM_MAX_BYTES) {
+      const remaining = STREAM_MAX_MS - (Date.now() - startedAt);
+      if (remaining <= 0) break; // total-time budget spent (steady infinite stream)
       let timer;
       const idle = new Promise((resolve) => {
-        timer = setTimeout(() => resolve(STREAM_IDLE_SENTINEL), STREAM_IDLE_MS);
+        timer = setTimeout(
+          () => resolve(STREAM_IDLE_SENTINEL),
+          Math.min(STREAM_IDLE_MS, remaining),
+        );
       });
       const result = await Promise.race([reader.read(), idle]);
       clearTimeout(timer);

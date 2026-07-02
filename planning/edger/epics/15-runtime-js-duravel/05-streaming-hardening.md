@@ -51,8 +51,10 @@
 
 ## Tasks
 ### Fase 1 — Streaming
-- [x] `drainBounded` no harness (byte cap + idle timeout) substitui `arrayBuffer()`; finito inteiro, infinito bounded sem hang.
-- [x] Teste `streaming.rs`: finito multi-chunk inteiro; infinito bounded + processo sobrevive ao 2º request. Mutação capturada (voltar a `arrayBuffer()` → teste infinito trava → vermelho).
+- [x] `drainBounded` no harness (byte cap + idle + **teto de tempo total** `EDGER_STREAM_MAX_MS`) substitui `arrayBuffer()`; finito inteiro, infinito bounded sem hang.
+- [x] Handlers globais `unhandledrejection`/`error` no harness: erro de background do worker pós-resposta não derruba o processo persistente.
+- [x] Testes `streaming.rs` (4): finito inteiro; infinito por byte cap; SSE de cadência estável por tempo total; sobrevivência a erro de background. Mutações capturadas (voltar a `arrayBuffer()` → infinito trava; remover teto de tempo → SSE estável trava; remover handlers → `[UDS_IO] Broken pipe`).
+- [x] Validado ao vivo no preview builtin: `/sse` e `/stream` retornam bounded repetidamente (antes travavam/matavam o processo).
 ### Fase 2 — Aposentar v1
 - [x] AGENTS.md + runtime-functional-plan: processo persistente é default; v1 (`EDGER_JS_RUNTIME=bridge`) é fallback legado.
 - [x] compat-matrix sse/stream atualizada.
@@ -70,14 +72,22 @@ cargo build --workspace
 
 **completed** (2026-07-02) — Fecha a fundação durável. O harness passou a ler o
 body como **stream bounded** (`drainBounded`: cap de bytes `EDGER_STREAM_MAX_BYTES`
-+ idle `EDGER_STREAM_IDLE_MS`) em vez de `arrayBuffer()`. Isso corrige um bug real
-de correção do backend de processo: um stream infinito/SSE **travava** o processo
-persistente (o `arrayBuffer()` nunca resolvia) e desincronizava o protocolo de
-frames. Agora body finito multi-chunk chega inteiro (fim do bounded-first-chunk) e
-o infinito é limitado sem travar — provado por `edger-isolation/tests/streaming.rs`
-(finito entrega `chunk-a;chunk-b;chunk-c`; infinito volta bounded e o 2º request no
-mesmo socket segue OK). Mutação capturada (voltar a `arrayBuffer()` faz o teste
-infinito atingir timeout → vermelho). Ponte v1 formalizada como fallback legado
++ idle `EDGER_STREAM_IDLE_MS` + **teto de tempo total** `EDGER_STREAM_MAX_MS`) em vez
+de `arrayBuffer()`. Isso corrige um bug real de correção do backend de processo: um
+stream infinito/SSE **travava** o processo persistente (`arrayBuffer()` nunca resolvia)
+e desincronizava os frames. O **teste ao vivo no preview builtin** revelou dois defeitos
+que os testes iniciais não pegavam: (1) um SSE de cadência estável (o worker `sse` emite
+1 evento/s via `setInterval`) escapa do idle e correria até o byte cap — resolvido pelo
+teto de tempo total; (2) o `setInterval` disparava um tick após o `cancel()` do stream, e
+o `enqueue()` num controller fechado lançava um erro **de background não capturado** que
+matava o processo Deno (`[UDS_IO] Broken pipe` no request seguinte) — resolvido com
+handlers globais `unhandledrejection`/`error` no harness, tornando o processo resiliente a
+erros de background do código do usuário (timer solto, promise flutuante). Provado por
+`edger-isolation/tests/streaming.rs` (4 testes: finito inteiro, infinito por byte cap, SSE
+estável por tempo total, sobrevivência a erro de background) e revalidado ao vivo (`/sse` e
+`/stream` respondem bounded repetidamente). Mutações capturadas: voltar a `arrayBuffer()`
+(infinito trava), remover o teto de tempo (SSE estável trava), remover os handlers
+(`Broken pipe`). Ponte v1 formalizada como fallback legado
 (`EDGER_JS_RUNTIME=bridge`; default UDS) em AGENTS.md e no runtime-functional-plan;
 compat-matrix sse/stream atualizada. Adiados com racional explícito (fora do slice):
 passthrough HTTP incremental ao cliente (exige contrato `Isolate` streaming — grande
