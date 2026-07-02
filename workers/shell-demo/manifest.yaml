@@ -6,6 +6,7 @@ injectBase: true
 shellExcludes:
   - ssr-demo
   - sveltekit-demo
+  - tanstack-demo
   - cpanel
   - cron-worker
   - fullstack-demo
