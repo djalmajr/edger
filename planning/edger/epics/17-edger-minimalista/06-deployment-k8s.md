@@ -46,13 +46,23 @@
 - [x] 2026-07-03 — `questions.yaml` com grupos Runtime/Scaling/Resources/Auth (sem Persistence/Turso).
 - [x] 2026-07-03 — Ingress servindo o cPanel por path configurável; validação estática via `helm lint`/`helm template` quando o binário `helm` estiver disponível.
 - [x] 2026-07-03 — Dockerfile multi-stage com runtime Deno, binário `edger`, cPanel embarcado, usuário não-root e `.dockerignore`.
-- [x] 2026-07-03 — Doc/story de operação registra rotação por Secret-arquivo, OIDC fase 2, API Gateway externo e validação real de `helm install` delegada ao harness/usuário.
+- [x] 2026-07-03 — Doc/story de operação registra rotação por Secret-arquivo, OIDC fase 2, API Gateway externo e validação real de `helm install` em cluster real.
 
 ## Implementation Notes
 
 - 2026-07-03 — O chart entregue em `charts/edger/` é stateless: usa Deployment, ConfigMap, Secret opcional, Service, Ingress opcional e HPA opcional; não cria PVC, StatefulSet, banco ou recursos Turso.
 - 2026-07-03 — `rootKey.value` gera um Secret do chart e `rootKey.existingSecret` referencia um Secret externo. Em ambos os casos o pod recebe `EDGER_ROOT_KEY_FILE=/var/run/secrets/edger-root/root-key`; rotação real em cluster fica para o harness/usuário validar, porque esta execução não deve rodar `helm install`.
 - 2026-07-03 — OIDC permanece opcional/fase 2 no form (`oidc.enabled` + `EDGER_OIDC_*`), sem bloquear o deploy root-key.
+
+## Validação em cluster (2026-07-03)
+
+- Cluster: K3s v1.35.5 single-node (Hetzner , x86_64, Ubuntu 24.04); helm v4.2.2.
+- Imagem: cross-compile local + montagem docker buildx amd64 (216MB) — nota: rustc SEGFAULTa sob emulação x86 no Docker Desktop/Apple Silicon; zigbuild é a rota para builds amd64 locais. Import direto no containerd (sem registry, validação apenas).
+- `helm install` → sucesso; pod 1/1 Running em 11s, sem restart.
+- Provas in-cluster (port-forward svc :3000): `/health` 200, `/ready` 200, `/` → 307 `/cpanel/`, cPanel servido do pod, admin sem key 401, admin com a chave do Secret-arquivo 200.
+- Rotação de root key sem restart: chave nova aceita após ~75s (re-projeção do kubelet), chave antiga 401, restartCount=0.
+- Limpeza completa: helm uninstall + namespace e imagem removidos.
+- Pendência que resta: exposição via Cloudflare Tunnel/ingress e deploy contínuo (kaniko/registry, runbook 08 do infra) ficam para quando o edger for a produção de fato.
 
 ## Verification
 ```bash
