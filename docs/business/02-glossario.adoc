@@ -37,9 +37,10 @@
 | Alvo futuro de produção para JS/TS embutido. A bridge Deno CLI comprova o
   contrato funcional, mas ainda não é a meta final de performance.
 
-| Wasm ABI v1
-| Contrato mínimo para módulos Wasm: exports `memory`, `http_status()` e
-  `http_body_len()`. O body fica no offset `0` da linear memory.
+| Wasm ABI v2
+| Contrato para módulos Wasm: exports `memory`, `edger_alloc(len)` e
+  `edger_handle(ptr, len)`. Request e response trafegam por frames em linear
+  memory.
 
 | WorkerPool
 | Componente de `edger-worker` que cria, cacheia, supervisiona e despacha

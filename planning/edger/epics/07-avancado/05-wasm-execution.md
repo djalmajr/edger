@@ -19,7 +19,7 @@
 |---|---|---|
 | `edger-isolation/src/wasm/mod.rs` | edit | `WasmIsolate` impl `Isolate::execute_wasm` |
 | `edger-isolation/src/wasm/wasi.rs` | edit | Config WASI deny-by-default + env filter |
-| `edger-isolation/src/wasm/handler.rs` | edit | Convenção ABI v1 `http_status` + `http_body_len` |
+| `edger-isolation/src/wasm/handler.rs` | edit | ABI request/response em linear memory |
 | `edger-isolation/src/wasm/load.rs` | edit | Load seguro `.wasm`/`.wat` dentro do worker dir |
 | `edger-isolation/src/lib.rs` | edit | Registrar backend Wasm; feature `wasm` |
 | `edger-isolation/Cargo.toml` | edit | deps `wasmtime`, `wasmtime-wasi`, `wat` |
@@ -38,10 +38,12 @@
 ### TO-BE
 - Entrypoint `.wasm` ou `.wat` do manifest carregado em wasmtime Engine com
   config determinística e validação de path sob worker dir.
-- WASI v1 deny-by-default: imports WASI/host são rejeitados; env sensível é
-  filtrado antes de qualquer futura injeção.
-- Handler ABI v1 documentado: `memory`, `http_status()` e `http_body_len()`;
-  response body é lido do offset `0`.
+- WASIp1 é linkado por `wasmtime-wasi` com contexto mínimo: sem preopens de
+  filesystem, sem rede por default, env sensível filtrado e stdout/stderr
+  opt-in.
+- Handler ABI v2 documentado: `memory`, `edger_alloc(len)` e
+  `edger_handle(ptr, len)`; request e response trafegam por frames na linear
+  memory.
 - `WasmModule { entry: Option<String> }` no `ExecutionKind` é honrado pelo pool
   e pela factory dinâmica do binário.
 - Processo/pool consegue servir workers JS/TS e Wasm no mesmo runtime sem estado
@@ -53,14 +55,13 @@
 - **In:** wasmtime standalone, WASI deny-by-default, execute_wasm, pool/bin
   wiring, fixture + testes, coexistência JS/Wasm.
 - **Out:** Wasm dentro do deno isolate; component model avançado; hot reload de
-  módulos; host WASI real com preopen; request/response ABI completa via
-  linear memory.
+  módulos; preopen explícito do worker root para leitura de arquivos locais.
 
 ### Acceptance criteria
-- [x] Módulo WAT mínimo responde via `WasmIsolate::execute_wasm` (ABI v1: `http_status` + `http_body_len`)
-- [x] Worker `workers/wasm-hello/` responde GET via `pool.fetch`/pipeline com body `wasm-hello` (tests `wasm_pool_integration.rs`, `kind_dispatch_integration.rs`)
+- [x] Módulo WAT responde via `WasmIsolate::execute_wasm` usando request/response em linear memory.
+- [x] Worker `workers/wasm-hello/` ecoa a URI recebida pelo guest em teste in-process de `edger-isolation`.
 - [x] Módulo malformado ou path fora do dir falha com `IsolationError` claro.
-- [x] WASI não concede acesso a filesystem fora do worker dir (imports WASI bloqueados no ABI v1).
+- [x] WASI não concede acesso a filesystem/rede por default; imports WASIp1 são linkados por host real sem preopens.
 - [x] Env vars `*_SECRET` não passam para Wasm (`WasiConfig` filtra env antes de futura injeção).
 - [x] Coexistência: processo pode ter isolates V8 e Wasm simultâneos sem shared mutable state.
 - [x] `cargo test -p edger-isolation --features wasm` verde.
@@ -84,14 +85,15 @@
 - [x] Validação: tamanho máximo módulo, magic bytes, reject unknown imports per policy.
 
 ### Fase 2 — WASI sandbox
-- [x] `wasi.rs`: deny-by-default + imports WASI/host bloqueados no ABI v1.
+- [x] `wasi.rs`: deny-by-default + host WASIp1 real sem FS/rede por default.
 - [x] Env filter: apenas keys não sensíveis ficam em `WasiConfig`.
-- [ ] Host WASI real: preopen apenas worker root; cap net desabilitada por default (follow-up pós-ABI v1).
-- [ ] Env inject no host WASI: apenas keys permitidas pelo manifest após sensitive filter (follow-up pós-ABI v1).
+- [x] Host WASI real: `wasi_snapshot_preview1` linkado por `wasmtime-wasi`; cap net desabilitada por default.
+- [x] Env inject no host WASI: apenas keys permitidas pelo manifest após sensitive filter.
+- [ ] Preopen apenas worker root para futuros workers WASI que precisem de filesystem local.
 
 ### Fase 3 — Request ABI
-- [ ] `handler.rs`: serialize request para linear memory; invoke export; deserialize response (follow-up ABI v2).
-- [x] Documentar ABI v1 em `planning/edger/docs/wasm-abi.md` (curto, versionado).
+- [x] `handler.rs`: serialize request para linear memory; invoke export; deserialize response (ABI v2).
+- [x] Documentar ABI v2 em `planning/edger/docs/wasm-abi.md` (curto, versionado).
 
 ### Fase 4 — Integração
 - [x] `WorkerPool::fetch` respeita `WorkerConfig.kind` quando `kind_hint` não é informado.

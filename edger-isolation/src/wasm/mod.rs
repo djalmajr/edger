@@ -84,7 +84,6 @@ impl Isolate for WasmIsolate {
         req: SerializedRequest,
         config: &WorkerConfig,
     ) -> Result<SerializedResponse, IsolationError> {
-        let _ = &req;
         if self.wasm_bytes.is_none() {
             if let (Some(dir), Some(entry)) =
                 (config.worker_dir.as_ref(), config.entrypoint.as_deref())
@@ -98,7 +97,8 @@ impl Isolate for WasmIsolate {
                 "no wasm module bytes configured on WasmIsolate",
             )
         })?;
-        self.handler.execute_module_with_config(bytes, &self.wasi)
+        self.handler
+            .execute_module_with_config(bytes, &req, &self.wasi)
     }
 
     async fn notify_idle(&mut self) -> Result<(), IsolationError> {

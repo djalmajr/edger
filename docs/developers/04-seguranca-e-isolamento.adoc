@@ -39,18 +39,22 @@ Pendências:
 
 ==== Isolamento Wasm
 
-Wasm usa `wasmtime` standalone. O ABI v1 é deny-by-default:
+Wasm usa `wasmtime` standalone. A ABI v2 é deny-by-default no host:
 
 * valida magic bytes Wasm;
 * limita módulo a 4 MiB;
-* limita body a 64 KiB;
+* limita frames request/response a 256 KiB;
+* limita body de response a 64 KiB;
 * nega qualquer import de host;
-* nega imports WASI (`wasi_snapshot_preview1` e `wasi:*`) quando sandbox está
-  `deny_all`;
+* linka imports WASIp1 `wasi_snapshot_preview1` com FS/rede sem permissões por
+  default;
+* rejeita imports `wasi:*` de component model/WASIp2 no caminho atual de core
+  modules;
 * filtra env sensível em `WasiConfig::from_worker_config` para padrões como
   `AWS_*`, `DB_*`, `*_KEY` e `*_SECRET`.
 
-Host WASI real com preopen restrito ao worker root ainda é pendência.
+Preopen restrito ao worker root segue como evolução para workers Wasm que
+precisem ler arquivos locais.
 
 ==== Extensões
 

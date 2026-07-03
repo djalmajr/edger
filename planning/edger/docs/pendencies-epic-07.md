@@ -40,7 +40,7 @@ Documento dedicado para itens não resolvidos durante execução da Fase 7.
 - [x] Harden de permissões/sandbox da Deno CLI bridge: migrado de `deno eval` (permissão total) para `deno run --no-prompt` com `--allow-read=<worker_dir>`, `--allow-env` sobre env limpo/filtrado e `--allow-net` configurável via `EDGER_DENO_ALLOW_NET` (`false|hosts`); write/run/ffi/sys negados. Testes `edger-isolation/tests/deno_sandbox.rs`.
 - [x] Pool recicla worker após erro de isolate (antes ficava preso em `Active` e todo request seguinte falhava com `worker not ready for dispatch`); regressão em `edger-worker/tests/pool_error_recovery.rs`.
 
-### 07.05 Wasm execution — **completed (standalone wasmtime v1)**
+### 07.05 Wasm execution — **completed (standalone wasmtime + ABI v2)**
 
 - [x] ABI mínima `http_status` + `http_body_len` + testes
 - [x] Load from worker dir + pool E2E
@@ -50,8 +50,9 @@ Documento dedicado para itens não resolvidos durante execução da Fase 7.
 - [x] Factory dinâmica do orquestrador Rust escolhe `WasmIsolate` por kind
 - [x] Coexistência JS/TS + Wasm no mesmo processo/pool coberta por integração
 - [x] Fixture `workers/wasm-hello/index.wat` documenta materialização opcional de `index.wasm`
-- [ ] Host WASI real: preopen apenas worker root + env inject permitido
-- [ ] ABI request/response em linear memory
+- [x] Host WASI real: `wasi_snapshot_preview1` linkado com deny-all de FS/rede por default, env filtrado quando permitido e stdout/stderr opt-in
+- [x] ABI request/response em linear memory
+- [ ] Preopen explícito de worker root para futuros workers WASI que precisem ler arquivos locais
 - Ver `status/checkpoint-2026-06-29-story-07-05-wip.md`,
   `status/evidence/story-07-05-runtime.txt` e
   `status/closure-2026-07-01-story-07-05-wasm-execution.md`
