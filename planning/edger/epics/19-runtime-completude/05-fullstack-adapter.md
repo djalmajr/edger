@@ -4,7 +4,7 @@
 
 ## Context
 
-- **Problema:** `kind: fullstack` existe no contrato, mas hoje retorna stub `501`; apps rodam apenas via `kind: fetch` com wrapper manual.
+- **Problema:** antes desta story, `kind: fullstack` existia no contrato, mas retornava stub `501`; apps rodavam apenas via `kind: fetch` com wrapper manual.
 - **Objetivo:** tornar `kind: fullstack` declarativo com `adapter: hono|sveltekit|tanstack`.
 - **Valor:** remove o stub e entrega um caminho oficial para apps fullstack suportados.
 - **Dependência:** Story 19.B, porque esta story também toca o caminho de execução em `edger-worker/src/pool.rs`.
@@ -21,19 +21,19 @@
 ## Detail
 
 ### Critérios de aceite
-- [ ] Não há stub `501` para `kind: fullstack`.
-- [ ] Manifesto aceita `adapter: hono`, `adapter: sveltekit` ou `adapter: tanstack`.
-- [ ] Adapter desconhecido falha com erro claro e status estável.
-- [ ] Um app suportado serve sem wrapper manual em `kind: fetch`.
-- [ ] O limite de body efetivo da Story 19.B continua aplicado.
+- [x] Não há stub `501` para `kind: fullstack`.
+- [x] Manifesto aceita `adapter: hono`, `adapter: sveltekit` ou `adapter: tanstack`.
+- [x] Adapter desconhecido falha com erro claro e status estável.
+- [x] Um app suportado serve sem wrapper manual em `kind: fullstack`.
+- [x] O limite de body efetivo da Story 19.B continua aplicado.
 
 ## Tasks
 
-- [ ] Confirmar o contrato atual de `kind` e `adapter`.
-- [ ] Modelar adapters suportados no contrato de execução.
-- [ ] Remover o caminho que retorna 501.
-- [ ] Ligar dispatch fullstack aos adapters declarados.
-- [ ] Adicionar testes para adapter suportado e adapter inválido.
+- [x] Confirmar o contrato atual de `kind` e `adapter`.
+- [x] Modelar adapters suportados no contrato de execução.
+- [x] Remover o caminho que retorna 501.
+- [x] Ligar dispatch fullstack aos adapters declarados.
+- [x] Adicionar testes para adapter suportado e adapter inválido.
 
 ## Verification
 
@@ -47,4 +47,8 @@ cargo fmt -- --check
 
 ## Status
 
-**pending**
+**completed** (2026-07-03) — `kind: fullstack` agora exige
+`adapter: hono|sveltekit|tanstack` e usa `ssrEntrypoint` (com `entrypoint`
+como alias) para delegar ao backend fetch existente. TanStack Start serve
+`clientDir` estaticamente via Rust, restaura `x-base` antes do SSR e o fixture
+`workers/tanstack-demo` não depende mais de wrapper manual.

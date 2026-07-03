@@ -1,6 +1,6 @@
 //! Integration tests for MockIsolate (story 03.02) — written first (TDD red).
 
-use edger_core::{ExecutionKind, Isolate, SerializedRequest, WorkerConfig};
+use edger_core::{Isolate, SerializedRequest, WorkerConfig};
 use edger_isolation::{dispatch_execution, MockIsolate};
 
 fn sample_req(uri: &str) -> SerializedRequest {
@@ -68,17 +68,26 @@ async fn mock_isolate_wasm_header() {
 }
 
 #[tokio::test]
-async fn dispatch_fullstack_returns_501() {
+async fn dispatch_fullstack_uses_fetch_backend_with_restored_base() {
     let mut isolate = MockIsolate::new();
-    let req = sample_req("/ssr");
-    let config = default_config();
-    let kind = ExecutionKind::Fullstack {
-        adapter: "next".into(),
+    let mut req = sample_req("/ssr");
+    req.headers.push(("x-base".into(), "/mock-worker".into()));
+    req.base_href = Some("/mock-worker/".into());
+    let manifest = edger_core::WorkerManifest {
+        name: "mock-worker".into(),
+        adapter: Some("tanstack".into()),
+        kind: Some("fullstack".into()),
+        ssr_entrypoint: Some("server/server.js".into()),
+        ..Default::default()
     };
+    let config = edger_core::parse_worker_config(&manifest);
+    let kind = config.kind.clone().unwrap();
     let res = dispatch_execution(&mut isolate, kind, req, &config)
         .await
         .unwrap();
-    assert_eq!(res.status, 501);
+    assert_eq!(res.status, 200);
+    let body = String::from_utf8(res.body.unwrap().to_vec()).unwrap();
+    assert!(body.contains("fetch:GET /mock-worker/ssr"));
 }
 
 #[tokio::test]

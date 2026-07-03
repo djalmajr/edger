@@ -11,7 +11,10 @@ use edger_core::{
     create_worker_ref, BodyStream, ExecutionKind, Isolate, SerializedRequest, SerializedResponse,
     StreamedResponse, WorkerConfig, WorkerManifest, WorkerRef, WorkerResponse,
 };
-use edger_isolation::{execute_with_limits, validate_request, ResourceLimits};
+use edger_isolation::{
+    dispatch_fullstack_stream, execute_with_limits, try_serve_fullstack_asset, validate_request,
+    ResourceLimits,
+};
 use tracing::Instrument;
 use uuid::Uuid;
 
@@ -445,7 +448,9 @@ impl WorkerPool {
             .unwrap_or(worker_ref.kind.clone());
         let streamable = matches!(
             kind,
-            ExecutionKind::FetchHandler | ExecutionKind::RoutesTable
+            ExecutionKind::FetchHandler
+                | ExecutionKind::RoutesTable
+                | ExecutionKind::Fullstack { .. }
         );
         // Ephemeral workers (ttl 0) hold a lifetimed concurrency permit that
         // cannot travel inside a 'static body stream — they stay buffered.
@@ -464,6 +469,13 @@ impl WorkerPool {
         config.worker_dir = Some(worker_ref.dir.clone());
         worker_ref.config = config.clone();
         validate_request(&req, &config).map_err(WorkerError::Isolation)?;
+        if matches!(kind, ExecutionKind::Fullstack { .. }) {
+            if let Some(asset) =
+                try_serve_fullstack_asset(&req, &config).map_err(WorkerError::Isolation)?
+            {
+                return Ok(WorkerResponse::Buffered(asset));
+            }
+        }
 
         const MAX_RESOLVE_ATTEMPTS: usize = 32;
         let mut attempt = 0;
@@ -512,6 +524,9 @@ impl WorkerPool {
         let mut isolate_guard = instance.isolate().lock_owned().await;
         let res = match kind {
             ExecutionKind::RoutesTable => isolate_guard.execute_routes_stream(req, &config).await,
+            ExecutionKind::Fullstack { .. } => {
+                dispatch_fullstack_stream(isolate_guard.as_mut(), req, &config).await
+            }
             _ => isolate_guard.execute_fetch_stream(req, &config).await,
         };
 
@@ -570,14 +585,27 @@ impl WorkerPool {
         let mut worker_ref = worker_ref.clone();
         let mut config = worker_ref.config.clone();
         config.worker_dir = Some(worker_ref.dir.clone());
+        worker_ref.config = config.clone();
+        validate_request(&req, &config).map_err(WorkerError::Isolation)?;
+
+        let kind = kind_hint
+            .clone()
+            .or(config.kind.clone())
+            .or(Some(worker_ref.kind.clone()))
+            .unwrap_or(ExecutionKind::FetchHandler);
+        if matches!(kind, ExecutionKind::Fullstack { .. }) {
+            if let Some(asset) =
+                try_serve_fullstack_asset(&req, &config).map_err(WorkerError::Isolation)?
+            {
+                return Ok(asset);
+            }
+        }
 
         let _ephemeral_permit = if config.ttl_ms == 0 {
             Some(self.inner.ephemeral.acquire().await?)
         } else {
             None
         };
-        worker_ref.config = config.clone();
-        validate_request(&req, &config).map_err(WorkerError::Isolation)?;
 
         // Concurrent requests to the same worker share one cached instance and
         // queue on its dispatch lock. An ephemeral instance (ttl_ms == 0) is
@@ -637,11 +665,6 @@ impl WorkerPool {
             instance: instance.clone(),
             armed: true,
         };
-
-        let kind = kind_hint
-            .or(config.kind.clone())
-            .or(Some(worker_ref.kind.clone()))
-            .unwrap_or(ExecutionKind::FetchHandler);
 
         let isolate_arc = instance.isolate();
         let mut isolate = isolate_arc.lock().await;

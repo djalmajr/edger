@@ -1,4 +1,5 @@
 name: fullstack-demo
 version: "1.0.0"
-entrypoint: index.ts
 kind: fullstack
+adapter: hono
+ssrEntrypoint: index.ts

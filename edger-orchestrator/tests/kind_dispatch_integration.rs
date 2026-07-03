@@ -4,10 +4,13 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use edger_core::ExecutionKind;
+use edger_core::{
+    ExecutionKind, Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig,
+};
 use edger_isolation::{DenoFacade, DenoIsolate, WasmIsolate};
 use edger_orchestrator::{
     build_pipeline, load_manifests_from_dirs, ControlAuth, OrchestratorState, ServerState,
@@ -28,9 +31,83 @@ impl IsolateFactory for RuntimeFactory {
     }
 }
 
+struct FullstackProbeFactory;
+
+impl IsolateFactory for FullstackProbeFactory {
+    fn create_isolate(&self, _worker_ref: &edger_core::WorkerRef) -> Box<dyn edger_core::Isolate> {
+        Box::new(FullstackProbeIsolate)
+    }
+}
+
+struct FullstackProbeIsolate;
+
+#[async_trait]
+impl Isolate for FullstackProbeIsolate {
+    async fn execute_fetch(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        let x_base = req
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("x-base"))
+            .map(|(_, value)| value.as_str())
+            .unwrap_or("");
+        Ok(SerializedResponse {
+            status: 200,
+            headers: vec![("content-type".into(), "text/plain".into())],
+            body: Some(bytes::Bytes::from(format!(
+                "ssr uri={} entrypoint={} x-base={}",
+                req.uri,
+                config.entrypoint.as_deref().unwrap_or(""),
+                x_base
+            ))),
+        })
+    }
+
+    async fn execute_routes(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+
+    async fn serve_static_spa(
+        &mut self,
+        _path: &str,
+        _base_href: Option<&str>,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        Err(IsolationError::new(
+            "UNEXPECTED_SPA",
+            "unexpected SPA dispatch",
+        ))
+    }
+
+    async fn execute_wasm(
+        &mut self,
+        _req: SerializedRequest,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        Err(IsolationError::new(
+            "UNEXPECTED_WASM",
+            "unexpected Wasm dispatch",
+        ))
+    }
+}
+
 fn state_with_workers(root: std::path::PathBuf) -> OrchestratorState {
+    state_with_factory(root, Arc::new(RuntimeFactory))
+}
+
+fn state_with_factory(
+    root: std::path::PathBuf,
+    factory: Arc<dyn IsolateFactory>,
+) -> OrchestratorState {
     let server = ServerState::new_unready();
-    let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(RuntimeFactory));
+    let pool = WorkerPool::with_factory(PoolConfig::default(), factory);
     server.mark_ready(pool.clone());
 
     OrchestratorState {
@@ -735,11 +812,10 @@ kind: routes
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-// Mutation captured: dispatching Fullstack workers to the fetch backend
-// (instead of the documented 501 adapter-required response) makes this
-// worker execute as plain JS and the status assertion goes red.
+// Mutation captured: accepting a fullstack manifest without an adapter lets the
+// runtime reach a generic dispatch error instead of a clear config failure.
 #[tokio::test]
-async fn fullstack_worker_returns_501_adapter_required() {
+async fn fullstack_worker_without_adapter_fails_manifest_validation() {
     let root = tempfile::tempdir().unwrap();
     let worker_dir = root.path().join("ssr-app");
     fs::create_dir_all(&worker_dir).unwrap();
@@ -747,8 +823,8 @@ async fn fullstack_worker_returns_501_adapter_required() {
         worker_dir.join("manifest.yaml"),
         r#"name: ssr-app
 version: "1.0.0"
-entrypoint: index.ts
 kind: fullstack
+ssrEntrypoint: index.ts
 "#,
     )
     .unwrap();
@@ -758,7 +834,109 @@ kind: fullstack
     )
     .unwrap();
 
-    let app = build_pipeline(state_with_workers(root.path().to_path_buf()));
-    let (status, _body) = dispatch(app, "GET", "/ssr-app", Body::empty()).await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    let err = load_manifests_from_dirs(&[root.path().to_path_buf()]).unwrap_err();
+    assert_eq!(err.code, "VALIDATION_ERROR");
+    assert!(err.message.contains("manifest.adapter"));
+}
+
+#[tokio::test]
+async fn fullstack_worker_with_invalid_adapter_fails_manifest_validation() {
+    let root = tempfile::tempdir().unwrap();
+    let worker_dir = root.path().join("ssr-app");
+    fs::create_dir_all(&worker_dir).unwrap();
+    fs::write(
+        worker_dir.join("manifest.yaml"),
+        r#"name: ssr-app
+version: "1.0.0"
+kind: fullstack
+adapter: next
+ssrEntrypoint: index.ts
+"#,
+    )
+    .unwrap();
+    fs::write(
+        worker_dir.join("index.ts"),
+        r#"Deno.serve(() => new Response("ssr"));"#,
+    )
+    .unwrap();
+
+    let err = load_manifests_from_dirs(&[root.path().to_path_buf()]).unwrap_err();
+    assert_eq!(err.code, "VALIDATION_ERROR");
+    assert!(err.message.contains("unsupported adapter"));
+}
+
+fn workers_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("workers")
+}
+
+// Mutation captured: dropping fullstack base restoration sends `/` to the
+// TanStack server bundle and this request body loses `/tanstack-demo/`.
+#[tokio::test]
+async fn tanstack_fullstack_worker_dispatches_ssr_with_base_restored() {
+    let app = build_pipeline(state_with_factory(
+        workers_root(),
+        Arc::new(FullstackProbeFactory),
+    ));
+
+    let (status, body) = dispatch(app, "GET", "/tanstack-demo", Body::empty()).await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected body: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("uri=/tanstack-demo/"), "body: {text}");
+    assert!(text.contains("entrypoint=server/server.js"), "body: {text}");
+    assert!(text.contains("x-base=/tanstack-demo"), "body: {text}");
+}
+
+// Mutation captured: routing TanStack assets through SSR instead of the Rust
+// clientDir preflight returns the probe body instead of the built CSS.
+#[tokio::test]
+async fn tanstack_fullstack_worker_serves_client_asset() {
+    let app = build_pipeline(state_with_factory(
+        workers_root(),
+        Arc::new(FullstackProbeFactory),
+    ));
+
+    let (status, body) = dispatch(
+        app,
+        "GET",
+        "/tanstack-demo/assets/styles-DLLFwaUX.css",
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("@layer"), "body: {text}");
+    assert!(!text.contains("ssr uri="), "asset hit SSR: {text}");
+}
+
+// Mutation captured: removing decoded path validation lets encoded traversal
+// reach files outside clientDir or treats malformed escapes as normal SSR.
+#[tokio::test]
+async fn tanstack_fullstack_worker_rejects_bad_asset_paths() {
+    let app = build_pipeline(state_with_factory(
+        workers_root(),
+        Arc::new(FullstackProbeFactory),
+    ));
+
+    let (status, _body) = dispatch(
+        app.clone(),
+        "GET",
+        "/tanstack-demo/assets/%2e%2e/server/server.js",
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _body) =
+        dispatch(app, "GET", "/tanstack-demo/assets/%E0%A4%A", Body::empty()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
