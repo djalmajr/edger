@@ -26,7 +26,7 @@
 | 17.C Remover estado + bindings | `03-remover-estado-bindings.md` | Deletar `keyval`/`turso`/`turso-remote` + service bindings + `DurableSqlProvider`; manter env/secrets + egress | medium | not started | 17.B |
 | 17.D Remover gateway extension | `04-remover-gateway.md` | Deletar `edger-ext-gateway`; doc de deployment com API GW externo | medium | not started | 17.C |
 | 17.E Remover sistema de extensões | `05-remover-extensoes.md` | Deletar `ExtensionRegistry`/hooks/`Extension`/`Middleware`; limpar `visibility`/`namespaces` vestigiais | large | not started | 17.A–17.D |
-| 17.F Deployment K8s de referência | `06-deployment-k8s.md` | Manifesto: Deployment stateless + Secret-arquivo + doc de rotação sem restart; API GW externo na frente | small | not started | 17.A–17.E |
+| 17.F Deployment K8s de referência | `06-deployment-k8s.md` | Helm chart Rancher-style (questions.yaml modelado no Buntime, stateless) que instala e serve o cPanel; Deployment + HPA + Secret-arquivo | medium | not started | 17.A–17.E |
 
 ## Roadmap
 
