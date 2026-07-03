@@ -1,8 +1,9 @@
 //! Buntime manifest field mapping tests (story 02.02).
 
 use edger_core::{
-    create_worker_ref, infer_execution_kind, parse_duration_string_to_ms, parse_size_to_bytes,
-    parse_worker_config, ExecutionKind, WorkerManifest,
+    create_worker_ref, effective_max_body_size_bytes, infer_execution_kind,
+    parse_duration_string_to_ms, parse_size_to_bytes, parse_worker_config, ExecutionKind,
+    WorkerManifest, DEFAULT_MAX_BODY_BYTES,
 };
 
 const SAMPLE_YAML: &str = include_str!("fixtures/sample_manifest.yaml");
@@ -33,6 +34,20 @@ fn parse_worker_config_normalizes_buntime_fields() {
     assert!(config.inject_base);
     assert_eq!(config.cron.len(), 1);
     assert_eq!(config.kind, Some(ExecutionKind::FetchHandler));
+}
+
+#[test]
+fn effective_body_limit_uses_global_default_without_manifest_override() {
+    let config = parse_worker_config(&WorkerManifest {
+        name: "default-body-limit".into(),
+        ..Default::default()
+    });
+
+    assert_eq!(config.max_body_size_bytes, None);
+    assert_eq!(
+        effective_max_body_size_bytes(&config),
+        DEFAULT_MAX_BODY_BYTES
+    );
 }
 
 #[test]

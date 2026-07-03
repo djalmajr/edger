@@ -1,6 +1,9 @@
 //! Wire validation and IPC framing (types canonical in edger-core).
 
-use edger_core::{validate_headers, CoreError, IsolationError, SerializedRequest, WorkerConfig};
+use edger_core::{
+    effective_max_body_size_bytes, validate_headers, CoreError, IsolationError, SerializedRequest,
+    WorkerConfig,
+};
 
 /// Validate request against core header limits and worker max body size.
 pub fn validate_request(
@@ -9,10 +12,11 @@ pub fn validate_request(
 ) -> Result<(), IsolationError> {
     validate_headers(&req.headers).map_err(|e| IsolationError::new(&e.code, e.message))?;
 
-    if let (Some(max), Some(body)) = (config.max_body_size_bytes, &req.body) {
+    let max = effective_max_body_size_bytes(config);
+    if let Some(body) = &req.body {
         if body.len() as u64 > max {
             return Err(IsolationError::new(
-                "VALIDATION_ERROR",
+                "PAYLOAD_TOO_LARGE",
                 format!("body exceeds max {} bytes", max),
             ));
         }

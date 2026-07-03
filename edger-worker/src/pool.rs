@@ -11,6 +11,7 @@ use edger_core::{
     create_worker_ref, BodyStream, ExecutionKind, Isolate, SerializedRequest, SerializedResponse,
     StreamedResponse, WorkerConfig, WorkerManifest, WorkerRef, WorkerResponse,
 };
+use edger_isolation::{execute_with_limits, validate_request, ResourceLimits};
 use tracing::Instrument;
 use uuid::Uuid;
 
@@ -462,6 +463,7 @@ impl WorkerPool {
         let mut config = worker_ref.config.clone();
         config.worker_dir = Some(worker_ref.dir.clone());
         worker_ref.config = config.clone();
+        validate_request(&req, &config).map_err(WorkerError::Isolation)?;
 
         const MAX_RESOLVE_ATTEMPTS: usize = 32;
         let mut attempt = 0;
@@ -575,6 +577,7 @@ impl WorkerPool {
             None
         };
         worker_ref.config = config.clone();
+        validate_request(&req, &config).map_err(WorkerError::Isolation)?;
 
         // Concurrent requests to the same worker share one cached instance and
         // queue on its dispatch lock. An ephemeral instance (ttl_ms == 0) is
@@ -880,32 +883,14 @@ async fn dispatch_to_isolate<I: Isolate + ?Sized>(
 ) -> Result<SerializedResponse, edger_core::IsolationError> {
     let execution_kind = execution_kind_label(&kind).to_string();
     let request_id = req.request_id.clone();
-    async move {
-        match kind {
-            ExecutionKind::FetchHandler => isolate.execute_fetch(req, config).await,
-            ExecutionKind::RoutesTable => isolate.execute_routes(req, config).await,
-            ExecutionKind::StaticSpa { inject_base } => {
-                let base = if inject_base {
-                    Some(req.base_href.as_deref().unwrap_or("/"))
-                } else {
-                    None
-                };
-                isolate.serve_static_spa(&req.uri, base, config).await
-            }
-            ExecutionKind::WasmModule { .. } => isolate.execute_wasm(req, config).await,
-            ExecutionKind::Fullstack { adapter } => Ok(SerializedResponse {
-                status: 501,
-                headers: vec![("x-adapter".into(), adapter)],
-                body: Some(Bytes::from_static(b"fullstack not implemented")),
-            }),
-        }
-    }
-    .instrument(tracing::debug_span!(
-        "isolate.execute",
-        request_id = %request_id,
-        execution_kind = %execution_kind
-    ))
-    .await
+    let limits = ResourceLimits::from_config(config);
+    execute_with_limits(isolate, kind, req, config, &limits)
+        .instrument(tracing::debug_span!(
+            "isolate.execute",
+            request_id = %request_id,
+            execution_kind = %execution_kind
+        ))
+        .await
 }
 
 fn execution_kind_label(kind: &ExecutionKind) -> &'static str {

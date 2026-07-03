@@ -42,7 +42,14 @@ fn reject_oversized_body() {
     });
     let body = Bytes::from(vec![0u8; 2048]);
     let err = validate_request(&sample_req(vec![], Some(body)), &config).unwrap_err();
-    assert_eq!(err.code, "VALIDATION_ERROR");
+    assert_eq!(err.code, "PAYLOAD_TOO_LARGE");
+}
+
+#[test]
+fn default_config_rejects_body_above_global_limit() {
+    let body = Bytes::from(vec![0u8; edger_core::DEFAULT_MAX_BODY_BYTES as usize + 1]);
+    let err = validate_request(&sample_req(vec![], Some(body)), &default_config()).unwrap_err();
+    assert_eq!(err.code, "PAYLOAD_TOO_LARGE");
 }
 
 #[test]

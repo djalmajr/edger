@@ -21,8 +21,9 @@ pub use admin::{
 };
 pub use auth::{extract_api_key_from_pairs, HeaderPairs};
 pub use config::{
-    infer_execution_kind, parse_duration_string_to_ms, parse_duration_to_ms, parse_size_to_bytes,
-    parse_worker_config, WorkerConfig,
+    effective_max_body_size_bytes, effective_max_body_size_bytes_usize, infer_execution_kind,
+    parse_duration_string_to_ms, parse_duration_to_ms, parse_size_to_bytes, parse_worker_config,
+    WorkerConfig, DEFAULT_MAX_BODY_BYTES,
 };
 pub use error::{CoreError, IsolationError};
 pub use execution::ExecutionKind;

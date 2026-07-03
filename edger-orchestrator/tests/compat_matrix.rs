@@ -27,7 +27,6 @@ fn must_preserve_rows_are_published_as_tested() {
         "`fetch(req) -> Response` contract",
         "Wasm standalone worker",
         "Static SPA",
-        "ApiKeyPrincipal + namespaces",
         "Reserved paths",
         "Ingress body/header limits",
         "Request-id/log correlation",
@@ -43,4 +42,10 @@ fn known_partial_rows_remain_explicit() {
     for row in ["Manifest fields", "CommonJS Node server examples"] {
         assert_row_status(&matrix, row, "partial");
     }
+}
+
+#[test]
+fn known_removed_rows_remain_explicit() {
+    let matrix = compat_matrix();
+    assert_row_status(&matrix, "ApiKeyPrincipal + namespaces", "n/a");
 }

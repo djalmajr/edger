@@ -1,6 +1,6 @@
 //! edger-worker — WorkerPool, LRU, supervisor (Epic 04).
 //!
-//! Depends only on `edger-core` for production; isolate backends injected via `IsolateFactory`.
+//! Isolate backends are injected via `IsolateFactory`; shared limit guards live in edger-isolation.
 
 pub mod ephemeral;
 pub mod error;
