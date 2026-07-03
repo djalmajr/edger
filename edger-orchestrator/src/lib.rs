@@ -15,7 +15,6 @@ pub mod registry;
 pub mod router;
 pub mod security;
 pub mod server;
-pub mod service_bindings;
 pub mod tracing_init;
 pub mod wire;
 pub mod worker_errors;
@@ -39,7 +38,6 @@ pub use router::{
 };
 pub use security::validate_admin_mutation_security;
 pub use server::{port_from_env, router, serve, ServerConfig, ServerState};
-pub use service_bindings::{resolve_service_bindings, SERVICE_BINDINGS_HEADER};
 pub use tracing_init::{init_tracing_from_env, TracingInitConfig};
 
 pub use wire::{axum_to_serialized, serialized_to_axum, MAX_BODY_BYTES};

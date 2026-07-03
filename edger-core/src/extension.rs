@@ -4,7 +4,6 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::bindings::BindingKind;
 use crate::context::{ExtensionContext, RequestContext, ServerHandle};
 use crate::wire::{SerializedRequest, SerializedResponse};
 use crate::worker_ref::WorkerRef;
@@ -20,7 +19,6 @@ pub enum ExtensionCapability {
     Middleware,
     RequestHook,
     ResponseHook,
-    ServiceProvider { kind: BindingKind },
     WorkerHandler,
 }
 
@@ -39,17 +37,8 @@ impl ExtensionCapability {
             Self::Middleware => "middleware".into(),
             Self::RequestHook => "onRequest".into(),
             Self::ResponseHook => "onResponse".into(),
-            Self::ServiceProvider { kind } => match kind {
-                BindingKind::DurableSql => "provider:durableSql".into(),
-                BindingKind::KeyValue => "provider:keyValue".into(),
-                BindingKind::Queue => "provider:queue".into(),
-            },
             Self::WorkerHandler => "workerHandler".into(),
         }
-    }
-
-    pub fn service_provider(kind: BindingKind) -> Self {
-        Self::ServiceProvider { kind }
     }
 }
 

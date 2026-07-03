@@ -5,20 +5,14 @@
 //! - `RUNTIME_WORKER_DIRS` — `:` separated worker roots (default `workers`)
 //! - `ROOT_API_KEY` — synthetic root principal (optional; handled by edger-ext-auth)
 //! - `EDGER_AUTH_DB` — SQLite path for API keys (default in-memory if unset)
-//! - `EDGER_DURABLE_SQL_PROVIDER` — `local` (default), `turso-remote`, or `turso-sync`
-//! - `EDGER_STATE_DIR` — directory for local SQL/KV/queue state (default in-memory if unset)
 //! - `EDGER_EXTENSION_STATUS_FILE` — JSON overlay for runtime extension enable/disable status
 //! - `EDGER_CRON_ENABLED` — enable manifest `cron[]` jobs (default true)
-//! - `EDGER_TURSO_*` — remote/sync Turso provider settings when selected
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use edger_core::{DurableSqlProvider, ExecutionKind, ExtensionContext};
+use edger_core::{ExecutionKind, ExtensionContext};
 use edger_ext_auth::AuthExtension;
-use edger_ext_keyval::SqlKeyValueProvider;
-use edger_ext_turso::LocalSqliteProvider;
-use edger_ext_turso_remote::RemoteTursoProvider;
 use edger_isolation::{DenoFacade, DenoIsolate, DenoProcessIsolate, WasiConfig, WasmIsolate};
 use edger_orchestrator::{
     build_pipeline, collect_cron_registrations, collect_extensions, init_tracing_from_env,
@@ -71,13 +65,8 @@ async fn main() -> anyhow::Result<()> {
     let index = load_manifests_from_dirs(&worker_dirs)?;
 
     let auth_ext = AuthExtension::from_env()?.into_arc();
-    let sql_provider = durable_sql_provider_from_env()?;
     let mut registry = collect_extensions(vec![])?;
     registry.register_auth_provider(auth_ext.clone())?;
-    let keyval_provider = Arc::new(SqlKeyValueProvider::new(sql_provider.clone()));
-    registry.register_durable_sql_provider(sql_provider)?;
-    registry.register_key_value_provider(keyval_provider.clone())?;
-    registry.register_queue_provider(keyval_provider)?;
     load_extension_status_store_from_env(&registry)?;
     run_on_init(&registry, &mut ExtensionContext::default())?;
     run_on_server_start(&registry, &edger_core::ServerHandle::default());
@@ -122,42 +111,6 @@ fn worker_dirs_from_env() -> Vec<PathBuf> {
         .map(|raw| parse_runtime_worker_dirs(&raw))
         .filter(|dirs| !dirs.is_empty())
         .unwrap_or_else(|| vec![PathBuf::from("workers")])
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DurableSqlProviderKind {
-    Local,
-    TursoRemote,
-}
-
-fn durable_sql_provider_from_env() -> anyhow::Result<Arc<dyn DurableSqlProvider>> {
-    match durable_sql_provider_kind(std::env::var("EDGER_DURABLE_SQL_PROVIDER").ok().as_deref())? {
-        DurableSqlProviderKind::Local => local_sql_provider_from_env(),
-        DurableSqlProviderKind::TursoRemote => {
-            Ok(Arc::new(RemoteTursoProvider::from_env()?) as Arc<dyn DurableSqlProvider>)
-        }
-    }
-}
-
-fn durable_sql_provider_kind(raw: Option<&str>) -> anyhow::Result<DurableSqlProviderKind> {
-    match raw.map(str::trim).filter(|value| !value.is_empty()) {
-        None | Some("local") | Some("sqlite") | Some("local-sqlite") => {
-            Ok(DurableSqlProviderKind::Local)
-        }
-        Some("turso") | Some("turso-remote") | Some("remote") | Some("sync")
-        | Some("turso-sync") => Ok(DurableSqlProviderKind::TursoRemote),
-        Some(value) => anyhow::bail!(
-            "EDGER_DURABLE_SQL_PROVIDER must be local, turso-remote or turso-sync; got {value}"
-        ),
-    }
-}
-
-fn local_sql_provider_from_env() -> anyhow::Result<Arc<dyn DurableSqlProvider>> {
-    let provider = match std::env::var("EDGER_STATE_DIR") {
-        Ok(path) if !path.trim().is_empty() => LocalSqliteProvider::open_dir(path)?,
-        _ => LocalSqliteProvider::in_memory(),
-    };
-    Ok(Arc::new(provider) as Arc<dyn DurableSqlProvider>)
 }
 
 fn env_flag_default_true(name: &str) -> bool {
@@ -212,49 +165,6 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    #[test]
-    fn durable_sql_provider_kind_defaults_to_local() {
-        assert_eq!(
-            durable_sql_provider_kind(None).unwrap(),
-            DurableSqlProviderKind::Local
-        );
-    }
-
-    #[test]
-    fn durable_sql_provider_kind_accepts_remote_aliases() {
-        for value in ["turso", "turso-remote", "remote", "sync", "turso-sync"] {
-            assert_eq!(
-                durable_sql_provider_kind(Some(value)).unwrap(),
-                DurableSqlProviderKind::TursoRemote
-            );
-        }
-    }
-
-    #[test]
-    fn durable_sql_provider_kind_rejects_unknown_values() {
-        let err = durable_sql_provider_kind(Some("postgres")).unwrap_err();
-
-        assert!(err.to_string().contains("EDGER_DURABLE_SQL_PROVIDER"));
-    }
-
-    #[test]
-    fn durable_sql_provider_from_env_selects_remote_without_connecting() {
-        let _guard = env_lock().lock().unwrap();
-        std::env::set_var("EDGER_DURABLE_SQL_PROVIDER", "turso-remote");
-        std::env::set_var("EDGER_TURSO_NAMESPACE", "@acme");
-        std::env::set_var("EDGER_TURSO_URL", "libsql://example.turso.io");
-        std::env::set_var("EDGER_TURSO_AUTH_TOKEN", "secret-token");
-        std::env::remove_var("EDGER_TURSO_LOCAL_PATH");
-
-        let provider = durable_sql_provider_from_env().unwrap();
-
-        assert_eq!(provider.name(), "turso-remote");
-        std::env::remove_var("EDGER_DURABLE_SQL_PROVIDER");
-        std::env::remove_var("EDGER_TURSO_NAMESPACE");
-        std::env::remove_var("EDGER_TURSO_URL");
-        std::env::remove_var("EDGER_TURSO_AUTH_TOKEN");
     }
 
     #[test]

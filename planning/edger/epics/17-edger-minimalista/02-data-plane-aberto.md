@@ -40,3 +40,15 @@
 cargo test -p edger-orchestrator
 curl -H "Authorization: Bearer qualquer-coisa" http://127.0.0.1:3000/<worker>  # worker decide
 ```
+
+## Status
+
+**completed** (2026-07-02) — O pipeline não autentica mais requests de worker: as
+arms `Worker`/`HomepageFallback`/`PluginBase` do `dispatch_resolved_route` passam
+`principal: None` e não chamam `authorize()`. O worker recebe o request cru, com
+`Authorization` intacto, e faz (ou não) sua própria auth. Só o control plane
+(`/api/admin/*`) segue gateado. O marcador `x-edger-internal` (cron) continua
+confiável: `dispatch_worker` autentica **apenas** para validar esse header contra a
+root key (não bloqueia acesso). Removidos `is_public_worker`/`should_skip_hooks`.
+Validado ao vivo: workers antes `protected` servem sem key; control plane 401 sem
+key / 200 com root; worker recebe token custom intacto.

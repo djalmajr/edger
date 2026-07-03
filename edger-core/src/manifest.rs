@@ -2,8 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::bindings::BindingManifest;
-
 /// Public route bypass configuration (Buntime `publicRoutes`).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +52,4 @@ pub struct WorkerManifest {
     pub dependencies: Option<Vec<String>>,
     #[serde(default)]
     pub shell_excludes: Vec<String>,
-    #[serde(default)]
-    pub bindings: Vec<BindingManifest>,
 }

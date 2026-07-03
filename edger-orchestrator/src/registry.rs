@@ -11,8 +11,8 @@ use edger_core::{
     AdminExtensionManifestMenu, AdminExtensionReconcileAction, AdminExtensionReconcileActionKind,
     AdminExtensionReconcileClassification, AdminExtensionReconcileDiagnostics,
     AdminExtensionReconcileRequest, AdminExtensionReconcileResponse,
-    AdminExtensionReconcileSummary, AuthProvider, BindingKind, CoreError, DurableSqlProvider,
-    ExtensionCapability, ExtensionDependency, KeyValueProvider, Middleware, QueueProvider,
+    AdminExtensionReconcileSummary, AuthProvider, CoreError, ExtensionCapability,
+    ExtensionDependency, Middleware,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -22,11 +22,8 @@ use serde_json::{Map, Value};
 pub struct ExtensionRegistry {
     middlewares: Arc<Vec<Arc<dyn Middleware>>>,
     auth_provider: Arc<Option<Arc<dyn AuthProvider>>>,
-    durable_sql_provider: Arc<Option<Arc<dyn DurableSqlProvider>>>,
     extension_status: Arc<RwLock<BTreeMap<String, bool>>>,
     extension_status_store: Arc<RwLock<Option<PathBuf>>>,
-    key_value_provider: Arc<Option<Arc<dyn KeyValueProvider>>>,
-    queue_provider: Arc<Option<Arc<dyn QueueProvider>>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -137,101 +134,6 @@ impl ExtensionRegistry {
             .filter(|provider| self.is_extension_enabled(provider.name()))
     }
 
-    pub fn durable_sql_provider(&self) -> Option<Arc<dyn DurableSqlProvider>> {
-        self.registered_durable_sql_provider()
-            .filter(|provider| self.is_extension_enabled(provider.name()))
-    }
-
-    pub fn key_value_provider(&self) -> Option<Arc<dyn KeyValueProvider>> {
-        self.registered_key_value_provider()
-            .filter(|provider| self.is_extension_enabled(provider.name()))
-    }
-
-    pub fn queue_provider(&self) -> Option<Arc<dyn QueueProvider>> {
-        self.registered_queue_provider()
-            .filter(|provider| self.is_extension_enabled(provider.name()))
-    }
-
-    pub fn has_service_provider(&self, kind: &BindingKind) -> bool {
-        match kind {
-            BindingKind::DurableSql => self.durable_sql_provider().is_some(),
-            BindingKind::KeyValue => self.key_value_provider().is_some(),
-            BindingKind::Queue => self.queue_provider().is_some(),
-        }
-    }
-
-    pub fn register_durable_sql_provider(
-        &mut self,
-        provider: Arc<dyn DurableSqlProvider>,
-    ) -> Result<(), CoreError> {
-        let expected = ExtensionCapability::service_provider(BindingKind::DurableSql);
-        self.register_service_provider(
-            provider.name(),
-            provider.priority(),
-            provider.capabilities(),
-            provider.dependencies(),
-            &expected,
-        )?;
-        let name = provider.name();
-        {
-            let slot = Arc::make_mut(&mut self.durable_sql_provider);
-            if slot.is_some() {
-                return Err(duplicate_provider_error(&expected));
-            }
-            *slot = Some(provider);
-        }
-        self.ensure_status(name);
-        Ok(())
-    }
-
-    pub fn register_key_value_provider(
-        &mut self,
-        provider: Arc<dyn KeyValueProvider>,
-    ) -> Result<(), CoreError> {
-        let expected = ExtensionCapability::service_provider(BindingKind::KeyValue);
-        self.register_service_provider(
-            provider.name(),
-            provider.priority(),
-            provider.capabilities(),
-            provider.dependencies(),
-            &expected,
-        )?;
-        let name = provider.name();
-        {
-            let slot = Arc::make_mut(&mut self.key_value_provider);
-            if slot.is_some() {
-                return Err(duplicate_provider_error(&expected));
-            }
-            *slot = Some(provider);
-        }
-        self.ensure_status(name);
-        Ok(())
-    }
-
-    pub fn register_queue_provider(
-        &mut self,
-        provider: Arc<dyn QueueProvider>,
-    ) -> Result<(), CoreError> {
-        let expected = ExtensionCapability::service_provider(BindingKind::Queue);
-        self.register_service_provider(
-            provider.name(),
-            provider.priority(),
-            provider.capabilities(),
-            provider.dependencies(),
-            &expected,
-        )?;
-        let name = provider.name();
-        {
-            let slot = Arc::make_mut(&mut self.queue_provider);
-            if slot.is_some() {
-                return Err(duplicate_provider_error(&expected));
-            }
-            *slot = Some(provider);
-        }
-        self.ensure_status(name);
-        Ok(())
-    }
-
     pub fn is_extension_enabled(&self, name: &str) -> bool {
         self.extension_status
             .read()
@@ -313,48 +215,6 @@ impl ExtensionRegistry {
                     dependencies: provider.dependencies(),
                     diagnostics: provider.diagnostics(),
                     kind: "authProvider",
-                    name: provider.name(),
-                    priority: provider.priority(),
-                    status: status_label(self.is_extension_enabled(provider.name())),
-                },
-            );
-        }
-        if let Some(provider) = self.registered_durable_sql_provider() {
-            upsert_admin_extension(
-                &mut by_name,
-                AdminExtensionRegistration {
-                    capabilities: provider.capabilities(),
-                    dependencies: provider.dependencies(),
-                    diagnostics: provider.diagnostics(),
-                    kind: "serviceProvider",
-                    name: provider.name(),
-                    priority: provider.priority(),
-                    status: status_label(self.is_extension_enabled(provider.name())),
-                },
-            );
-        }
-        if let Some(provider) = self.registered_key_value_provider() {
-            upsert_admin_extension(
-                &mut by_name,
-                AdminExtensionRegistration {
-                    capabilities: provider.capabilities(),
-                    dependencies: provider.dependencies(),
-                    diagnostics: provider.diagnostics(),
-                    kind: "serviceProvider",
-                    name: provider.name(),
-                    priority: provider.priority(),
-                    status: status_label(self.is_extension_enabled(provider.name())),
-                },
-            );
-        }
-        if let Some(provider) = self.registered_queue_provider() {
-            upsert_admin_extension(
-                &mut by_name,
-                AdminExtensionRegistration {
-                    capabilities: provider.capabilities(),
-                    dependencies: provider.dependencies(),
-                    diagnostics: provider.diagnostics(),
-                    kind: "serviceProvider",
                     name: provider.name(),
                     priority: provider.priority(),
                     status: status_label(self.is_extension_enabled(provider.name())),
@@ -545,32 +405,11 @@ impl ExtensionRegistry {
         if let Some(provider) = self.registered_auth_provider() {
             names.insert(provider.name().to_string());
         }
-        if let Some(provider) = self.registered_durable_sql_provider() {
-            names.insert(provider.name().to_string());
-        }
-        if let Some(provider) = self.registered_key_value_provider() {
-            names.insert(provider.name().to_string());
-        }
-        if let Some(provider) = self.registered_queue_provider() {
-            names.insert(provider.name().to_string());
-        }
         names.into_iter().collect()
     }
 
     fn registered_auth_provider(&self) -> Option<Arc<dyn AuthProvider>> {
         (*self.auth_provider).clone()
-    }
-
-    fn registered_durable_sql_provider(&self) -> Option<Arc<dyn DurableSqlProvider>> {
-        (*self.durable_sql_provider).clone()
-    }
-
-    fn registered_key_value_provider(&self) -> Option<Arc<dyn KeyValueProvider>> {
-        (*self.key_value_provider).clone()
-    }
-
-    fn registered_queue_provider(&self) -> Option<Arc<dyn QueueProvider>> {
-        (*self.queue_provider).clone()
     }
 
     fn ensure_capability_declared(
@@ -622,34 +461,7 @@ impl ExtensionRegistry {
                 .capabilities()
                 .iter()
                 .any(|capability| capability == expected)
-        }) || self.durable_sql_provider().is_some_and(|extension| {
-            extension
-                .capabilities()
-                .iter()
-                .any(|capability| capability == expected)
-        }) || self.key_value_provider().is_some_and(|extension| {
-            extension
-                .capabilities()
-                .iter()
-                .any(|capability| capability == expected)
-        }) || self.queue_provider().is_some_and(|extension| {
-            extension
-                .capabilities()
-                .iter()
-                .any(|capability| capability == expected)
         })
-    }
-
-    fn register_service_provider(
-        &self,
-        extension_name: &str,
-        _priority: i32,
-        capabilities: Vec<ExtensionCapability>,
-        dependencies: Vec<ExtensionDependency>,
-        expected: &ExtensionCapability,
-    ) -> Result<(), CoreError> {
-        self.ensure_capability_declared(extension_name, expected, capabilities)?;
-        self.ensure_dependencies(extension_name, dependencies)
     }
 
     /// Build a registry from an explicit extension list (story 06.01 — chosen pattern).
@@ -673,13 +485,6 @@ pub fn collect_extensions(
     middlewares: Vec<Arc<dyn Middleware>>,
 ) -> Result<ExtensionRegistry, CoreError> {
     ExtensionRegistry::from_explicit(middlewares)
-}
-
-fn duplicate_provider_error(capability: &ExtensionCapability) -> CoreError {
-    CoreError::new(
-        "COLLISION",
-        format!("provider already registered for {}", capability.label()),
-    )
 }
 
 fn reconcile_action_kind(effective: bool, desired: bool) -> AdminExtensionReconcileActionKind {
@@ -810,7 +615,6 @@ fn admin_extension_manifest(
             | ExtensionCapability::AuthProvider
             | ExtensionCapability::HostRouting
             | ExtensionCapability::Middleware
-            | ExtensionCapability::ServiceProvider { .. }
             | ExtensionCapability::WorkerHandler => {
                 push_unique_string(&mut manifest.provides, capability.label());
             }

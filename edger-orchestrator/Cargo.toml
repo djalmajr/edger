@@ -11,9 +11,6 @@ path = "src/bin/edger.rs"
 [dependencies]
 edger-core = { path = "../edger-core" }
 edger-ext-auth = { path = "../edger-ext-auth" }
-edger-ext-keyval = { path = "../edger-ext-keyval" }
-edger-ext-turso = { path = "../edger-ext-turso" }
-edger-ext-turso-remote = { path = "../edger-ext-turso-remote" }
 edger-worker = { path = "../edger-worker" }
 edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "multiproc"] }
 anyhow.workspace = true

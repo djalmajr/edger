@@ -6,7 +6,6 @@
 pub mod admin;
 pub mod api_key_store;
 pub mod auth;
-pub mod bindings;
 pub mod config;
 pub mod context;
 pub mod error;
@@ -31,11 +30,6 @@ pub use admin::{
 };
 pub use api_key_store::ApiKeyStore;
 pub use auth::{extract_api_key_from_pairs, AuthProvider, HeaderPairs};
-pub use bindings::{
-    binding_descriptor, default_binding_namespace, BindingDescriptor, BindingKind, BindingManifest,
-    BindingSet, DurableSqlProvider, KeyValueEntry, KeyValueProvider, QueueMessage, QueueProvider,
-    SqlRow, StateKey, StateValue,
-};
 pub use config::{
     infer_execution_kind, parse_duration_string_to_ms, parse_duration_to_ms, parse_size_to_bytes,
     parse_worker_config, WorkerConfig,
@@ -70,7 +64,6 @@ mod tests {
     fn modules_declared_and_reexported() {
         assert_eq!(CRATE_PURE_VOCABULARY, "edger-core");
         let _ = std::any::type_name::<AdminWorkerInfo>();
-        let _ = std::any::type_name::<BindingDescriptor>();
         let _ = std::any::type_name::<WorkerManifest>();
         let _ = std::any::type_name::<SerializedRequest>();
         let _ = std::any::type_name::<ApiKeyPrincipal>();

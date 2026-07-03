@@ -2,7 +2,7 @@
 
 use edger_core::{
     create_worker_ref, infer_execution_kind, parse_duration_string_to_ms, parse_size_to_bytes,
-    parse_worker_config, BindingKind, ExecutionKind, WorkerManifest,
+    parse_worker_config, ExecutionKind, WorkerManifest,
 };
 
 const SAMPLE_YAML: &str = include_str!("fixtures/sample_manifest.yaml");
@@ -20,12 +20,6 @@ fn manifest_deserializes_from_yaml_fixture() {
         .unwrap()
         .routes
         .contains(&"/health".into()));
-    assert_eq!(manifest.bindings.len(), 3);
-    assert_eq!(manifest.bindings[0].kind, BindingKind::DurableSql);
-    assert_eq!(manifest.bindings[0].name, "db");
-    assert_eq!(manifest.bindings[0].namespace.as_deref(), Some("@acme"));
-    assert_eq!(manifest.bindings[1].kind, BindingKind::KeyValue);
-    assert_eq!(manifest.bindings[2].kind, BindingKind::Queue);
 }
 
 #[test]
@@ -46,13 +40,6 @@ fn parse_worker_config_normalizes_buntime_fields() {
     assert_eq!(config.shell_excludes, vec!["todos", "platform"]);
     assert_eq!(config.cron.len(), 1);
     assert_eq!(config.kind, Some(ExecutionKind::FetchHandler));
-    assert_eq!(config.bindings.len(), 3);
-    assert_eq!(config.bindings[0].name, "db");
-    assert_eq!(
-        config.bindings[0].permissions,
-        vec!["sql:read", "sql:write"]
-    );
-    assert_eq!(config.bindings[1].namespace, None);
 }
 
 #[test]

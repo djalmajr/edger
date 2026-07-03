@@ -1,6 +1,5 @@
 //! Normalized worker configuration and parsers.
 
-use crate::bindings::BindingManifest;
 use crate::execution::ExecutionKind;
 use crate::manifest::WorkerManifest;
 
@@ -25,7 +24,6 @@ pub struct WorkerConfig {
     pub public_routes: Option<crate::manifest::PublicRoutesConfig>,
     pub cron: Vec<crate::manifest::CronJob>,
     pub kind: Option<ExecutionKind>,
-    pub bindings: Vec<BindingManifest>,
     pub shell_excludes: Vec<String>,
 }
 
@@ -176,7 +174,6 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         public_routes: manifest.public_routes.clone(),
         cron: manifest.cron.clone().unwrap_or_default(),
         kind: Some(kind),
-        bindings: manifest.bindings.clone(),
         shell_excludes: manifest.shell_excludes.clone(),
     }
 }

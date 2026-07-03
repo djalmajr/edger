@@ -12,7 +12,7 @@ use serde_json::json;
 use tower_http::trace::TraceLayer;
 
 use crate::admin_api;
-use crate::auth::{is_public_route, AuthGate};
+use crate::auth::AuthGate;
 use crate::context::RequestContext;
 use crate::hooks::{
     run_on_request, run_on_response, run_on_worker_complete, run_on_worker_dispatch,
@@ -26,7 +26,6 @@ use crate::router::{resolve_host_route, resolve_route, ReservedPath, ResolvedRou
 use crate::server::{
     request_id_from_headers, request_id_middleware, request_metrics_middleware, ServerState,
 };
-use crate::service_bindings::{resolve_service_bindings, SERVICE_BINDINGS_HEADER};
 use crate::wire::{axum_to_serialized, serialized_to_axum};
 
 /// Shared orchestrator state for health probes and worker dispatch.
@@ -143,29 +142,16 @@ async fn dispatch_resolved_route(
     state: &OrchestratorState,
     req: Request<Body>,
     request_id: String,
-    path: &str,
+    _path: &str,
     route: ResolvedRoute,
 ) -> Result<Response<Body>, CoreError> {
+    // Data plane is OPEN (Epic 17): the edger does not authenticate worker
+    // requests. The worker receives the raw request (Authorization intact) and
+    // owns its own auth. Only the control plane (`/api/admin/*`) is gated.
     match route {
         ResolvedRoute::Reserved { kind } => handle_reserved(kind),
-        ResolvedRoute::PluginBase { .. } => {
-            let principal = state.auth.authorize(path, req.headers(), None, None)?;
-            dispatch_plugin_stub(principal)
-        }
+        ResolvedRoute::PluginBase { .. } => dispatch_plugin_stub(None),
         ResolvedRoute::HomepageFallback { worker } => {
-            let public_worker = is_public_worker(&worker);
-            let principal = if public_worker {
-                None
-            } else {
-                state.auth.authorize(
-                    path,
-                    req.headers(),
-                    worker.config.public_routes.as_ref(),
-                    worker.namespace.as_deref(),
-                )?
-            };
-            let skip_hooks = public_worker
-                || should_skip_hooks(path, &state.auth, worker.config.public_routes.as_ref());
             dispatch_worker(
                 state,
                 req,
@@ -174,8 +160,8 @@ async fn dispatch_resolved_route(
                     worker,
                     rewritten_path: "/".into(),
                     kind_hint: None,
-                    principal,
-                    skip_hooks,
+                    principal: None,
+                    skip_hooks: false,
                 },
             )
             .await
@@ -185,19 +171,6 @@ async fn dispatch_resolved_route(
             rewritten_path,
             kind_hint,
         } => {
-            let public_worker = is_public_worker(&worker);
-            let principal = if public_worker {
-                None
-            } else {
-                state.auth.authorize(
-                    path,
-                    req.headers(),
-                    worker.config.public_routes.as_ref(),
-                    worker.namespace.as_deref(),
-                )?
-            };
-            let skip_hooks = public_worker
-                || should_skip_hooks(path, &state.auth, worker.config.public_routes.as_ref());
             dispatch_worker(
                 state,
                 req,
@@ -206,26 +179,13 @@ async fn dispatch_resolved_route(
                     worker,
                     rewritten_path,
                     kind_hint: Some(kind_hint),
-                    principal,
-                    skip_hooks,
+                    principal: None,
+                    skip_hooks: false,
                 },
             )
             .await
         }
     }
-}
-
-fn should_skip_hooks(
-    path: &str,
-    auth: &AuthGate,
-    worker_public_routes: Option<&edger_core::PublicRoutesConfig>,
-) -> bool {
-    is_public_route(path, &auth.config.global_public_routes)
-        || worker_public_routes.is_some_and(|routes| is_public_route(path, routes))
-}
-
-fn is_public_worker(worker: &WorkerRef) -> bool {
-    worker.config.visibility == "public"
 }
 
 fn dispatch_plugin_stub(
@@ -268,7 +228,16 @@ async fn dispatch_worker(
         worker_namespace = worker.namespace.as_deref().unwrap_or(""),
         "worker dispatch"
     );
-    sanitize_internal_headers(&mut req, principal.as_ref());
+    // Data plane is open, but the `x-edger-internal` marker (used by cron) must
+    // stay trustworthy: validate it against the root key so an external client
+    // cannot forge it. This authenticates ONLY to gate the internal header — it
+    // never blocks access to the worker.
+    let internal_principal = state
+        .auth
+        .authenticate_headers(req.headers())
+        .ok()
+        .flatten();
+    sanitize_internal_headers(&mut req, internal_principal.as_ref());
     let mut serialized = axum_to_serialized(req, request_id.clone()).await?;
     let (original_path, query) = split_path_query(&serialized.uri);
     let base_path = worker_base_path(&worker, original_path);
@@ -276,12 +245,6 @@ async fn dispatch_worker(
     serialized.base_href = Some(base_href(&base_path));
     set_header(&mut serialized.headers, "x-request-id", &request_id);
     set_header(&mut serialized.headers, "x-base", &base_path);
-    if let Some(bindings) = resolve_service_bindings(&worker, principal.as_ref(), &state.registry)?
-    {
-        let bindings = serde_json::to_string(&bindings)
-            .map_err(|err| CoreError::new("SERIALIZE_ERROR", err.to_string()))?;
-        set_header(&mut serialized.headers, SERVICE_BINDINGS_HEADER, &bindings);
-    }
 
     let mut ctx = RequestContext::new(request_id);
     ctx.principal = principal;
