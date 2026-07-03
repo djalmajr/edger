@@ -1,6 +1,6 @@
 // TanStack Start on EdgeR (story 16.C recipe): the build's server bundle is a
 // pure fetch handler (createStartHandler) that does NOT serve client assets —
-// this thin wrapper serves ./client/* statically and delegates the rest.
+// this thin wrapper serves known client assets statically and delegates the rest.
 // Build recipe: vite.config.ts with `ssr: { noExternal: true }` so the server
 // bundle is self-contained (Deno resolves only node builtins, no node_modules).
 import server from "./server/server.js";
@@ -20,15 +20,56 @@ const TYPES = {
   ".json": "application/json",
 };
 
-async function tryStatic(pathname) {
-  if (pathname.includes("..")) return null;
+const PUBLIC_FILES = new Set([
+  "/favicon.ico",
+  "/logo192.png",
+  "/logo512.png",
+  "/manifest.json",
+  "/robots.txt",
+]);
+
+function validateStaticPath(pathname) {
+  let decoded;
   try {
-    const data = await Deno.readFile(new URL(`./client${pathname}`, import.meta.url));
-    const ext = pathname.slice(pathname.lastIndexOf("."));
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return { response: new Response("malformed path", { status: 400 }) };
+  }
+
+  if (
+    decoded.includes("\0") ||
+    decoded.includes("..") ||
+    decoded.startsWith("//") ||
+    decoded.startsWith("/.")
+  ) {
+    return { response: new Response("not found", { status: 404 }) };
+  }
+
+  if (!decoded.startsWith("/")) {
+    return { response: new Response("malformed path", { status: 400 }) };
+  }
+
+  if (decoded.startsWith("/assets/") || PUBLIC_FILES.has(decoded)) {
+    return { pathname: decoded };
+  }
+
+  return {};
+}
+
+async function tryStatic(pathname) {
+  const validated = validateStaticPath(pathname);
+  if (validated.response) return validated.response;
+  if (!validated.pathname) return null;
+
+  try {
+    const data = await Deno.readFile(
+      new URL(`./client${validated.pathname}`, import.meta.url),
+    );
+    const ext = validated.pathname.slice(validated.pathname.lastIndexOf("."));
     return new Response(data, {
       headers: {
         "content-type": TYPES[ext] ?? "application/octet-stream",
-        "cache-control": pathname.startsWith("/assets/")
+        "cache-control": validated.pathname.startsWith("/assets/")
           ? "public, max-age=31536000, immutable"
           : "no-cache",
       },

@@ -47,6 +47,15 @@
 curl -H "Authorization: Bearer $KEY" http://127.0.0.1:3000/tanstack-demo
 ```
 
+## Revalidação 2026-07-03
+
+O wrapper `workers/tanstack-demo/index.mjs` foi endurecido para servir estáticos
+apenas de `/assets/*` e dos arquivos públicos presentes no build
+(`favicon.ico`, `logo192.png`, `logo512.png`, `manifest.json`, `robots.txt`).
+Paths malformados retornam 400; traversal/absolutos fora do contrato retornam
+404. A validação live pós-Epic 17 deve ser executada pelo harness fora do
+sandbox e anexada pelo coordenador.
+
 ## Status
 
 **completed** (2026-07-02) — TanStack Start roda no EdgeR: fixture `workers/tanstack-demo`
