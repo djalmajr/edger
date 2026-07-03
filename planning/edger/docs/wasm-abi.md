@@ -1,50 +1,83 @@
 # Wasm ABI (edger)
 
-**Status:** ABI v1 mínima implementada na story `07.05`
+**Status:** ABI v2 request/response em linear memory implementada no
+`edger-isolation`  
 **Origin:** `planning/edger/design.md` (Wasm standalone wasmtime + WASI)
 
 ## Modelo
 
-- Wasm **standalone** via wasmtime + WASI (não co-localizado no isolate JS)
-- Entrypoint via `manifest.yaml` (`entrypoint: index.wasm` ou `index.wat`) ou bytes pré-carregados em teste
-- ABI v1 não recebe request em linear memory; retorna uma resposta estática do módulo
-- Imports de host e WASI são negados por default no ABI v1
-- O mesmo processo pode servir workers JS/TS e Wasm; a factory escolhe
-  `DenoIsolate` ou `WasmIsolate` por `ExecutionKind`
+- Wasm **standalone** via wasmtime; não é co-localizado no isolate JS.
+- Entrypoint via `manifest.yaml` (`entrypoint: index.wasm` ou `index.wat`) ou
+  bytes pré-carregados em teste.
+- O host serializa a request HTTP para a memória linear do guest, chama um
+  export do módulo e decodifica a response devolvida também pela memória linear.
+- Imports de host arbitrários continuam negados. Imports WASIp1
+  `wasi_snapshot_preview1` são linkados por `wasmtime-wasi` com contexto mínimo:
+  sem preopens de filesystem, sem rede por default, env filtrado quando
+  permitido e stdout/stderr apenas quando `WasiConfig::allow_stdio` pedir.
 
-## ABI / exports
-
-Exports obrigatórios para resposta com body:
+## Exports obrigatórios
 
 | Export | Tipo | Descrição |
 |---|---|---|
-| `memory` | memory | Linear memory lida a partir do offset `0` |
-| `http_status` | `() -> i32` | Status HTTP; default `200` se ausente |
-| `http_body_len` | `() -> i32` | Número de bytes do body no offset `0`; default `0` se ausente |
+| `memory` | memory | Memória linear usada para request e response |
+| `edger_alloc` | `(len: i32) -> i32` | Aloca `len` bytes no guest e retorna o ponteiro |
+| `edger_handle` | `(ptr: i32, len: i32) -> i64` | Processa a request em `ptr..ptr+len` e retorna `(response_len << 32) | response_ptr` |
 
-Limites e validações:
+## Request frame
+
+Todos os inteiros são little-endian. O host escreve:
+
+| Offset | Tipo | Campo |
+|---|---|---|
+| `0` | `u32` | tamanho do método |
+| `4` | `u32` | tamanho da URI/path recebido pelo worker |
+| `8` | `u32` | tamanho dos headers serializados |
+| `12` | `u32` | tamanho do body |
+| `16..` | bytes | método, URI, headers JSON e body, nessa ordem |
+
+Headers usam JSON `Vec<(String, String)>`, o mesmo formato lógico do
+`SerializedRequest`. O body é omitido como zero bytes quando a request não tem
+body.
+
+## Response frame
+
+O guest devolve um ponteiro e tamanho empacotados em `i64`. O host lê:
+
+| Offset | Tipo | Campo |
+|---|---|---|
+| `0` | `u16` | status HTTP, de `100` a `599` |
+| `2` | 2 bytes | reservado/padding |
+| `4` | `u32` | tamanho dos headers serializados |
+| `8` | `u32` | tamanho do body |
+| `12..` | bytes | headers JSON e body, nessa ordem |
+
+Headers usam JSON `Vec<(String, String)>` e passam por `validate_headers`. Body
+zero vira `None`.
+
+## Limites e validações
 
 - Módulo deve começar com magic bytes Wasm (`\0asm`).
-- Entrypoint `.wat` é compilado para Wasm antes da validação, para fixtures e exemplos de desenvolvimento.
+- Entrypoint `.wat` é compilado para Wasm antes da validação, para fixtures e
+  exemplos de desenvolvimento.
 - Módulo máximo: 4 MiB.
-- Body máximo: 64 KiB.
-- Qualquer import externo retorna `WASM_IMPORT_DENIED`.
-- Qualquer import WASI (`wasi_snapshot_preview1` ou `wasi:*`) retorna `WASI_IMPORT_DENIED` quando o sandbox está `deny_all`.
-
-## WASI / env
-
-- `WasiConfig::deny_all()` é o default.
-- `WasiConfig::from_worker_config` filtra env sensível antes de qualquer futura injeção.
-- Padrões bloqueados nesta fase: `AWS_*`, `DB_*`, `*_KEY`, `*_SECRET`.
-- Host WASI real com preopen de worker root ainda é pendência; até lá, imports WASI são bloqueados.
+- Frame máximo request/response: 256 KiB.
+- Body máximo de response: 64 KiB.
+- Qualquer import externo fora de `wasi_snapshot_preview1` retorna
+  `WASM_IMPORT_DENIED`.
+- Imports `wasi:*` de component model/WASIp2 retornam `WASI_IMPORT_UNSUPPORTED`
+  no caminho atual de core modules.
 
 ## Fixture local
 
 `workers/wasm-hello/index.wat` é a fonte versionada do fixture. O runtime
 compila `.wat` para bytes Wasm antes da validação, o que mantém o exemplo
-auditável sem exigir toolchain Wasm no checkout. Para materializar `index.wasm`
-manualmente, veja `workers/wasm-hello/README.md`.
+auditável sem exigir toolchain Wasm no checkout. O fixture ecoa a URI recebida
+como `wasm path: <uri>`, provando que a request chegou ao guest.
+
+Para materializar `index.wasm` manualmente, veja
+`workers/wasm-hello/README.md`.
 
 ## Versionamento
 
-_v0.1 — foundation_
+_v0.2 — request/response em linear memory_

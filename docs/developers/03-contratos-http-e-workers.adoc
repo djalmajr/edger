@@ -126,9 +126,11 @@ Características atuais:
 
 ==== Contrato Wasm
 
-O kind `WasmModule` executa `.wasm` ou `.wat` via `wasmtime`.
+O kind `WasmModule` executa `.wasm` ou `.wat` via `wasmtime`. O contrato
+atual é a ABI v2 em linear memory; o host escreve a request no guest, chama
+`edger_handle` e lê a response devolvida pelo guest.
 
-Exports v1:
+Exports obrigatórios:
 
 [cols="1,2,3",options="header"]
 |===
@@ -136,19 +138,21 @@ Exports v1:
 
 | `memory`
 | linear memory
-| Body lido a partir do offset `0`.
+| Request e response trafegam por frames em memória linear.
 
-| `http_status`
-| `() -> i32`
-| Status HTTP. Default: `200` quando ausente.
+| `edger_alloc`
+| `(len: i32) -> i32`
+| Aloca o frame da request dentro do guest.
 
-| `http_body_len`
-| `() -> i32`
-| Tamanho do body em bytes. Default: `0` quando ausente.
+| `edger_handle`
+| `(ptr: i32, len: i32) -> i64`
+| Processa a request e retorna `(response_len << 32) \| response_ptr`.
 |===
 
-Limites v1: módulo até 4 MiB, body até 64 KiB, imports de host e WASI negados
-por default.
+Limites: módulo até 4 MiB, frame até 256 KiB e body de response até 64 KiB.
+Imports de host arbitrários são negados. Imports WASIp1
+`wasi_snapshot_preview1` são linkados com contexto mínimo, sem FS/rede por
+default.
 
 ==== Erros esperados
 

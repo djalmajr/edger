@@ -66,6 +66,74 @@ async fn dispatch(
     (status, body)
 }
 
+fn static_wasm_response_wat(body: &str) -> String {
+    let body_len = body.len();
+    let frame_len = 12 + 2 + body_len;
+
+    format!(
+        r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 64) "[]")
+  (data (i32.const 96) "{body}")
+
+  (func (export "edger_alloc") (param $len i32) (result i32)
+    i32.const 1024
+  )
+
+  (func $copy (param $dst i32) (param $src i32) (param $len i32)
+    (local $i i32)
+    loop $copy_loop
+      local.get $i
+      local.get $len
+      i32.lt_u
+      if
+        local.get $dst
+        local.get $i
+        i32.add
+        local.get $src
+        local.get $i
+        i32.add
+        i32.load8_u
+        i32.store8
+        local.get $i
+        i32.const 1
+        i32.add
+        local.set $i
+        br $copy_loop
+      end
+    end
+  )
+
+  (func (export "edger_handle") (param $req_ptr i32) (param $req_len i32) (result i64)
+    i32.const 512
+    i32.const 200
+    i32.store16
+    i32.const 516
+    i32.const 2
+    i32.store
+    i32.const 520
+    i32.const {body_len}
+    i32.store
+    i32.const 524
+    i32.const 64
+    i32.const 2
+    call $copy
+    i32.const 526
+    i32.const 96
+    i32.const {body_len}
+    call $copy
+
+    i32.const 512
+    i64.extend_i32_u
+    i64.const {frame_len}
+    i64.const 32
+    i64.shl
+    i64.or
+  )
+)"#
+    )
+}
+
 #[tokio::test]
 async fn js_worker_dispatches_through_deno_backend() {
     let root = tempfile::tempdir().unwrap();
@@ -505,12 +573,7 @@ kind: wasm
     .unwrap();
     fs::write(
         worker_dir.join("index.wat"),
-        r#"(module
-  (memory (export "memory") 1)
-  (data (i32.const 0) "wasm-hello")
-  (func (export "http_status") (result i32) i32.const 200)
-  (func (export "http_body_len") (result i32) i32.const 10)
-)"#,
+        static_wasm_response_wat("wasm-hello"),
     )
     .unwrap();
 
@@ -568,12 +631,7 @@ kind: wasm
     .unwrap();
     fs::write(
         wasm_dir.join("index.wat"),
-        r#"(module
-  (memory (export "memory") 1)
-  (data (i32.const 0) "wasm-ok")
-  (func (export "http_status") (result i32) i32.const 200)
-  (func (export "http_body_len") (result i32) i32.const 7)
-)"#,
+        static_wasm_response_wat("wasm-ok"),
     )
     .unwrap();
 

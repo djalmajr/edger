@@ -47,7 +47,8 @@ export default {
 
 1. Crie `workers/<name>/manifest.yaml` com `kind: wasm` e `entrypoint`.
 2. Adicione `index.wasm` ou `index.wat`.
-3. Exporte, no mínimo, `memory`, `http_status()` e `http_body_len()`.
+3. Exporte `memory`, `edger_alloc(len)` e `edger_handle(ptr, len)` conforme
+   `planning/edger/docs/wasm-abi.md`.
 4. Rode o servidor e chame `/<name>`.
 
 ==== Criar uma nova extensão

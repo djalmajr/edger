@@ -26,6 +26,7 @@ isolamento Wasm, auth, extensões ou contratos de worker.
 | Aceito
 
 | link:../adr/0005-wasm-standalone-wasmtime-abi-v1.md[0005]
-| Wasm standalone com `wasmtime` e ABI HTTP v1
-| Aceito
+| Wasm standalone com `wasmtime` e ABI HTTP v1 como base histórica; ABI atual em
+  `planning/edger/docs/wasm-abi.md`
+| Aceito / Evoluído
 |===
