@@ -18,7 +18,7 @@ use crate::ephemeral::EphemeralGate;
 use crate::error::WorkerError;
 use crate::factory::IsolateFactory;
 use crate::instance::WorkerInstance;
-use crate::lru::WorkerLru;
+use crate::lru::{ReservedSlot, WorkerGroup, WorkerLru};
 use crate::metrics::{MetricsCollector, PoolMetrics, WorkerStats};
 use crate::state::WorkerState;
 use crate::supervisor::Supervisor;
@@ -92,11 +92,24 @@ impl WorkerPool {
         self.inner.metrics.set_idle_workers(idle);
     }
 
-    /// Resolve or create a pooled worker instance (new entries start in `Creating`).
-    pub async fn get_or_create(
-        &self,
-        worker_ref: &WorkerRef,
-    ) -> Result<Arc<WorkerInstance>, WorkerError> {
+    fn create_instance(&self, worker_ref: &WorkerRef) -> Arc<WorkerInstance> {
+        let isolate = self.inner.factory.create_isolate(worker_ref);
+        Arc::new(WorkerInstance::new(worker_ref.clone(), isolate))
+    }
+
+    fn create_group(&self, worker_ref: &WorkerRef) -> Arc<WorkerGroup> {
+        let initial_processes = worker_ref
+            .config
+            .min_processes
+            .max(1)
+            .min(worker_ref.config.max_processes.max(1));
+        let instances = (0..initial_processes)
+            .map(|_| self.create_instance(worker_ref))
+            .collect();
+        Arc::new(WorkerGroup::new(instances))
+    }
+
+    fn get_or_create_group(&self, worker_ref: &WorkerRef) -> Result<Arc<WorkerGroup>, WorkerError> {
         self.ensure_active()?;
         let key = WorkerCacheKey::from_worker_ref(worker_ref);
 
@@ -110,25 +123,36 @@ impl WorkerPool {
             return Err(WorkerError::Evicted);
         }
 
-        if let Some(instance) = self.inner.cache.get(&key) {
+        if let Some(group) = self.inner.cache.get_group(&key) {
+            if let Some(instance) = group.instances_snapshot().first() {
+                if instance.worker_ref.namespace != worker_ref.namespace {
+                    return Err(WorkerError::Collision {
+                        key: format!("{key:?}"),
+                        detail: "namespace mismatch for cache key".into(),
+                    });
+                }
+            }
+            self.inner.metrics.record_hit();
+            return Ok(group);
+        }
+
+        let spawn_start = Instant::now();
+        let group = self.create_group(worker_ref);
+
+        if let Some(instance) = group.instances_snapshot().first() {
             if instance.worker_ref.namespace != worker_ref.namespace {
                 return Err(WorkerError::Collision {
                     key: format!("{key:?}"),
                     detail: "namespace mismatch for cache key".into(),
                 });
             }
-            if instance.state() == WorkerState::Terminated {
-                return Err(WorkerError::Retired);
-            }
-            self.inner.metrics.record_hit();
-            return Ok(instance);
         }
 
-        let spawn_start = Instant::now();
-        let isolate = self.inner.factory.create_isolate(worker_ref);
-        let instance = Arc::new(WorkerInstance::new(worker_ref.clone(), isolate));
-
-        if let Some(evicted_key) = self.inner.cache.insert(key.clone(), Arc::clone(&instance)) {
+        if let Some(evicted_key) = self
+            .inner
+            .cache
+            .insert_group(key.clone(), Arc::clone(&group))
+        {
             if evicted_key == key {
                 return Err(WorkerError::Collision {
                     key: format!("{key:?}"),
@@ -146,7 +170,48 @@ impl WorkerPool {
         self.inner.metrics.record_miss();
         self.inner.metrics.record_spawn_latency(elapsed_ms);
         self.sync_worker_counts();
-        Ok(instance)
+        Ok(group)
+    }
+
+    /// Resolve or create a pooled worker instance (new entries start in `Creating`).
+    pub async fn get_or_create(
+        &self,
+        worker_ref: &WorkerRef,
+    ) -> Result<Arc<WorkerInstance>, WorkerError> {
+        let group = self.get_or_create_group(worker_ref)?;
+        group
+            .instances_snapshot()
+            .into_iter()
+            .find(|instance| instance.state() != WorkerState::Terminated)
+            .ok_or(WorkerError::Retired)
+    }
+
+    async fn acquire_dispatch_slot(
+        &self,
+        worker_ref: &WorkerRef,
+    ) -> Result<(Arc<WorkerInstance>, tokio::sync::OwnedMutexGuard<()>), WorkerError> {
+        let group = self.get_or_create_group(worker_ref)?;
+        let max_processes = worker_ref.config.max_processes.max(1);
+
+        match group.reserve_slot(max_processes, || {
+            let spawn_start = Instant::now();
+            let instance = self.create_instance(worker_ref);
+            self.inner.metrics.record_miss();
+            self.inner
+                .metrics
+                .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
+            instance
+        }) {
+            ReservedSlot::Acquired { instance, guard } => {
+                self.sync_worker_counts();
+                Ok((instance, guard))
+            }
+            ReservedSlot::Wait(instance) => {
+                let guard = instance.dispatch_lock().lock_owned().await;
+                Ok((instance, guard))
+            }
+            ReservedSlot::Unavailable => Err(WorkerError::Retired),
+        }
     }
 
     /// Legacy pool entry that derives identity from the worker directory.
@@ -256,8 +321,8 @@ impl WorkerPool {
         let mut attempt = 0;
         let (instance, dispatch_guard) = loop {
             attempt += 1;
-            let instance = match self.get_or_create(&worker_ref).await {
-                Ok(instance) => instance,
+            let (instance, dispatch_guard) = match self.acquire_dispatch_slot(&worker_ref).await {
+                Ok(slot) => slot,
                 Err(WorkerError::Retired | WorkerError::Evicted)
                     if attempt < MAX_RESOLVE_ATTEMPTS =>
                 {
@@ -266,7 +331,6 @@ impl WorkerPool {
                 }
                 Err(err) => return Err(err),
             };
-            let dispatch_guard = instance.dispatch_lock().lock_owned().await;
 
             if instance.state() == WorkerState::Creating {
                 let spawn_start = Instant::now();
@@ -373,8 +437,8 @@ impl WorkerPool {
         let mut attempt = 0;
         let (instance, dispatch_guard) = loop {
             attempt += 1;
-            let instance = match self.get_or_create(&worker_ref).await {
-                Ok(instance) => instance,
+            let (instance, dispatch_guard) = match self.acquire_dispatch_slot(&worker_ref).await {
+                Ok(slot) => slot,
                 Err(WorkerError::Retired | WorkerError::Evicted)
                     if attempt < MAX_RESOLVE_ATTEMPTS =>
                 {
@@ -383,7 +447,6 @@ impl WorkerPool {
                 }
                 Err(err) => return Err(err),
             };
-            let dispatch_guard = instance.dispatch_lock().lock_owned().await;
 
             if instance.state() == WorkerState::Creating {
                 let spawn_start = Instant::now();
@@ -466,7 +529,7 @@ impl WorkerPool {
     /// Remove a terminated/ephemeral worker from the LRU cache.
     pub fn remove_instance(&self, instance: &WorkerInstance) {
         let key = WorkerCacheKey::from_worker_ref(&instance.worker_ref);
-        self.inner.cache.remove(&key);
+        self.inner.cache.remove_instance(&key, instance.id());
         self.inner.metrics.record_terminated();
         self.sync_worker_counts();
     }
@@ -527,7 +590,7 @@ fn worker_stats_for_instance(instance: &WorkerInstance) -> WorkerStats {
         unhealthy: instance.is_unhealthy(),
         uptime_seconds: instance.uptime_seconds(),
         version: instance.worker_ref.version.clone(),
-        worker_id: instance.worker_ref.id,
+        worker_id: instance.id(),
     }
 }
 

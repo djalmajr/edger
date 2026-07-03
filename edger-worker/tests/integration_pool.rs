@@ -5,12 +5,19 @@
 
 mod helpers;
 
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use edger_core::{create_worker_ref, ExecutionKind, WorkerManifest, WorkerRef};
+use async_trait::async_trait;
+use bytes::Bytes;
+use edger_core::{
+    create_worker_ref, ExecutionKind, Isolate, SerializedRequest, SerializedResponse, WorkerConfig,
+    WorkerManifest, WorkerRef,
+};
 use edger_isolation::MockIsolate;
-use edger_worker::{IsolateFactory, PoolConfig, WorkerError, WorkerState};
+use edger_worker::{IsolateFactory, PoolConfig, WorkerError, WorkerPool, WorkerState};
 use helpers::{
     default_pool_config, execution_kind_from_manifest, pool_with_factory, serialized_get,
     temp_worker_dir, MockIsolateFactory,
@@ -30,6 +37,114 @@ impl IsolateFactory for RecordingFactory {
         self.created_refs.lock().unwrap().push(worker_ref.clone());
         Box::new(MockIsolate::new())
     }
+}
+
+struct NumberedSlowFactory {
+    delay_ms: u64,
+    next_id: AtomicUsize,
+}
+
+impl NumberedSlowFactory {
+    fn new(delay_ms: u64) -> Self {
+        Self {
+            delay_ms,
+            next_id: AtomicUsize::new(1),
+        }
+    }
+
+    fn created_count(&self) -> usize {
+        self.next_id.load(Ordering::SeqCst) - 1
+    }
+}
+
+impl IsolateFactory for NumberedSlowFactory {
+    fn create_isolate(&self, _worker_ref: &WorkerRef) -> Box<dyn edger_core::Isolate> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        Box::new(NumberedSlowIsolate {
+            delay_ms: self.delay_ms,
+            id,
+        })
+    }
+}
+
+struct NumberedSlowIsolate {
+    delay_ms: u64,
+    id: usize,
+}
+
+#[async_trait]
+impl Isolate for NumberedSlowIsolate {
+    async fn execute_fetch(
+        &mut self,
+        _req: SerializedRequest,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+        Ok(SerializedResponse {
+            status: 200,
+            headers: vec![],
+            body: Some(Bytes::from(format!("isolate-{}", self.id))),
+        })
+    }
+
+    async fn execute_routes(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+
+    async fn serve_static_spa(
+        &mut self,
+        _path: &str,
+        _base_href: Option<&str>,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        self.execute_fetch(serialized_get("/"), config).await
+    }
+
+    async fn execute_wasm(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+}
+
+fn numbered_worker_ref(max_processes: usize, min_processes: usize, max_requests: u32) -> WorkerRef {
+    create_worker_ref(
+        std::path::PathBuf::from("/workers/story18-numbered"),
+        WorkerManifest {
+            name: "story18-numbered".into(),
+            max_processes: Some(max_processes),
+            min_processes: Some(min_processes),
+            max_requests: Some(max_requests),
+            ttl: Some(serde_yaml::Value::String("30s".into())),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+async fn fetch_numbered(pool: WorkerPool, worker_ref: WorkerRef, path: &str) -> usize {
+    let body = pool
+        .fetch_worker(
+            &worker_ref,
+            serialized_get(path),
+            Some(ExecutionKind::FetchHandler),
+        )
+        .await
+        .unwrap()
+        .body
+        .unwrap();
+    String::from_utf8(body.to_vec())
+        .unwrap()
+        .strip_prefix("isolate-")
+        .unwrap()
+        .parse()
+        .unwrap()
 }
 
 #[tokio::test]
@@ -186,6 +301,118 @@ async fn integration_max_requests_retires_then_respawns() {
         .await
         .unwrap();
     assert!(pool.get_metrics().cache_misses > misses);
+}
+
+#[tokio::test]
+async fn story18_default_manifest_keeps_one_process_per_worker() {
+    let factory = Arc::new(NumberedSlowFactory::new(60));
+    let pool = WorkerPool::with_factory(default_pool_config(), factory.clone());
+    let worker_ref = create_worker_ref(
+        std::path::PathBuf::from("/workers/story18-default"),
+        WorkerManifest {
+            name: "story18-default".into(),
+            ttl: Some(serde_yaml::Value::String("30s".into())),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let (first, second) = tokio::join!(
+        fetch_numbered(pool.clone(), worker_ref.clone(), "/one"),
+        fetch_numbered(pool.clone(), worker_ref.clone(), "/two")
+    );
+
+    assert_eq!(first, second);
+    assert_eq!(
+        factory.created_count(),
+        1,
+        "default manifest must preserve the single-process worker behavior"
+    );
+}
+
+#[tokio::test]
+async fn story18_max_processes_fans_out_concurrent_fetches() {
+    let factory = Arc::new(NumberedSlowFactory::new(80));
+    let pool = WorkerPool::with_factory(default_pool_config(), factory.clone());
+    let worker_ref = numbered_worker_ref(3, 0, 0);
+
+    let (first, second, third) = tokio::join!(
+        fetch_numbered(pool.clone(), worker_ref.clone(), "/one"),
+        fetch_numbered(pool.clone(), worker_ref.clone(), "/two"),
+        fetch_numbered(pool.clone(), worker_ref.clone(), "/three")
+    );
+    let ids = HashSet::from([first, second, third]);
+
+    assert_eq!(
+        ids.len(),
+        3,
+        "three concurrent fetches with maxProcesses=3 must use three instances"
+    );
+    assert_eq!(factory.created_count(), 3);
+    assert_eq!(pool.len(), 3);
+}
+
+#[tokio::test]
+async fn story18_max_requests_recycles_only_one_instance() {
+    let factory = Arc::new(NumberedSlowFactory::new(40));
+    let pool = WorkerPool::with_factory(default_pool_config(), factory);
+    let warm_ref = numbered_worker_ref(2, 0, 0);
+
+    let (first, second) = tokio::join!(
+        fetch_numbered(pool.clone(), warm_ref.clone(), "/warm-one"),
+        fetch_numbered(pool.clone(), warm_ref.clone(), "/warm-two")
+    );
+    assert_eq!(HashSet::from([first, second]).len(), 2);
+    assert_eq!(pool.worker_stats().len(), 2);
+
+    let retiring_ref = numbered_worker_ref(2, 0, 1);
+    let retired_id = fetch_numbered(pool.clone(), retiring_ref, "/retire-one").await;
+    let remaining_request_counts = pool
+        .worker_stats()
+        .into_iter()
+        .map(|stats| stats.request_count)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        pool.len(),
+        1,
+        "maxRequests must remove only the instance that reached its limit"
+    );
+    assert_eq!(remaining_request_counts, vec![1]);
+
+    let survivor_ref = numbered_worker_ref(2, 0, 0);
+    let survivor_id = fetch_numbered(pool.clone(), survivor_ref, "/survivor").await;
+    assert_ne!(
+        retired_id, survivor_id,
+        "the sibling process should continue serving after one instance is recycled"
+    );
+}
+
+#[tokio::test]
+async fn story18_shutdown_drains_all_instances_in_group() {
+    let factory = Arc::new(NumberedSlowFactory::new(40));
+    let pool = WorkerPool::with_factory(default_pool_config(), factory);
+    let worker_ref = numbered_worker_ref(3, 0, 0);
+
+    let _ = tokio::join!(
+        fetch_numbered(pool.clone(), worker_ref.clone(), "/one"),
+        fetch_numbered(pool.clone(), worker_ref.clone(), "/two"),
+        fetch_numbered(pool.clone(), worker_ref.clone(), "/three")
+    );
+    assert_eq!(pool.len(), 3);
+
+    pool.shutdown();
+
+    assert_eq!(pool.len(), 0);
+    let err = pool
+        .fetch_worker(
+            &worker_ref,
+            serialized_get("/after-shutdown"),
+            Some(ExecutionKind::FetchHandler),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("shut down"));
 }
 
 #[tokio::test]

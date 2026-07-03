@@ -16,6 +16,9 @@ pub struct WorkerConfig {
     pub timeout_ms: u64,
     pub idle_timeout_ms: u64,
     pub max_requests: u32,
+    pub concurrency: usize,
+    pub min_processes: usize,
+    pub max_processes: usize,
     pub max_body_size_bytes: Option<u64>,
     pub low_memory: bool,
     pub auto_install: bool,
@@ -150,6 +153,17 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         .as_ref()
         .and_then(|s| parse_size_to_bytes(s));
 
+    let max_processes = manifest
+        .max_processes
+        .or(manifest.concurrency)
+        .unwrap_or(1)
+        .max(1);
+    let concurrency = manifest
+        .concurrency
+        .unwrap_or(max_processes)
+        .clamp(1, max_processes);
+    let min_processes = manifest.min_processes.unwrap_or(0).min(max_processes);
+
     WorkerConfig {
         enabled: manifest.enabled.unwrap_or(true),
         worker_dir: None,
@@ -160,6 +174,9 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         timeout_ms,
         idle_timeout_ms,
         max_requests: manifest.max_requests.unwrap_or(0),
+        concurrency,
+        min_processes,
+        max_processes,
         max_body_size_bytes,
         low_memory: manifest.low_memory.unwrap_or(false),
         auto_install: manifest.auto_install.unwrap_or(false),

@@ -97,4 +97,4 @@ curl -s http://127.0.0.1:19080/metrics | rg "edger_pool"
 
 ## Status
 
-**pending** (2026-07-03) — story planejada; nenhuma implementação iniciada.
+**implemented** (2026-07-03) — implementação local na branch `feat/worker-process-pool` adiciona configuração `concurrency`/`minProcesses`/`maxProcesses`, grupo de processos por worker, roteamento para instância livre com criação sob demanda até o teto, reciclagem por instância e testes dirigidos sem socket. Verificação executada com `CARGO_TARGET_DIR=/private/tmp/edger-pool-target`: `cargo check --workspace --all-targets`, `cargo fmt --all --check`, `cargo clippy -p edger-worker -p edger-orchestrator`, `cargo test -p edger-worker story18`, `cargo test -p edger-orchestrator --test pipeline_integration`.
