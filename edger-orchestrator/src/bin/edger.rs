@@ -91,16 +91,47 @@ async fn main() -> anyhow::Result<()> {
         state.server.cron_metrics(),
     )?;
 
-    let shutdown_server = server.clone();
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            tracing::info!("shutdown signal received");
-            cron_scheduler.shutdown().await;
-            shutdown_server.shutdown_pool();
-        }
-    });
+    let serve_result = serve(config, app, shutdown_signal()).await;
+    tracing::info!("HTTP server stopped; shutting down cron scheduler and worker pool");
+    cron_scheduler.shutdown().await;
+    server.shutdown_pool();
+    serve_result
+}
 
-    serve(config, app).await
+#[cfg(unix)]
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut terminate = match signal(SignalKind::terminate()) {
+        Ok(signal) => signal,
+        Err(error) => {
+            tracing::warn!(%error, "failed to install SIGTERM handler; waiting for SIGINT only");
+            wait_for_sigint().await;
+            return;
+        }
+    };
+
+    tokio::select! {
+        _ = wait_for_sigint() => {}
+        _ = terminate.recv() => {
+            tracing::info!("SIGTERM received; starting graceful shutdown");
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    wait_for_sigint().await;
+}
+
+async fn wait_for_sigint() {
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => tracing::info!("SIGINT received; starting graceful shutdown"),
+        Err(error) => {
+            tracing::warn!(%error, "failed to wait for SIGINT; shutdown signal disabled");
+            std::future::pending::<()>().await;
+        }
+    }
 }
 
 fn worker_dirs_from_env() -> Vec<PathBuf> {

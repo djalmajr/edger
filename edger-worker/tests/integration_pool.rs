@@ -194,6 +194,76 @@ impl Isolate for NumberedStreamingIsolate {
     }
 }
 
+struct FirstInstanceFailsFactory {
+    next_id: AtomicUsize,
+}
+
+impl FirstInstanceFailsFactory {
+    fn new() -> Self {
+        Self {
+            next_id: AtomicUsize::new(1),
+        }
+    }
+}
+
+impl IsolateFactory for FirstInstanceFailsFactory {
+    fn create_isolate(&self, _worker_ref: &WorkerRef) -> Box<dyn edger_core::Isolate> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        Box::new(FirstInstanceFailsIsolate { id })
+    }
+}
+
+struct FirstInstanceFailsIsolate {
+    id: usize,
+}
+
+#[async_trait]
+impl Isolate for FirstInstanceFailsIsolate {
+    async fn execute_fetch(
+        &mut self,
+        _req: SerializedRequest,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        if self.id == 1 {
+            return Err(edger_core::IsolationError::new(
+                "OOM",
+                "simulated per-process OOM",
+            ));
+        }
+        Ok(SerializedResponse {
+            status: 200,
+            headers: vec![],
+            body: Some(Bytes::from(format!("isolate-{}", self.id))),
+        })
+    }
+
+    async fn execute_routes(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+
+    async fn serve_static_spa(
+        &mut self,
+        _path: &str,
+        _base_href: Option<&str>,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        self.execute_fetch(serialized_get("/"), config).await
+    }
+
+    async fn execute_wasm(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+}
+
 struct PendingBody;
 
 impl futures_core::Stream for PendingBody {
@@ -235,6 +305,21 @@ fn queued_worker_ref(max_processes: usize, queue_limit: usize, queue_timeout: &s
             queue_limit: Some(queue_limit),
             queue_timeout: Some(serde_yaml::Value::String(queue_timeout.into())),
             ttl: Some(serde_yaml::Value::String("30s".into())),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+fn ttl_stream_worker_ref(ttl: &str) -> WorkerRef {
+    create_worker_ref(
+        std::path::PathBuf::from("/workers/story18-ttl-stream"),
+        WorkerManifest {
+            name: "story18-ttl-stream".into(),
+            max_processes: Some(1),
+            queue_limit: Some(1),
+            queue_timeout: Some(serde_yaml::Value::String("1s".into())),
+            ttl: Some(serde_yaml::Value::String(ttl.into())),
             ..Default::default()
         },
     )
@@ -499,6 +584,160 @@ async fn story18_max_requests_recycles_only_one_instance() {
         retired_id, survivor_id,
         "the sibling process should continue serving after one instance is recycled"
     );
+}
+
+// Mutation captured: selecting an idle sibling before replenishing a group that
+// fell below minProcesses makes the second maxRequests=1 dispatch retire the
+// last process, dropping the group to zero and failing this regression.
+#[tokio::test]
+async fn story18_max_requests_one_recycles_instances_without_killing_group() {
+    let factory = Arc::new(NumberedSlowFactory::new(0));
+    let pool = WorkerPool::with_factory(default_pool_config(), factory);
+    let worker_ref = numbered_worker_ref(2, 2, 1);
+
+    let first = fetch_numbered(pool.clone(), worker_ref.clone(), "/first").await;
+    assert_eq!(first, 1);
+    assert_eq!(
+        pool.len(),
+        1,
+        "only the process that reached maxRequests should be recycled"
+    );
+
+    let second = fetch_numbered(pool.clone(), worker_ref.clone(), "/second").await;
+    assert_eq!(
+        second, 3,
+        "demand should replenish minProcesses with a fresh process before reusing the survivor"
+    );
+    assert_eq!(
+        pool.len(),
+        1,
+        "the sibling process must survive repeated per-instance recycling"
+    );
+
+    let third = fetch_numbered(pool.clone(), worker_ref, "/third").await;
+    assert_eq!(third, 4);
+    assert_eq!(pool.len(), 1);
+}
+
+// Mutation captured: recycling the whole WorkerGroup on a single isolate/OOM
+// error removes the healthy sibling, so the follow-up dispatch cannot observe
+// an already-surviving process.
+#[tokio::test]
+async fn story18_instance_error_does_not_kill_sibling_process() {
+    let pool = WorkerPool::with_factory(
+        default_pool_config(),
+        Arc::new(FirstInstanceFailsFactory::new()),
+    );
+    let worker_ref = numbered_worker_ref(2, 2, 0);
+
+    let (first, second) = tokio::join!(
+        pool.fetch_worker(
+            &worker_ref,
+            serialized_get("/oom"),
+            Some(ExecutionKind::FetchHandler),
+        ),
+        pool.fetch_worker(
+            &worker_ref,
+            serialized_get("/sibling"),
+            Some(ExecutionKind::FetchHandler),
+        )
+    );
+
+    assert!(matches!(first, Err(WorkerError::Isolation(_))));
+    let second = second.expect("healthy sibling should complete");
+    assert_eq!(
+        String::from_utf8(second.body.unwrap().to_vec()).unwrap(),
+        "isolate-2"
+    );
+    assert_eq!(
+        pool.worker_stats().len(),
+        1,
+        "failed process should be removed without evicting the sibling"
+    );
+
+    let follow_up = fetch_numbered(pool.clone(), worker_ref, "/follow-up").await;
+    assert_eq!(
+        follow_up, 3,
+        "next demand replenishes capacity instead of recreating the whole group"
+    );
+    assert_eq!(pool.worker_stats().len(), 2);
+}
+
+// Mutation captured: treating TTL as a group-level timer or failing to keep a
+// streamed response Active lets the short TTL terminate the streaming process
+// before the body is dropped.
+#[tokio::test]
+async fn story18_active_stream_is_not_terminated_by_ttl() {
+    let pool = WorkerPool::with_factory(
+        default_pool_config(),
+        Arc::new(NumberedStreamingFactory::new()),
+    );
+    let worker_ref = ttl_stream_worker_ref("25ms");
+
+    let streamed = pool
+        .fetch_worker_stream(
+            &worker_ref,
+            serialized_get("/stream"),
+            Some(ExecutionKind::FetchHandler),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(streamed, WorkerResponse::Streamed(_)));
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let stats = pool.worker_stats();
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].state, WorkerState::Active);
+
+    drop(streamed);
+}
+
+// Mutation captured: a shutdown that only flips a pool flag leaves an already
+// queued waiter sleeping until queue_timeout instead of waking it with the
+// typed shutdown error.
+#[tokio::test]
+async fn story18_shutdown_rejects_new_requests_drains_active_and_wakes_queue() {
+    let factory = Arc::new(NumberedSlowFactory::new(160));
+    let pool = WorkerPool::with_factory(default_pool_config(), factory);
+    let worker_ref = queued_worker_ref(1, 1, "1s");
+
+    let active = tokio::spawn(fetch_numbered(pool.clone(), worker_ref.clone(), "/active"));
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let queued_pool = pool.clone();
+    let queued_ref = worker_ref.clone();
+    let queued = tokio::spawn(async move {
+        queued_pool
+            .fetch_worker(
+                &queued_ref,
+                serialized_get("/queued"),
+                Some(ExecutionKind::FetchHandler),
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    pool.shutdown();
+
+    let new_request = pool
+        .fetch_worker(
+            &worker_ref,
+            serialized_get("/after-shutdown"),
+            Some(ExecutionKind::FetchHandler),
+        )
+        .await;
+    assert!(matches!(new_request, Err(WorkerError::Shutdown)));
+
+    let queued_result = tokio::time::timeout(Duration::from_millis(200), queued)
+        .await
+        .expect("queued waiter must be woken by shutdown")
+        .unwrap();
+    assert!(matches!(queued_result, Err(WorkerError::Shutdown)));
+
+    let active_id = active.await.unwrap();
+    assert_eq!(active_id, 1, "active request should finish during drain");
 }
 
 #[tokio::test]

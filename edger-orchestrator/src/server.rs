@@ -1,5 +1,6 @@
 //! HTTP server — health/readiness probes and request tracing (story 05.01).
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -193,11 +194,16 @@ pub fn router(state: ServerState) -> Router {
         .with_state(state)
 }
 
-/// Bind and serve until the listener stops (graceful shutdown wired in the binary).
-pub async fn serve(config: ServerConfig, app: Router) -> anyhow::Result<()> {
+/// Bind and serve until the shutdown signal resolves.
+pub async fn serve<S>(config: ServerConfig, app: Router, shutdown_signal: S) -> anyhow::Result<()>
+where
+    S: Future<Output = ()> + Send + 'static,
+{
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
     info!(%config.addr, "edger listening");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal)
+        .await?;
     Ok(())
 }
 
