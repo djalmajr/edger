@@ -1,14 +1,16 @@
 //! Pool metrics collector and per-worker stats snapshots.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use edger_core::WorkerRef;
 use uuid::Uuid;
 
 use crate::state::WorkerState;
 
 const SPAWN_LATENCY_SAMPLES: usize = 16;
+const WORKER_WAIT_SAMPLES: usize = 16;
 
 /// Snapshot of pool-level metrics (cloneable, orchestrator-facing).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -43,6 +45,86 @@ pub struct PoolMetrics {
     pub worker_queue_wait_ms_last: u64,
     /// Last request duration (milliseconds) — histogram stub.
     pub request_duration_ms_last: u64,
+    /// Per-worker-group process, queue, wait, and recycle snapshots.
+    pub worker_groups: Vec<WorkerGroupMetrics>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkerGroupMetrics {
+    pub active_processes: usize,
+    pub enqueued_total: u64,
+    pub idle_processes: usize,
+    pub max_processes: usize,
+    pub name: String,
+    pub namespace: Option<String>,
+    pub processes: Vec<WorkerProcessMetrics>,
+    pub queued: u64,
+    pub recycle_error_total: u64,
+    pub recycle_max_requests_total: u64,
+    pub recycle_oom_shutdown_total: u64,
+    pub recycle_ttl_total: u64,
+    pub rejected_total: u64,
+    pub terminating_processes: usize,
+    pub timeout_total: u64,
+    pub total_processes: usize,
+    pub version: String,
+    pub wait_ms_last: u64,
+    pub wait_ms_p50: u64,
+    pub wait_ms_p95: u64,
+}
+
+impl WorkerGroupMetrics {
+    pub fn identity(&self) -> WorkerGroupIdentity {
+        WorkerGroupIdentity {
+            name: self.name.clone(),
+            namespace: self.namespace.clone(),
+            version: self.version.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerProcessMetrics {
+    pub request_count: u32,
+    pub state: WorkerState,
+    pub unhealthy: bool,
+    pub uptime_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WorkerGroupIdentity {
+    pub name: String,
+    pub namespace: Option<String>,
+    pub version: String,
+}
+
+impl WorkerGroupIdentity {
+    pub fn from_worker_ref(worker_ref: &WorkerRef) -> Self {
+        Self {
+            name: worker_ref.name.clone(),
+            namespace: worker_ref.namespace.clone(),
+            version: worker_ref.version.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerRecycleCause {
+    Error,
+    MaxRequests,
+    OomShutdown,
+    Ttl,
+}
+
+impl WorkerRecycleCause {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::MaxRequests => "max_requests",
+            Self::OomShutdown => "oom_shutdown",
+            Self::Ttl => "ttl",
+        }
+    }
 }
 
 /// Per-worker stats for observability hooks.
@@ -78,6 +160,45 @@ pub struct MetricsCollector {
     worker_queue_rejected: AtomicU64,
     worker_queue_timeout: AtomicU64,
     worker_queue_wait_ms_last: AtomicU64,
+    worker_groups: Mutex<BTreeMap<WorkerGroupIdentity, WorkerGroupRuntimeMetrics>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkerGroupRuntimeMetrics {
+    pub enqueued_total: u64,
+    pub queued: u64,
+    pub recycle_error_total: u64,
+    pub recycle_max_requests_total: u64,
+    pub recycle_oom_shutdown_total: u64,
+    pub recycle_ttl_total: u64,
+    pub rejected_total: u64,
+    pub timeout_total: u64,
+    pub wait_ms_last: u64,
+    pub wait_ms_p50: u64,
+    pub wait_ms_p95: u64,
+    wait_samples: VecDeque<u64>,
+}
+
+impl WorkerGroupRuntimeMetrics {
+    fn record_wait(&mut self, ms: u64) {
+        self.wait_ms_last = ms;
+        if self.wait_samples.len() >= WORKER_WAIT_SAMPLES {
+            self.wait_samples.pop_front();
+        }
+        self.wait_samples.push_back(ms);
+        let samples = self.wait_samples.iter().copied().collect::<Vec<_>>();
+        self.wait_ms_p50 = percentile(&samples, 50);
+        self.wait_ms_p95 = percentile(&samples, 95);
+    }
+
+    fn record_recycle(&mut self, cause: WorkerRecycleCause) {
+        match cause {
+            WorkerRecycleCause::Error => self.recycle_error_total += 1,
+            WorkerRecycleCause::MaxRequests => self.recycle_max_requests_total += 1,
+            WorkerRecycleCause::OomShutdown => self.recycle_oom_shutdown_total += 1,
+            WorkerRecycleCause::Ttl => self.recycle_ttl_total += 1,
+        }
+    }
 }
 
 impl Default for MetricsCollector {
@@ -99,6 +220,7 @@ impl Default for MetricsCollector {
             worker_queue_rejected: AtomicU64::new(0),
             worker_queue_timeout: AtomicU64::new(0),
             worker_queue_wait_ms_last: AtomicU64::new(0),
+            worker_groups: Mutex::new(BTreeMap::new()),
         }
     }
 }
@@ -169,6 +291,58 @@ impl MetricsCollector {
         self.worker_queue_wait_ms_last.store(ms, Ordering::Relaxed);
     }
 
+    pub fn record_worker_group_queue_enqueued(&self, worker_ref: &WorkerRef, queued: u64) {
+        self.update_worker_group(worker_ref, |metrics| {
+            metrics.enqueued_total += 1;
+            metrics.queued = queued;
+        });
+    }
+
+    pub fn record_worker_group_queue_rejected(&self, worker_ref: &WorkerRef, queued: u64) {
+        self.update_worker_group(worker_ref, |metrics| {
+            metrics.rejected_total += 1;
+            metrics.queued = queued;
+        });
+    }
+
+    pub fn record_worker_group_queue_timeout(
+        &self,
+        worker_ref: &WorkerRef,
+        queued: u64,
+        wait_ms: u64,
+    ) {
+        self.update_worker_group(worker_ref, |metrics| {
+            metrics.timeout_total += 1;
+            metrics.queued = queued;
+            metrics.record_wait(wait_ms);
+        });
+    }
+
+    pub fn record_worker_group_queue_wait(
+        &self,
+        worker_ref: &WorkerRef,
+        queued: u64,
+        wait_ms: u64,
+    ) {
+        self.update_worker_group(worker_ref, |metrics| {
+            metrics.queued = queued;
+            metrics.record_wait(wait_ms);
+        });
+    }
+
+    pub fn record_worker_group_recycle(&self, worker_ref: &WorkerRef, cause: WorkerRecycleCause) {
+        self.update_worker_group(worker_ref, |metrics| metrics.record_recycle(cause));
+    }
+
+    pub fn worker_group_runtime_snapshots(
+        &self,
+    ) -> BTreeMap<WorkerGroupIdentity, WorkerGroupRuntimeMetrics> {
+        self.worker_groups
+            .lock()
+            .expect("worker_groups lock")
+            .clone()
+    }
+
     pub fn snapshot(&self) -> PoolMetrics {
         let p50 = self
             .spawn_samples
@@ -196,15 +370,70 @@ impl MetricsCollector {
             worker_queue_timeout: self.worker_queue_timeout.load(Ordering::Relaxed),
             worker_queue_wait_ms_last: self.worker_queue_wait_ms_last.load(Ordering::Relaxed),
             request_duration_ms_last: self.request_duration_ms_last.load(Ordering::Relaxed),
+            worker_groups: Vec::new(),
         }
+    }
+
+    fn update_worker_group<F>(&self, worker_ref: &WorkerRef, update: F)
+    where
+        F: FnOnce(&mut WorkerGroupRuntimeMetrics),
+    {
+        let key = WorkerGroupIdentity::from_worker_ref(worker_ref);
+        let mut groups = self.worker_groups.lock().expect("worker_groups lock");
+        update(groups.entry(key).or_default());
     }
 }
 
 fn percentile_p50(samples: &[u64]) -> u64 {
+    percentile(samples, 50)
+}
+
+fn percentile(samples: &[u64], percentile: u64) -> u64 {
     if samples.is_empty() {
         return 0;
     }
     let mut sorted = samples.to_vec();
     sorted.sort_unstable();
-    sorted[sorted.len() / 2]
+    let index = ((sorted.len() - 1) as u64 * percentile / 100) as usize;
+    sorted[index]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use edger_core::{create_worker_ref, WorkerManifest};
+    use std::path::PathBuf;
+
+    #[test]
+    fn worker_group_queue_metrics_keep_low_cardinality_identity() {
+        let collector = MetricsCollector::default();
+        let worker_ref = create_worker_ref(
+            PathBuf::from("/tmp/secret-absolute-worker-path"),
+            WorkerManifest {
+                name: "@tenant-a/echo".into(),
+                version: Some("1.0.0".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        collector.record_worker_group_queue_enqueued(&worker_ref, 1);
+        collector.record_worker_group_queue_wait(&worker_ref, 0, 9);
+        collector.record_worker_group_queue_rejected(&worker_ref, 0);
+        collector.record_worker_group_queue_timeout(&worker_ref, 0, 11);
+        collector.record_worker_group_recycle(&worker_ref, WorkerRecycleCause::MaxRequests);
+
+        let groups = collector.worker_group_runtime_snapshots();
+        let (identity, metrics) = groups.iter().next().expect("worker group metrics");
+
+        assert_eq!(identity.name, "@tenant-a/echo");
+        assert_eq!(identity.version, "1.0.0");
+        assert_eq!(identity.namespace.as_deref(), Some("@tenant-a"));
+        assert_eq!(metrics.enqueued_total, 1);
+        assert_eq!(metrics.rejected_total, 1);
+        assert_eq!(metrics.timeout_total, 1);
+        assert_eq!(metrics.wait_ms_last, 11);
+        assert_eq!(metrics.recycle_max_requests_total, 1);
+        assert!(!format!("{identity:?}").contains("/tmp/secret-absolute-worker-path"));
+    }
 }

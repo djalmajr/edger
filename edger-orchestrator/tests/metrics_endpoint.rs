@@ -153,6 +153,31 @@ async fn body_text(response: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
+fn assert_worker_metric_labels_are_low_cardinality(body: &str) {
+    for line in body
+        .lines()
+        .filter(|line| line.starts_with("edger_worker_"))
+    {
+        let Some((_, rest)) = line.split_once('{') else {
+            continue;
+        };
+        let Some((labels, _)) = rest.split_once('}') else {
+            panic!("worker metric line has no closing label set: {line}");
+        };
+        for label in labels.split(',').filter_map(|label| label.split_once('=')) {
+            assert!(
+                matches!(
+                    label.0,
+                    "worker" | "version" | "namespace" | "state" | "cause"
+                ),
+                "unexpected high-cardinality worker metric label `{}` in line `{}`",
+                label.0,
+                line
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn metrics_endpoint_is_prometheus_text_without_secrets() {
     // Mutation captured: accidentally serializing config/env into metrics would
@@ -182,6 +207,9 @@ async fn metrics_endpoint_is_prometheus_text_without_secrets() {
     assert!(body.contains("edger_pool_workers 0"));
     assert!(!body.contains("test-root"));
     assert!(!body.to_ascii_lowercase().contains("authorization"));
+    assert!(!body.to_ascii_lowercase().contains("request_id"));
+    assert!(!body.to_ascii_lowercase().contains("requestid"));
+    assert!(!body.to_ascii_lowercase().contains("path=\""));
 }
 
 #[tokio::test]
@@ -217,10 +245,38 @@ async fn metrics_reflect_worker_pool_cache_hit_after_dispatch() {
 
     assert!(body.contains("edger_pool_cache_hits_total 1"));
     assert!(body.contains("edger_pool_cache_misses_total 1"));
+    assert!(
+        body.contains(
+            "edger_worker_processes{worker=\"echo\",version=\"1.0.0\",namespace=\"\",state=\"total\"} 1"
+        ),
+        "{body}"
+    );
+    assert!(
+        body.contains(
+            "edger_worker_processes{worker=\"echo\",version=\"1.0.0\",namespace=\"\",state=\"idle\"} 1"
+        ),
+        "{body}"
+    );
+    assert!(
+        body.contains(
+            "edger_worker_queue_depth{worker=\"echo\",version=\"1.0.0\",namespace=\"\"} 0"
+        ),
+        "{body}"
+    );
+    assert!(
+        body.contains(
+            "edger_worker_recycle_total{worker=\"echo\",version=\"1.0.0\",namespace=\"\",cause=\"ttl\"} 0"
+        ),
+        "{body}"
+    );
     assert!(body.contains("edger_http_requests_total{method=\"GET\",status=\"200\"}"));
     assert!(body.contains("edger_http_request_duration_ms_last"));
     assert!(!body.contains("echo@1.0.0"));
     assert!(!body.contains("worker_id"));
+    assert!(!body.contains("/workers/echo"));
+    assert!(!body.to_ascii_lowercase().contains("authorization"));
+    assert!(!body.to_ascii_lowercase().contains("request_id"));
+    assert_worker_metric_labels_are_low_cardinality(&body);
 }
 
 #[tokio::test]
@@ -276,13 +332,36 @@ async fn metrics_stats_returns_pool_and_worker_snapshot_without_secrets() {
     assert_eq!(worker["version"], "1.0.0");
     assert_eq!(worker["state"], "idle");
     assert_eq!(worker["requests"], 2);
+    assert_eq!(worker["activeProcesses"], 0);
+    assert_eq!(worker["idleProcesses"], 1);
+    assert_eq!(worker["totalProcesses"], 1);
+    assert_eq!(worker["queued"], 0);
+    assert_eq!(worker["waitMs"], 0);
+    assert_eq!(worker["rejectedTotal"], 0);
+    assert_eq!(worker["timeoutTotal"], 0);
+    assert_eq!(worker["recycle"]["ttl"], 0);
+    assert_eq!(worker["recycle"]["maxRequests"], 0);
+    assert_eq!(worker["recycle"]["error"], 0);
+    assert_eq!(worker["recycle"]["oomShutdown"], 0);
+    let processes = worker["processes"].as_array().unwrap();
+    assert_eq!(processes.len(), 1);
+    assert_eq!(processes[0]["state"], "idle");
+    assert_eq!(processes[0]["requests"], 2);
+    assert_eq!(processes[0]["unhealthy"], false);
+    assert!(processes[0]["uptimeSeconds"].is_u64());
     assert!(worker["id"].as_str().is_some_and(|id| !id.is_empty()));
     assert!(worker["uptimeSeconds"].is_u64());
     assert_eq!(worker["unhealthy"], false);
 
     assert!(!text.contains("test-root"));
     assert!(!text.contains("secret request body"));
+    assert!(!text.contains("/workers/echo"));
     assert!(!text.to_ascii_lowercase().contains("authorization"));
+    assert!(!text.to_ascii_lowercase().contains("requestid"));
+    assert!(!text.to_ascii_lowercase().contains("request_id"));
+    assert!(!text.to_ascii_lowercase().contains("header"));
+    assert!(!text.to_ascii_lowercase().contains("root_api_key"));
+    assert!(!text.to_ascii_lowercase().contains("env"));
 }
 
 #[tokio::test]

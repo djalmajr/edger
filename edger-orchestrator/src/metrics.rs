@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use edger_worker::metrics::{WorkerGroupMetrics, WorkerProcessMetrics};
 use edger_worker::{PoolMetrics, WorkerState, WorkerStats};
 use serde::Serialize;
 
@@ -38,15 +39,46 @@ pub struct MetricsPoolStats {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MetricsWorkerStats {
+    pub active_processes: usize,
     pub app: String,
     pub id: String,
+    pub idle_processes: usize,
+    pub max_processes: usize,
     pub name: String,
     pub namespace: Option<String>,
+    pub processes: Vec<MetricsWorkerProcessStats>,
+    pub queued: u64,
+    pub recycle: MetricsWorkerRecycleStats,
+    pub rejected_total: u64,
+    pub requests: u32,
+    pub state: &'static str,
+    pub terminating_processes: usize,
+    pub timeout_total: u64,
+    pub total_processes: usize,
+    pub unhealthy: bool,
+    pub uptime_seconds: u64,
+    pub version: String,
+    pub wait_ms: u64,
+    pub wait_ms_p50: u64,
+    pub wait_ms_p95: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricsWorkerProcessStats {
     pub requests: u32,
     pub state: &'static str,
     pub unhealthy: bool,
     pub uptime_seconds: u64,
-    pub version: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricsWorkerRecycleStats {
+    pub error: u64,
+    pub max_requests: u64,
+    pub oom_shutdown: u64,
+    pub ttl: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -108,20 +140,7 @@ pub fn metrics_stats_response(
             terminated_total: metrics.terminated_total,
             total_workers: metrics.active_workers,
         },
-        workers: workers
-            .iter()
-            .map(|worker| MetricsWorkerStats {
-                app: worker.app.clone(),
-                id: worker.worker_id.to_string(),
-                name: worker.name.clone(),
-                namespace: worker.namespace.clone(),
-                requests: worker.request_count,
-                state: worker_state_label(worker.state),
-                unhealthy: worker.unhealthy,
-                uptime_seconds: worker.uptime_seconds,
-                version: worker.version.clone(),
-            })
-            .collect(),
+        workers: metrics_worker_stats(metrics, workers),
     }
 }
 
@@ -215,6 +234,7 @@ pub fn pool_metrics_prometheus(metrics: &PoolMetrics) -> String {
         "Ephemeral worker requests rejected because the queue was full",
         metrics.ephemeral_rejected,
     );
+    push_worker_group_metrics(&mut out, &metrics.worker_groups);
     out
 }
 
@@ -265,6 +285,134 @@ fn escape_label_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+fn metrics_worker_stats(metrics: &PoolMetrics, workers: &[WorkerStats]) -> Vec<MetricsWorkerStats> {
+    if metrics.worker_groups.is_empty() {
+        return workers
+            .iter()
+            .map(metrics_worker_stats_from_instance)
+            .collect();
+    }
+
+    metrics
+        .worker_groups
+        .iter()
+        .map(|group| metrics_worker_stats_from_group(group, workers))
+        .collect()
+}
+
+fn metrics_worker_stats_from_group(
+    group: &WorkerGroupMetrics,
+    workers: &[WorkerStats],
+) -> MetricsWorkerStats {
+    let matching_worker = workers.iter().find(|worker| {
+        worker.name == group.name
+            && worker.version == group.version
+            && worker.namespace == group.namespace
+    });
+    let requests = group
+        .processes
+        .iter()
+        .map(|process| process.request_count)
+        .sum();
+    let uptime_seconds = group
+        .processes
+        .iter()
+        .map(|process| process.uptime_seconds)
+        .max()
+        .unwrap_or(0);
+    MetricsWorkerStats {
+        active_processes: group.active_processes,
+        app: format!("{}@{}", group.name, group.version),
+        id: matching_worker
+            .map(|worker| worker.worker_id.to_string())
+            .unwrap_or_default(),
+        idle_processes: group.idle_processes,
+        max_processes: group.max_processes,
+        name: group.name.clone(),
+        namespace: group.namespace.clone(),
+        processes: group.processes.iter().map(metrics_process_stats).collect(),
+        queued: group.queued,
+        recycle: MetricsWorkerRecycleStats {
+            error: group.recycle_error_total,
+            max_requests: group.recycle_max_requests_total,
+            oom_shutdown: group.recycle_oom_shutdown_total,
+            ttl: group.recycle_ttl_total,
+        },
+        rejected_total: group.rejected_total,
+        requests,
+        state: worker_group_state_label(group),
+        terminating_processes: group.terminating_processes,
+        timeout_total: group.timeout_total,
+        total_processes: group.total_processes,
+        unhealthy: group.processes.iter().any(|process| process.unhealthy),
+        uptime_seconds,
+        version: group.version.clone(),
+        wait_ms: group.wait_ms_last,
+        wait_ms_p50: group.wait_ms_p50,
+        wait_ms_p95: group.wait_ms_p95,
+    }
+}
+
+fn metrics_worker_stats_from_instance(worker: &WorkerStats) -> MetricsWorkerStats {
+    let process = WorkerProcessMetrics {
+        request_count: worker.request_count,
+        state: worker.state,
+        unhealthy: worker.unhealthy,
+        uptime_seconds: worker.uptime_seconds,
+    };
+    MetricsWorkerStats {
+        active_processes: usize::from(worker.state == WorkerState::Active),
+        app: worker.app.clone(),
+        id: worker.worker_id.to_string(),
+        idle_processes: usize::from(worker.state == WorkerState::Idle),
+        max_processes: 1,
+        name: worker.name.clone(),
+        namespace: worker.namespace.clone(),
+        processes: vec![metrics_process_stats(&process)],
+        queued: 0,
+        recycle: MetricsWorkerRecycleStats::default(),
+        rejected_total: 0,
+        requests: worker.request_count,
+        state: worker_state_label(worker.state),
+        terminating_processes: usize::from(worker.state == WorkerState::Terminating),
+        timeout_total: 0,
+        total_processes: 1,
+        unhealthy: worker.unhealthy,
+        uptime_seconds: worker.uptime_seconds,
+        version: worker.version.clone(),
+        wait_ms: 0,
+        wait_ms_p50: 0,
+        wait_ms_p95: 0,
+    }
+}
+
+fn metrics_process_stats(process: &WorkerProcessMetrics) -> MetricsWorkerProcessStats {
+    MetricsWorkerProcessStats {
+        requests: process.request_count,
+        state: worker_state_label(process.state),
+        unhealthy: process.unhealthy,
+        uptime_seconds: process.uptime_seconds,
+    }
+}
+
+fn worker_group_state_label(group: &WorkerGroupMetrics) -> &'static str {
+    if group.active_processes > 0 {
+        "active"
+    } else if group.idle_processes > 0 && group.idle_processes == group.total_processes {
+        "idle"
+    } else if group.total_processes == 0 {
+        "absent"
+    } else if group
+        .processes
+        .iter()
+        .any(|process| process.state == WorkerState::Terminating)
+    {
+        "terminating"
+    } else {
+        "ready"
+    }
+}
+
 fn worker_state_label(state: WorkerState) -> &'static str {
     match state {
         WorkerState::Creating => "creating",
@@ -277,7 +425,192 @@ fn worker_state_label(state: WorkerState) -> &'static str {
     }
 }
 
-fn push_metric(out: &mut String, name: &str, kind: &str, help: &str, value: u64) {
+fn push_worker_group_metrics(out: &mut String, groups: &[WorkerGroupMetrics]) {
+    if groups.is_empty() {
+        return;
+    }
+
+    push_metric_header(
+        out,
+        "edger_worker_processes",
+        "gauge",
+        "Worker processes by state for each worker group",
+    );
+    for group in groups {
+        push_worker_sample(
+            out,
+            "edger_worker_processes",
+            group,
+            &[("state", "total")],
+            group.total_processes as u64,
+        );
+        push_worker_sample(
+            out,
+            "edger_worker_processes",
+            group,
+            &[("state", "active")],
+            group.active_processes as u64,
+        );
+        push_worker_sample(
+            out,
+            "edger_worker_processes",
+            group,
+            &[("state", "idle")],
+            group.idle_processes as u64,
+        );
+        push_worker_sample(
+            out,
+            "edger_worker_processes",
+            group,
+            &[("state", "terminating")],
+            group.terminating_processes as u64,
+        );
+    }
+    out.push('\n');
+
+    push_worker_metric(
+        out,
+        "edger_worker_queue_depth",
+        "gauge",
+        "Persistent-worker requests currently waiting for this worker group",
+        groups,
+        |group| group.queued,
+    );
+    push_worker_metric(
+        out,
+        "edger_worker_queue_enqueued_total",
+        "counter",
+        "Persistent-worker requests admitted into this worker group's wait queue",
+        groups,
+        |group| group.enqueued_total,
+    );
+    push_worker_metric(
+        out,
+        "edger_worker_queue_rejected_total",
+        "counter",
+        "Persistent-worker requests rejected because this worker group's queue was full",
+        groups,
+        |group| group.rejected_total,
+    );
+    push_worker_metric(
+        out,
+        "edger_worker_queue_timeout_total",
+        "counter",
+        "Persistent-worker requests that timed out waiting for this worker group",
+        groups,
+        |group| group.timeout_total,
+    );
+    push_worker_metric(
+        out,
+        "edger_worker_queue_wait_ms_last",
+        "gauge",
+        "Last persistent-worker queue wait for this worker group in milliseconds",
+        groups,
+        |group| group.wait_ms_last,
+    );
+    push_worker_metric(
+        out,
+        "edger_worker_queue_wait_ms_p50",
+        "gauge",
+        "Median persistent-worker queue wait from the recent in-process sample window",
+        groups,
+        |group| group.wait_ms_p50,
+    );
+    push_worker_metric(
+        out,
+        "edger_worker_queue_wait_ms_p95",
+        "gauge",
+        "95th percentile persistent-worker queue wait from the recent in-process sample window",
+        groups,
+        |group| group.wait_ms_p95,
+    );
+
+    push_metric_header(
+        out,
+        "edger_worker_recycle_total",
+        "counter",
+        "Worker processes recycled by cause for each worker group",
+    );
+    for group in groups {
+        push_worker_sample(
+            out,
+            "edger_worker_recycle_total",
+            group,
+            &[("cause", "ttl")],
+            group.recycle_ttl_total,
+        );
+        push_worker_sample(
+            out,
+            "edger_worker_recycle_total",
+            group,
+            &[("cause", "max_requests")],
+            group.recycle_max_requests_total,
+        );
+        push_worker_sample(
+            out,
+            "edger_worker_recycle_total",
+            group,
+            &[("cause", "error")],
+            group.recycle_error_total,
+        );
+        push_worker_sample(
+            out,
+            "edger_worker_recycle_total",
+            group,
+            &[("cause", "oom_shutdown")],
+            group.recycle_oom_shutdown_total,
+        );
+    }
+    out.push('\n');
+}
+
+fn push_worker_metric<F>(
+    out: &mut String,
+    name: &str,
+    kind: &str,
+    help: &str,
+    groups: &[WorkerGroupMetrics],
+    value: F,
+) where
+    F: Fn(&WorkerGroupMetrics) -> u64,
+{
+    push_metric_header(out, name, kind, help);
+    for group in groups {
+        push_worker_sample(out, name, group, &[], value(group));
+    }
+    out.push('\n');
+}
+
+fn push_worker_sample(
+    out: &mut String,
+    name: &str,
+    group: &WorkerGroupMetrics,
+    extra_labels: &[(&str, &str)],
+    value: u64,
+) {
+    out.push_str(name);
+    out.push_str("{worker=\"");
+    out.push_str(&escape_label_value(&group.name));
+    out.push_str("\",version=\"");
+    out.push_str(&escape_label_value(&group.version));
+    out.push_str("\",namespace=\"");
+    out.push_str(&escape_label_value(
+        group.namespace.as_deref().unwrap_or(""),
+    ));
+    out.push('"');
+    for (label, label_value) in extra_labels {
+        out.push(',');
+        out.push_str(label);
+        out.push_str("=\"");
+        out.push_str(&escape_label_value(label_value));
+        out.push('"');
+    }
+    out.push_str("} ");
+    out.push_str(&value.to_string());
+    out.push('\n');
+}
+
+fn push_metric_header(out: &mut String, name: &str, kind: &str, help: &str) {
     out.push_str("# HELP ");
     out.push_str(name);
     out.push(' ');
@@ -288,6 +621,10 @@ fn push_metric(out: &mut String, name: &str, kind: &str, help: &str, value: u64)
     out.push(' ');
     out.push_str(kind);
     out.push('\n');
+}
+
+fn push_metric(out: &mut String, name: &str, kind: &str, help: &str, value: u64) {
+    push_metric_header(out, name, kind, help);
     out.push_str(name);
     out.push(' ');
     out.push_str(&value.to_string());
@@ -318,6 +655,7 @@ mod tests {
             worker_queue_rejected: 0,
             worker_queue_timeout: 0,
             worker_queue_wait_ms_last: 0,
+            worker_groups: Vec::new(),
         });
 
         assert!(output.contains("# TYPE edger_pool_cache_hits_total counter"));
@@ -347,6 +685,7 @@ mod tests {
                 worker_queue_rejected: 0,
                 worker_queue_timeout: 0,
                 worker_queue_wait_ms_last: 0,
+                worker_groups: Vec::new(),
             },
             &[WorkerStats {
                 app: "echo@1.0.0".into(),
