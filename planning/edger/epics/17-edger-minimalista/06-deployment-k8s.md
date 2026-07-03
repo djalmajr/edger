@@ -19,10 +19,11 @@
 ## Files
 | Path | Action | Reason |
 |---|---|---|
-| `deploy/helm/edger/Chart.yaml` | create | Metadados do chart |
-| `deploy/helm/edger/questions.yaml` | create | Form de instalação Rancher-style (grupos Runtime/Scaling/Resources/Auth) |
-| `deploy/helm/edger/values.yaml` | create | Defaults (image, replicas, OIDC, root-key, HPA, ingress do cPanel) |
-| `deploy/helm/edger/templates/` | create | `deployment.yaml` (stateless), `service.yaml`, `ingress.yaml` (serve o cPanel), `hpa.yaml`, `secret.yaml` (root-key como arquivo) |
+| `charts/edger/Chart.yaml` | create | Metadados do chart |
+| `charts/edger/questions.yaml` | create | Form de instalação Rancher-style (grupos Runtime/Scaling/Resources/Auth) |
+| `charts/edger/values.yaml` | create | Defaults (image, replicas, OIDC, root-key, HPA, ingress do cPanel) |
+| `charts/edger/templates/` | create | `deployment.yaml` (stateless), `service.yaml`, `ingress.yaml` (serve o cPanel), `hpa.yaml`, `secret.yaml` (root-key como arquivo) |
+| `Dockerfile`, `.dockerignore` | create | Imagem multi-stage com binário `edger`, Deno no PATH e cPanel embarcado |
 | `planning/edger/docs/deployment-k8s.md` | create | Operação: rotação sem restart, envs OIDC, API GW na frente, scaling (aponta Epic 18) |
 
 ## Detail
@@ -41,10 +42,17 @@
 - Stories 17.A–17.E
 
 ## Tasks
-- [ ] Chart `deploy/helm/edger` (Chart/values/questions/templates) modelado no `../buntime/charts`, adaptado stateless.
-- [ ] `questions.yaml` com grupos Runtime/Scaling/Resources/Auth (sem Persistence/Turso).
-- [ ] Ingress servindo o cPanel; validar `helm template` + (se disponível) `helm lint`.
-- [ ] Doc de operação (rotação sem restart, OIDC, API GW, ponteiro para Epic 18).
+- [x] 2026-07-03 — Chart `charts/edger` (Chart/values/questions/templates) modelado no `../buntime/charts`, adaptado stateless.
+- [x] 2026-07-03 — `questions.yaml` com grupos Runtime/Scaling/Resources/Auth (sem Persistence/Turso).
+- [x] 2026-07-03 — Ingress servindo o cPanel por path configurável; validação estática via `helm lint`/`helm template` quando o binário `helm` estiver disponível.
+- [x] 2026-07-03 — Dockerfile multi-stage com runtime Deno, binário `edger`, cPanel embarcado, usuário não-root e `.dockerignore`.
+- [x] 2026-07-03 — Doc/story de operação registra rotação por Secret-arquivo, OIDC fase 2, API Gateway externo e validação real de `helm install` delegada ao harness/usuário.
+
+## Implementation Notes
+
+- 2026-07-03 — O chart entregue em `charts/edger/` é stateless: usa Deployment, ConfigMap, Secret opcional, Service, Ingress opcional e HPA opcional; não cria PVC, StatefulSet, banco ou recursos Turso.
+- 2026-07-03 — `rootKey.value` gera um Secret do chart e `rootKey.existingSecret` referencia um Secret externo. Em ambos os casos o pod recebe `EDGER_ROOT_KEY_FILE=/var/run/secrets/edger-root/root-key`; rotação real em cluster fica para o harness/usuário validar, porque esta execução não deve rodar `helm install`.
+- 2026-07-03 — OIDC permanece opcional/fase 2 no form (`oidc.enabled` + `EDGER_OIDC_*`), sem bloquear o deploy root-key.
 
 ## Verification
 ```bash

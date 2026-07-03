@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "edger.fullname" . }}
+  labels:
+    {{- include "edger.labels" . | nindent 4 }}
+data:
+  PORT: {{ .Values.service.port | quote }}
+  RUNTIME_WORKER_DIRS: {{ .Values.runtime.workerDirs | quote }}
+  EDGER_CRON_ENABLED: {{ .Values.cron.enabled | quote }}
+  EDGER_JS_RUNTIME: {{ .Values.runtime.jsRuntime | quote }}
+  HOME: "/tmp"
+  DENO_DIR: "/tmp/deno"
+  {{- if .Values.oidc.enabled }}
+  EDGER_OIDC_ISSUER: {{ .Values.oidc.issuer | quote }}
+  EDGER_OIDC_AUDIENCE: {{ .Values.oidc.audience | quote }}
+  EDGER_OIDC_ROLES_CLAIM: {{ .Values.oidc.rolesClaim | quote }}
+  EDGER_OIDC_REQUIRED_ROLE: {{ .Values.oidc.requiredRole | quote }}
+  {{- end }}

@@ -1,0 +1,20 @@
+EdgeR deployed successfully.
+
+Release: {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+
+{{- if .Values.ingress.enabled }}
+Open the cPanel at:
+  http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}{{ if ne (.Values.ingress.path | default "/") "/" }}{{ .Values.ingress.path }}{{ end }}/cpanel/
+{{- else }}
+Forward the service locally:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "edger.fullname" . }} 3000:{{ .Values.service.port }}
+  open http://127.0.0.1:3000/cpanel/
+{{- end }}
+
+{{- if or .Values.rootKey.value .Values.rootKey.existingSecret }}
+Log in with the root key stored in Secret {{ include "edger.rootKeySecretName" . }} key {{ .Values.rootKey.secretKey }}.
+The key is mounted as a file at {{ include "edger.rootKeyFilePath" . }} and read through EDGER_ROOT_KEY_FILE.
+{{- else }}
+No root key Secret is configured. EdgeR will start with open control-plane auth until ROOT_API_KEY or EDGER_ROOT_KEY_FILE is provided.
+{{- end }}
