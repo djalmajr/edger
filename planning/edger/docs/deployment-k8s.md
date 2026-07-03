@@ -27,7 +27,26 @@ Turso.
   com default `/`.
 - O API Gateway externo fica na frente do Service/Ingress quando necessário; o
   chart não embute gateway stateful nem armazenamento.
-- Escala fina de pool por worker e tuning adicional de HPA permanecem no Epic 18.
+
+## Escala: L1 por worker e L2 por HPA
+
+O chart expõe apenas escala L2 de réplicas do EdgeR. `charts/edger/values.yaml`
+define `replicaCount` e `hpa.enabled`, `hpa.minReplicas`,
+`hpa.maxReplicas`, `hpa.targetCPUUtilizationPercentage`; o
+`charts/edger/questions.yaml` expõe esses campos no grupo `Scaling`; e
+`charts/edger/templates/hpa.yaml` renderiza um
+`HorizontalPodAutoscaler` `autoscaling/v2` apontando para a Deployment.
+
+`maxProcesses`, `minProcesses`, `concurrency`, `queueLimit` e `queueTimeout`
+são configuração L1 por worker no manifesto, não env global do pod. Por isso o
+chart não cria um valor global de pool: um único knob de Deployment misturaria
+workloads diferentes e esconderia o orçamento de memória por processo.
+
+Use L1 para remover head-of-line blocking de um worker quente dentro da réplica;
+use L2 para multiplicar a capacidade total com mais pods. HPA sozinho não
+resolve o caso em que cada réplica mantém `maxProcesses: 1` e o mesmo worker
+serializa requests dentro de cada pod. A operação completa está descrita em
+`planning/edger/docs/scaling.md`.
 
 ## Validação em cluster (2026-07-03)
 
