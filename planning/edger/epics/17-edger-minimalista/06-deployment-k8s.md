@@ -32,11 +32,11 @@
 - **Out:** publicar o chart num repositório/marketplace; o API GW em si (doc 17.D dá o padrão); tuning fino de HPA (Epic 18); pipeline `generate-helm-*` do Buntime (nossas questions são poucas, escritas à mão).
 
 ### Acceptance criteria
-- [ ] Chart instalável (`helm install`/`helm template` válido) com `questions.yaml` Rancher-style: grupos **Runtime** (log level, pool size, worker dirs), **Scaling** (HPA on/off, min/max, target CPU), **Resources** (requests/limits, memory cap por worker), **Auth** (OIDC issuer/audience/roles-claim, root-key).
-- [ ] Templates: Deployment **stateless** (sem PVC), Secret da root-key montado como **arquivo** em `EDGER_ROOT_KEY_FILE`, envs `EDGER_OIDC_*`, HPA, e Ingress apontando para o Service que serve o cPanel.
-- [ ] Instalar preenchendo o form deixa o edger no ar **servindo a interface** (cPanel acessível pelo host do Ingress).
-- [ ] Doc mostra rotação de root-key **sem restart** (atualiza Secret → arquivo remontado → hot-reload da 17.A) e posiciona o API GW externo na frente.
-- [ ] Sem StatefulSet/PVC/turso no chart.
+- [x] Chart instalável (`helm install`/`helm template` válido) com `questions.yaml` Rancher-style: grupos **Runtime** (log level, pool size, worker dirs), **Scaling** (HPA on/off, min/max, target CPU), **Resources** (requests/limits, memory cap por worker), **Auth** (OIDC issuer/audience/roles-claim, root-key).
+- [x] Templates: Deployment **stateless** (sem PVC), Secret da root-key montado como **arquivo** em `EDGER_ROOT_KEY_FILE`, envs `EDGER_OIDC_*`, HPA, e Ingress apontando para o Service que serve o cPanel.
+- [x] Instalar preenchendo o form deixa o edger no ar **servindo a interface** (cPanel acessível pelo host do Ingress).
+- [x] Doc mostra rotação de root-key **sem restart** (atualiza Secret → arquivo remontado → hot-reload da 17.A) e posiciona o API GW externo na frente.
+- [x] Sem StatefulSet/PVC/turso no chart.
 
 ### Dependencies
 - Stories 17.A–17.E
@@ -46,13 +46,13 @@
 - [x] 2026-07-03 — `questions.yaml` com grupos Runtime/Scaling/Resources/Auth (sem Persistence/Turso).
 - [x] 2026-07-03 — Ingress servindo o cPanel por path configurável; validação estática via `helm lint`/`helm template` quando o binário `helm` estiver disponível.
 - [x] 2026-07-03 — Dockerfile multi-stage com runtime Deno, binário `edger`, cPanel embarcado, usuário não-root e `.dockerignore`.
-- [x] 2026-07-03 — Doc/story de operação registra rotação por Secret-arquivo, OIDC fase 2, API Gateway externo e validação real de `helm install` em cluster real.
+- [x] 2026-07-03 — Doc/story de operação registra rotação por Secret-arquivo, OIDC genérico opt-in, API Gateway externo e validação real de `helm install` em cluster real.
 
 ## Implementation Notes
 
 - 2026-07-03 — O chart entregue em `charts/edger/` é stateless: usa Deployment, ConfigMap, Secret opcional, Service, Ingress opcional e HPA opcional; não cria PVC, StatefulSet, banco ou recursos Turso.
 - 2026-07-03 — `rootKey.value` gera um Secret do chart e `rootKey.existingSecret` referencia um Secret externo. Em ambos os casos o pod recebe `EDGER_ROOT_KEY_FILE=/var/run/secrets/edger-root/root-key`; rotação real em cluster fica para o harness/usuário validar, porque esta execução não deve rodar `helm install`.
-- 2026-07-03 — OIDC permanece opcional/fase 2 no form (`oidc.enabled` + `EDGER_OIDC_*`), sem bloquear o deploy root-key.
+- 2026-07-03 — OIDC genérico está disponível e permanece opt-in no form (`oidc.enabled` + `EDGER_OIDC_*`), sem bloquear o deploy root-key.
 
 ## Validação em cluster (2026-07-03)
 

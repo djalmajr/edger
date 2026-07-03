@@ -15,7 +15,7 @@ Turso.
 - Ambos montam a chave em `/var/run/secrets/edger-root/root-key` e configuram
   `EDGER_ROOT_KEY_FILE` para esse caminho. A rotação acontece atualizando o
   Secret; o runtime relê o arquivo sem restart.
-- OIDC é fase 2 e fica opcional via `oidc.enabled`, `oidc.issuer`,
+- OIDC genérico está implementado e fica opt-in via `oidc.enabled`, `oidc.issuer`,
   `oidc.audience`, `oidc.rolesClaim` e `oidc.requiredRole`, renderizados como
   `EDGER_OIDC_*`.
 

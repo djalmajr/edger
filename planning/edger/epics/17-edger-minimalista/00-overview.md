@@ -21,12 +21,12 @@
 
 | Story | Arquivo | Objetivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|---|
-| 17.A Control-plane auth stateless (OIDC + root-key) | `01-control-plane-auth.md` | Validador OIDC genérico (discovery+JWKS+claims) opt-in + root-key via Secret-arquivo (hot-reload); deletar `edger-ext-auth`; só gateia `/api/admin/*` | large | in progress — base root-key entregue (2026-07-03); OIDC pendente | — |
-| 17.B Data plane aberto | `02-data-plane-aberto.md` | Worker recebe request cru (Authorization intacto); só control plane gateia | small | **completed** | — |
-| 17.C Remover estado + bindings | `03-remover-estado-bindings.md` | Deletados keyval/turso/turso-remote + service bindings + DurableSqlProvider; env/secrets + egress mantidos | medium | **completed** | 17.B |
-| 17.D Remover gateway + shell | `04-remover-gateway.md` | Deletar `edger-ext-gateway` **e** o shell routing (`shell_gateway`); ingress/composição → externo | medium | **completed** | — |
+| 17.A Control-plane auth stateless (OIDC + root-key) | `01-control-plane-auth.md` | Validador OIDC genérico (discovery+JWKS+claims) opt-in + root-key via Secret-arquivo (hot-reload); deletar `edger-ext-auth`; só gateia `/api/admin/*` | large | **completed** (2026-07-03) | — |
+| 17.B Data plane aberto | `02-data-plane-aberto.md` | Worker recebe request cru (Authorization intacto); só control plane gateia | small | **completed** (2026-07-02) | — |
+| 17.C Remover estado + bindings | `03-remover-estado-bindings.md` | Deletados keyval/turso/turso-remote + service bindings + DurableSqlProvider; env/secrets + egress mantidos | medium | **completed** (2026-07-02) | 17.B |
+| 17.D Remover gateway + shell | `04-remover-gateway.md` | Deletar `edger-ext-gateway` **e** o shell routing (`shell_gateway`); ingress/composição → externo | medium | **completed** (2026-07-02) | — |
 | 17.E Remover sistema de extensões | `05-remover-extensoes.md` | Deletar `ExtensionRegistry`/hooks/`Extension`/`Middleware`; limpar `visibility`/`namespaces` vestigiais | large | **completed** (2026-07-03) | 17.A–17.D |
-| 17.F Deployment K8s de referência | `06-deployment-k8s.md` | Helm chart Rancher-style (questions.yaml modelado no Buntime, stateless) que instala e serve o cPanel; Deployment + HPA + Secret-arquivo | medium | not started | 17.A–17.E |
+| 17.F Deployment K8s de referência | `06-deployment-k8s.md` | Helm chart Rancher-style (questions.yaml modelado no Buntime, stateless) que instala e serve o cPanel; Deployment + HPA + Secret-arquivo | medium | **completed** (2026-07-03) | 17.A–17.E |
 
 ## Roadmap
 
@@ -43,13 +43,13 @@ Ordem = da folha para a raiz: primeiro troca a auth (destrava o problema K8s), d
 
 ## Epic acceptance criteria
 
-- [ ] Control plane protegido por OIDC (opt-in, provider-agnóstico) e/ou root-key via Secret-arquivo; **zero** persistência de auth (sem SQLite, sem PVC); edger stateless (HPA-ready).
-- [ ] Data plane aberto: worker recebe o request cru (inclusive `Authorization`) e decide sua própria auth.
-- [ ] Worker conecta direto no backend que escolher (env/secrets injetados + egress); sem bindings/providers no caminho.
-- [ ] `edger-ext-{auth,gateway,keyval,turso,turso-remote}` deletados; sistema de extensões/registry/hooks deletado; `visibility`/`namespaces` removidos.
-- [ ] Observabilidade (request-id, métricas, tracing) preservada (já é built-in).
-- [ ] Manifesto K8s de referência (Deployment stateless + Secret-arquivo) + doc de rotação sem restart.
-- [ ] Gates verdes (workspace + multiproc + clippy + fmt + oráculo); MVP live no preview segue servindo workers (SSR/SPA/API/streaming).
+- [x] Control plane protegido por OIDC (opt-in, provider-agnóstico) e/ou root-key via Secret-arquivo; **zero** persistência de auth (sem SQLite, sem PVC); edger stateless (HPA-ready).
+- [x] Data plane aberto: worker recebe o request cru (inclusive `Authorization`) e decide sua própria auth.
+- [x] Worker conecta direto no backend que escolher (env/secrets injetados + egress); sem bindings/providers no caminho.
+- [x] `edger-ext-{auth,gateway,keyval,turso,turso-remote}` deletados; sistema de extensões/registry/hooks deletado; `visibility`/`namespaces` removidos.
+- [x] Observabilidade (request-id, métricas, tracing) preservada (já é built-in).
+- [x] Manifesto K8s de referência (Deployment stateless + Secret-arquivo) + doc de rotação sem restart.
+- [x] Gates verdes (workspace + multiproc + clippy + fmt + oráculo); MVP live no preview segue servindo workers (SSR/SPA/API/streaming).
 
 ## Risks
 
@@ -62,4 +62,4 @@ Ordem = da folha para a raiz: primeiro troca a auth (destrava o problema K8s), d
 
 ## Status
 
-**in progress** (2026-07-03) — 17.E concluída: sistema de extensões/registry/hooks removido, `/api/admin/extensions*` removido, cPanel sem Modules, e `visibility`/`publicRoutes`/`shellExcludes` fora do manifest/config. 17.A mantém base root-key entregue (sem `edger-ext-auth`, sem gestão de API keys, gate só no control plane); OIDC genérico segue pendente. Desenho fechado após sequência de decisões do operador: worker soberano, 100% serverless, auth OIDC opt-in + root-key stateless, sem extensões/estado/gateway dentro do edger. Adição de escala (pool por worker + HPA) fica no Epic 18.
+**completed** (2026-07-03) — 17.A–17.F concluídas e mergeadas. Evidência curta: ControlAuth built-in com root-key hot-reload e OIDC genérico validado contra Keycloak real; data plane aberto; providers de estado/bindings, gateway/shell e extensão/registry/hooks removidos; chart/Dockerfile stateless validado em cluster K3s real com cPanel, probes admin e rotação de root-key sem restart.

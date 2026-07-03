@@ -1,5 +1,10 @@
 # Durable Provider Contract
 
+> OBSOLETE since Epic 17: `DurableSqlProvider`, durable state providers and
+> service bindings were removed from the runtime by Story 17.C. This document is
+> retained as historical planning context only. See
+> `planning/edger/epics/17-edger-minimalista/`.
+
 **Origin:** `planning/edger/epics/09-providers-duraveis-externos/01-contrato-provider-sql-remoto.md`
 
 ## Purpose

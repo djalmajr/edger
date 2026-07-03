@@ -1,5 +1,9 @@
 # Pendências Epic 07 — Fase 7 Avançado
 
+> HISTÓRICO desde o Epic 17: este arquivo registra pendências e decisões da fase
+> pré-Epic 17. Itens sobre auth de worker, shell/gateway, bindings ou Turso não
+> representam backlog atual do runtime minimalista.
+
 **Origin:** `planning/edger/epics/07-avancado/00-overview.md`  
 **Atualizado:** 2026-07-02
 

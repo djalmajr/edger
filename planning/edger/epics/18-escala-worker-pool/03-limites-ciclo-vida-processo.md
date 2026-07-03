@@ -89,4 +89,4 @@ curl -s http://127.0.0.1:19080/metrics/stats
 
 ## Status
 
-**pending** (2026-07-03) — story planejada; nenhuma implementação iniciada.
+**completed** (2026-07-03) — lifecycle por processo e shutdown gracioso mergeados: limites aplicados por processo, reciclagem por instância, fila fechada em shutdown e drain de processos ativos antes da terminação.

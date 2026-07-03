@@ -1,6 +1,11 @@
 # Extensões edger (edger-ext-*)
 
-**Status:** ativo (Epic 06 delivered; Story 08.06 provider model)
+> OBSOLETO desde o Epic 17: o sistema de extensões/registry/hooks, `edger-ext-*`,
+> providers e auth plugável foram removidos do runtime. Este arquivo fica como
+> registro histórico da arquitetura pré-Epic 17. Ver
+> `planning/edger/epics/17-edger-minimalista/`.
+
+**Status:** histórico/obsoleto (removido pelo Epic 17)
 **Origin:** `planning/edger/epics/06-extensibilidade/00-overview.md`
 
 ## Princípio choose ONE
