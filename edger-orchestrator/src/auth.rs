@@ -7,13 +7,22 @@ use std::time::SystemTime;
 use axum::http::HeaderMap;
 use edger_core::{root_principal, ApiKeyPrincipal, PublicRoutesConfig};
 
+#[cfg(test)]
+use crate::oidc::JwksSource;
+use crate::oidc::{OidcConfig, OidcValidator};
+
 const ROOT_API_KEY_ENV: &str = "ROOT_API_KEY";
 const EDGER_ROOT_KEY_FILE_ENV: &str = "EDGER_ROOT_KEY_FILE";
+const EDGER_OIDC_AUDIENCE_ENV: &str = "EDGER_OIDC_AUDIENCE";
+const EDGER_OIDC_ISSUER_ENV: &str = "EDGER_OIDC_ISSUER";
+const EDGER_OIDC_REQUIRED_ROLE_ENV: &str = "EDGER_OIDC_REQUIRED_ROLE";
+const EDGER_OIDC_ROLES_CLAIM_ENV: &str = "EDGER_OIDC_ROLES_CLAIM";
 
 /// Auth gate configuration. `EDGER_ROOT_KEY_FILE` takes precedence over `ROOT_API_KEY`.
 #[derive(Clone, Debug, Default)]
 pub struct ControlAuthConfig {
     pub global_public_routes: PublicRoutesConfig,
+    pub oidc: Option<OidcConfig>,
     root_key_source: RootKeySource,
 }
 
@@ -37,6 +46,7 @@ struct FileRootKeyState {
 pub struct ControlAuth {
     pub config: ControlAuthConfig,
     file_state: Arc<RwLock<FileRootKeyState>>,
+    oidc: Option<OidcValidator>,
 }
 
 impl ControlAuthConfig {
@@ -48,8 +58,10 @@ impl ControlAuthConfig {
             (None, Some(key)) => RootKeySource::Env(key),
             (None, None) => RootKeySource::Open,
         };
+        let oidc = oidc_config_from_env();
         Self {
             global_public_routes: PublicRoutesConfig::default(),
+            oidc,
             root_key_source,
         }
     }
@@ -57,6 +69,7 @@ impl ControlAuthConfig {
     fn with_static_key(key: impl Into<String>) -> Self {
         Self {
             global_public_routes: PublicRoutesConfig::default(),
+            oidc: None,
             root_key_source: RootKeySource::Static(key.into()),
         }
     }
@@ -64,9 +77,15 @@ impl ControlAuthConfig {
 
 impl ControlAuth {
     pub fn new(config: ControlAuthConfig) -> Self {
+        let oidc = config.oidc.clone().and_then(|oidc_config| {
+            OidcValidator::with_http_source(oidc_config)
+                .map_err(|err| tracing::warn!(error = %err, "could not initialize OIDC validator"))
+                .ok()
+        });
         Self {
             config,
             file_state: Arc::default(),
+            oidc,
         }
     }
 
@@ -78,18 +97,41 @@ impl ControlAuth {
         Self::new(ControlAuthConfig::with_static_key(key))
     }
 
-    pub fn authenticate_headers(&self, headers: &HeaderMap) -> Option<ApiKeyPrincipal> {
-        let credential = extract_api_key(headers)?;
-        let root_key = self.current_root_key()?;
-        if credential == root_key {
-            Some(root_principal())
-        } else {
-            None
+    #[cfg(test)]
+    pub fn with_oidc_source(config: OidcConfig, source: Arc<dyn JwksSource>) -> Self {
+        Self {
+            config: ControlAuthConfig {
+                global_public_routes: PublicRoutesConfig::default(),
+                oidc: Some(config.clone()),
+                root_key_source: RootKeySource::Open,
+            },
+            file_state: Arc::default(),
+            oidc: Some(OidcValidator::new(config, source)),
+        }
+    }
+
+    pub async fn authenticate_headers(&self, headers: &HeaderMap) -> Option<ApiKeyPrincipal> {
+        if let (Some(credential), Some(root_key)) =
+            (extract_api_key(headers), self.current_root_key())
+        {
+            if credential == root_key {
+                return Some(root_principal());
+            }
+        }
+
+        let token = extract_bearer_token(headers)?;
+        let validator = self.oidc.as_ref()?;
+        match validator.validate_token(token).await {
+            Ok(principal) => Some(principal),
+            Err(err) => {
+                tracing::debug!(error = %err, "OIDC bearer token rejected");
+                None
+            }
         }
     }
 
     pub fn is_open(&self) -> bool {
-        matches!(self.config.root_key_source, RootKeySource::Open)
+        matches!(self.config.root_key_source, RootKeySource::Open) && self.config.oidc.is_none()
     }
 
     pub fn root_key_for_internal_clients(&self) -> Option<String> {
@@ -175,6 +217,14 @@ pub fn extract_api_key(headers: &HeaderMap) -> Option<String> {
     edger_core::extract_api_key_from_pairs(&header_map_to_pairs(headers))
 }
 
+fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|token| !token.is_empty())
+}
+
 /// Check whether a path matches configured public routes (Buntime `publicRoutes`).
 pub fn is_public_route(path: &str, config: &PublicRoutesConfig) -> bool {
     for route in &config.routes {
@@ -194,6 +244,25 @@ fn non_empty_env(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn oidc_config_from_env() -> Option<OidcConfig> {
+    let issuer = non_empty_env(EDGER_OIDC_ISSUER_ENV)?;
+    let audience = match non_empty_env(EDGER_OIDC_AUDIENCE_ENV) {
+        Some(audience) => audience,
+        None => {
+            tracing::warn!(
+                "EDGER_OIDC_ISSUER is configured but EDGER_OIDC_AUDIENCE is missing; OIDC disabled"
+            );
+            return None;
+        }
+    };
+    Some(OidcConfig {
+        audience,
+        issuer,
+        required_role: non_empty_env(EDGER_OIDC_REQUIRED_ROLE_ENV),
+        roles_claim: non_empty_env(EDGER_OIDC_ROLES_CLAIM_ENV),
+    })
 }
 
 #[cfg(test)]
@@ -221,62 +290,63 @@ mod tests {
         assert!(is_public_route("/health/live", &prefix));
     }
 
-    #[test]
-    fn static_root_key_returns_synthetic_principal() {
+    #[tokio::test]
+    async fn static_root_key_returns_synthetic_principal() {
         let auth = ControlAuth::with_static_key("root-secret");
         let mut headers = HeaderMap::new();
         headers.insert(
             "authorization",
             HeaderValue::from_static("Bearer root-secret"),
         );
-        let principal = auth.authenticate_headers(&headers).unwrap();
+        let principal = auth.authenticate_headers(&headers).await.unwrap();
         assert!(principal.is_root);
         assert_eq!(principal.namespaces, vec!["*"]);
     }
 
-    #[test]
-    fn static_root_key_rejects_missing_and_invalid_credentials() {
+    #[tokio::test]
+    async fn static_root_key_rejects_missing_and_invalid_credentials() {
         let auth = ControlAuth::with_static_key("root-secret");
-        assert!(auth.authenticate_headers(&HeaderMap::new()).is_none());
+        assert!(auth.authenticate_headers(&HeaderMap::new()).await.is_none());
 
         let mut headers = HeaderMap::new();
         headers.insert("x-api-key", HeaderValue::from_static("wrong"));
-        assert!(auth.authenticate_headers(&headers).is_none());
+        assert!(auth.authenticate_headers(&headers).await.is_none());
 
         headers.insert("x-api-key", HeaderValue::from_static("root-secret"));
-        assert!(auth.authenticate_headers(&headers).unwrap().is_root);
+        assert!(auth.authenticate_headers(&headers).await.unwrap().is_root);
     }
 
-    #[test]
-    fn open_mode_does_not_authenticate_headers() {
+    #[tokio::test]
+    async fn open_mode_does_not_authenticate_headers() {
         let auth = ControlAuth::new(ControlAuthConfig::default());
         let mut headers = HeaderMap::new();
         headers.insert("x-api-key", HeaderValue::from_static("anything"));
 
         assert!(auth.is_open());
-        assert!(auth.authenticate_headers(&headers).is_none());
+        assert!(auth.authenticate_headers(&headers).await.is_none());
     }
 
-    #[test]
-    fn file_root_key_hot_reloads_without_recreating_auth() {
+    #[tokio::test]
+    async fn file_root_key_hot_reloads_without_recreating_auth() {
         let mut file = NamedTempFile::new().unwrap();
         file.write_all(b"k1\n").unwrap();
         file.flush().unwrap();
         let auth = ControlAuth::new(ControlAuthConfig {
             global_public_routes: PublicRoutesConfig::default(),
+            oidc: None,
             root_key_source: RootKeySource::File(file.path().to_path_buf()),
         });
 
         let mut headers = HeaderMap::new();
         headers.insert("x-api-key", HeaderValue::from_static("k1"));
-        assert!(auth.authenticate_headers(&headers).unwrap().is_root);
+        assert!(auth.authenticate_headers(&headers).await.unwrap().is_root);
 
         std::thread::sleep(Duration::from_millis(1100));
         std::fs::write(file.path(), "k2\n").unwrap();
 
         headers.insert("x-api-key", HeaderValue::from_static("k1"));
-        assert!(auth.authenticate_headers(&headers).is_none());
+        assert!(auth.authenticate_headers(&headers).await.is_none());
         headers.insert("x-api-key", HeaderValue::from_static("k2"));
-        assert!(auth.authenticate_headers(&headers).unwrap().is_root);
+        assert!(auth.authenticate_headers(&headers).await.unwrap().is_root);
     }
 }

@@ -253,7 +253,7 @@ async fn dispatch_worker(
     // stay trustworthy: validate it against the root key so an external client
     // cannot forge it. This authenticates ONLY to gate the internal header — it
     // never blocks access to the worker.
-    let internal_principal = state.auth.authenticate_headers(req.headers());
+    let internal_principal = state.auth.authenticate_headers(req.headers()).await;
     sanitize_internal_headers(&mut req, internal_principal.as_ref());
     let mut serialized = axum_to_serialized(req, request_id.clone()).await?;
     let (original_path, query) = split_path_query(&serialized.uri);
