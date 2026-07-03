@@ -14,7 +14,7 @@ use edger_core::{
 };
 use edger_orchestrator::{
     build_pipeline, collect_cron_registrations, ControlAuth, ControlAuthConfig, CronScheduler,
-    CronSchedulerConfig, ExtensionRegistry, ManifestIndex, OrchestratorState, ServerState,
+    CronSchedulerConfig, ManifestIndex, OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -127,7 +127,6 @@ fn public_worker_manifest() -> WorkerManifest {
         name: "cron-worker".into(),
         version: Some("1.0.0".into()),
         entrypoint: Some("index.ts".into()),
-        visibility: Some("public".into()),
         ..Default::default()
     }
 }
@@ -152,7 +151,6 @@ fn state_with_auth(
         server,
         pool,
         index,
-        registry: ExtensionRegistry::new(),
         auth,
     }
 }

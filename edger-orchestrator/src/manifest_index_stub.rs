@@ -19,7 +19,7 @@ pub struct ManifestEntry {
     pub plugin_base: Option<String>,
 }
 
-/// Minimal manifest registry used by `resolve_route`.
+/// Minimal manifest index used by `resolve_route`.
 #[derive(Clone, Debug, Default)]
 pub struct ManifestIndex {
     inner: Arc<RwLock<ManifestIndexState>>,
@@ -363,13 +363,6 @@ fn admin_worker_info(entry: &ManifestEntry) -> AdminWorkerInfo {
         name: entry.worker.name.clone(),
         namespace: entry.worker.namespace.clone(),
         plugin_base: entry.plugin_base.clone(),
-        public_routes: entry
-            .worker
-            .config
-            .public_routes
-            .as_ref()
-            .map(|routes| routes.routes.clone())
-            .unwrap_or_default(),
         source: entry.worker.dir.display().to_string(),
         status: if entry.worker.config.enabled {
             "loaded"
@@ -378,7 +371,6 @@ fn admin_worker_info(entry: &ManifestEntry) -> AdminWorkerInfo {
         }
         .into(),
         version: entry.worker.version.clone(),
-        visibility: entry.worker.config.visibility.clone(),
     }
 }
 
@@ -612,12 +604,10 @@ mod tests {
         let mut index = ManifestIndex::new();
         let mut manifest = manifest("shell-demo", "1.0.0");
         manifest.base = Some("/".into());
-        manifest.shell_excludes = vec!["todos".into()];
         index.insert(PathBuf::from("/w/shell"), manifest).unwrap();
 
         let shell = index.shell().unwrap();
         assert_eq!(shell.name, "shell-demo");
-        assert_eq!(shell.config.shell_excludes, vec!["todos"]);
         assert!(index.plugin_for_path("/todos").is_none());
         assert!(index.homepage().is_some());
     }

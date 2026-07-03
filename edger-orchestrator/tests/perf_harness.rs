@@ -9,7 +9,7 @@ use bytes::Bytes;
 use edger_core::{Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig};
 use edger_core::{WorkerManifest, WorkerRef};
 use edger_orchestrator::{
-    build_pipeline, ControlAuth, ExtensionRegistry, ManifestIndex, OrchestratorState, ServerState,
+    build_pipeline, ControlAuth, ManifestIndex, OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -99,7 +99,6 @@ fn perf_state() -> OrchestratorState {
         server,
         pool,
         index,
-        registry: ExtensionRegistry::new(),
         auth: ControlAuth::with_static_key("test-root"),
     }
 }

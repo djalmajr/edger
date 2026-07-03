@@ -11,8 +11,8 @@ use edger_core::{
     MAX_HEADERS, MAX_HEADER_VALUE_BYTES,
 };
 use edger_orchestrator::{
-    build_pipeline, load_manifests_from_dirs, ControlAuth, ExtensionRegistry, OrchestratorState,
-    ServerState, MAX_BODY_BYTES,
+    build_pipeline, load_manifests_from_dirs, ControlAuth, OrchestratorState, ServerState,
+    MAX_BODY_BYTES,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -119,7 +119,6 @@ kind: fetch
         server,
         pool,
         index: load_manifests_from_dirs(&[root_path]).unwrap(),
-        registry: ExtensionRegistry::new(),
         auth: ControlAuth::with_static_key("test-root"),
     })
 }

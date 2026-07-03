@@ -6,10 +6,8 @@
 pub mod admin;
 pub mod auth;
 pub mod config;
-pub mod context;
 pub mod error;
 pub mod execution;
-pub mod extension;
 pub mod isolate;
 pub mod manifest;
 pub mod principal;
@@ -18,12 +16,7 @@ pub mod wire;
 pub mod worker_ref;
 
 pub use admin::{
-    AdminCatalogItem, AdminCatalogResponse, AdminErrorResponse, AdminExtensionInfo,
-    AdminExtensionManifest, AdminExtensionManifestConfig, AdminExtensionManifestMenu,
-    AdminExtensionReconcileAction, AdminExtensionReconcileActionKind,
-    AdminExtensionReconcileClassification, AdminExtensionReconcileDiagnostics,
-    AdminExtensionReconcileRequest, AdminExtensionReconcileResponse,
-    AdminExtensionReconcileSummary, AdminExtensionsResponse, AdminMutationResponse,
+    AdminCatalogItem, AdminCatalogResponse, AdminErrorResponse, AdminMutationResponse,
     AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse,
 };
 pub use auth::{extract_api_key_from_pairs, HeaderPairs};
@@ -31,14 +24,10 @@ pub use config::{
     infer_execution_kind, parse_duration_string_to_ms, parse_duration_to_ms, parse_size_to_bytes,
     parse_worker_config, WorkerConfig,
 };
-pub use context::{ExtensionContext, RequestContext, ServerHandle};
 pub use error::{CoreError, IsolationError};
 pub use execution::ExecutionKind;
-pub use extension::{
-    Extension, ExtensionCapability, ExtensionDependency, ExtensionHook, Middleware, WorkerHandler,
-};
 pub use isolate::Isolate;
-pub use manifest::{CronJob, PublicRoutesConfig, WorkerManifest};
+pub use manifest::{CronJob, WorkerManifest};
 pub use principal::{principal_can_access_namespace, root_principal, ApiKeyPrincipal};
 pub use security::{
     is_mutating_method, is_sensitive_env_key, principal_can_access_optional_namespace,

@@ -49,7 +49,6 @@ import {
 const VIEWS = [
   { description: "Runtime posture at a glance", icon: "lucide:gauge", id: "overview", title: "Overview" },
   { description: "Runtime worker inventory", icon: "lucide:cpu", id: "workers", title: "Workers" },
-  { description: "Static extension registry", icon: "lucide:puzzle", id: "modules", title: "Modules" },
 ];
 
 async function apiJson(apiKey, path, init = {}) {
@@ -66,14 +65,13 @@ async function apiJson(apiKey, path, init = {}) {
 
 async function loadAll(apiKey) {
   const session = await apiJson(apiKey, "/api/admin/session");
-  const [workers, modules, workerErrors] = await Promise.all([
+  const [workers, workerErrors] = await Promise.all([
     apiJson(apiKey, "/api/admin/workers").then((data) => data.workers || []),
-    apiJson(apiKey, "/api/admin/extensions").then((data) => data.extensions || []),
     apiJson(apiKey, "/api/admin/workers/error-summary")
       .then((data) => data.summary || {})
       .catch(() => ({})),
   ]);
-  return { modules, principal: session.principal, workerErrors, workers };
+  return { principal: session.principal, workerErrors, workers };
 }
 
 // ExecutionKind serializes unit variants as strings ("FetchHandler") and
@@ -180,21 +178,15 @@ function visibilityBadge(visibility) {
 }
 
 function OverviewView({ data }) {
-  const { modules, principal, workers } = data;
+  const { principal, workers } = data;
   return html`
     <div class="grid gap-4">
-      <div class="grid gap-4 md:grid-cols-3">
+      <div class="grid gap-4 md:grid-cols-2">
         <${MetricCard}
           help="Loaded from RUNTIME_WORKER_DIRS"
           icon="lucide:cpu"
           label="Workers"
           value=${String(workers.length)}
-        />
-        <${MetricCard}
-          help="Static extension registry"
-          icon="lucide:puzzle"
-          label="Modules"
-          value=${String(modules.length)}
         />
         <${MetricCard}
           help="Built-in root-key gate"
@@ -396,37 +388,6 @@ function WorkersView({ apiKey, data, onDeployed }) {
           <div class="flex justify-end">
             <${Button} onClick=${closeDialog(WORKER_ERRORS_DIALOG_ID)} size="sm" type="button" variant="outline">Close<//>
           </div>
-        <//>
-      <//>
-    <//>
-  `;
-}
-
-function ModulesView({ data }) {
-  return html`
-    <${Section} description="Extensions registered at the composition root." title="Modules">
-      <${Table}>
-        <${TableHeader}>
-          <${TableRow}>
-            <${TableHead}>Name<//>
-            <${TableHead}>Kind<//>
-            <${TableHead}>Status<//>
-            <${TableHead}>Capabilities<//>
-            <${TableHead}>Priority<//>
-          <//>
-        <//>
-        <${TableBody}>
-          ${data.modules.map(
-            (mod) => html`
-              <${TableRow} key=${mod.name}>
-                <${TableCell}><code class="bg-muted rounded px-1.5 py-0.5 text-xs">${mod.name}</code><//>
-                <${TableCell}>${kindLabel(mod.kind)}<//>
-                <${TableCell}><${Badge} variant="outline">${mod.status || "-"}<//><//>
-                <${TableCell} className="text-muted-foreground">${listText(mod.capabilities)}<//>
-                <${TableCell}>${mod.priority ?? "-"}<//>
-              <//>
-            `,
-          )}
         <//>
       <//>
     <//>
@@ -781,7 +742,6 @@ function Shell({ apiKey, data, onLogout, onRefresh, refreshing }) {
           ${view === "overview" && html`<${OverviewView} data=${data} />`}
           ${view === "workers" &&
           html`<${WorkersView} apiKey=${apiKey} data=${data} onDeployed=${onRefresh} />`}
-          ${view === "modules" && html`<${ModulesView} data=${data} />`}
         </div>
       <//>
     </div>

@@ -13,8 +13,7 @@ use axum::Router;
 use edger_core::ExecutionKind;
 use edger_isolation::{DenoProcessIsolate, WasmIsolate};
 use edger_orchestrator::{
-    build_pipeline, load_manifests_from_dirs, ControlAuth, ExtensionRegistry, OrchestratorState,
-    ServerState,
+    build_pipeline, load_manifests_from_dirs, ControlAuth, OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -40,7 +39,6 @@ fn state(root: std::path::PathBuf) -> OrchestratorState {
         server,
         pool,
         index: load_manifests_from_dirs(&[root]).unwrap(),
-        registry: ExtensionRegistry::new(),
         auth: ControlAuth::with_static_key("test-root"),
     }
 }
@@ -92,7 +90,7 @@ fn worker_with_entry(
 // leaves Express with no handler — spawn fails / route 500s and this goes red.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs deno + npm network (cold cache); run explicitly"]
-async fn express_and_hono_run_on_the_process_backend() {
+async fn express_and_hono_execute_on_the_process_backend() {
     let root = tempfile::tempdir().unwrap();
     worker(
         root.path(),

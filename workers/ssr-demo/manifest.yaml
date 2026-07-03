@@ -2,4 +2,3 @@ name: ssr-demo
 version: "1.0.0"
 entrypoint: index.tsx
 kind: fetch
-visibility: public

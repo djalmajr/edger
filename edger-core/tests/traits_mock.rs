@@ -1,86 +1,10 @@
-//! Trait mock compile/smoke tests (story 02.04).
+//! Core worker vocabulary compile/smoke tests.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use anyhow::Result;
 use async_trait::async_trait;
 use edger_core::{
-    create_worker_ref, Extension, ExtensionContext, Isolate, IsolationError, Middleware,
-    RequestContext, SerializedRequest, SerializedResponse, WorkerConfig, WorkerHandler,
-    WorkerManifest, WorkerRef,
+    create_worker_ref, Isolate, IsolationError, SerializedRequest, SerializedResponse,
+    WorkerConfig, WorkerManifest,
 };
-
-struct NoopMiddleware {
-    hits: AtomicUsize,
-}
-
-impl Extension for NoopMiddleware {
-    fn name(&self) -> &'static str {
-        "noop"
-    }
-
-    fn priority(&self) -> i32 {
-        -10
-    }
-
-    fn on_init(&self, _ctx: &mut ExtensionContext) -> Result<()> {
-        Ok(())
-    }
-}
-
-impl Middleware for NoopMiddleware {
-    fn on_request(
-        &self,
-        _req: &mut SerializedRequest,
-        _ctx: &RequestContext,
-    ) -> Result<Option<SerializedResponse>> {
-        self.hits.fetch_add(1, Ordering::SeqCst);
-        Ok(None)
-    }
-}
-
-struct ShortCircuitMiddleware;
-
-impl Extension for ShortCircuitMiddleware {
-    fn name(&self) -> &'static str {
-        "short"
-    }
-
-    fn on_init(&self, _ctx: &mut ExtensionContext) -> Result<()> {
-        Ok(())
-    }
-}
-
-impl Middleware for ShortCircuitMiddleware {
-    fn on_request(
-        &self,
-        _req: &mut SerializedRequest,
-        _ctx: &RequestContext,
-    ) -> Result<Option<SerializedResponse>> {
-        Ok(Some(SerializedResponse {
-            status: 418,
-            headers: vec![],
-            body: None,
-        }))
-    }
-}
-
-struct MockHandler;
-
-#[async_trait]
-impl WorkerHandler for MockHandler {
-    async fn handle(
-        &self,
-        _req: SerializedRequest,
-        worker: &WorkerRef,
-    ) -> Result<SerializedResponse> {
-        Ok(SerializedResponse {
-            status: 200,
-            headers: vec![],
-            body: Some(bytes::Bytes::from(worker.name.clone())),
-        })
-    }
-}
 
 struct MockIsolate;
 
@@ -128,51 +52,13 @@ impl Isolate for MockIsolate {
     }
 }
 
-#[test]
-fn middleware_on_request_returns_none_to_continue() {
-    let mw = NoopMiddleware {
-        hits: AtomicUsize::new(0),
-    };
-    let mut req = SerializedRequest {
-        method: "GET".into(),
-        uri: "/".into(),
-        headers: vec![],
-        body: None,
-        request_id: "r".into(),
-        base_href: None,
-    };
-    let ctx = RequestContext::new("r");
-    let out = Middleware::on_request(&mw, &mut req, &ctx).unwrap();
-    assert!(out.is_none());
-    assert_eq!(mw.hits.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn middleware_short_circuit_returns_some() {
-    let mw = ShortCircuitMiddleware;
-    let mut req = SerializedRequest {
-        method: "GET".into(),
-        uri: "/".into(),
-        headers: vec![],
-        body: None,
-        request_id: "r".into(),
-        base_href: None,
-    };
-    let ctx = RequestContext::new("r");
-    let out = Middleware::on_request(&mw, &mut req, &ctx)
-        .unwrap()
-        .unwrap();
-    assert_eq!(out.status, 418);
-}
-
 #[tokio::test]
-async fn worker_handler_and_isolate_mocks_compile() {
+async fn worker_ref_and_isolate_mock_compile() {
     let manifest = WorkerManifest {
         name: "hello".into(),
         ..Default::default()
     };
     let worker = create_worker_ref(std::path::PathBuf::from("/w"), manifest).unwrap();
-    let handler = MockHandler;
     let req = SerializedRequest {
         method: "GET".into(),
         uri: "/".into(),
@@ -181,8 +67,6 @@ async fn worker_handler_and_isolate_mocks_compile() {
         request_id: "r".into(),
         base_href: None,
     };
-    let res = handler.handle(req.clone(), &worker).await.unwrap();
-    assert_eq!(res.body.unwrap().as_ref(), b"hello");
 
     let mut isolate = MockIsolate;
     let config = worker.config.clone();

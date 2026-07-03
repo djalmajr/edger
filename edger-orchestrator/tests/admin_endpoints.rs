@@ -9,8 +9,7 @@ use axum::Router;
 use edger_core::WorkerManifest;
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
-    build_pipeline, ControlAuth, ControlAuthConfig, ExtensionRegistry, ManifestIndex,
-    OrchestratorState, ServerState,
+    build_pipeline, ControlAuth, ControlAuthConfig, ManifestIndex, OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use serde_json::Value;
@@ -47,7 +46,6 @@ fn state_with_auth(auth: ControlAuth) -> OrchestratorState {
         server,
         pool,
         index,
-        registry: ExtensionRegistry::new(),
         auth,
     }
 }
@@ -175,10 +173,10 @@ async fn admin_session_returns_root_principal() {
     assert_eq!(json["principal"]["namespaces"], serde_json::json!(["*"]));
 }
 
-// Mutation captured: dropping worker catalog construction or extension list
-// serialization leaves the expected top-level response fields missing.
+// Mutation captured: dropping worker catalog construction leaves the expected
+// worker entry missing.
 #[tokio::test]
-async fn admin_catalog_and_extensions_return_basic_shapes() {
+async fn admin_catalog_returns_worker_entries() {
     let app = build_pipeline(root_state());
 
     let (status, catalog, text) = send(
@@ -200,7 +198,7 @@ async fn admin_catalog_and_extensions_return_basic_shapes() {
     assert_eq!(worker["route"], "/hello");
     assert_eq!(worker["status"], "loaded");
 
-    let (status, extensions, text) = send(
+    let (status, _json, _text) = send(
         app,
         "GET",
         "/api/admin/extensions",
@@ -208,8 +206,7 @@ async fn admin_catalog_and_extensions_return_basic_shapes() {
         Body::empty(),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
-    assert!(extensions["extensions"].as_array().is_some());
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 // Mutation captured: toggling only the admin listing state without affecting

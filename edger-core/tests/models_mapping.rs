@@ -13,13 +13,6 @@ fn manifest_deserializes_from_yaml_fixture() {
     assert_eq!(manifest.name, "@acme/checkout");
     assert_eq!(manifest.version.as_deref(), Some("1.2.3"));
     assert_eq!(manifest.max_requests, Some(1000));
-    assert_eq!(manifest.shell_excludes, vec!["todos", "platform"]);
-    assert!(manifest
-        .public_routes
-        .as_ref()
-        .unwrap()
-        .routes
-        .contains(&"/health".into()));
 }
 
 #[test]
@@ -36,8 +29,6 @@ fn parse_worker_config_normalizes_buntime_fields() {
     assert!(config.low_memory);
     assert!(!config.auto_install);
     assert!(config.inject_base);
-    assert_eq!(config.visibility, "protected");
-    assert_eq!(config.shell_excludes, vec!["todos", "platform"]);
     assert_eq!(config.cron.len(), 1);
     assert_eq!(config.kind, Some(ExecutionKind::FetchHandler));
 }

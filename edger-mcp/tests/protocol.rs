@@ -107,7 +107,6 @@ name: secure-api
 version: 1.2.3
 entrypoint: index.ts
 kind: fetch
-visibility: protected
 env:
   DATABASE_URL: postgres://hidden
   PUBLIC_VALUE: visible
@@ -123,7 +122,6 @@ env:
     assert_eq!(workers[0]["name"], "secure-api");
     assert_eq!(workers[0]["version"], "1.2.3");
     assert_eq!(workers[0]["source"], "workers/secure-api");
-    assert_eq!(workers[0]["visibility"], "protected");
 
     let serialized = serde_json::to_string(body).unwrap();
     assert!(!serialized.contains("postgres://hidden"));

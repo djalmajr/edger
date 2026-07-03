@@ -9,19 +9,17 @@
 //! - `EDGER_OIDC_AUDIENCE` — required audience when `EDGER_OIDC_ISSUER` is set
 //! - `EDGER_OIDC_ROLES_CLAIM` — optional dotted role claim path, e.g. `realm_access.roles` or `groups`
 //! - `EDGER_OIDC_REQUIRED_ROLE` — optional role required inside `EDGER_OIDC_ROLES_CLAIM`
-//! - `EDGER_EXTENSION_STATUS_FILE` — JSON overlay for runtime extension enable/disable status
 //! - `EDGER_CRON_ENABLED` — enable manifest `cron[]` jobs (default true)
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use edger_core::{ExecutionKind, ExtensionContext};
+use edger_core::ExecutionKind;
 use edger_isolation::{DenoFacade, DenoIsolate, DenoProcessIsolate, WasiConfig, WasmIsolate};
 use edger_orchestrator::{
-    build_pipeline, collect_cron_registrations, collect_extensions, init_tracing_from_env,
-    load_manifests_from_dirs, parse_runtime_worker_dirs, port_from_env, run_on_init,
-    run_on_server_start, run_on_shutdown, serve, ControlAuth, CronScheduler, CronSchedulerConfig,
-    ExtensionRegistry, OrchestratorState, ServerConfig, ServerState,
+    build_pipeline, collect_cron_registrations, init_tracing_from_env, load_manifests_from_dirs,
+    parse_runtime_worker_dirs, port_from_env, serve, ControlAuth, CronScheduler,
+    CronSchedulerConfig, OrchestratorState, ServerConfig, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 
@@ -67,10 +65,6 @@ async fn main() -> anyhow::Result<()> {
     let worker_dirs = worker_dirs_from_env();
     let index = load_manifests_from_dirs(&worker_dirs)?;
 
-    let registry = collect_extensions(vec![])?;
-    load_extension_status_store_from_env(&registry)?;
-    run_on_init(&registry, &mut ExtensionContext::default())?;
-    run_on_server_start(&registry, &edger_core::ServerHandle::default());
     let auth = ControlAuth::from_env();
     if auth.is_open() {
         tracing::warn!(
@@ -82,7 +76,6 @@ async fn main() -> anyhow::Result<()> {
         server: server.clone(),
         pool,
         index,
-        registry,
         auth,
     };
     let app = build_pipeline(state.clone());
@@ -98,13 +91,11 @@ async fn main() -> anyhow::Result<()> {
         state.server.cron_metrics(),
     )?;
 
-    let shutdown_registry = state.registry.clone();
     let shutdown_server = server.clone();
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             tracing::info!("shutdown signal received");
             cron_scheduler.shutdown().await;
-            let _ = run_on_shutdown(&shutdown_registry);
             shutdown_server.shutdown_pool();
         }
     });
@@ -138,28 +129,6 @@ fn non_empty_env(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn load_extension_status_store_from_env(registry: &ExtensionRegistry) -> anyhow::Result<()> {
-    if let Some(path) = extension_status_file_from_env() {
-        registry.load_extension_status_store(path)?;
-    }
-    Ok(())
-}
-
-fn extension_status_file_from_env() -> Option<PathBuf> {
-    std::env::var("EDGER_EXTENSION_STATUS_FILE")
-        .ok()
-        .map(|path| path.trim().to_string())
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var("EDGER_STATE_DIR")
-                .ok()
-                .map(|path| path.trim().to_string())
-                .filter(|path| !path.is_empty())
-                .map(|path| PathBuf::from(path).join("extension-status.json"))
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,31 +140,15 @@ mod tests {
     }
 
     #[test]
-    fn extension_status_file_from_env_prefers_explicit_file() {
+    fn env_flag_default_true_handles_common_false_values() {
         let _guard = env_lock().lock().unwrap();
-        std::env::set_var("EDGER_EXTENSION_STATUS_FILE", "/tmp/edger/extensions.json");
-        std::env::set_var("EDGER_STATE_DIR", "/tmp/edger/state");
 
-        assert_eq!(
-            extension_status_file_from_env().unwrap(),
-            PathBuf::from("/tmp/edger/extensions.json")
-        );
+        for value in ["0", "false", "no", "off"] {
+            std::env::set_var("EDGER_CRON_ENABLED", value);
+            assert!(!env_flag_default_true("EDGER_CRON_ENABLED"));
+        }
 
-        std::env::remove_var("EDGER_EXTENSION_STATUS_FILE");
-        std::env::remove_var("EDGER_STATE_DIR");
-    }
-
-    #[test]
-    fn extension_status_file_from_env_defaults_to_state_dir() {
-        let _guard = env_lock().lock().unwrap();
-        std::env::remove_var("EDGER_EXTENSION_STATUS_FILE");
-        std::env::set_var("EDGER_STATE_DIR", "/tmp/edger/state");
-
-        assert_eq!(
-            extension_status_file_from_env().unwrap(),
-            PathBuf::from("/tmp/edger/state/extension-status.json")
-        );
-
-        std::env::remove_var("EDGER_STATE_DIR");
+        std::env::remove_var("EDGER_CRON_ENABLED");
+        assert!(env_flag_default_true("EDGER_CRON_ENABLED"));
     }
 }

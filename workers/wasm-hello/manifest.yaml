@@ -2,4 +2,3 @@ name: wasm-hello
 version: "1.0.0"
 entrypoint: index.wat
 kind: wasm
-visibility: protected

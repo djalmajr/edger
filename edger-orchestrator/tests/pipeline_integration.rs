@@ -13,7 +13,7 @@ use edger_core::{
 };
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
-    build_pipeline, ControlAuth, ExtensionRegistry, ManifestIndex, OrchestratorState, ServerState,
+    build_pipeline, ControlAuth, ManifestIndex, OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -153,7 +153,6 @@ fn orchestrator_with_worker() -> OrchestratorState {
         server,
         pool,
         index,
-        registry: ExtensionRegistry::new(),
         auth: ControlAuth::with_static_key("test-root"),
     }
 }
@@ -170,7 +169,6 @@ fn orchestrator_with_index_and_factory(
         server,
         pool,
         index,
-        registry: ExtensionRegistry::new(),
         auth: ControlAuth::with_static_key("test-root"),
     }
 }

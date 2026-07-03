@@ -1,4 +1,4 @@
-//! Request pipeline — route resolution, hook stub, pool dispatch (story 05.03).
+//! Request pipeline — route resolution and pool dispatch.
 
 use axum::body::Body;
 use axum::extract::State;
@@ -13,15 +13,9 @@ use tower_http::trace::TraceLayer;
 
 use crate::admin_api;
 use crate::auth::ControlAuth;
-use crate::context::RequestContext;
-use crate::hooks::{
-    run_on_request, run_on_response, run_on_worker_complete, run_on_worker_dispatch,
-    run_on_worker_error,
-};
 use crate::manifest_index_stub::ManifestIndex;
 use crate::metrics::{cron_metrics_prometheus, metrics_stats_response, pool_metrics_prometheus};
 use crate::operational_log::log_operational_error;
-use crate::registry::ExtensionRegistry;
 use crate::router::{resolve_host_route, resolve_route, ReservedPath, ResolvedRoute};
 use crate::server::{
     request_id_from_headers, request_id_middleware, request_metrics_middleware, ServerState,
@@ -34,7 +28,6 @@ pub struct OrchestratorState {
     pub server: ServerState,
     pub pool: WorkerPool,
     pub index: ManifestIndex,
-    pub registry: ExtensionRegistry,
     pub auth: ControlAuth,
 }
 
@@ -172,7 +165,6 @@ async fn dispatch_resolved_route(
                     rewritten_path: normalize_rewritten_path(&remainder),
                     kind_hint: Some(kind_hint),
                     principal: None,
-                    skip_hooks: false,
                     base_path: Some(plugin.base),
                 },
             )
@@ -188,7 +180,6 @@ async fn dispatch_resolved_route(
                     rewritten_path: "/".into(),
                     kind_hint: None,
                     principal: None,
-                    skip_hooks: false,
                     base_path: None,
                 },
             )
@@ -208,7 +199,6 @@ async fn dispatch_resolved_route(
                     rewritten_path,
                     kind_hint: Some(kind_hint),
                     principal: None,
-                    skip_hooks: false,
                     base_path: None,
                 },
             )
@@ -223,7 +213,6 @@ struct DispatchParams {
     rewritten_path: String,
     kind_hint: Option<ExecutionKind>,
     principal: Option<edger_core::ApiKeyPrincipal>,
-    skip_hooks: bool,
     base_path: Option<String>,
 }
 
@@ -237,8 +226,7 @@ async fn dispatch_worker(
         worker,
         rewritten_path,
         kind_hint,
-        principal,
-        skip_hooks,
+        principal: _principal,
         base_path,
     } = params;
 
@@ -263,20 +251,6 @@ async fn dispatch_worker(
     set_header(&mut serialized.headers, "x-request-id", &request_id);
     set_header(&mut serialized.headers, "x-base", &base_path);
 
-    let mut ctx = RequestContext::new(request_id);
-    ctx.principal = principal;
-    ctx.worker = Some(worker.clone());
-
-    if !skip_hooks {
-        let short_circuit = run_on_request(&state.registry, &mut serialized, &ctx)
-            .map_err(|e| CoreError::new("HOOK_ERROR", e.to_string()))?;
-        if let Some(response) = short_circuit {
-            return serialized_to_axum(response);
-        }
-        run_on_worker_dispatch(&state.registry, &ctx)
-            .map_err(|e| CoreError::new("HOOK_ERROR", e.to_string()))?;
-    }
-
     let worker_response = match state
         .pool
         .fetch_worker_stream(&worker, serialized, kind_hint)
@@ -287,44 +261,18 @@ async fn dispatch_worker(
         Err(err) => {
             state.server.worker_errors().record(
                 &worker.name,
-                &ctx.request_id,
+                &request_id,
                 map_error_status(&err).as_u16(),
                 &err.code,
                 &err.message,
             );
-            if !skip_hooks {
-                let error = err.to_string();
-                run_on_worker_error(&state.registry, &error, &ctx);
-            }
             return Err(err);
         }
     };
 
     match worker_response {
-        edger_core::WorkerResponse::Buffered(mut response) => {
-            if !skip_hooks {
-                run_on_worker_complete(&state.registry, &response, &ctx);
-                run_on_response(&state.registry, &mut response, &ctx);
-            }
-            serialized_to_axum(response)
-        }
-        edger_core::WorkerResponse::Streamed(mut streamed) => {
-            // Hooks observe a headers-only view: the body streams straight to
-            // the client, so body-mutating hooks do not apply to streamed
-            // responses (status/header mutations DO propagate).
-            if !skip_hooks {
-                let mut view = edger_core::SerializedResponse {
-                    status: streamed.status,
-                    headers: streamed.headers.clone(),
-                    body: None,
-                };
-                run_on_worker_complete(&state.registry, &view, &ctx);
-                run_on_response(&state.registry, &mut view, &ctx);
-                streamed.status = view.status;
-                streamed.headers = view.headers;
-            }
-            crate::wire::streamed_to_axum(streamed)
-        }
+        edger_core::WorkerResponse::Buffered(response) => serialized_to_axum(response),
+        edger_core::WorkerResponse::Streamed(streamed) => crate::wire::streamed_to_axum(streamed),
     }
 }
 
@@ -493,7 +441,6 @@ mod tests {
             server,
             pool,
             index,
-            registry: ExtensionRegistry::new(),
             auth,
         }
     }

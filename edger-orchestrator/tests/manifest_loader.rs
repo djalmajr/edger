@@ -157,7 +157,6 @@ fn manifest_yaml_uses_package_json_name_when_omitted() {
         todo_dir.join("manifest.yaml"),
         r#"entrypoint: index.html
 injectBase: true
-visibility: public
 "#,
     )
     .unwrap();

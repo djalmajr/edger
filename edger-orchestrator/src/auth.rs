@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
 use axum::http::HeaderMap;
-use edger_core::{root_principal, ApiKeyPrincipal, PublicRoutesConfig};
+use edger_core::{root_principal, ApiKeyPrincipal};
 
 #[cfg(test)]
 use crate::oidc::JwksSource;
@@ -21,7 +21,6 @@ const EDGER_OIDC_ROLES_CLAIM_ENV: &str = "EDGER_OIDC_ROLES_CLAIM";
 /// Auth gate configuration. `EDGER_ROOT_KEY_FILE` takes precedence over `ROOT_API_KEY`.
 #[derive(Clone, Debug, Default)]
 pub struct ControlAuthConfig {
-    pub global_public_routes: PublicRoutesConfig,
     pub oidc: Option<OidcConfig>,
     root_key_source: RootKeySource,
 }
@@ -60,7 +59,6 @@ impl ControlAuthConfig {
         };
         let oidc = oidc_config_from_env();
         Self {
-            global_public_routes: PublicRoutesConfig::default(),
             oidc,
             root_key_source,
         }
@@ -68,7 +66,6 @@ impl ControlAuthConfig {
 
     fn with_static_key(key: impl Into<String>) -> Self {
         Self {
-            global_public_routes: PublicRoutesConfig::default(),
             oidc: None,
             root_key_source: RootKeySource::Static(key.into()),
         }
@@ -101,7 +98,6 @@ impl ControlAuth {
     pub fn with_oidc_source(config: OidcConfig, source: Arc<dyn JwksSource>) -> Self {
         Self {
             config: ControlAuthConfig {
-                global_public_routes: PublicRoutesConfig::default(),
                 oidc: Some(config.clone()),
                 root_key_source: RootKeySource::Open,
             },
@@ -225,20 +221,6 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
         .filter(|token| !token.is_empty())
 }
 
-/// Check whether a path matches configured public routes (Buntime `publicRoutes`).
-pub fn is_public_route(path: &str, config: &PublicRoutesConfig) -> bool {
-    for route in &config.routes {
-        if config.exact {
-            if path == route {
-                return true;
-            }
-        } else if path == route || path.starts_with(&format!("{route}/")) {
-            return true;
-        }
-    }
-    false
-}
-
 fn non_empty_env(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
@@ -272,23 +254,6 @@ mod tests {
     use std::io::Write;
     use std::time::Duration;
     use tempfile::NamedTempFile;
-
-    #[test]
-    fn public_route_exact_and_prefix() {
-        let exact = PublicRoutesConfig {
-            routes: vec!["/login".into()],
-            exact: true,
-        };
-        assert!(is_public_route("/login", &exact));
-        assert!(!is_public_route("/login/oauth", &exact));
-
-        let prefix = PublicRoutesConfig {
-            routes: vec!["/health".into()],
-            exact: false,
-        };
-        assert!(is_public_route("/health", &prefix));
-        assert!(is_public_route("/health/live", &prefix));
-    }
 
     #[tokio::test]
     async fn static_root_key_returns_synthetic_principal() {
@@ -332,7 +297,6 @@ mod tests {
         file.write_all(b"k1\n").unwrap();
         file.flush().unwrap();
         let auth = ControlAuth::new(ControlAuthConfig {
-            global_public_routes: PublicRoutesConfig::default(),
             oidc: None,
             root_key_source: RootKeySource::File(file.path().to_path_buf()),
         });

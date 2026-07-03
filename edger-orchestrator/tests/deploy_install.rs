@@ -10,8 +10,7 @@ use axum::Router;
 use edger_core::ExecutionKind;
 use edger_isolation::{DenoFacade, DenoIsolate, WasmIsolate};
 use edger_orchestrator::{
-    build_pipeline, load_manifests_from_dirs, ControlAuth, ExtensionRegistry, OrchestratorState,
-    ServerState,
+    build_pipeline, load_manifests_from_dirs, ControlAuth, OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -38,7 +37,6 @@ fn state_with_root(root: std::path::PathBuf) -> OrchestratorState {
         server,
         pool,
         index: load_manifests_from_dirs(&[root]).unwrap(),
-        registry: ExtensionRegistry::new(),
         auth: ControlAuth::with_static_key("test-root"),
     }
 }
@@ -598,7 +596,7 @@ fn throwing_public_zip() -> Vec<u8> {
     zip_package(&[
         (
             "manifest.yaml",
-            "name: boom-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nvisibility: public\n",
+            "name: boom-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n",
         ),
         (
             "index.ts",
@@ -607,14 +605,13 @@ fn throwing_public_zip() -> Vec<u8> {
     ])
 }
 
-// Mutation captured: dropping `auth_required` from the install response (or
-// deriving it independently of visibility) breaks these assertions.
+// Mutation captured: dropping the installed worker identity from the response
+// makes the cPanel unable to link to the new worker and breaks these assertions.
 #[tokio::test]
-async fn install_response_reports_auth_required_from_visibility() {
+async fn install_response_reports_worker_identity() {
     let root = tempfile::tempdir().unwrap();
     let app = build_pipeline(state_with_root(root.path().to_path_buf()));
 
-    // protected worker -> authRequired true
     let (status, json, text) = send(
         app.clone(),
         "POST",
@@ -625,11 +622,10 @@ async fn install_response_reports_auth_required_from_visibility() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
-    assert_eq!(json["visibility"], "protected");
-    assert_eq!(json["authRequired"], true);
+    assert_eq!(json["name"], "zip-app");
+    assert_eq!(json["version"], "1.0.0");
     assert_eq!(json["url"], "/zip-app");
 
-    // public worker -> authRequired false
     let (status, json, _text) = send(
         app,
         "POST",
@@ -640,8 +636,8 @@ async fn install_response_reports_auth_required_from_visibility() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(json["visibility"], "public");
-    assert_eq!(json["authRequired"], false);
+    assert_eq!(json["name"], "boom-app");
+    assert_eq!(json["url"], "/boom-app");
 }
 
 // Mutation captured: not recording worker dispatch errors (or the errors

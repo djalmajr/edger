@@ -25,7 +25,7 @@
 | 17.B Data plane aberto | `02-data-plane-aberto.md` | Worker recebe request cru (Authorization intacto); só control plane gateia | small | **completed** | — |
 | 17.C Remover estado + bindings | `03-remover-estado-bindings.md` | Deletados keyval/turso/turso-remote + service bindings + DurableSqlProvider; env/secrets + egress mantidos | medium | **completed** | 17.B |
 | 17.D Remover gateway + shell | `04-remover-gateway.md` | Deletar `edger-ext-gateway` **e** o shell routing (`shell_gateway`); ingress/composição → externo | medium | **completed** | — |
-| 17.E Remover sistema de extensões | `05-remover-extensoes.md` | Deletar `ExtensionRegistry`/hooks/`Extension`/`Middleware`; limpar `visibility`/`namespaces` vestigiais | large | not started | 17.A–17.D |
+| 17.E Remover sistema de extensões | `05-remover-extensoes.md` | Deletar `ExtensionRegistry`/hooks/`Extension`/`Middleware`; limpar `visibility`/`namespaces` vestigiais | large | **completed** (2026-07-03) | 17.A–17.D |
 | 17.F Deployment K8s de referência | `06-deployment-k8s.md` | Helm chart Rancher-style (questions.yaml modelado no Buntime, stateless) que instala e serve o cPanel; Deployment + HPA + Secret-arquivo | medium | not started | 17.A–17.E |
 
 ## Roadmap
@@ -62,4 +62,4 @@ Ordem = da folha para a raiz: primeiro troca a auth (destrava o problema K8s), d
 
 ## Status
 
-**in progress** (2026-07-03) — 17.A com base root-key entregue (sem `edger-ext-auth`, sem gestão de API keys, gate só no control plane); OIDC genérico segue pendente. Desenho fechado após sequência de decisões do operador: worker soberano, 100% serverless, auth OIDC opt-in + root-key stateless, sem extensões/estado/gateway dentro do edger. Adição de escala (pool por worker + HPA) fica no Epic 18.
+**in progress** (2026-07-03) — 17.E concluída: sistema de extensões/registry/hooks removido, `/api/admin/extensions*` removido, cPanel sem Modules, e `visibility`/`publicRoutes`/`shellExcludes` fora do manifest/config. 17.A mantém base root-key entregue (sem `edger-ext-auth`, sem gestão de API keys, gate só no control plane); OIDC genérico segue pendente. Desenho fechado após sequência de decisões do operador: worker soberano, 100% serverless, auth OIDC opt-in + root-key stateless, sem extensões/estado/gateway dentro do edger. Adição de escala (pool por worker + HPA) fica no Epic 18.

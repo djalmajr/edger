@@ -10,8 +10,7 @@ use axum::http::{Request, StatusCode};
 use edger_core::{WorkerManifest, MAX_HEADERS};
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
-    build_pipeline, ControlAuth, ExtensionRegistry, ManifestIndex, OrchestratorState, ServerState,
-    MAX_BODY_BYTES,
+    build_pipeline, ControlAuth, ManifestIndex, OrchestratorState, ServerState, MAX_BODY_BYTES,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -91,7 +90,6 @@ fn test_state() -> OrchestratorState {
         server,
         pool,
         index,
-        registry: ExtensionRegistry::new(),
         auth: ControlAuth::with_static_key("root-secret"),
     }
 }
