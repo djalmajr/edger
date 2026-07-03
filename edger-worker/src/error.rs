@@ -19,6 +19,10 @@ pub enum WorkerError {
     },
     #[error("ephemeral queue full (concurrency limit reached)")]
     EphemeralQueueFull,
+    #[error("worker queue full (all processes busy)")]
+    WorkerQueueFull,
+    #[error("worker queue timeout (all processes busy)")]
+    WorkerQueueTimeout,
     #[error("worker retired (max_requests reached)")]
     Retired,
     #[error("isolation error: {0}")]

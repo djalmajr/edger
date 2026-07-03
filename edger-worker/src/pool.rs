@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use edger_core::{
@@ -189,7 +189,11 @@ impl WorkerPool {
     async fn acquire_dispatch_slot(
         &self,
         worker_ref: &WorkerRef,
-    ) -> Result<(Arc<WorkerInstance>, tokio::sync::OwnedMutexGuard<()>), WorkerError> {
+    ) -> Result<DispatchSlot, WorkerError> {
+        if worker_ref.config.ttl_ms == 0 {
+            return self.acquire_ephemeral_dispatch_slot(worker_ref).await;
+        }
+
         let group = self.get_or_create_group(worker_ref)?;
         let max_processes = worker_ref.config.max_processes.max(1);
 
@@ -204,13 +208,90 @@ impl WorkerPool {
         }) {
             ReservedSlot::Acquired { instance, guard } => {
                 self.sync_worker_counts();
-                Ok((instance, guard))
+                Ok(DispatchSlot::new(instance, Arc::clone(&group), guard))
+            }
+            ReservedSlot::Wait(_) => {
+                self.acquire_queued_dispatch_slot(worker_ref, group, max_processes)
+                    .await
+            }
+            ReservedSlot::Unavailable => Err(WorkerError::Retired),
+        }
+    }
+
+    async fn acquire_ephemeral_dispatch_slot(
+        &self,
+        worker_ref: &WorkerRef,
+    ) -> Result<DispatchSlot, WorkerError> {
+        let group = self.get_or_create_group(worker_ref)?;
+
+        match group.reserve_slot(usize::MAX, || {
+            let spawn_start = Instant::now();
+            let instance = self.create_instance(worker_ref);
+            self.inner.metrics.record_miss();
+            self.inner
+                .metrics
+                .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
+            instance
+        }) {
+            ReservedSlot::Acquired { instance, guard } => {
+                self.sync_worker_counts();
+                Ok(DispatchSlot::new(instance, Arc::clone(&group), guard))
             }
             ReservedSlot::Wait(instance) => {
                 let guard = instance.dispatch_lock().lock_owned().await;
-                Ok((instance, guard))
+                Ok(DispatchSlot::new(instance, group, guard))
             }
             ReservedSlot::Unavailable => Err(WorkerError::Retired),
+        }
+    }
+
+    async fn acquire_queued_dispatch_slot(
+        &self,
+        worker_ref: &WorkerRef,
+        group: Arc<WorkerGroup>,
+        max_processes: usize,
+    ) -> Result<DispatchSlot, WorkerError> {
+        let Some(_waiter) = group.try_enter_queue(
+            worker_ref.config.queue_limit,
+            Arc::clone(&self.inner.metrics),
+        ) else {
+            self.inner.metrics.record_worker_queue_rejected();
+            return Err(WorkerError::WorkerQueueFull);
+        };
+        self.inner.metrics.record_worker_queue_enqueued();
+
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_millis(worker_ref.config.queue_timeout_ms);
+        loop {
+            match group.reserve_slot(max_processes, || {
+                let spawn_start = Instant::now();
+                let instance = self.create_instance(worker_ref);
+                self.inner.metrics.record_miss();
+                self.inner
+                    .metrics
+                    .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
+                instance
+            }) {
+                ReservedSlot::Acquired { instance, guard } => {
+                    self.sync_worker_counts();
+                    return Ok(DispatchSlot::new(instance, Arc::clone(&group), guard));
+                }
+                ReservedSlot::Wait(_) => {}
+                ReservedSlot::Unavailable => return Err(WorkerError::Retired),
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                self.inner.metrics.record_worker_queue_timeout();
+                return Err(WorkerError::WorkerQueueTimeout);
+            }
+
+            if tokio::time::timeout_at(deadline, group.wait_for_slot_release())
+                .await
+                .is_err()
+            {
+                self.inner.metrics.record_worker_queue_timeout();
+                return Err(WorkerError::WorkerQueueTimeout);
+            }
         }
     }
 
@@ -319,9 +400,9 @@ impl WorkerPool {
 
         const MAX_RESOLVE_ATTEMPTS: usize = 32;
         let mut attempt = 0;
-        let (instance, dispatch_guard) = loop {
+        let dispatch_slot = loop {
             attempt += 1;
-            let (instance, dispatch_guard) = match self.acquire_dispatch_slot(&worker_ref).await {
+            let dispatch_slot = match self.acquire_dispatch_slot(&worker_ref).await {
                 Ok(slot) => slot,
                 Err(WorkerError::Retired | WorkerError::Evicted)
                     if attempt < MAX_RESOLVE_ATTEMPTS =>
@@ -331,6 +412,7 @@ impl WorkerPool {
                 }
                 Err(err) => return Err(err),
             };
+            let instance = Arc::clone(&dispatch_slot.instance);
 
             if instance.state() == WorkerState::Creating {
                 let spawn_start = Instant::now();
@@ -341,15 +423,16 @@ impl WorkerPool {
             }
 
             if crate::state::accepts_dispatch(instance.state()) {
-                break (instance, dispatch_guard);
+                break dispatch_slot;
             }
 
-            drop(dispatch_guard);
+            drop(dispatch_slot);
             if attempt >= MAX_RESOLVE_ATTEMPTS {
                 return Err(WorkerError::NotReady);
             }
             tokio::task::yield_now().await;
         };
+        let instance = Arc::clone(&dispatch_slot.instance);
 
         Supervisor::on_request_start(&instance).await?;
 
@@ -385,7 +468,7 @@ impl WorkerPool {
                     instance,
                     config,
                     started,
-                    _dispatch_guard: dispatch_guard,
+                    _dispatch_slot: dispatch_slot,
                     isolate_guard: Some(isolate_guard),
                 };
                 Ok(WorkerResponse::Streamed(StreamedResponse {
@@ -435,9 +518,9 @@ impl WorkerPool {
         // re-resolve a fresh instance instead of failing the request.
         const MAX_RESOLVE_ATTEMPTS: usize = 32;
         let mut attempt = 0;
-        let (instance, dispatch_guard) = loop {
+        let dispatch_slot = loop {
             attempt += 1;
-            let (instance, dispatch_guard) = match self.acquire_dispatch_slot(&worker_ref).await {
+            let dispatch_slot = match self.acquire_dispatch_slot(&worker_ref).await {
                 Ok(slot) => slot,
                 Err(WorkerError::Retired | WorkerError::Evicted)
                     if attempt < MAX_RESOLVE_ATTEMPTS =>
@@ -447,6 +530,7 @@ impl WorkerPool {
                 }
                 Err(err) => return Err(err),
             };
+            let instance = Arc::clone(&dispatch_slot.instance);
 
             if instance.state() == WorkerState::Creating {
                 let spawn_start = Instant::now();
@@ -457,18 +541,19 @@ impl WorkerPool {
             }
 
             if crate::state::accepts_dispatch(instance.state()) {
-                break (instance, dispatch_guard);
+                break dispatch_slot;
             }
 
             // A concurrent ephemeral dispatch terminated this shared instance
             // while we waited on its lock; drop it and resolve a fresh one.
-            drop(dispatch_guard);
+            drop(dispatch_slot);
             if attempt >= MAX_RESOLVE_ATTEMPTS {
                 return Err(WorkerError::NotReady);
             }
             tokio::task::yield_now().await;
         };
-        let _dispatch_guard = dispatch_guard;
+        let instance = Arc::clone(&dispatch_slot.instance);
+        let _dispatch_slot = dispatch_slot;
 
         Supervisor::on_request_start(&instance).await?;
 
@@ -649,8 +734,35 @@ struct StreamDispatchState {
     instance: Arc<WorkerInstance>,
     config: WorkerConfig,
     started: Instant,
-    _dispatch_guard: tokio::sync::OwnedMutexGuard<()>,
+    _dispatch_slot: DispatchSlot,
     isolate_guard: Option<tokio::sync::OwnedMutexGuard<Box<dyn Isolate>>>,
+}
+
+struct DispatchSlot {
+    instance: Arc<WorkerInstance>,
+    group: Arc<WorkerGroup>,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl DispatchSlot {
+    fn new(
+        instance: Arc<WorkerInstance>,
+        group: Arc<WorkerGroup>,
+        guard: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Self {
+        Self {
+            instance,
+            group,
+            guard: Some(guard),
+        }
+    }
+}
+
+impl Drop for DispatchSlot {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        self.group.notify_slot_released();
+    }
 }
 
 /// Body stream wrapper enforcing the lifecycle above.
@@ -703,7 +815,7 @@ async fn complete_stream_state(state: StreamDispatchState) {
         instance,
         config,
         started,
-        _dispatch_guard,
+        _dispatch_slot,
         isolate_guard,
     } = state;
     drop(isolate_guard);

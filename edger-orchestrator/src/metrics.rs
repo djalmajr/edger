@@ -313,6 +313,11 @@ mod tests {
             spawn_latency_ms_last: 5,
             spawn_latency_ms_p50: 6,
             terminated_total: 8,
+            worker_queue_enqueued: 0,
+            worker_queue_queued: 0,
+            worker_queue_rejected: 0,
+            worker_queue_timeout: 0,
+            worker_queue_wait_ms_last: 0,
         });
 
         assert!(output.contains("# TYPE edger_pool_cache_hits_total counter"));
@@ -337,6 +342,11 @@ mod tests {
                 spawn_latency_ms_last: 4,
                 spawn_latency_ms_p50: 5,
                 terminated_total: 0,
+                worker_queue_enqueued: 0,
+                worker_queue_queued: 0,
+                worker_queue_rejected: 0,
+                worker_queue_timeout: 0,
+                worker_queue_wait_ms_last: 0,
             },
             &[WorkerStats {
                 app: "echo@1.0.0".into(),

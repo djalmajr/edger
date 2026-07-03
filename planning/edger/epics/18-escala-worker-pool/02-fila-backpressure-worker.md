@@ -54,29 +54,29 @@
 - **Out:** retry automático; persistência da fila; ordenação global entre réplicas; prioridade por rota; integração com API Gateway externo.
 
 ### Acceptance criteria
-- [ ] `queueLimit: 0` rejeita imediatamente quando todos os processos do worker estão ocupados e `maxProcesses` foi atingido.
-- [ ] `queueLimit: 1` permite exatamente 1 request esperando; o próximo recebe erro tipado sem entrar no lock indefinidamente.
-- [ ] `queueTimeout` expira request que esperou demais e retorna status HTTP documentado (503 recomendado para timeout de capacidade).
-- [ ] Fila cheia retorna status HTTP documentado (429 se tratado como rate/backpressure do worker; 503 se tratado como capacidade indisponível), com código estável no body.
-- [ ] Stream/SSE longo em uma instância não bloqueia requests que possam usar outra instância livre do mesmo grupo.
-- [ ] Cancelamento de request esperando na fila remove o waiter e não vaza contadores/permissões.
+- [x] `queueLimit: 0` rejeita imediatamente quando todos os processos do worker estão ocupados e `maxProcesses` foi atingido. (Concluído em 2026-07-03)
+- [x] `queueLimit: 1` permite exatamente 1 request esperando; o próximo recebe erro tipado sem entrar no lock indefinidamente. (Concluído em 2026-07-03)
+- [x] `queueTimeout` expira request que esperou demais e retorna status HTTP documentado (503 recomendado para timeout de capacidade). (Concluído em 2026-07-03)
+- [x] Fila cheia retorna status HTTP documentado (429 se tratado como rate/backpressure do worker; 503 se tratado como capacidade indisponível), com código estável no body. (Concluído em 2026-07-03)
+- [x] Stream/SSE longo em uma instância não bloqueia requests que possam usar outra instância livre do mesmo grupo. (Concluído em 2026-07-03)
+- [x] Cancelamento de request esperando na fila remove o waiter e não vaza contadores/permissões. (Concluído em 2026-07-03)
 
 ### Dependencies
 - Story 18.A
 
 ## Tasks
 ### Fase 1 — Contrato de saturação
-- [ ] Definir nomes finais dos campos (`queueLimit`, `queueTimeout`) em manifesto/config.
-- [ ] Adicionar erros persistentes tipados em `WorkerError`.
-- [ ] Definir mapeamento HTTP e shape do body.
+- [x] Definir nomes finais dos campos (`queueLimit`, `queueTimeout`) em manifesto/config. (Concluído em 2026-07-03)
+- [x] Adicionar erros persistentes tipados em `WorkerError`. (Concluído em 2026-07-03)
+- [x] Definir mapeamento HTTP e shape do body. (Concluído em 2026-07-03)
 ### Fase 2 — Fila bounded
-- [ ] Implementar aquisição de slot por grupo com timeout.
-- [ ] Garantir cancel safety para waiters.
-- [ ] Integrar com seleção/spawn da 18.A.
+- [x] Implementar aquisição de slot por grupo com timeout. (Concluído em 2026-07-03)
+- [x] Garantir cancel safety para waiters. (Concluído em 2026-07-03)
+- [x] Integrar com seleção/spawn da 18.A. (Concluído em 2026-07-03)
 ### Fase 3 — HTTP e testes
-- [ ] Mapear erros em `pipeline.rs` sem cair em 500 genérico.
-- [ ] Testar fila cheia, timeout e cancelamento.
-- [ ] Testar stream longo + segundo processo livre.
+- [x] Mapear erros em `pipeline.rs` sem cair em 500 genérico. (Concluído em 2026-07-03)
+- [x] Testar fila cheia, timeout e cancelamento. (Concluído em 2026-07-03)
+- [x] Testar stream longo + segundo processo livre. (Concluído em 2026-07-03)
 
 ## Verification
 
@@ -92,4 +92,4 @@ curl -s http://127.0.0.1:19080/metrics | rg "queue|rejected|wait"
 
 ## Status
 
-**pending** (2026-07-03) — story planejada; nenhuma implementação iniciada.
+**completed** (2026-07-03) — Validado live: worker persistente maxProcesses=1/queueLimit=1/queueTimeout=400ms com sleep 1200ms -> req1 200 (serve), req2 503 (queue timeout), req3 429 (queue full). Suite completa verde (49). Footgun bare-manifest registrado em follow-ups/.

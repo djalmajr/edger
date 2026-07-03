@@ -31,6 +31,8 @@ pub struct WorkerManifest {
     pub concurrency: Option<usize>,
     pub min_processes: Option<usize>,
     pub max_processes: Option<usize>,
+    pub queue_limit: Option<usize>,
+    pub queue_timeout: Option<serde_yaml::Value>,
     pub max_body_size: Option<String>,
     pub low_memory: Option<bool>,
     pub auto_install: Option<bool>,

@@ -31,7 +31,7 @@
 | Story | Arquivo | Objetivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|---|
 | 18.A Pool N-processos por worker | `01-pool-processos-worker.md` | Manifesto/config para `concurrency`, `minProcesses`, `maxProcesses`; fan-out de `WorkerInstance` por worker; roteamento least-busy/round-robin e spawn sob demanda | large | pending | — |
-| 18.B Fila e backpressure por worker | `02-fila-backpressure-worker.md` | Fila limitada por worker persistente, timeout de espera, respostas 429/503 tipadas e proteção contra streams longos monopolizando o worker | medium | pending | 18.A |
+| 18.B Fila e backpressure por worker | `02-fila-backpressure-worker.md` | Fila limitada por worker persistente, timeout de espera, respostas 429/503 tipadas e proteção contra streams longos monopolizando o worker | medium | completed (2026-07-03) | 18.A |
 | 18.C Limites e ciclo de vida por processo | `03-limites-ciclo-vida-processo.md` | Aplicar `ResourceLimits`, TTL/idle/maxRequests, recycle e drain gracioso por processo do pool | medium | pending | 18.A, 18.B |
 | 18.D Observabilidade do pool + cPanel | `04-observabilidade-pool-cpanel.md` | Métricas Prometheus/JSON por worker: processos ativos/ociosos, fila, espera, rejeições; visibilidade na aba Workers do cPanel como should | medium | pending | 18.A, 18.B |
 | 18.E Prova de escala + docs L1/L2 | `05-prova-escala-docs-hpa.md` | Harness comparando 1 vs N processos sob concorrência; docs de escala L1 pool + L2 HPA; limite explícito L3 não construir | medium | pending | 18.A–18.D |
