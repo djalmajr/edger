@@ -34,7 +34,7 @@
 | 18.B Fila e backpressure por worker | `02-fila-backpressure-worker.md` | Fila limitada por worker persistente, timeout de espera, respostas 429/503 tipadas e proteção contra streams longos monopolizando o worker | medium | completed (2026-07-03) | 18.A |
 | 18.C Limites e ciclo de vida por processo | `03-limites-ciclo-vida-processo.md` | Aplicar `ResourceLimits`, TTL/idle/maxRequests, recycle e drain gracioso por processo do pool | medium | pending | 18.A, 18.B |
 | 18.D Observabilidade do pool + cPanel | `04-observabilidade-pool-cpanel.md` | Métricas Prometheus/JSON por worker: processos ativos/ociosos, fila, espera, rejeições; visibilidade na aba Workers do cPanel como should | medium | pending | 18.A, 18.B |
-| 18.E Prova de escala + docs L1/L2 | `05-prova-escala-docs-hpa.md` | Harness comparando 1 vs N processos sob concorrência; docs de escala L1 pool + L2 HPA; limite explícito L3 não construir | medium | pending | 18.A–18.D |
+| 18.E Prova de escala + docs L1/L2 | `05-prova-escala-docs-hpa.md` | Harness comparando 1 vs N processos sob concorrência; docs de escala L1 pool + L2 HPA; limite explícito L3 não construir | medium | completed (2026-07-03) | 18.A–18.D |
 
 ## Roadmap
 
@@ -59,8 +59,8 @@ Ordem = primeiro abrir a unidade de concorrência (processos por worker), depois
 - [ ] Quando todos os processos estão ocupados, requests entram em fila limitada por worker ou recebem resposta tipada 429/503; streams longos não causam head-of-line blocking além da capacidade configurada.
 - [ ] `/metrics` e `/metrics/stats` expõem processos ativos/ociosos, ocupação, fila, latência de espera e rejeições por worker sem labels secret-like.
 - [ ] cPanel mostra, no mínimo como should, a visão operacional do pool por worker sem bloquear o runtime headless.
-- [ ] `edger-orchestrator/tests/perf_harness.rs` cobre comparação 1 vs N sob concorrência e demonstra melhora verificável em p50/p95/throughput ou queda de wait time.
-- [ ] Docs explicam Level 1 (pool interno), Level 2 (HPA via `charts/edger`) e declaram Level 3 Knative/FaaS fora de escopo.
+- [x] `edger-orchestrator/tests/perf_harness.rs` cobre comparação 1 vs N sob concorrência e demonstra melhora verificável em p50/p95/throughput ou queda de wait time.
+- [x] Docs explicam Level 1 (pool interno), Level 2 (HPA via `charts/edger`) e declaram Level 3 Knative/FaaS fora de escopo.
 - [ ] Gates esperados: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`; harness de perf ignorado executável explicitamente; validação live com `cargo run -p edger-orchestrator --bin edger` + `curl` para workers concorrentes e `/metrics`.
 
 ## Risks

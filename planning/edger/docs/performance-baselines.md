@@ -24,6 +24,7 @@ Ambiente: macOS local, `cargo run -p edger-orchestrator --bin edger`,
 | 2026-06-29 | `/hello-world` segunda chamada | `200`, `0.037221s` | `hello-world` não tem TTL persistente; não é cache hit de pool |
 | 2026-06-29 | `/metrics` | `200`, `0.000929s`, `text/plain; version=0.0.4` | Scrape read-only de `WorkerPool::get_metrics()` |
 | 2026-07-01 | `perf_harness` persistent worker warm hit | p50 `52us`, p95 `92us`, `49` cache hits, `1` cache miss | `cargo test -p edger-orchestrator --test perf_harness -- --ignored --nocapture`; in-memory fixture, not Deno |
+| 2026-07-03 | `perf_harness` concorrente 1 vs N | a preencher pelo coordenador | Harness executável no sandbox, mas números do sandbox não são baseline confiável |
 
 Snapshot de métricas após duas chamadas a `hello-world` efêmero:
 
@@ -71,8 +72,49 @@ curl -sS -D - -o /dev/null \
 cargo test -p edger-orchestrator --test perf_harness -- --ignored --nocapture
 ```
 
+## Baseline 18.E: pool 1 vs N
+
+Ambiente: macOS Apple Silicon (arm64), `cargo test` debug, harness com
+`MockIsolate` de sleep simulado. Não é Deno real; mede a mecânica de
+concorrência do pool, não latência absoluta de produção.
+
+Comando reprodutível para o harness dedicado, capturado em 2026-07-03:
+
+```bash
+cargo test -p edger-orchestrator --test perf_harness -- --ignored --nocapture
+```
+
+Linhas grepáveis esperadas:
+
+```text
+PERF scenario=maxproc_1_queue requests=32 concurrency=8 maxProcesses=1 ...
+PERF scenario=maxproc_N_queue requests=32 concurrency=8 maxProcesses=4 ...
+PERF scenario=maxproc_1_no_queue requests=32 concurrency=8 maxProcesses=1 ...
+PERF scenario=maxproc_N_no_queue requests=32 concurrency=8 maxProcesses=4 ...
+```
+
+Números coletados fora do sandbox:
+
+| Data | Cenário | Requests | Concorrência | `maxProcesses` | p50 ms | p95 ms | Throughput req/s | Queued | Rejected | OK |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2026-07-03 | `maxproc_1_queue` | 32 | 8 | 1 | 172 | 340 | 23.32 | 28 | 0 | 32 |
+| 2026-07-03 | `maxproc_N_queue` | 32 | 8 | 4 | 47 | 84 | 92.17 | 16 | 0 | 32 |
+| 2026-07-03 | `maxproc_1_no_queue` | 32 | 8 | 1 | 0 | 42 | 183.20 | 0 | 28 | 4 |
+| 2026-07-03 | `maxproc_N_no_queue` | 32 | 8 | 4 | 0 | 42 | 182.23 | 0 | 16 | 16 |
+
+Leitura: sob concorrência 8 com fila, `maxProcesses=4` deu cerca de 4x o
+throughput (`23.32` -> `92.17` req/s) e cerca de 4x menor p95 (`340` -> `84`
+ms) vs `maxProcesses=1`; a serialização de 1 processo vira paralelismo. Sem
+fila (`queueLimit=0`), a saturação aparece como rejeições 429: 1 processo
+rejeita 28/32, 4 processos rejeitam 16/32.
+
+Esses baselines são evidência local e comparativa, não garantia universal.
+Hardware, versão do Deno em produção e a natureza CPU-bound vs IO-bound do
+worker real mudam o resultado. O baseline de produção real deve ser medido no
+cluster.
+
 ## Próximo baseline
 
-Expandir o harness dedicado com worker efêmero, worker lento e cenário de burst.
-O objetivo é medir p50/p95/p99, hit rate e rejeições sem depender de amostras
-manuais de uma única execução.
+Adicionar p99 e cenários com workers Deno reais quando houver ambiente dedicado
+para benchmark de regressão. O harness atual usa fixture in-memory para isolar a
+semântica do pool, fila e backpressure sem bind de socket.
