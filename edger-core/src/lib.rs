@@ -23,10 +23,10 @@ pub use auth::{extract_api_key_from_pairs, HeaderPairs};
 pub use config::{
     effective_max_body_size_bytes, effective_max_body_size_bytes_usize, infer_execution_kind,
     parse_duration_string_to_ms, parse_duration_to_ms, parse_size_to_bytes, parse_worker_config,
-    WorkerConfig, DEFAULT_MAX_BODY_BYTES,
+    FullstackBasePath, FullstackConfig, WorkerConfig, DEFAULT_MAX_BODY_BYTES,
 };
 pub use error::{CoreError, IsolationError};
-pub use execution::ExecutionKind;
+pub use execution::{normalize_fullstack_adapter, ExecutionKind, SUPPORTED_FULLSTACK_ADAPTERS};
 pub use isolate::Isolate;
 pub use manifest::{CronJob, WorkerManifest};
 pub use principal::{principal_can_access_namespace, root_principal, ApiKeyPrincipal};
@@ -38,7 +38,9 @@ pub use wire::{
     validate_headers, BodyStream, SerializedRequest, SerializedResponse, StreamedResponse,
     WorkerResponse, MAX_HEADERS, MAX_HEADER_BYTES, MAX_HEADER_VALUE_BYTES,
 };
-pub use worker_ref::{create_worker_ref, parse_namespaced_name, WorkerRef};
+pub use worker_ref::{
+    create_worker_ref, parse_namespaced_name, validate_worker_manifest, WorkerRef,
+};
 
 /// Crate identity marker for module layout tests.
 pub const CRATE_PURE_VOCABULARY: &str = "edger-core";

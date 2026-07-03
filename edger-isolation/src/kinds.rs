@@ -21,10 +21,8 @@ pub async fn dispatch_execution<I: Isolate + ?Sized>(
             isolate.serve_static_spa(&req.uri, base, config).await
         }
         ExecutionKind::WasmModule { .. } => isolate.execute_wasm(req, config).await,
-        ExecutionKind::Fullstack { adapter } => Ok(SerializedResponse {
-            status: 501,
-            headers: vec![("x-adapter".into(), adapter)],
-            body: Some(bytes::Bytes::from_static(b"fullstack not implemented")),
-        }),
+        ExecutionKind::Fullstack { .. } => {
+            crate::fullstack::dispatch_fullstack_buffered(isolate, req, config).await
+        }
     }
 }

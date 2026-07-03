@@ -122,7 +122,7 @@ fn resolve_static_request_path(
     }
 }
 
-fn content_type_for(path: &Path) -> &'static str {
+pub(crate) fn content_type_for(path: &Path) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()).unwrap_or("") {
         "css" => "text/css; charset=utf-8",
         "html" | "htm" => "text/html; charset=utf-8",

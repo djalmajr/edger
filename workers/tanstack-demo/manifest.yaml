@@ -1,4 +1,7 @@
 name: tanstack-demo
 version: "1.0.0"
-entrypoint: index.mjs
-kind: fetch
+kind: fullstack
+adapter: tanstack
+ssrEntrypoint: server/server.js
+clientDir: client
+basePath: auto

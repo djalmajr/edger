@@ -1,6 +1,6 @@
 //! Normalized worker configuration and parsers.
 
-use crate::execution::ExecutionKind;
+use crate::execution::{normalize_fullstack_adapter, ExecutionKind};
 use crate::manifest::WorkerManifest;
 
 /// Runtime-normalized worker configuration.
@@ -29,6 +29,22 @@ pub struct WorkerConfig {
     pub inject_base: bool,
     pub cron: Vec<crate::manifest::CronJob>,
     pub kind: Option<ExecutionKind>,
+    pub fullstack: Option<FullstackConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FullstackConfig {
+    pub adapter: String,
+    pub ssr_entrypoint: Option<String>,
+    pub client_dir: Option<String>,
+    pub asset_prefixes: Vec<String>,
+    pub base_path: FullstackBasePath,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FullstackBasePath {
+    Auto,
+    Fixed(String),
 }
 
 /// Parse duration string or numeric seconds to milliseconds (Buntime `parseDurationToMs`).
@@ -89,7 +105,9 @@ pub fn parse_size_to_bytes(input: &str) -> Option<u64> {
 /// Infer execution kind from manifest fields (Buntime getEntrypoint + wrapper rules).
 pub fn infer_execution_kind(manifest: &WorkerManifest) -> ExecutionKind {
     if let Some(ref kind) = manifest.kind {
-        if let Some(parsed) = ExecutionKind::from_manifest_kind(kind) {
+        if let Some(parsed) =
+            ExecutionKind::from_manifest_kind_with_adapter(kind, manifest.adapter.as_deref())
+        {
             return match parsed {
                 ExecutionKind::WasmModule { entry: None } => ExecutionKind::WasmModule {
                     entry: manifest.entrypoint.clone(),
@@ -114,6 +132,97 @@ pub fn infer_execution_kind(manifest: &WorkerManifest) -> ExecutionKind {
         }
     }
     ExecutionKind::FetchHandler
+}
+
+pub fn fullstack_config_from_manifest(manifest: &WorkerManifest) -> Option<FullstackConfig> {
+    let kind = manifest.kind.as_deref()?;
+    let is_fullstack = matches!(
+        kind.trim().to_ascii_lowercase().as_str(),
+        "ssr" | "fullstack"
+    );
+    if !is_fullstack {
+        return None;
+    }
+
+    let adapter = manifest
+        .adapter
+        .as_deref()
+        .and_then(normalize_fullstack_adapter)
+        .unwrap_or("")
+        .to_string();
+    let asset_prefixes = if manifest.asset_prefixes.is_empty() {
+        default_fullstack_asset_prefixes(&adapter, manifest.client_dir.is_some())
+    } else {
+        manifest
+            .asset_prefixes
+            .iter()
+            .filter_map(|prefix| normalize_asset_prefix(prefix))
+            .collect()
+    };
+
+    Some(FullstackConfig {
+        adapter,
+        ssr_entrypoint: manifest
+            .ssr_entrypoint
+            .clone()
+            .or_else(|| manifest.entrypoint.clone()),
+        client_dir: manifest.client_dir.clone(),
+        asset_prefixes,
+        base_path: normalize_fullstack_base_path(manifest.base_path.as_deref()),
+    })
+}
+
+fn default_fullstack_asset_prefixes(adapter: &str, has_client_dir: bool) -> Vec<String> {
+    match adapter {
+        "tanstack" => [
+            "/assets/",
+            "/favicon.ico",
+            "/logo192.png",
+            "/logo512.png",
+            "/manifest.json",
+            "/robots.txt",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        "hono" if has_client_dir => ["/assets/", "/favicon.ico", "/manifest.json", "/robots.txt"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn normalize_asset_prefix(prefix: &str) -> Option<String> {
+    let trimmed = prefix.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let prefixed = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    if prefixed == "/" {
+        Some(prefixed)
+    } else {
+        Some(prefixed.trim_end_matches('/').to_string())
+    }
+}
+
+fn normalize_fullstack_base_path(value: Option<&str>) -> FullstackBasePath {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return FullstackBasePath::Auto;
+    };
+    if value.eq_ignore_ascii_case("auto") {
+        return FullstackBasePath::Auto;
+    }
+    let normalized = if value == "/" {
+        "/".to_string()
+    } else {
+        format!("/{}", value.trim_matches('/'))
+    };
+    FullstackBasePath::Fixed(normalized)
 }
 
 /// Explicit JS/TS and SPA workers default to a sliding TTL (persistent) instead
@@ -149,6 +258,7 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
             ExecutionKind::StaticSpa { .. }
                 | ExecutionKind::FetchHandler
                 | ExecutionKind::RoutesTable
+                | ExecutionKind::Fullstack { .. }
         ) {
         WARM_WORKER_DEFAULT_TTL_MS
     } else {
@@ -214,5 +324,6 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         inject_base: manifest.inject_base.unwrap_or(true),
         cron: manifest.cron.clone().unwrap_or_default(),
         kind: Some(kind),
+        fullstack: fullstack_config_from_manifest(manifest),
     }
 }

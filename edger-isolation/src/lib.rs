@@ -6,6 +6,7 @@
 
 pub mod backend;
 pub mod error;
+pub mod fullstack;
 pub mod isolate;
 pub mod kinds;
 pub mod limits;
@@ -28,6 +29,10 @@ pub mod wasm;
 
 pub use backend::{create_isolate, IsolationBackend};
 pub use error::IsolationBackendError;
+pub use fullstack::{
+    dispatch_fullstack_buffered, dispatch_fullstack_stream, prepare_fullstack_request,
+    try_serve_fullstack_asset,
+};
 pub use isolate::Isolate;
 pub use kinds::dispatch_execution;
 pub use limits::{execute_with_limits, CpuTimer, LimitGuard, ResourceLimits};

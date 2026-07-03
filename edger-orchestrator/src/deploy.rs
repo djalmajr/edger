@@ -222,10 +222,10 @@ fn validate_package_manifest(dir: &Path, manifest: &WorkerManifest) -> Result<()
             "package must include manifest.yaml (or package.json) with a worker name",
         ));
     }
-    if manifest.entrypoint.is_none() {
+    if manifest.entrypoint.is_none() && manifest.ssr_entrypoint.is_none() {
         return Err(CoreError::new(
             "DEPLOY_INVALID_PACKAGE",
-            "package has no entrypoint (manifest entrypoint or index.{html,ts,js,mjs,wasm,wat})",
+            "package has no entrypoint (manifest entrypoint, ssrEntrypoint or index.{html,ts,js,mjs,wasm,wat})",
         ));
     }
     Ok(())

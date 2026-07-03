@@ -2,8 +2,9 @@
 
 use edger_core::{
     create_worker_ref, effective_max_body_size_bytes, infer_execution_kind,
-    parse_duration_string_to_ms, parse_size_to_bytes, parse_worker_config, ExecutionKind,
-    WorkerManifest, DEFAULT_MAX_BODY_BYTES,
+    parse_duration_string_to_ms, parse_size_to_bytes, parse_worker_config,
+    validate_worker_manifest, ExecutionKind, FullstackBasePath, WorkerManifest,
+    DEFAULT_MAX_BODY_BYTES,
 };
 
 const SAMPLE_YAML: &str = include_str!("fixtures/sample_manifest.yaml");
@@ -116,6 +117,82 @@ fn infer_execution_kind_rules() {
             entry: Some("index.wat".into())
         }
     );
+}
+
+#[test]
+fn fullstack_manifest_requires_supported_adapter() {
+    let missing = WorkerManifest {
+        name: "ssr-app".into(),
+        kind: Some("fullstack".into()),
+        ssr_entrypoint: Some("server.js".into()),
+        ..Default::default()
+    };
+    let err = validate_worker_manifest(&missing).unwrap_err();
+    assert_eq!(err.code, "VALIDATION_ERROR");
+    assert!(err.message.contains("manifest.adapter"));
+    assert!(err.message.contains("hono, sveltekit, tanstack"));
+
+    let invalid = WorkerManifest {
+        adapter: Some("next".into()),
+        ..missing
+    };
+    let err = validate_worker_manifest(&invalid).unwrap_err();
+    assert_eq!(err.code, "VALIDATION_ERROR");
+    assert!(err.message.contains("unsupported adapter"));
+}
+
+#[test]
+fn fullstack_manifest_accepts_entrypoint_as_ssr_alias() {
+    let manifest = WorkerManifest {
+        name: "ssr-app".into(),
+        adapter: Some("hono".into()),
+        entrypoint: Some("index.ts".into()),
+        kind: Some("fullstack".into()),
+        ..Default::default()
+    };
+
+    validate_worker_manifest(&manifest).unwrap();
+    assert_eq!(
+        infer_execution_kind(&manifest),
+        ExecutionKind::Fullstack {
+            adapter: "hono".into()
+        }
+    );
+}
+
+#[test]
+fn parse_worker_config_normalizes_fullstack_tanstack_fields() {
+    let manifest: WorkerManifest = serde_yaml::from_str(
+        r#"name: tanstack-demo
+version: "1.0.0"
+kind: fullstack
+adapter: tanstack
+ssrEntrypoint: server/server.js
+clientDir: client
+basePath: auto
+"#,
+    )
+    .unwrap();
+
+    let config = parse_worker_config(&manifest);
+
+    assert_eq!(
+        config.kind,
+        Some(ExecutionKind::Fullstack {
+            adapter: "tanstack".into()
+        })
+    );
+    assert_eq!(config.ttl_ms, 300_000);
+    let fullstack = config.fullstack.unwrap();
+    assert_eq!(fullstack.adapter, "tanstack");
+    assert_eq!(
+        fullstack.ssr_entrypoint.as_deref(),
+        Some("server/server.js")
+    );
+    assert_eq!(fullstack.client_dir.as_deref(), Some("client"));
+    assert_eq!(fullstack.base_path, FullstackBasePath::Auto);
+    assert!(fullstack.asset_prefixes.contains(&"/assets/".into()));
+    assert!(fullstack.asset_prefixes.contains(&"/favicon.ico".into()));
 }
 
 #[test]

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::config::WorkerConfig;
-use crate::execution::ExecutionKind;
+use crate::execution::{normalize_fullstack_adapter, ExecutionKind, SUPPORTED_FULLSTACK_ADAPTERS};
 use crate::manifest::WorkerManifest;
 
 /// Resolved worker identity (namespaced + semver).
@@ -41,6 +41,7 @@ pub fn create_worker_ref(
             "name is required",
         ));
     }
+    validate_worker_manifest(&manifest)?;
     let version = manifest.version.clone().unwrap_or_else(|| "latest".into());
     let config = crate::config::parse_worker_config(&manifest);
     let kind = config.kind.clone().unwrap_or(ExecutionKind::FetchHandler);
@@ -59,4 +60,62 @@ pub fn create_worker_ref(
         kind,
         config,
     })
+}
+
+pub fn validate_worker_manifest(manifest: &WorkerManifest) -> Result<(), crate::error::CoreError> {
+    let Some(kind) = manifest.kind.as_deref() else {
+        return Ok(());
+    };
+    if !matches!(
+        kind.trim().to_ascii_lowercase().as_str(),
+        "ssr" | "fullstack"
+    ) {
+        return Ok(());
+    }
+
+    let adapters = SUPPORTED_FULLSTACK_ADAPTERS.join(", ");
+    let Some(adapter) = manifest
+        .adapter
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    else {
+        return Err(crate::error::CoreError::validation(
+            "manifest.adapter",
+            format!("adapter is required for kind fullstack (expected one of: {adapters})"),
+        ));
+    };
+    if normalize_fullstack_adapter(adapter).is_none() {
+        return Err(crate::error::CoreError::validation(
+            "manifest.adapter",
+            format!("unsupported adapter {adapter:?} (expected one of: {adapters})"),
+        ));
+    }
+
+    let has_ssr_entrypoint = manifest
+        .ssr_entrypoint
+        .as_deref()
+        .or(manifest.entrypoint.as_deref())
+        .map(str::trim)
+        .is_some_and(|entry| !entry.is_empty());
+    if !has_ssr_entrypoint {
+        return Err(crate::error::CoreError::validation(
+            "manifest.ssrEntrypoint",
+            "ssrEntrypoint is required for kind fullstack (entrypoint is accepted as an alias)",
+        ));
+    }
+
+    if let Some(base_path) = manifest.base_path.as_deref().map(str::trim) {
+        if !base_path.is_empty()
+            && !base_path.eq_ignore_ascii_case("auto")
+            && !base_path.starts_with('/')
+        {
+            return Err(crate::error::CoreError::validation(
+                "manifest.basePath",
+                "basePath must be \"auto\" or an absolute path starting with /",
+            ));
+        }
+    }
+
+    Ok(())
 }

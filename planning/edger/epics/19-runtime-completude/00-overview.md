@@ -10,9 +10,9 @@ inexistentes. O runtime funciona, mas carrega dívida que confunde autores de
 workers e mantenedores.
 
 **AS-IS:**
-- `kind: fullstack` existe como variante de enum + stub `501` (`edger-worker/src/pool.rs`,
-  `edger-core/src/execution.rs`). SSR fullstack só roda hoje via `kind: fetch` + wrapper
-  manual por worker (`workers/tanstack-demo/index.mjs`, `workers/ssr-demo/index.tsx`).
+- `kind: fullstack` agora possui adapters declarativos `hono`, `sveltekit` e
+  `tanstack`; o stub `501` foi removido na Story 19.05. TanStack Start usa
+  `ssrEntrypoint` + `clientDir` no manifest, sem wrapper manual.
 - `UdsTransport` (`edger-isolation/src/transport.rs`) é código morto — o UDS real é
   `multiproc.rs`.
 - `StubBundler` (`edger-isolation/src/deno/bundle.rs`) não empacota dependências;
@@ -36,7 +36,7 @@ OTLP export; Cloudflare Tunnel/CD.
 | 02 | Per-worker body override | Ligar `max_body_bytes` da config ao execute path | S/M | — | pending |
 | 03 | eszip bundler real | Substituir StubBundler por bundling real (deps) | M | — | pending |
 | 04 | WASI host real | Passar request ao wasm, ABI real | M/L | — | pending |
-| 05 | Fullstack adapter | `kind: fullstack, adapter: X` declarativo | L | 02 | pending |
+| 05 | Fullstack adapter | `kind: fullstack, adapter: X` declarativo | L | 02 | completed |
 
 ## Roadmap
 
@@ -49,12 +49,12 @@ Caminho crítico: 02 → 05.
 
 ## Critérios de aceite do epic
 
-- [ ] Nenhum stub `501` para `kind: fullstack` (ou variante removida com decisão registrada)
+- [x] Nenhum stub `501` para `kind: fullstack` (ou variante removida com decisão registrada)
 - [ ] `UdsTransport` removido; workspace compila sem re-exports órfãos
 - [ ] Bundler produz artefato real para multi-file worker (teste)
 - [ ] Módulo wasm recebe request e responde (teste ponta-a-ponta)
 - [ ] Worker com `max_body_bytes` custom rejeita/aceita conforme limite próprio (teste)
-- [ ] `kind: fullstack, adapter: tanstack|hono|sveltekit` serve app sem wrapper manual
+- [x] `kind: fullstack, adapter: tanstack|hono|sveltekit` serve app sem wrapper manual
 - [ ] `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace` verdes
 - [ ] Validação viva fora do sandbox por feature (coordenador)
 

@@ -37,6 +37,12 @@ pub struct WorkerManifest {
     pub low_memory: Option<bool>,
     pub auto_install: Option<bool>,
     pub inject_base: Option<bool>,
+    pub adapter: Option<String>,
+    pub ssr_entrypoint: Option<String>,
+    pub client_dir: Option<String>,
+    #[serde(default)]
+    pub asset_prefixes: Vec<String>,
+    pub base_path: Option<String>,
     pub cron: Option<Vec<CronJob>>,
     pub kind: Option<String>,
     pub base: Option<String>,
