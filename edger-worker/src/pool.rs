@@ -1,6 +1,6 @@
 //! WorkerPool — LRU cache + fetch entry point with supervisor integration.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,7 +19,10 @@ use crate::error::WorkerError;
 use crate::factory::IsolateFactory;
 use crate::instance::WorkerInstance;
 use crate::lru::{QueueEnterResult, ReservedSlot, WorkerGroup, WorkerLru};
-use crate::metrics::{MetricsCollector, PoolMetrics, WorkerStats};
+use crate::metrics::{
+    MetricsCollector, PoolMetrics, WorkerGroupIdentity, WorkerGroupMetrics, WorkerProcessMetrics,
+    WorkerRecycleCause, WorkerStats,
+};
 use crate::state::WorkerState;
 use crate::supervisor::Supervisor;
 use crate::types::{PoolConfig, WorkerCacheKey};
@@ -261,19 +264,33 @@ impl WorkerPool {
             worker_ref.config.queue_limit,
             Arc::clone(&self.inner.metrics),
         ) {
-            QueueEnterResult::Accepted(waiter) => waiter,
+            QueueEnterResult::Accepted(waiter) => {
+                self.inner
+                    .metrics
+                    .record_worker_group_queue_enqueued(worker_ref, group.queued_waiters() as u64);
+                waiter
+            }
             QueueEnterResult::Closed => return Err(WorkerError::Shutdown),
             QueueEnterResult::Full => {
                 self.inner.metrics.record_worker_queue_rejected();
+                self.inner
+                    .metrics
+                    .record_worker_group_queue_rejected(worker_ref, group.queued_waiters() as u64);
                 return Err(WorkerError::WorkerQueueFull);
             }
         };
         self.inner.metrics.record_worker_queue_enqueued();
+        let queued_start = Instant::now();
 
         let deadline =
             tokio::time::Instant::now() + Duration::from_millis(worker_ref.config.queue_timeout_ms);
         loop {
             if self.inner.shutdown.load(Ordering::SeqCst) || group.is_closed() {
+                self.inner.metrics.record_worker_group_queue_wait(
+                    worker_ref,
+                    group.queued_waiters().saturating_sub(1) as u64,
+                    queued_start.elapsed().as_millis() as u64,
+                );
                 return Err(WorkerError::Shutdown);
             }
 
@@ -292,17 +309,39 @@ impl WorkerPool {
             ) {
                 ReservedSlot::Acquired { instance, guard } => {
                     self.sync_worker_counts();
+                    self.inner.metrics.record_worker_group_queue_wait(
+                        worker_ref,
+                        group.queued_waiters().saturating_sub(1) as u64,
+                        queued_start.elapsed().as_millis() as u64,
+                    );
                     return Ok(DispatchSlot::new(instance, Arc::clone(&group), guard));
                 }
                 ReservedSlot::Wait(_) => {}
                 ReservedSlot::Unavailable if self.inner.shutdown.load(Ordering::SeqCst) => {
+                    self.inner.metrics.record_worker_group_queue_wait(
+                        worker_ref,
+                        group.queued_waiters().saturating_sub(1) as u64,
+                        queued_start.elapsed().as_millis() as u64,
+                    );
                     return Err(WorkerError::Shutdown);
                 }
-                ReservedSlot::Unavailable => return Err(WorkerError::Retired),
+                ReservedSlot::Unavailable => {
+                    self.inner.metrics.record_worker_group_queue_wait(
+                        worker_ref,
+                        group.queued_waiters().saturating_sub(1) as u64,
+                        queued_start.elapsed().as_millis() as u64,
+                    );
+                    return Err(WorkerError::Retired);
+                }
             }
 
             if tokio::time::Instant::now() >= deadline {
                 self.inner.metrics.record_worker_queue_timeout();
+                self.inner.metrics.record_worker_group_queue_timeout(
+                    worker_ref,
+                    group.queued_waiters().saturating_sub(1) as u64,
+                    queued_start.elapsed().as_millis() as u64,
+                );
                 return Err(WorkerError::WorkerQueueTimeout);
             }
 
@@ -311,6 +350,11 @@ impl WorkerPool {
                 .is_err()
             {
                 self.inner.metrics.record_worker_queue_timeout();
+                self.inner.metrics.record_worker_group_queue_timeout(
+                    worker_ref,
+                    group.queued_waiters().saturating_sub(1) as u64,
+                    queued_start.elapsed().as_millis() as u64,
+                );
                 return Err(WorkerError::WorkerQueueTimeout);
             }
         }
@@ -629,13 +673,21 @@ impl WorkerPool {
     /// spawned next time, instead of leaving it wedged in `Active`.
     fn recycle_cancelled(&self, instance: &Arc<WorkerInstance>) {
         instance.set_state(WorkerState::Terminated);
-        self.remove_instance(instance);
+        self.remove_instance_with_cause(instance, WorkerRecycleCause::Error);
     }
 
     /// Remove a terminated/ephemeral worker from the LRU cache.
     pub fn remove_instance(&self, instance: &WorkerInstance) {
+        let cause = infer_recycle_cause(instance);
+        self.remove_instance_with_cause(instance, cause);
+    }
+
+    fn remove_instance_with_cause(&self, instance: &WorkerInstance, cause: WorkerRecycleCause) {
         let key = WorkerCacheKey::from_worker_ref(&instance.worker_ref);
         self.inner.cache.remove_instance(&key, instance.id());
+        self.inner
+            .metrics
+            .record_worker_group_recycle(&instance.worker_ref, cause);
         self.inner.metrics.record_terminated();
         self.sync_worker_counts();
     }
@@ -653,6 +705,11 @@ impl WorkerPool {
             .iter()
             .flat_map(|group| group.instances_snapshot())
             .collect::<Vec<_>>();
+        for instance in &instances {
+            self.inner
+                .metrics
+                .record_worker_group_recycle(&instance.worker_ref, WorkerRecycleCause::OomShutdown);
+        }
 
         self.inner.cache.clear();
         self.inner.evicted.lock().expect("evicted lock").clear();
@@ -669,7 +726,9 @@ impl WorkerPool {
     }
 
     pub fn get_metrics(&self) -> PoolMetrics {
-        self.inner.metrics.snapshot()
+        let mut metrics = self.inner.metrics.snapshot();
+        metrics.worker_groups = self.worker_group_metrics();
+        metrics
     }
 
     pub fn get_worker_stats(&self, worker_id: Uuid) -> Option<WorkerStats> {
@@ -701,6 +760,98 @@ impl WorkerPool {
 
     pub fn is_empty(&self) -> bool {
         self.inner.cache.is_empty()
+    }
+}
+
+fn infer_recycle_cause(instance: &WorkerInstance) -> WorkerRecycleCause {
+    if instance.is_unhealthy() {
+        return WorkerRecycleCause::Error;
+    }
+    if instance.worker_ref.config.max_requests > 0
+        && instance.request_count() >= instance.worker_ref.config.max_requests
+    {
+        return WorkerRecycleCause::MaxRequests;
+    }
+    WorkerRecycleCause::Ttl
+}
+
+fn merge_worker_group_metrics(
+    mut live: BTreeMap<WorkerGroupIdentity, WorkerGroupMetrics>,
+    runtime: BTreeMap<WorkerGroupIdentity, crate::metrics::WorkerGroupRuntimeMetrics>,
+) -> Vec<WorkerGroupMetrics> {
+    for (identity, counters) in runtime {
+        let group = live
+            .entry(identity.clone())
+            .or_insert_with(|| WorkerGroupMetrics {
+                name: identity.name,
+                namespace: identity.namespace,
+                version: identity.version,
+                ..Default::default()
+            });
+        group.enqueued_total = counters.enqueued_total;
+        group.queued = counters.queued;
+        group.recycle_error_total = counters.recycle_error_total;
+        group.recycle_max_requests_total = counters.recycle_max_requests_total;
+        group.recycle_oom_shutdown_total = counters.recycle_oom_shutdown_total;
+        group.recycle_ttl_total = counters.recycle_ttl_total;
+        group.rejected_total = counters.rejected_total;
+        group.timeout_total = counters.timeout_total;
+        group.wait_ms_last = counters.wait_ms_last;
+        group.wait_ms_p50 = counters.wait_ms_p50;
+        group.wait_ms_p95 = counters.wait_ms_p95;
+    }
+    live.into_values().collect()
+}
+
+impl WorkerPool {
+    fn worker_group_metrics(&self) -> Vec<WorkerGroupMetrics> {
+        let mut live = BTreeMap::new();
+        for group in self.inner.cache.groups_snapshot() {
+            let instances = group.instances_snapshot();
+            let Some(first) = instances.first() else {
+                continue;
+            };
+            let identity = WorkerGroupIdentity::from_worker_ref(&first.worker_ref);
+            let processes = instances
+                .iter()
+                .map(|instance| WorkerProcessMetrics {
+                    request_count: instance.request_count(),
+                    state: instance.state(),
+                    unhealthy: instance.is_unhealthy(),
+                    uptime_seconds: instance.uptime_seconds(),
+                })
+                .collect::<Vec<_>>();
+            let active_processes = processes
+                .iter()
+                .filter(|process| process.state == WorkerState::Active)
+                .count();
+            let idle_processes = processes
+                .iter()
+                .filter(|process| process.state == WorkerState::Idle)
+                .count();
+            let terminating_processes = processes
+                .iter()
+                .filter(|process| process.state == WorkerState::Terminating)
+                .count();
+            live.insert(
+                identity,
+                WorkerGroupMetrics {
+                    active_processes,
+                    idle_processes,
+                    max_processes: first.worker_ref.config.max_processes.max(1),
+                    name: first.worker_ref.name.clone(),
+                    namespace: first.worker_ref.namespace.clone(),
+                    processes,
+                    queued: group.queued_waiters() as u64,
+                    terminating_processes,
+                    total_processes: instances.len(),
+                    version: first.worker_ref.version.clone(),
+                    ..Default::default()
+                },
+            );
+        }
+
+        merge_worker_group_metrics(live, self.inner.metrics.worker_group_runtime_snapshots())
     }
 }
 

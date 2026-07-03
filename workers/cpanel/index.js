@@ -65,13 +65,14 @@ async function apiJson(apiKey, path, init = {}) {
 
 async function loadAll(apiKey) {
   const session = await apiJson(apiKey, "/api/admin/session");
-  const [workers, workerErrors] = await Promise.all([
+  const [workers, workerErrors, metricsStats] = await Promise.all([
     apiJson(apiKey, "/api/admin/workers").then((data) => data.workers || []),
     apiJson(apiKey, "/api/admin/workers/error-summary")
       .then((data) => data.summary || {})
       .catch(() => ({})),
+    apiJson(apiKey, "/metrics/stats").catch(() => null),
   ]);
-  return { principal: session.principal, workerErrors, workers };
+  return { metricsStats, principal: session.principal, workerErrors, workers };
 }
 
 // ExecutionKind serializes unit variants as strings ("FetchHandler") and
@@ -225,6 +226,7 @@ function WorkersView({ apiKey, data, onDeployed }) {
   const [busy, setBusy] = useState(null);
   const [errorsView, setErrorsView] = useState(null);
   const workerErrors = data.workerErrors || {};
+  const runtimeWorkers = data.metricsStats?.workers || [];
 
   const openErrors = async (name) => {
     setErrorsView({ loading: true, name });
@@ -253,6 +255,14 @@ function WorkersView({ apiKey, data, onDeployed }) {
       servingVersion.set(worker.name, worker.version);
     }
   }
+
+  const runtimeFor = (worker) =>
+    runtimeWorkers.find(
+      (entry) =>
+        entry.name === worker.name &&
+        entry.version === worker.version &&
+        (entry.namespace || null) === (worker.namespace || null),
+    );
 
   const toggle = async (worker, enable) => {
     const key = `${worker.name}@${worker.version}`;
@@ -290,6 +300,9 @@ function WorkersView({ apiKey, data, onDeployed }) {
             <${TableHead}>Kind<//>
             <${TableHead}>Visibility<//>
             <${TableHead}>Status<//>
+            <${TableHead}>Capacity<//>
+            <${TableHead}>Queue<//>
+            <${TableHead}>Processes<//>
             <${TableHead}>Source<//>
             <${TableHead} className="text-right">Actions<//>
           <//>
@@ -300,6 +313,7 @@ function WorkersView({ apiKey, data, onDeployed }) {
             const serving = multiVersion && servingVersion.get(worker.name) === worker.version;
             const disabled = worker.status === "disabled";
             const errorInfo = workerErrors[worker.name];
+            const runtime = runtimeFor(worker);
             const rowKey = `${worker.name}@${worker.version}`;
             return html`
               <${TableRow} key=${rowKey}>
@@ -330,6 +344,29 @@ function WorkersView({ apiKey, data, onDeployed }) {
                         <//>
                       </button>
                     `}
+                  </span>
+                <//>
+                <${TableCell}>
+                  <span class="text-sm">
+                    ${runtime ? `${runtime.activeProcesses}/${runtime.maxProcesses || runtime.totalProcesses || 1}` : "0/-"}
+                  </span>
+                <//>
+                <${TableCell}>
+                  <span class="text-muted-foreground text-xs">
+                    ${runtime ? `${runtime.queued} queued · ${runtime.waitMs}ms · ${runtime.rejectedTotal} rejected` : "-"}
+                  </span>
+                <//>
+                <${TableCell}>
+                  <span class="flex flex-wrap gap-1">
+                    ${runtime?.processes?.length
+                      ? runtime.processes.map(
+                          (process, index) => html`
+                            <${Badge} key=${index} variant=${process.unhealthy ? "destructive" : "outline"}>
+                              ${process.state}
+                            <//>
+                          `,
+                        )
+                      : html`<span class="text-muted-foreground text-xs">none</span>`}
                   </span>
                 <//>
                 <${TableCell} className="text-muted-foreground">${worker.source || "-"}<//>
