@@ -135,6 +135,24 @@ impl ManifestIndex {
             })
     }
 
+    pub fn resolve_plugin_worker(&self, plugin: &PluginRef) -> Result<WorkerRef, CoreError> {
+        let state = self.inner.read().map_err(|_| lock_err())?;
+        state
+            .entries
+            .get(&plugin.name)
+            .and_then(|entries| {
+                entries.iter().find(|entry| {
+                    entry.worker.config.enabled
+                        && entry.worker.dir == plugin.dir
+                        && entry.plugin_base.as_deref() == Some(plugin.base.as_str())
+                })
+            })
+            .map(|entry| entry.worker.clone())
+            .ok_or_else(|| {
+                CoreError::new("NOT_FOUND", format!("worker not found: {}", plugin.name))
+            })
+    }
+
     pub fn plugin_for_path(&self, path: &str) -> Option<(PluginRef, String)> {
         let state = self.inner.read().ok()?;
         for plugin in &state.plugins {

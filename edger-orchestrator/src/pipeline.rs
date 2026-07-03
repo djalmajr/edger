@@ -160,7 +160,24 @@ async fn dispatch_resolved_route(
     // owns its own auth. Only the control plane (`/api/admin/*`) is gated.
     match route {
         ResolvedRoute::Reserved { kind } => handle_reserved(kind),
-        ResolvedRoute::PluginBase { .. } => dispatch_plugin_stub(None),
+        ResolvedRoute::PluginBase { plugin, remainder } => {
+            let worker = state.index.resolve_plugin_worker(&plugin)?;
+            let kind_hint = worker.kind.clone();
+            dispatch_worker(
+                state,
+                req,
+                DispatchParams {
+                    request_id,
+                    worker,
+                    rewritten_path: normalize_rewritten_path(&remainder),
+                    kind_hint: Some(kind_hint),
+                    principal: None,
+                    skip_hooks: false,
+                    base_path: Some(plugin.base),
+                },
+            )
+            .await
+        }
         ResolvedRoute::HomepageFallback { worker } => {
             dispatch_worker(
                 state,
@@ -172,6 +189,7 @@ async fn dispatch_resolved_route(
                     kind_hint: None,
                     principal: None,
                     skip_hooks: false,
+                    base_path: None,
                 },
             )
             .await
@@ -191,21 +209,12 @@ async fn dispatch_resolved_route(
                     kind_hint: Some(kind_hint),
                     principal: None,
                     skip_hooks: false,
+                    base_path: None,
                 },
             )
             .await
         }
     }
-}
-
-fn dispatch_plugin_stub(
-    _principal: Option<edger_core::ApiKeyPrincipal>,
-) -> Result<Response<Body>, CoreError> {
-    Ok(json_error(
-        StatusCode::NOT_IMPLEMENTED,
-        "PLUGIN_BASE",
-        "plugin dispatch not implemented in story 05.03",
-    ))
 }
 
 struct DispatchParams {
@@ -215,6 +224,7 @@ struct DispatchParams {
     kind_hint: Option<ExecutionKind>,
     principal: Option<edger_core::ApiKeyPrincipal>,
     skip_hooks: bool,
+    base_path: Option<String>,
 }
 
 async fn dispatch_worker(
@@ -229,6 +239,7 @@ async fn dispatch_worker(
         kind_hint,
         principal,
         skip_hooks,
+        base_path,
     } = params;
 
     tracing::info!(
@@ -246,7 +257,7 @@ async fn dispatch_worker(
     sanitize_internal_headers(&mut req, internal_principal.as_ref());
     let mut serialized = axum_to_serialized(req, request_id.clone()).await?;
     let (original_path, query) = split_path_query(&serialized.uri);
-    let base_path = worker_base_path(&worker, original_path);
+    let base_path = base_path.unwrap_or_else(|| worker_base_path(&worker, original_path));
     serialized.uri = append_query(rewritten_path, query);
     serialized.base_href = Some(base_href(&base_path));
     set_header(&mut serialized.headers, "x-request-id", &request_id);
@@ -358,6 +369,16 @@ fn worker_base_path(worker: &WorkerRef, original_path: &str) -> String {
         base
     } else {
         "/".into()
+    }
+}
+
+fn normalize_rewritten_path(remainder: &str) -> String {
+    if remainder.is_empty() {
+        "/".into()
+    } else if remainder.starts_with('/') {
+        remainder.to_string()
+    } else {
+        format!("/{remainder}")
     }
 }
 
