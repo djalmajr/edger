@@ -42,6 +42,7 @@ pub struct OrchestratorState {
 pub fn build_pipeline(state: OrchestratorState) -> Router {
     let metrics_state = state.server.clone();
     Router::new()
+        .route("/", get(root_redirect))
         .route("/health", get(health_handler))
         .route("/healthz", get(health_handler))
         .route("/livez", get(live_handler))
@@ -58,6 +59,15 @@ pub fn build_pipeline(state: OrchestratorState) -> Router {
         .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// The runtime's own control panel is the front door: `/` redirects to the
+/// cPanel worker at its canonical mount (`/cpanel/`). Keeping it a plain 302
+/// (instead of serving the SPA at `/`) means the cPanel has one canonical URL
+/// with a stable base path — swappable/client-routed frontends stay correct —
+/// while app workers keep the bare `/<worker>` namespace and unknown paths 404.
+async fn root_redirect() -> impl IntoResponse {
+    axum::response::Redirect::temporary("/cpanel/")
 }
 
 async fn health_handler() -> impl IntoResponse {
