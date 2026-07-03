@@ -6,12 +6,14 @@ use std::time::Instant;
 
 use edger_core::{Isolate, WorkerRef};
 use tokio::sync::Mutex as AsyncMutex;
+use uuid::Uuid;
 
 use crate::state::WorkerState;
 
 /// A pooled worker with an injected isolate backend and lifecycle state.
 pub struct WorkerInstance {
     pub worker_ref: WorkerRef,
+    id: Uuid,
     created_at: Instant,
     dispatch_lock: Arc<AsyncMutex<()>>,
     isolate: Arc<AsyncMutex<Box<dyn Isolate>>>,
@@ -26,6 +28,7 @@ impl WorkerInstance {
     pub fn new(worker_ref: WorkerRef, isolate: Box<dyn Isolate>) -> Self {
         Self {
             worker_ref,
+            id: Uuid::new_v4(),
             created_at: Instant::now(),
             dispatch_lock: Arc::new(AsyncMutex::new(())),
             isolate: Arc::new(AsyncMutex::new(isolate)),
@@ -35,6 +38,10 @@ impl WorkerInstance {
             idle_notifications: AtomicU32::new(0),
             ttl_handle: Mutex::new(None),
         }
+    }
+
+    pub fn id(&self) -> Uuid {
+        self.id
     }
 
     pub fn isolate(&self) -> Arc<AsyncMutex<Box<dyn Isolate>>> {
