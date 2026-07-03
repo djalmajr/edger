@@ -65,7 +65,7 @@ Consolidar o runtime para uso real e migração Buntime: execução production-p
 | 07.01 Manifests + kinds completos | `01-full-manifests-kinds.md` | large | **completed** (dispatch E2E por todos os kinds) | 07.04, 07.05, Epic 05 |
 | 07.02 Shell routing | `02-shell-routing.md` | medium | **completed** (SPA namespaced + injectBase false + doc protocolo; decisão shell entregue na 08.05) | 07.01 |
 | 07.03 Cron nativo | `03-native-cron.md` | medium | **completed** (tokio scheduler v1) | 07.01, Epic 05 |
-| 07.04 Execução JS real | `04-real-js-execution.md` | large | in progress (Deno CLI bridge v1 sandboxed; **produção durável reorientada para o Epic 15 — runtime JS multi-processo — em vez de embutir `deno_core`, após medição de perf 2026-07-02**) | Epic 03 (spike), Epic 04, Epic 05 |
+| 07.04 Execução JS real | `04-real-js-execution.md` | large | **completed** (entregue pelo Epic 15: processo Deno persistente por UDS é o runtime JS durável de produção — ~25x vs bridge v1; a bridge v1 fica como fallback legado `EDGER_JS_RUNTIME=bridge`; streaming passthrough pelo Epic 16.D) | Epic 03 (spike), Epic 04, Epic 05 |
 | 07.05 Execução Wasm | `05-wasm-execution.md` | large | **completed** (standalone wasmtime v1; ABI/WASI host follow-ups) | Epic 03 (spike), Epic 04, Epic 05 |
 | 07.06 Observabilidade OTEL | `06-observability-otel.md` | medium | **completed** (observability v1; OTLP exporter pending) | 07.01, 07.04, 07.05 |
 | 07.07 Hardening + matriz compat | `07-hardening-compat-matrix.md` | large | **completed** (limits, compat smoke, perf harness, CI v1) | 07.02, 07.03, 07.06 |

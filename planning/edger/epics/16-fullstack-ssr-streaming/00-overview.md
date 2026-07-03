@@ -59,4 +59,4 @@ flowchart LR
 
 ## Status
 
-**in-progress** (2026-07-02) — criado a partir dos adiados do 15.E + direção do operador (frameworks leves primeiro, Hono SSR+JSX como combinação de interesse).
+**completed** (2026-07-02) — as 4 stories entregues no mesmo dia da criação. **16.A**: Hono SSR+JSX blessed path (deploy de fonte `.tsx`, zero build, zero código novo de runtime). **16.B**: SvelteKit adapter-node rodando (SSR+API+assets), com 2 gaps reais do harness corrigidos (captura de todos os listeners `request`; default de Host) e, após teste manual no browser, receita revisada com `paths.base` + wrapper (paths relativos quebravam a hidratação na URL bare). **16.C**: TanStack Start rodando (SSR+API+assets+hidratação+router), com receita documentada (`ssr.noExternal`, `base`/`basepath`, wrapper de estáticos — embrião do adapter declarativo). **16.D**: streaming passthrough real (frames H/C/E, `WorkerResponse::Streamed`, `GuardedBody` cancel-safe) — `curl -N /sse` recebe eventos incrementais ao vivo. O `kind: fullstack` declarativo (adapter que automatize as receitas) fica como epic futuro.
