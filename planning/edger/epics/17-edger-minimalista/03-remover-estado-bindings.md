@@ -43,3 +43,16 @@
 cargo build --workspace
 # live: worker que abre conexão a um Postgres/libSQL externo com URL/token via env do manifest
 ```
+
+## Status
+
+**completed** (2026-07-02) — Deletados os crates `edger-ext-keyval`, `edger-ext-turso`,
+`edger-ext-turso-remote` (+ membership + deps), `service_bindings.rs`, `edger-core/src/bindings.rs`
+(traits `DurableSqlProvider`/`KeyValueProvider`/`QueueProvider`, `BindingSet`, `BindingKind`),
+o campo `bindings` de `WorkerConfig`/`WorkerManifest`, a capability `ServiceProvider` e toda a
+maquinaria de provider do registry (register/getters/has_service_provider). Boot sem
+`durable_sql_provider_from_env`/keyval wiring. Fixture `workers/state-demo` deletada; teste
+`models_mapping.rs` sem asserções de bindings. **Mantidos**: injeção de env/secrets (filtrada)
+e egress (`--allow-net`) — é assim que o worker recebe credencial e alcança o backend que
+escolher (libSQL/Turso/Postgres/Deno KV, direto). Verde: workspace + multiproc + clippy + fmt
++ E2E deno.

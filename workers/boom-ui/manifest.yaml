@@ -2,4 +2,3 @@ name: boom-ui
 version: "1.0.0"
 entrypoint: index.ts
 kind: fetch
-visibility: public

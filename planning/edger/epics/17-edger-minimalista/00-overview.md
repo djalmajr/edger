@@ -21,12 +21,12 @@
 
 | Story | Arquivo | Objetivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|---|
-| 17.A Control-plane auth stateless (OIDC + root-key) | `01-control-plane-auth.md` | Validador OIDC genérico (discovery+JWKS+claims) opt-in + root-key via Secret-arquivo (hot-reload); deletar `edger-ext-auth`; só gateia `/api/admin/*` | large | not started | — |
-| 17.B Data plane aberto | `02-data-plane-aberto.md` | Remover `authorize()` do caminho do worker; worker recebe request cru com headers intactos | small | not started | 17.A |
-| 17.C Remover estado + bindings | `03-remover-estado-bindings.md` | Deletar `keyval`/`turso`/`turso-remote` + service bindings + `DurableSqlProvider`; manter env/secrets + egress | medium | not started | 17.B |
-| 17.D Remover gateway extension | `04-remover-gateway.md` | Deletar `edger-ext-gateway`; doc de deployment com API GW externo | medium | not started | 17.C |
-| 17.E Remover sistema de extensões | `05-remover-extensoes.md` | Deletar `ExtensionRegistry`/hooks/`Extension`/`Middleware`; limpar `visibility`/`namespaces` vestigiais | large | not started | 17.A–17.D |
-| 17.F Deployment K8s de referência | `06-deployment-k8s.md` | Manifesto: Deployment stateless + Secret-arquivo + doc de rotação sem restart; API GW externo na frente | small | not started | 17.A–17.E |
+| 17.A Control-plane auth stateless (OIDC + root-key) | `01-control-plane-auth.md` | Validador OIDC genérico (discovery+JWKS+claims) opt-in + root-key via Secret-arquivo (hot-reload); deletar `edger-ext-auth`; só gateia `/api/admin/*` | large | in progress — base root-key entregue (2026-07-03); OIDC pendente | — |
+| 17.B Data plane aberto | `02-data-plane-aberto.md` | Worker recebe request cru (Authorization intacto); só control plane gateia | small | **completed** | — |
+| 17.C Remover estado + bindings | `03-remover-estado-bindings.md` | Deletados keyval/turso/turso-remote + service bindings + DurableSqlProvider; env/secrets + egress mantidos | medium | **completed** | 17.B |
+| 17.D Remover gateway + shell | `04-remover-gateway.md` | Deletar `edger-ext-gateway` **e** o shell routing (`shell_gateway`); ingress/composição → externo | medium | **completed** | — |
+| 17.E Remover sistema de extensões | `05-remover-extensoes.md` | Deletar `ExtensionRegistry`/hooks/`Extension`/`Middleware`; limpar `visibility`/`namespaces` vestigiais | large | **completed** (2026-07-03) | 17.A–17.D |
+| 17.F Deployment K8s de referência | `06-deployment-k8s.md` | Helm chart Rancher-style (questions.yaml modelado no Buntime, stateless) que instala e serve o cPanel; Deployment + HPA + Secret-arquivo | medium | not started | 17.A–17.E |
 
 ## Roadmap
 
@@ -62,4 +62,4 @@ Ordem = da folha para a raiz: primeiro troca a auth (destrava o problema K8s), d
 
 ## Status
 
-**not started** (2026-07-02) — desenho fechado após sequência de decisões do operador: worker soberano, 100% serverless, auth OIDC opt-in + root-key stateless, sem extensões/estado/gateway dentro do edger. Adição de escala (pool por worker + HPA) fica no Epic 18.
+**in progress** (2026-07-03) — 17.E concluída: sistema de extensões/registry/hooks removido, `/api/admin/extensions*` removido, cPanel sem Modules, e `visibility`/`publicRoutes`/`shellExcludes` fora do manifest/config. 17.A mantém base root-key entregue (sem `edger-ext-auth`, sem gestão de API keys, gate só no control plane); OIDC genérico segue pendente. Desenho fechado após sequência de decisões do operador: worker soberano, 100% serverless, auth OIDC opt-in + root-key stateless, sem extensões/estado/gateway dentro do edger. Adição de escala (pool por worker + HPA) fica no Epic 18.

@@ -7,12 +7,10 @@ use std::sync::Mutex;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use edger_core::{ApiKeyStore, WorkerManifest, MAX_HEADERS};
-use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
+use edger_core::{WorkerManifest, MAX_HEADERS};
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
-    build_pipeline, AuthGate, AuthGateConfig, ExtensionRegistry, ManifestIndex, OrchestratorState,
-    ServerState, MAX_BODY_BYTES,
+    build_pipeline, ControlAuth, ManifestIndex, OrchestratorState, ServerState, MAX_BODY_BYTES,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -84,29 +82,6 @@ fn test_state() -> OrchestratorState {
             .unwrap();
     }
 
-    let store = Arc::new(SqliteApiKeyStore::in_memory().unwrap());
-    store
-        .insert_key(
-            "acme-read-token",
-            "acme-reader",
-            "viewer",
-            &["workers:read".into()],
-            &["@acme".into()],
-            None,
-        )
-        .unwrap();
-    store
-        .insert_key(
-            "acme-no-workers-token",
-            "acme-no-workers",
-            "viewer",
-            &[],
-            &["@acme".into()],
-            None,
-        )
-        .unwrap();
-
-    let auth = Arc::new(AuthExtension::new(store, Some("root-secret".into())));
     let server = ServerState::new_unready();
     let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(StubFactory));
     server.mark_ready(pool.clone());
@@ -115,8 +90,7 @@ fn test_state() -> OrchestratorState {
         server,
         pool,
         index,
-        registry: ExtensionRegistry::new(),
-        auth: AuthGate::new(AuthGateConfig::default(), auth),
+        auth: ControlAuth::with_static_key("root-secret"),
     }
 }
 
@@ -136,11 +110,11 @@ async fn response_json(res: axum::response::Response) -> (StatusCode, serde_json
 }
 
 #[tokio::test]
-async fn namespaced_worker_inventory_is_filtered_for_non_root_key() {
+async fn root_worker_inventory_lists_all_workers() {
     let res = request(
         Request::builder()
             .uri("/api/admin/workers")
-            .header("authorization", "Bearer acme-read-token"),
+            .header("authorization", "Bearer root-secret"),
         Body::empty(),
     )
     .await;
@@ -153,38 +127,37 @@ async fn namespaced_worker_inventory_is_filtered_for_non_root_key() {
         .iter()
         .map(|worker| worker["name"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(names, vec!["@acme/api"]);
+    assert_eq!(names, vec!["@acme/api", "@other/api", "todos"]);
 }
 
 #[tokio::test]
-async fn worker_inventory_requires_workers_read_permission() {
+async fn worker_inventory_rejects_invalid_root_key() {
     let res = request(
         Request::builder()
             .uri("/api/admin/workers")
-            .header("authorization", "Bearer acme-no-workers-token"),
+            .header("authorization", "Bearer wrong"),
         Body::empty(),
     )
     .await;
     let (status, body) = response_json(res).await;
 
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(body["code"], "FORBIDDEN");
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "UNAUTHORIZED");
 }
 
 #[tokio::test]
-async fn namespaced_key_cannot_mutate_worker_state() {
+async fn missing_root_key_cannot_mutate_worker_state() {
     let res = request(
         Request::builder()
             .method("POST")
-            .uri("/api/admin/workers/todos/disable")
-            .header("authorization", "Bearer acme-read-token"),
+            .uri("/api/admin/workers/todos/disable"),
         Body::empty(),
     )
     .await;
     let (status, body) = response_json(res).await;
 
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(body["code"], "FORBIDDEN");
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "UNAUTHORIZED");
 }
 
 #[tokio::test]
@@ -269,20 +242,20 @@ async fn internal_header_does_not_authenticate_public_requests() {
 }
 
 #[tokio::test]
-async fn internal_header_does_not_elevate_non_root_keys() {
+async fn internal_header_does_not_elevate_invalid_keys() {
     let res = request(
         Request::builder()
             .method("POST")
             .uri("/api/admin/workers/todos/disable")
-            .header("authorization", "Bearer acme-read-token")
+            .header("authorization", "Bearer wrong")
             .header("x-edger-internal", "true"),
         Body::empty(),
     )
     .await;
     let (status, body) = response_json(res).await;
 
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(body["code"], "FORBIDDEN");
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "UNAUTHORIZED");
 }
 
 #[tokio::test]

@@ -8,10 +8,8 @@ use axum::http::{Request, StatusCode};
 use bytes::Bytes;
 use edger_core::{Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig};
 use edger_core::{WorkerManifest, WorkerRef};
-use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
 use edger_orchestrator::{
-    build_pipeline, AuthGate, AuthGateConfig, ExtensionRegistry, ManifestIndex, OrchestratorState,
-    ServerState,
+    build_pipeline, ControlAuth, ManifestIndex, OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -101,14 +99,7 @@ fn perf_state() -> OrchestratorState {
         server,
         pool,
         index,
-        registry: ExtensionRegistry::new(),
-        auth: AuthGate::new(
-            AuthGateConfig::default(),
-            Arc::new(AuthExtension::new(
-                Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
-                Some("test-root".into()),
-            )),
-        ),
+        auth: ControlAuth::with_static_key("test-root"),
     }
 }
 

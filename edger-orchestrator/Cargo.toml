@@ -10,14 +10,10 @@ path = "src/bin/edger.rs"
 
 [dependencies]
 edger-core = { path = "../edger-core" }
-edger-ext-auth = { path = "../edger-ext-auth" }
-edger-ext-gateway = { path = "../edger-ext-gateway" }
-edger-ext-keyval = { path = "../edger-ext-keyval" }
-edger-ext-turso = { path = "../edger-ext-turso" }
-edger-ext-turso-remote = { path = "../edger-ext-turso-remote" }
 edger-worker = { path = "../edger-worker" }
 edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "multiproc"] }
 anyhow.workspace = true
+async-trait.workspace = true
 bytes.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -31,16 +27,19 @@ futures-util = { version = "0.3", default-features = false }
 tower-http.workspace = true
 http.workspace = true
 hyper.workspace = true
+jsonwebtoken = "9"
 uuid.workspace = true
 semver.workspace = true
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tempfile = "3"
 
 [dev-dependencies]
+base64 = "0.22"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
-async-trait.workspace = true
-edger-ext-auth = { path = "../edger-ext-auth" }
 edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "multiproc"] }
+rand = "0.8"
+rsa = { version = "0.9", features = ["pem"] }
 serde_json.workspace = true
 tokio.workspace = true
 tower.workspace = true

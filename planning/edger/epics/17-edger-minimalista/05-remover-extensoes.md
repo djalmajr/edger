@@ -27,20 +27,27 @@
 - **Out:** qualquer novo sistema de plugins (YAGNI; redesenhar quando houver caso real).
 
 ### Acceptance criteria
-- [ ] `Extension`/`Middleware`/`ExtensionRegistry`/hooks deletados; `pipeline` despacha sem `run_on_*`; workspace compila.
-- [ ] Observabilidade preservada: `/metrics`, `/metrics/stats`, request-id e tracing seguem funcionando (suites verdes + live).
-- [ ] `visibility`/`namespaces`/`publicRoutes` removidos do manifest/config; manifests existentes carregam (campos ignorados/removidos).
-- [ ] `/api/admin/extensions*` removido.
+- [x] `Extension`/`Middleware`/`ExtensionRegistry`/hooks deletados; `pipeline` despacha sem `run_on_*`; workspace compila.
+- [x] Observabilidade preservada: `/metrics`, `/metrics/stats`, request-id e tracing seguem funcionando (suites verdes; live fica para o coordenador fora do sandbox).
+- [x] `visibility`/`namespaces`/`publicRoutes` removidos do manifest/config; manifests existentes carregam (campos ignorados/removidos).
+- [x] `/api/admin/extensions*` removido.
 
 ### Dependencies
 - Stories 17.A–17.D (todos os consumidores do registry precisam sair antes)
 
 ## Tasks
-- [ ] Remover chamadas de hook do pipeline; deletar `extension.rs`/`registry.rs`; limpar manifest/config.
-- [ ] Confirmar observabilidade built-in intacta (métricas/request-id/tracing) por teste + preview.
+- [x] Remover chamadas de hook do pipeline; deletar `extension.rs`/`registry.rs`; limpar manifest/config.
+- [x] Confirmar observabilidade built-in intacta por teste (preview/live fora do sandbox).
 
 ## Verification
 ```bash
 cargo test --workspace
 cargo test -p edger-orchestrator --test metrics_endpoint
 ```
+
+## Completion
+
+Concluída em 2026-07-03. Gates locais executados: `cargo fmt --all --check`,
+`cargo check --workspace --all-targets`, `cargo clippy --workspace --all-targets`
+com contagem `warning|error = 0`, `cargo test -p edger-orchestrator --lib`,
+`cargo test -p edger-core`, e o conjunto focado de testes admin/pipeline/routing/metrics.

@@ -13,6 +13,8 @@
 
 - `edger-ext-auth` (deletar), `edger-core/src/auth.rs` (`AuthProvider` trait — sai do registry), `edger-orchestrator/src/auth.rs` (`AuthGate`), `admin_api.rs` (`/api/admin/keys*` saem)
 
+Decisão (2026-07-03): quando `EDGER_ROOT_KEY_FILE` e `ROOT_API_KEY` estiverem configurados, o arquivo (`EDGER_ROOT_KEY_FILE`) tem precedência sobre a env (`ROOT_API_KEY`).
+
 ## Files
 
 | Path | Action | Reason |
@@ -40,23 +42,26 @@
 - **Out:** introspection de token opaco (escape hatch documentado); auth no data plane (removida em 17.B, não substituída).
 
 ### Acceptance criteria
-- [ ] `EDGER_OIDC_ISSUER`+`AUDIENCE` setados → JWT válido de qualquer provider OIDC autentica `/api/admin/*`; JWT inválido/expirado/assinatura errada → 401.
-- [ ] Claim de role configurável autoriza (Keycloak `realm_access.roles` e um genérico `groups` cobertos por teste).
-- [ ] `EDGER_ROOT_KEY_FILE` → bearer do arquivo autentica; **alterar o arquivo passa a valer sem restart** (hot-reload).
-- [ ] Nenhum configurado → `/api/admin/*` aberto (log de aviso).
-- [ ] `edger-ext-auth` deletado; sem store SQLite de chaves; `/api/admin/keys*` removidos; workspace compila.
-- [ ] cPanel loga com root-key sem fluxo de gestão de chaves.
+- [x] `EDGER_OIDC_ISSUER`+`AUDIENCE` setados → JWT válido de qualquer provider OIDC autentica `/api/admin/*`; JWT inválido/expirado/assinatura errada → 401. Coberto em 2026-07-03 por `edger-orchestrator/src/oidc.rs`; validação live contra IdP real fica com o harness.
+- [x] Claim de role configurável autoriza (Keycloak `realm_access.roles` e um genérico `groups` cobertos por teste). Coberto em 2026-07-03 por testes sem rede com JWKS estático.
+- [x] `EDGER_ROOT_KEY_FILE` → bearer do arquivo autentica; **alterar o arquivo passa a valer sem restart** (hot-reload).
+- [x] Nenhum configurado → `/api/admin/*` aberto (log de aviso).
+- [x] `edger-ext-auth` deletado; sem store SQLite de chaves; `/api/admin/keys*` removidos; workspace compila.
+- [x] cPanel loga com root-key sem fluxo de gestão de chaves.
+- [x] OIDC genérico (fase 2) entregue em 2026-07-03: discovery + JWKS + claims configuráveis via `EDGER_OIDC_*`; validação live contra um IdP real fica com o harness.
 
 ### Dependencies
 - Nenhuma (primeira story do epic).
 
 ## Tasks
 ### Fase 1 — Middleware
-- [ ] `control_auth.rs`: OIDC discovery + cache JWKS + verify JWT (assinatura/claims); root-key de arquivo com hot-reload; modo aberto.
+- [x] `auth.rs`: root-key via `ROOT_API_KEY` e `EDGER_ROOT_KEY_FILE` com hot-reload; modo aberto com warning quando nada configurado.
+- [x] OIDC genérico (fase 2) entregue em 2026-07-03: discovery + cache JWKS + verify JWT (assinatura/claims) via `EDGER_OIDC_*`.
 ### Fase 2 — Poda
-- [ ] Gatear `/api/admin/*`; remover endpoints de chaves; deletar `edger-ext-auth` + `AuthProvider`; simplificar cPanel.
+- [x] Gatear `/api/admin/*`; remover endpoints de chaves; deletar `edger-ext-auth` + `AuthProvider`; simplificar cPanel.
 ### Fase 3 — Doc + prova
-- [ ] Testes (JWT válido/inválido, role por claim, hot-reload da root-key, modo aberto); docs `EDGER_OIDC_*`/`EDGER_ROOT_KEY_FILE`; validação live no preview.
+- [x] Testes da fase base: modo aberto, 401 com key errada/ausente, hot-reload da root-key e migração de testes para `ControlAuth`.
+- [x] Testes/docs OIDC (JWT válido/inválido, role por claim, `EDGER_OIDC_*`) cobertos em 2026-07-03; validação live contra IdP real permanece com o harness externo.
 
 ## Verification
 

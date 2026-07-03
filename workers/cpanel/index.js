@@ -1,7 +1,7 @@
 import { unzipSync, zipSync } from "fflate";
 import { html } from "htm/preact";
 import { render } from "preact";
-import { useCallback, useRef, useState } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert.js";
 import { Badge } from "~/components/ui/badge.js";
 import { Button } from "~/components/ui/button.js";
@@ -25,7 +25,6 @@ import {
 import { Icon } from "~/components/ui/icon.js";
 import { Input } from "~/components/ui/input.js";
 import { Label } from "~/components/ui/label.js";
-import { Select, SelectItem } from "~/components/ui/select.js";
 import { Separator } from "~/components/ui/separator.js";
 import {
   Sidebar,
@@ -50,9 +49,6 @@ import {
 const VIEWS = [
   { description: "Runtime posture at a glance", icon: "lucide:gauge", id: "overview", title: "Overview" },
   { description: "Runtime worker inventory", icon: "lucide:cpu", id: "workers", title: "Workers" },
-  { description: "Static extension registry", icon: "lucide:puzzle", id: "modules", title: "Modules" },
-  { description: "Local gateway diagnostics", icon: "lucide:waypoints", id: "gateway", title: "Gateway" },
-  { description: "Operator credentials", icon: "lucide:key-round", id: "keys", title: "API Keys" },
 ];
 
 async function apiJson(apiKey, path, init = {}) {
@@ -69,16 +65,13 @@ async function apiJson(apiKey, path, init = {}) {
 
 async function loadAll(apiKey) {
   const session = await apiJson(apiKey, "/api/admin/session");
-  const [workers, modules, gateway, keys, workerErrors] = await Promise.all([
+  const [workers, workerErrors] = await Promise.all([
     apiJson(apiKey, "/api/admin/workers").then((data) => data.workers || []),
-    apiJson(apiKey, "/api/admin/extensions").then((data) => data.extensions || []),
-    apiJson(apiKey, "/api/admin/gateway/stats").catch((error) => ({ error: error.message })),
-    apiJson(apiKey, "/api/admin/keys").then((data) => data.keys || []),
     apiJson(apiKey, "/api/admin/workers/error-summary")
       .then((data) => data.summary || {})
       .catch(() => ({})),
   ]);
-  return { gateway, keys, modules, principal: session.principal, workerErrors, workers };
+  return { principal: session.principal, workerErrors, workers };
 }
 
 // ExecutionKind serializes unit variants as strings ("FetchHandler") and
@@ -95,13 +88,6 @@ function kindLabel(kind) {
 
 function listText(value) {
   return Array.isArray(value) && value.length ? value.join(", ") : "-";
-}
-
-function splitCsv(value) {
-  return String(value || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
 }
 
 function Login({ onAuthenticated }) {
@@ -192,11 +178,10 @@ function visibilityBadge(visibility) {
 }
 
 function OverviewView({ data }) {
-  const { gateway, keys, modules, principal, workers } = data;
-  const historyLabel = gateway?.history?.persistent?.enabled ? "persistent" : "local";
+  const { principal, workers } = data;
   return html`
     <div class="grid gap-4">
-      <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div class="grid gap-4 md:grid-cols-2">
         <${MetricCard}
           help="Loaded from RUNTIME_WORKER_DIRS"
           icon="lucide:cpu"
@@ -204,22 +189,10 @@ function OverviewView({ data }) {
           value=${String(workers.length)}
         />
         <${MetricCard}
-          help="Static extension registry"
-          icon="lucide:puzzle"
-          label="Modules"
-          value=${String(modules.length)}
-        />
-        <${MetricCard}
-          help="Gateway total since boot"
-          icon="lucide:activity"
-          label="Requests"
-          value=${String(gateway?.requests?.total ?? "-")}
-        />
-        <${MetricCard}
-          help="Operator API keys"
+          help="Built-in root-key gate"
           icon="lucide:fingerprint"
-          label="Keys"
-          value=${String(keys.length)}
+          label="Control plane"
+          value=${principal?.isRoot ? "root" : "restricted"}
         />
       </div>
       <${Section} description="Session principal resolved by the runtime auth gate." title="Runtime status">
@@ -228,7 +201,6 @@ function OverviewView({ data }) {
           <${DetailItem} label="Role" value=${principal?.role || "-"} />
           <${DetailItem} label="Namespaces" value=${listText(principal?.namespaces)} />
           <${DetailItem} label="Permissions" value=${listText(principal?.permissions)} />
-          <${DetailItem} label="Gateway history" value=${historyLabel} />
           <${DetailItem} label="Remote deploy" value="not included" />
         </div>
       <//>
@@ -419,204 +391,6 @@ function WorkersView({ apiKey, data, onDeployed }) {
         <//>
       <//>
     <//>
-  `;
-}
-
-function ModulesView({ data }) {
-  return html`
-    <${Section} description="Extensions registered at the composition root." title="Modules">
-      <${Table}>
-        <${TableHeader}>
-          <${TableRow}>
-            <${TableHead}>Name<//>
-            <${TableHead}>Kind<//>
-            <${TableHead}>Status<//>
-            <${TableHead}>Capabilities<//>
-            <${TableHead}>Priority<//>
-          <//>
-        <//>
-        <${TableBody}>
-          ${data.modules.map(
-            (mod) => html`
-              <${TableRow} key=${mod.name}>
-                <${TableCell}><code class="bg-muted rounded px-1.5 py-0.5 text-xs">${mod.name}</code><//>
-                <${TableCell}>${kindLabel(mod.kind)}<//>
-                <${TableCell}><${Badge} variant="outline">${mod.status || "-"}<//><//>
-                <${TableCell} className="text-muted-foreground">${listText(mod.capabilities)}<//>
-                <${TableCell}>${mod.priority ?? "-"}<//>
-              <//>
-            `,
-          )}
-        <//>
-      <//>
-    <//>
-  `;
-}
-
-function GatewayView({ data }) {
-  const gateway = data.gateway || {};
-  if (gateway.error) {
-    return html`
-      <${Alert} variant="destructive">
-        <${AlertTitle}>Gateway stats unavailable<//>
-        <${AlertDescription}>${gateway.error}<//>
-      <//>
-    `;
-  }
-  const requests = gateway.requests || {};
-  const rateLimit = gateway.rateLimit || {};
-  const historyLabel = gateway.history?.persistent?.enabled ? "persistent" : "local";
-  return html`
-    <${Section} description="Counters observed by the gateway middleware since boot." title="Gateway">
-      <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        <${DetailItem} label="Total" value=${requests.total ?? "-"} />
-        <${DetailItem} label="Continued" value=${requests.continued ?? "-"} />
-        <${DetailItem} label="Redirected" value=${requests.redirected ?? "-"} />
-        <${DetailItem} label="Rate limited" value=${requests.rateLimited ?? "-"} />
-        <${DetailItem} label="Buckets" value=${rateLimit.activeBuckets ?? "-"} />
-        <${DetailItem} label="History" value=${historyLabel} />
-      </div>
-    <//>
-  `;
-}
-
-function KeysView({ apiKey, data, onChanged }) {
-  const [createdKey, setCreatedKey] = useState(null);
-  const [error, setError] = useState(null);
-  const [pending, setPending] = useState(false);
-
-  const createKey = async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const fields = new FormData(form);
-    setError(null);
-    setPending(true);
-    try {
-      const result = await apiJson(apiKey, "/api/admin/keys", {
-        body: JSON.stringify({
-          expiresAt: null,
-          name: String(fields.get("name") || "").trim(),
-          namespaces: splitCsv(String(fields.get("namespaces") || "*") || "*"),
-          permissions: splitCsv(String(fields.get("permissions") || "")),
-          role: String(fields.get("role") || "viewer"),
-        }),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      });
-      setCreatedKey(result);
-      form.reset();
-      await onChanged();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setPending(false);
-    }
-  };
-
-  const revoke = async (id) => {
-    setError(null);
-    try {
-      await apiJson(apiKey, `/api/admin/keys/${id}/revoke`, { method: "POST" });
-      await onChanged();
-    } catch (err) {
-      setError(err.message);
-    }
-  };
-
-  return html`
-    <div class="grid gap-4">
-      <${Section} description="Create an operator key scoped by role, permissions and namespaces." title="New key">
-        <form class="grid gap-4 md:grid-cols-[minmax(0,1fr)_160px_minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end" onSubmit=${createKey}>
-          <div class="grid gap-2">
-            <${Label} for="key-name">Name<//>
-            <${Input} id="key-name" name="name" placeholder="ci-deploy" required />
-          </div>
-          <div class="grid gap-2">
-            <${Label} for="key-role">Role<//>
-            <${Select} id="key-role" name="role">
-              <${SelectItem} value="viewer">viewer<//>
-              <${SelectItem} value="editor">editor<//>
-              <${SelectItem} value="admin">admin<//>
-            <//>
-          </div>
-          <div class="grid gap-2">
-            <${Label} for="key-permissions">Permissions<//>
-            <${Input} id="key-permissions" name="permissions" placeholder="comma-separated" />
-          </div>
-          <div class="grid gap-2">
-            <${Label} for="key-namespaces">Namespaces<//>
-            <${Input} id="key-namespaces" name="namespaces" placeholder="default *" />
-          </div>
-          <${Button} disabled=${pending} type="submit">
-            ${pending ? html`<${Spinner} size="16" />` : html`<${Icon} icon="lucide:plus" size="16" />`}
-            Create
-          <//>
-        </form>
-        ${createdKey &&
-        html`
-          <${Alert} className="mt-4">
-            <${AlertTitle}>Key created — copy it now, it is shown only once<//>
-            <${AlertDescription}>
-              <code class="bg-muted rounded px-1.5 py-0.5 text-xs">${createdKey.rawKey}</code>
-            <//>
-          <//>
-        `}
-        ${error &&
-        html`
-          <${Alert} className="mt-4" variant="destructive">
-            <${AlertTitle}>Key operation failed<//>
-            <${AlertDescription}>${error}<//>
-          <//>
-        `}
-      <//>
-      <${Section} description="Keys accepted by the runtime auth gate." title="API keys">
-        <${Table}>
-          <${TableHeader}>
-            <${TableRow}>
-              <${TableHead}>Name<//>
-              <${TableHead}>Role<//>
-              <${TableHead}>Prefix<//>
-              <${TableHead}>Namespaces<//>
-              <${TableHead}>Status<//>
-              <${TableHead} className="w-12"><span class="sr-only">Actions</span><//>
-            <//>
-          <//>
-          <${TableBody}>
-            ${data.keys.map(
-              (key) => html`
-                <${TableRow} key=${key.id ?? key.name}>
-                  <${TableCell}><code class="bg-muted rounded px-1.5 py-0.5 text-xs">${key.name}</code><//>
-                  <${TableCell}>${key.role || "-"}<//>
-                  <${TableCell} className="text-muted-foreground">${key.keyPrefix || "-"}<//>
-                  <${TableCell} className="text-muted-foreground">${listText(key.namespaces)}<//>
-                  <${TableCell}>
-                    <${Badge} variant=${key.isRoot ? "default" : key.revoked ? "destructive" : "outline"}>
-                      ${key.isRoot ? "root" : key.revoked ? "revoked" : "active"}
-                    <//>
-                  <//>
-                  <${TableCell}>
-                    ${!key.isRoot &&
-                    !key.revoked &&
-                    html`
-                      <${Button}
-                        onClick=${() => revoke(key.id)}
-                        size="icon-sm"
-                        title="Revoke"
-                        type="button"
-                        variant="ghost"
-                      >
-                        <${Icon} className="text-destructive" icon="lucide:trash-2" size="16" />
-                        <span class="sr-only">Revoke</span>
-                      <//>
-                    `}
-                  <//>
-                <//>
-              `,
-            )}
-          <//>
-        <//>
-      <//>
-    </div>
   `;
 }
 
@@ -904,15 +678,10 @@ function DeployDialog({ apiKey, onDeployed }) {
   `;
 }
 
-function Shell({ apiKey, data, onLogout, onRefresh, refreshing, setData }) {
+function Shell({ apiKey, data, onLogout, onRefresh, refreshing }) {
   const [view, setView] = useState("overview");
   const active = VIEWS.find((entry) => entry.id === view) || VIEWS[0];
   const principal = data.principal;
-
-  const reloadKeys = useCallback(async () => {
-    const keys = await apiJson(apiKey, "/api/admin/keys").then((res) => res.keys || []);
-    setData((current) => ({ ...current, keys }));
-  }, [apiKey, setData]);
 
   return html`
     <div class="flex h-full w-full overflow-hidden">
@@ -973,9 +742,6 @@ function Shell({ apiKey, data, onLogout, onRefresh, refreshing, setData }) {
           ${view === "overview" && html`<${OverviewView} data=${data} />`}
           ${view === "workers" &&
           html`<${WorkersView} apiKey=${apiKey} data=${data} onDeployed=${onRefresh} />`}
-          ${view === "modules" && html`<${ModulesView} data=${data} />`}
-          ${view === "gateway" && html`<${GatewayView} data=${data} />`}
-          ${view === "keys" && html`<${KeysView} apiKey=${apiKey} data=${data} onChanged=${reloadKeys} />`}
         </div>
       <//>
     </div>
@@ -985,12 +751,6 @@ function Shell({ apiKey, data, onLogout, onRefresh, refreshing, setData }) {
 function App() {
   const [session, setSession] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
-
-  const setData = useCallback((updater) => {
-    setSession((current) =>
-      current ? { ...current, data: typeof updater === "function" ? updater(current.data) : updater } : current,
-    );
-  }, []);
 
   if (!session) {
     return html`<${Login} onAuthenticated=${(apiKey, data) => setSession({ apiKey, data })} />`;
@@ -1021,7 +781,6 @@ function App() {
       onLogout=${() => setSession(null)}
       onRefresh=${refresh}
       refreshing=${refreshing}
-      setData=${setData}
     />
   `;
 }

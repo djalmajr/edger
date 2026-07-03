@@ -88,11 +88,9 @@ pub struct SafeWorkerInfo {
     pub name: String,
     pub namespace: Option<String>,
     pub plugin_base: Option<String>,
-    pub public_routes: Vec<String>,
     pub source: String,
     pub status: String,
     pub version: String,
-    pub visibility: String,
 }
 
 pub fn list_workers(ctx: &McpContext, args: WorkerDiscoveryArgs) -> Result<serde_json::Value> {
@@ -247,11 +245,9 @@ fn safe_worker_info(workspace_root: &Path, worker: AdminWorkerInfo) -> SafeWorke
         name: worker.name,
         namespace: worker.namespace,
         plugin_base: worker.plugin_base,
-        public_routes: worker.public_routes,
         source: display_relative(workspace_root, Path::new(&worker.source)),
         status: worker.status,
         version: worker.version,
-        visibility: worker.visibility,
     }
 }
 

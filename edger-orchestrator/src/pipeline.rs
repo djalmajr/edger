@@ -1,4 +1,4 @@
-//! Request pipeline — route resolution, hook stub, pool dispatch (story 05.03).
+//! Request pipeline — route resolution and pool dispatch.
 
 use axum::body::Body;
 use axum::extract::State;
@@ -12,22 +12,14 @@ use serde_json::json;
 use tower_http::trace::TraceLayer;
 
 use crate::admin_api;
-use crate::auth::{is_public_route, AuthGate};
-use crate::context::RequestContext;
-use crate::hooks::{
-    run_on_request, run_on_response, run_on_worker_complete, run_on_worker_dispatch,
-    run_on_worker_error,
-};
+use crate::auth::ControlAuth;
 use crate::manifest_index_stub::ManifestIndex;
 use crate::metrics::{cron_metrics_prometheus, metrics_stats_response, pool_metrics_prometheus};
 use crate::operational_log::log_operational_error;
-use crate::registry::ExtensionRegistry;
 use crate::router::{resolve_host_route, resolve_route, ReservedPath, ResolvedRoute};
 use crate::server::{
     request_id_from_headers, request_id_middleware, request_metrics_middleware, ServerState,
 };
-use crate::service_bindings::{resolve_service_bindings, SERVICE_BINDINGS_HEADER};
-use crate::shell_gateway::resolve_shell_worker;
 use crate::wire::{axum_to_serialized, serialized_to_axum};
 
 /// Shared orchestrator state for health probes and worker dispatch.
@@ -36,14 +28,14 @@ pub struct OrchestratorState {
     pub server: ServerState,
     pub pool: WorkerPool,
     pub index: ManifestIndex,
-    pub registry: ExtensionRegistry,
-    pub auth: AuthGate,
+    pub auth: ControlAuth,
 }
 
 /// Build the full axum application (health + readiness + pipeline fallback).
 pub fn build_pipeline(state: OrchestratorState) -> Router {
     let metrics_state = state.server.clone();
     Router::new()
+        .route("/", get(root_redirect))
         .route("/health", get(health_handler))
         .route("/healthz", get(health_handler))
         .route("/livez", get(live_handler))
@@ -60,6 +52,15 @@ pub fn build_pipeline(state: OrchestratorState) -> Router {
         .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// The runtime's own control panel is the front door: `/` redirects to the
+/// cPanel worker at its canonical mount (`/cpanel/`). Keeping it a plain 302
+/// (instead of serving the SPA at `/`) means the cPanel has one canonical URL
+/// with a stable base path — swappable/client-routed frontends stay correct —
+/// while app workers keep the bare `/<worker>` namespace and unknown paths 404.
+async fn root_redirect() -> impl IntoResponse {
+    axum::response::Redirect::temporary("/cpanel/")
 }
 
 async fn health_handler() -> impl IntoResponse {
@@ -135,37 +136,6 @@ async fn handle_request(
         return dispatch_resolved_route(state, req, request_id, &path, route).await;
     }
 
-    if let Some(shell) =
-        resolve_shell_worker(req.method().as_str(), &path, req.headers(), &state.index)
-    {
-        let public_worker = is_public_worker(&shell);
-        let principal = if public_worker {
-            None
-        } else {
-            state.auth.authorize(
-                &path,
-                req.headers(),
-                shell.config.public_routes.as_ref(),
-                shell.namespace.as_deref(),
-            )?
-        };
-        let skip_hooks = public_worker
-            || should_skip_hooks(&path, &state.auth, shell.config.public_routes.as_ref());
-        return dispatch_worker(
-            state,
-            req,
-            DispatchParams {
-                request_id,
-                rewritten_path: path,
-                kind_hint: Some(shell.kind.clone()),
-                principal,
-                skip_hooks,
-                worker: shell,
-            },
-        )
-        .await;
-    }
-
     let route = resolve_route(&path, None, &state.index)?;
 
     dispatch_resolved_route(state, req, request_id, &path, route).await
@@ -175,29 +145,32 @@ async fn dispatch_resolved_route(
     state: &OrchestratorState,
     req: Request<Body>,
     request_id: String,
-    path: &str,
+    _path: &str,
     route: ResolvedRoute,
 ) -> Result<Response<Body>, CoreError> {
+    // Data plane is OPEN (Epic 17): the edger does not authenticate worker
+    // requests. The worker receives the raw request (Authorization intact) and
+    // owns its own auth. Only the control plane (`/api/admin/*`) is gated.
     match route {
         ResolvedRoute::Reserved { kind } => handle_reserved(kind),
-        ResolvedRoute::PluginBase { .. } => {
-            let principal = state.auth.authorize(path, req.headers(), None, None)?;
-            dispatch_plugin_stub(principal)
+        ResolvedRoute::PluginBase { plugin, remainder } => {
+            let worker = state.index.resolve_plugin_worker(&plugin)?;
+            let kind_hint = worker.kind.clone();
+            dispatch_worker(
+                state,
+                req,
+                DispatchParams {
+                    request_id,
+                    worker,
+                    rewritten_path: normalize_rewritten_path(&remainder),
+                    kind_hint: Some(kind_hint),
+                    principal: None,
+                    base_path: Some(plugin.base),
+                },
+            )
+            .await
         }
         ResolvedRoute::HomepageFallback { worker } => {
-            let public_worker = is_public_worker(&worker);
-            let principal = if public_worker {
-                None
-            } else {
-                state.auth.authorize(
-                    path,
-                    req.headers(),
-                    worker.config.public_routes.as_ref(),
-                    worker.namespace.as_deref(),
-                )?
-            };
-            let skip_hooks = public_worker
-                || should_skip_hooks(path, &state.auth, worker.config.public_routes.as_ref());
             dispatch_worker(
                 state,
                 req,
@@ -206,8 +179,8 @@ async fn dispatch_resolved_route(
                     worker,
                     rewritten_path: "/".into(),
                     kind_hint: None,
-                    principal,
-                    skip_hooks,
+                    principal: None,
+                    base_path: None,
                 },
             )
             .await
@@ -217,19 +190,6 @@ async fn dispatch_resolved_route(
             rewritten_path,
             kind_hint,
         } => {
-            let public_worker = is_public_worker(&worker);
-            let principal = if public_worker {
-                None
-            } else {
-                state.auth.authorize(
-                    path,
-                    req.headers(),
-                    worker.config.public_routes.as_ref(),
-                    worker.namespace.as_deref(),
-                )?
-            };
-            let skip_hooks = public_worker
-                || should_skip_hooks(path, &state.auth, worker.config.public_routes.as_ref());
             dispatch_worker(
                 state,
                 req,
@@ -238,36 +198,13 @@ async fn dispatch_resolved_route(
                     worker,
                     rewritten_path,
                     kind_hint: Some(kind_hint),
-                    principal,
-                    skip_hooks,
+                    principal: None,
+                    base_path: None,
                 },
             )
             .await
         }
     }
-}
-
-fn should_skip_hooks(
-    path: &str,
-    auth: &AuthGate,
-    worker_public_routes: Option<&edger_core::PublicRoutesConfig>,
-) -> bool {
-    is_public_route(path, &auth.config.global_public_routes)
-        || worker_public_routes.is_some_and(|routes| is_public_route(path, routes))
-}
-
-fn is_public_worker(worker: &WorkerRef) -> bool {
-    worker.config.visibility == "public"
-}
-
-fn dispatch_plugin_stub(
-    _principal: Option<edger_core::ApiKeyPrincipal>,
-) -> Result<Response<Body>, CoreError> {
-    Ok(json_error(
-        StatusCode::NOT_IMPLEMENTED,
-        "PLUGIN_BASE",
-        "plugin dispatch not implemented in story 05.03",
-    ))
 }
 
 struct DispatchParams {
@@ -276,7 +213,7 @@ struct DispatchParams {
     rewritten_path: String,
     kind_hint: Option<ExecutionKind>,
     principal: Option<edger_core::ApiKeyPrincipal>,
-    skip_hooks: bool,
+    base_path: Option<String>,
 }
 
 async fn dispatch_worker(
@@ -289,8 +226,8 @@ async fn dispatch_worker(
         worker,
         rewritten_path,
         kind_hint,
-        principal,
-        skip_hooks,
+        principal: _principal,
+        base_path,
     } = params;
 
     tracing::info!(
@@ -300,34 +237,19 @@ async fn dispatch_worker(
         worker_namespace = worker.namespace.as_deref().unwrap_or(""),
         "worker dispatch"
     );
-    sanitize_internal_headers(&mut req, principal.as_ref());
+    // Data plane is open, but the `x-edger-internal` marker (used by cron) must
+    // stay trustworthy: validate it against the root key so an external client
+    // cannot forge it. This authenticates ONLY to gate the internal header — it
+    // never blocks access to the worker.
+    let internal_principal = state.auth.authenticate_headers(req.headers()).await;
+    sanitize_internal_headers(&mut req, internal_principal.as_ref());
     let mut serialized = axum_to_serialized(req, request_id.clone()).await?;
     let (original_path, query) = split_path_query(&serialized.uri);
-    let base_path = worker_base_path(&worker, original_path);
+    let base_path = base_path.unwrap_or_else(|| worker_base_path(&worker, original_path));
     serialized.uri = append_query(rewritten_path, query);
     serialized.base_href = Some(base_href(&base_path));
     set_header(&mut serialized.headers, "x-request-id", &request_id);
     set_header(&mut serialized.headers, "x-base", &base_path);
-    if let Some(bindings) = resolve_service_bindings(&worker, principal.as_ref(), &state.registry)?
-    {
-        let bindings = serde_json::to_string(&bindings)
-            .map_err(|err| CoreError::new("SERIALIZE_ERROR", err.to_string()))?;
-        set_header(&mut serialized.headers, SERVICE_BINDINGS_HEADER, &bindings);
-    }
-
-    let mut ctx = RequestContext::new(request_id);
-    ctx.principal = principal;
-    ctx.worker = Some(worker.clone());
-
-    if !skip_hooks {
-        let short_circuit = run_on_request(&state.registry, &mut serialized, &ctx)
-            .map_err(|e| CoreError::new("HOOK_ERROR", e.to_string()))?;
-        if let Some(response) = short_circuit {
-            return serialized_to_axum(response);
-        }
-        run_on_worker_dispatch(&state.registry, &ctx)
-            .map_err(|e| CoreError::new("HOOK_ERROR", e.to_string()))?;
-    }
 
     let worker_response = match state
         .pool
@@ -339,44 +261,18 @@ async fn dispatch_worker(
         Err(err) => {
             state.server.worker_errors().record(
                 &worker.name,
-                &ctx.request_id,
+                &request_id,
                 map_error_status(&err).as_u16(),
                 &err.code,
                 &err.message,
             );
-            if !skip_hooks {
-                let error = err.to_string();
-                run_on_worker_error(&state.registry, &error, &ctx);
-            }
             return Err(err);
         }
     };
 
     match worker_response {
-        edger_core::WorkerResponse::Buffered(mut response) => {
-            if !skip_hooks {
-                run_on_worker_complete(&state.registry, &response, &ctx);
-                run_on_response(&state.registry, &mut response, &ctx);
-            }
-            serialized_to_axum(response)
-        }
-        edger_core::WorkerResponse::Streamed(mut streamed) => {
-            // Hooks observe a headers-only view: the body streams straight to
-            // the client, so body-mutating hooks do not apply to streamed
-            // responses (status/header mutations DO propagate).
-            if !skip_hooks {
-                let mut view = edger_core::SerializedResponse {
-                    status: streamed.status,
-                    headers: streamed.headers.clone(),
-                    body: None,
-                };
-                run_on_worker_complete(&state.registry, &view, &ctx);
-                run_on_response(&state.registry, &mut view, &ctx);
-                streamed.status = view.status;
-                streamed.headers = view.headers;
-            }
-            crate::wire::streamed_to_axum(streamed)
-        }
+        edger_core::WorkerResponse::Buffered(response) => serialized_to_axum(response),
+        edger_core::WorkerResponse::Streamed(streamed) => crate::wire::streamed_to_axum(streamed),
     }
 }
 
@@ -421,6 +317,16 @@ fn worker_base_path(worker: &WorkerRef, original_path: &str) -> String {
         base
     } else {
         "/".into()
+    }
+}
+
+fn normalize_rewritten_path(remainder: &str) -> String {
+    if remainder.is_empty() {
+        "/".into()
+    } else if remainder.starts_with('/') {
+        remainder.to_string()
+    } else {
+        format!("/{remainder}")
     }
 }
 
@@ -500,8 +406,7 @@ mod tests {
     use edger_worker::{IsolateFactory, PoolConfig};
     use tower::ServiceExt;
 
-    use crate::auth::{AuthGate, AuthGateConfig};
-    use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
+    use crate::auth::ControlAuth;
 
     struct StubFactory;
     impl IsolateFactory for StubFactory {
@@ -514,6 +419,10 @@ mod tests {
     }
 
     fn pipeline_with_hello() -> OrchestratorState {
+        pipeline_with_auth(ControlAuth::with_static_key("test-root"))
+    }
+
+    fn pipeline_with_auth(auth: ControlAuth) -> OrchestratorState {
         let mut index = ManifestIndex::new();
         index
             .insert(
@@ -532,14 +441,7 @@ mod tests {
             server,
             pool,
             index,
-            registry: ExtensionRegistry::new(),
-            auth: AuthGate::new(
-                AuthGateConfig::default(),
-                Arc::new(AuthExtension::new(
-                    Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
-                    Some("test-root".into()),
-                )),
-            ),
+            auth,
         }
     }
 
@@ -605,5 +507,67 @@ mod tests {
             .unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(text.contains("fetch:GET /?name=Alice"));
+    }
+
+    #[tokio::test]
+    async fn admin_session_is_open_when_no_root_key_source_exists() {
+        let app = build_pipeline(pipeline_with_auth(ControlAuth::new(Default::default())));
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/admin/session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["principal"]["isRoot"], true);
+    }
+
+    #[tokio::test]
+    async fn admin_workers_requires_configured_root_key() {
+        let app = build_pipeline(pipeline_with_hello());
+        let missing = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/admin/workers")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+        let wrong = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/admin/workers")
+                    .header("x-api-key", "wrong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+
+        let ok = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/admin/workers")
+                    .header("x-api-key", "test-root")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
     }
 }

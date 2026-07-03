@@ -101,10 +101,9 @@ impl CronScheduler {
         metrics: CronMetrics,
     ) -> Result<Self, CoreError> {
         if !registrations.is_empty() && config.root_api_key.is_none() {
-            return Err(CoreError::new(
-                "CRON_AUTH_MISSING",
-                "ROOT_API_KEY is required when manifest cron jobs are enabled",
-            ));
+            tracing::warn!(
+                "manifest cron jobs are enabled without ROOT_API_KEY or EDGER_ROOT_KEY_FILE; jobs will dispatch without Authorization and x-edger-internal will be discarded by the pipeline"
+            );
         }
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -112,7 +111,7 @@ impl CronScheduler {
 
         for registration in registrations {
             let app = app.clone();
-            let root_api_key = config.root_api_key.clone().unwrap_or_default();
+            let root_api_key = config.root_api_key.clone();
             let metrics = metrics.clone();
             let shutdown_rx = shutdown_rx.clone();
             handles.push(tokio::spawn(run_job(
@@ -227,7 +226,7 @@ fn invalid_schedule(schedule: &str) -> CoreError {
 async fn run_job(
     registration: CronJobRegistration,
     app: Router,
-    root_api_key: String,
+    root_api_key: Option<String>,
     metrics: CronMetrics,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
@@ -241,7 +240,9 @@ async fn run_job(
                 break;
             }
             _ = interval.tick() => {
-                if let Err(err) = dispatch_cron_request(app.clone(), &registration, &root_api_key).await {
+                if let Err(err) =
+                    dispatch_cron_request(app.clone(), &registration, root_api_key.as_deref()).await
+                {
                     metrics.record_failure();
                     tracing::warn!(
                         worker = %registration.worker.name,
@@ -260,15 +261,19 @@ async fn run_job(
 async fn dispatch_cron_request(
     app: Router,
     registration: &CronJobRegistration,
-    root_api_key: &str,
+    root_api_key: Option<&str>,
 ) -> Result<(), CoreError> {
     let uri = registration.route_path();
-    let request = Request::builder()
+    let mut request_builder = Request::builder()
         .method(registration.method())
         .uri(uri)
         .header(INTERNAL_REQUEST_HEADER, "true")
-        .header(header::AUTHORIZATION, format!("Bearer {root_api_key}"))
-        .header("x-request-id", format!("cron-{}", Uuid::new_v4()))
+        .header("x-request-id", format!("cron-{}", Uuid::new_v4()));
+    if let Some(root_api_key) = root_api_key {
+        request_builder =
+            request_builder.header(header::AUTHORIZATION, format!("Bearer {root_api_key}"));
+    }
+    let request = request_builder
         .body(Body::empty())
         .map_err(|err| CoreError::new("CRON_REQUEST_INVALID", err.to_string()))?;
 

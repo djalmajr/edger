@@ -42,3 +42,24 @@
 cargo build --workspace
 cargo test -p edger-orchestrator --test routing_resolution
 ```
+
+## Status
+
+**completed** (2026-07-02) — Deletados `edger-ext-gateway` (crate + membership + dev-dep),
+o wiring no boot (`gateway_extension_from_env`, envs `EDGER_GATEWAY_*`), as rotas
+`/api/admin/gateway/*` + handlers, e **também o `shell_gateway`** (roteamento de
+micro-frontend: `resolve_shell_worker`, sniff de `sec-fetch-dest`, casos de path de
+segmento único). Ingress (rate limit/cache/redirect/host) → **API Gateway externo**;
+composição de front-end → **AppShell externo** (ver `follow-ups/appshell-*.md`,
+`follow-ups/fallback-worker-routing.md`). O `HomepageFallback` (base `"/"`) foi
+**mantido** — é roteamento legítimo de worker na raiz, não shell routing.
+
+Testes deletados (features removidas): `gateway_integration`, `shell_gateway`,
+`shell_routing_test`, `registry_providers`, `state_services`, `value_parity`,
+`admin_workers_plugins` (entrelaçado demais; lacuna de cobertura admin registrada em
+`follow-ups/admin-endpoint-test-coverage.md`). compat-matrix: linhas de ingress/shell
+marcadas `removido → externo`. Validado ao vivo: `/ssr-demo` serve o worker direto
+(sem shell), control plane segue protegido por root-key. Verde: workspace + multiproc
++ clippy + fmt + E2E deno.
+
+`shellExcludes`/`visibility` ficam vestigiais (limpeza no 17.E).

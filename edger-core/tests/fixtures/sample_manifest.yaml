@@ -10,15 +10,6 @@ maxBodySize: 10mb
 lowMemory: true
 autoInstall: false
 injectBase: true
-visibility: protected
-shellExcludes:
-  - todos
-  - platform
-publicRoutes:
-  routes:
-    - /health
-    - /api/public
-  exact: false
 cron:
   - schedule: "0 * * * *"
     path: /cron-tick

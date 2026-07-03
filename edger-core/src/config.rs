@@ -1,6 +1,5 @@
 //! Normalized worker configuration and parsers.
 
-use crate::bindings::BindingManifest;
 use crate::execution::ExecutionKind;
 use crate::manifest::WorkerManifest;
 
@@ -21,12 +20,8 @@ pub struct WorkerConfig {
     pub low_memory: bool,
     pub auto_install: bool,
     pub inject_base: bool,
-    pub visibility: String,
-    pub public_routes: Option<crate::manifest::PublicRoutesConfig>,
     pub cron: Vec<crate::manifest::CronJob>,
     pub kind: Option<ExecutionKind>,
-    pub bindings: Vec<BindingManifest>,
-    pub shell_excludes: Vec<String>,
 }
 
 /// Parse duration string or numeric seconds to milliseconds (Buntime `parseDurationToMs`).
@@ -169,14 +164,7 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         low_memory: manifest.low_memory.unwrap_or(false),
         auto_install: manifest.auto_install.unwrap_or(false),
         inject_base: manifest.inject_base.unwrap_or(true),
-        visibility: manifest
-            .visibility
-            .clone()
-            .unwrap_or_else(|| "protected".into()),
-        public_routes: manifest.public_routes.clone(),
         cron: manifest.cron.clone().unwrap_or_default(),
         kind: Some(kind),
-        bindings: manifest.bindings.clone(),
-        shell_excludes: manifest.shell_excludes.clone(),
     }
 }

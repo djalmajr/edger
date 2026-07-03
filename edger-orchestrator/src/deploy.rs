@@ -21,8 +21,6 @@ pub struct InstalledWorker {
     pub version: String,
     pub url: String,
     pub kind: String,
-    pub visibility: String,
-    pub auth_required: bool,
     pub source: String,
 }
 
@@ -82,14 +80,11 @@ pub fn install_worker_from_zip(
         return Err(err);
     }
 
-    let auth_required = worker.config.visibility != "public";
     Ok(InstalledWorker {
         url: format!("/{}", worker.name),
         kind: kind_label(&worker.kind),
         name: worker.name,
         version: worker.version,
-        visibility: worker.config.visibility,
-        auth_required,
         source: target.display().to_string(),
     })
 }

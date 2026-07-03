@@ -1,0 +1,80 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/djalmajr/edger
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  name: ""
+
+service:
+  type: ClusterIP
+  port: 3000
+
+ingress:
+  enabled: false
+  host: ""
+  className: ""
+  path: "/"
+  pathType: Prefix
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: ""
+
+runtime:
+  workerDirs: "/app/workers"
+  jsRuntime: "process"
+
+cron:
+  enabled: true
+
+rootKey:
+  source: generated
+  value: ""
+  existingSecret: ""
+  secretKey: root-key
+  mountPath: /var/run/secrets/edger-root
+  fileName: root-key
+
+oidc:
+  enabled: false
+  issuer: ""
+  audience: ""
+  rolesClaim: ""
+  requiredRole: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+podSecurityContext:
+  fsGroup: 10001
+  runAsGroup: 10001
+  runAsNonRoot: true
+  runAsUser: 10001
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+extraEnv: []
+extraEnvFrom: []
+
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
