@@ -10,7 +10,6 @@ path = "src/bin/edger.rs"
 
 [dependencies]
 edger-core = { path = "../edger-core" }
-edger-ext-auth = { path = "../edger-ext-auth" }
 edger-worker = { path = "../edger-worker" }
 edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "multiproc"] }
 anyhow.workspace = true
@@ -35,7 +34,6 @@ tempfile = "3"
 [dev-dependencies]
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 async-trait.workspace = true
-edger-ext-auth = { path = "../edger-ext-auth" }
 edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "multiproc"] }
 serde_json.workspace = true
 tokio.workspace = true

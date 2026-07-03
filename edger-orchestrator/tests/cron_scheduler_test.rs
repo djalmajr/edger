@@ -12,9 +12,8 @@ use edger_core::{
     CronJob, Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig,
     WorkerManifest, INTERNAL_REQUEST_HEADER,
 };
-use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
 use edger_orchestrator::{
-    build_pipeline, collect_cron_registrations, AuthGate, AuthGateConfig, CronScheduler,
+    build_pipeline, collect_cron_registrations, ControlAuth, ControlAuthConfig, CronScheduler,
     CronSchedulerConfig, ExtensionRegistry, ManifestIndex, OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
@@ -134,6 +133,14 @@ fn public_worker_manifest() -> WorkerManifest {
 }
 
 fn state_with_index(index: ManifestIndex, requests: RecordedRequests) -> OrchestratorState {
+    state_with_auth(index, requests, ControlAuth::with_static_key("root-secret"))
+}
+
+fn state_with_auth(
+    index: ManifestIndex,
+    requests: RecordedRequests,
+    auth: ControlAuth,
+) -> OrchestratorState {
     let server = ServerState::new_unready();
     let pool = WorkerPool::with_factory(
         PoolConfig::default(),
@@ -146,13 +153,7 @@ fn state_with_index(index: ManifestIndex, requests: RecordedRequests) -> Orchest
         pool,
         index,
         registry: ExtensionRegistry::new(),
-        auth: AuthGate::new(
-            AuthGateConfig::default(),
-            Arc::new(AuthExtension::new(
-                Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
-                Some("root-secret".into()),
-            )),
-        ),
+        auth,
     }
 }
 
@@ -282,29 +283,38 @@ fn invalid_schedule_fails_startup_validation_with_typed_error() {
 }
 
 #[tokio::test]
-async fn cron_jobs_require_root_key_for_internal_dispatch() {
+async fn cron_jobs_start_without_root_key_and_dispatch_without_auth_headers() {
     let mut index = ManifestIndex::new();
     index
         .insert(
             PathBuf::from("/workers/cron-worker"),
-            cron_manifest(None, "@every 1s"),
+            cron_manifest(None, "@every 25ms"),
         )
         .unwrap();
     let requests = RecordedRequests::default();
-    let state = state_with_index(index, requests);
+    let state = state_with_auth(
+        index,
+        requests.clone(),
+        ControlAuth::new(ControlAuthConfig::default()),
+    );
     let metrics = state.server.cron_metrics();
 
-    let err = match CronScheduler::start(
+    let scheduler = CronScheduler::start(
         CronSchedulerConfig::new(None),
         collect_cron_registrations(&state.index).unwrap(),
         build_pipeline(state),
-        metrics,
-    ) {
-        Ok(_) => panic!("cron scheduler started without ROOT_API_KEY"),
-        Err(err) => err,
-    };
+        metrics.clone(),
+    )
+    .unwrap();
+    wait_until(|| metrics.executions_total() > 0).await;
+    scheduler.shutdown().await;
 
-    assert_eq!(err.code, "CRON_AUTH_MISSING");
+    assert_eq!(metrics.failures_total(), 0);
+    let request = requests.first().expect("cron worker request");
+    assert!(request
+        .headers
+        .iter()
+        .all(|(name, _)| name != "authorization" && name != INTERNAL_REQUEST_HEADER));
 }
 
 #[tokio::test]

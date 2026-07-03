@@ -3,8 +3,8 @@
 //! Environment:
 //! - `PORT` — listen port (default `3000`)
 //! - `RUNTIME_WORKER_DIRS` — `:` separated worker roots (default `workers`)
-//! - `ROOT_API_KEY` — synthetic root principal (optional; handled by edger-ext-auth)
-//! - `EDGER_AUTH_DB` — SQLite path for API keys (default in-memory if unset)
+//! - `ROOT_API_KEY` — control-plane root key (optional)
+//! - `EDGER_ROOT_KEY_FILE` — file-backed control-plane root key (takes precedence over `ROOT_API_KEY`)
 //! - `EDGER_EXTENSION_STATUS_FILE` — JSON overlay for runtime extension enable/disable status
 //! - `EDGER_CRON_ENABLED` — enable manifest `cron[]` jobs (default true)
 
@@ -12,13 +12,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use edger_core::{ExecutionKind, ExtensionContext};
-use edger_ext_auth::AuthExtension;
 use edger_isolation::{DenoFacade, DenoIsolate, DenoProcessIsolate, WasiConfig, WasmIsolate};
 use edger_orchestrator::{
     build_pipeline, collect_cron_registrations, collect_extensions, init_tracing_from_env,
     load_manifests_from_dirs, parse_runtime_worker_dirs, port_from_env, run_on_init,
-    run_on_server_start, run_on_shutdown, serve, AuthGate, AuthGateConfig, CronScheduler,
-    CronSchedulerConfig, ExtensionRegistry, OrchestratorState, ServerConfig, ServerState,
+    run_on_server_start, run_on_shutdown, serve, ControlAuth, CronScheduler, CronSchedulerConfig,
+    ExtensionRegistry, OrchestratorState, ServerConfig, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 
@@ -64,19 +63,23 @@ async fn main() -> anyhow::Result<()> {
     let worker_dirs = worker_dirs_from_env();
     let index = load_manifests_from_dirs(&worker_dirs)?;
 
-    let auth_ext = AuthExtension::from_env()?.into_arc();
-    let mut registry = collect_extensions(vec![])?;
-    registry.register_auth_provider(auth_ext.clone())?;
+    let registry = collect_extensions(vec![])?;
     load_extension_status_store_from_env(&registry)?;
     run_on_init(&registry, &mut ExtensionContext::default())?;
     run_on_server_start(&registry, &edger_core::ServerHandle::default());
+    let auth = ControlAuth::from_env();
+    if auth.is_open() {
+        tracing::warn!(
+            "control-plane auth is open because neither ROOT_API_KEY nor EDGER_ROOT_KEY_FILE is configured"
+        );
+    }
 
     let state = OrchestratorState {
         server: server.clone(),
         pool,
         index,
         registry,
-        auth: AuthGate::new(AuthGateConfig::default(), auth_ext),
+        auth,
     };
     let app = build_pipeline(state.clone());
     let cron_registrations = if env_flag_default_true("EDGER_CRON_ENABLED") {
@@ -85,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
         Vec::new()
     };
     let cron_scheduler = CronScheduler::start(
-        CronSchedulerConfig::new(root_api_key_from_env()),
+        CronSchedulerConfig::new(state.auth.root_key_for_internal_clients()),
         cron_registrations,
         app.clone(),
         state.server.cron_metrics(),
@@ -122,10 +125,6 @@ fn env_flag_default_true(name: &str) -> bool {
             )
         })
         .unwrap_or(true)
-}
-
-fn root_api_key_from_env() -> Option<String> {
-    non_empty_env("ROOT_API_KEY")
 }
 
 fn non_empty_env(name: &str) -> Option<String> {

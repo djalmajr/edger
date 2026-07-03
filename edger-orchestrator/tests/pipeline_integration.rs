@@ -6,11 +6,9 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use edger_core::WorkerManifest;
-use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
-    build_pipeline, AuthGate, AuthGateConfig, ExtensionRegistry, ManifestIndex, OrchestratorState,
-    ServerState,
+    build_pipeline, ControlAuth, ExtensionRegistry, ManifestIndex, OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -45,13 +43,7 @@ fn orchestrator_with_worker() -> OrchestratorState {
         pool,
         index,
         registry: ExtensionRegistry::new(),
-        auth: AuthGate::new(
-            AuthGateConfig::default(),
-            Arc::new(AuthExtension::new(
-                Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
-                Some("test-root".into()),
-            )),
-        ),
+        auth: ControlAuth::with_static_key("test-root"),
     }
 }
 

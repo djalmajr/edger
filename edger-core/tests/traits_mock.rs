@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::Result;
 use async_trait::async_trait;
 use edger_core::{
-    create_worker_ref, AuthProvider, Extension, ExtensionContext, Isolate, IsolationError,
-    Middleware, RequestContext, SerializedRequest, SerializedResponse, WorkerConfig, WorkerHandler,
+    create_worker_ref, Extension, ExtensionContext, Isolate, IsolationError, Middleware,
+    RequestContext, SerializedRequest, SerializedResponse, WorkerConfig, WorkerHandler,
     WorkerManifest, WorkerRef,
 };
 
@@ -62,34 +62,6 @@ impl Middleware for ShortCircuitMiddleware {
             headers: vec![],
             body: None,
         }))
-    }
-}
-
-struct MockAuth;
-
-impl Extension for MockAuth {
-    fn name(&self) -> &'static str {
-        "mock-auth"
-    }
-
-    fn on_init(&self, _ctx: &mut ExtensionContext) -> Result<()> {
-        Ok(())
-    }
-}
-
-impl AuthProvider for MockAuth {
-    fn authenticate(
-        &self,
-        headers: &[(String, String)],
-    ) -> Result<Option<edger_core::ApiKeyPrincipal>> {
-        if headers
-            .iter()
-            .any(|(k, _): &(String, String)| k.eq_ignore_ascii_case("x-api-key"))
-        {
-            Ok(Some(edger_core::root_principal()))
-        } else {
-            Ok(None)
-        }
     }
 }
 
@@ -191,17 +163,6 @@ fn middleware_short_circuit_returns_some() {
         .unwrap()
         .unwrap();
     assert_eq!(out.status, 418);
-}
-
-#[test]
-fn auth_provider_mock_compiles() {
-    let auth = MockAuth;
-    let principal = auth
-        .authenticate(&[("X-API-Key".into(), "secret".into())])
-        .unwrap()
-        .expect("principal");
-    assert!(principal.is_root);
-    assert!(auth.can_access_namespace(&principal, "@acme"));
 }
 
 #[tokio::test]

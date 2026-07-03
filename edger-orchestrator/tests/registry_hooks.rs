@@ -12,11 +12,10 @@ use edger_core::{
     Extension, ExtensionCapability, ExtensionContext, ExtensionHook, Middleware, RequestContext,
     SerializedRequest, SerializedResponse, WorkerManifest,
 };
-use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
-    build_pipeline, run_on_init, run_on_request, run_on_shutdown, AuthGate, AuthGateConfig,
-    ExtensionRegistry, ManifestIndex, OrchestratorState, ServerState,
+    build_pipeline, run_on_init, run_on_request, run_on_shutdown, ControlAuth, ExtensionRegistry,
+    ManifestIndex, OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -189,13 +188,7 @@ fn base_orchestrator(registry: ExtensionRegistry) -> OrchestratorState {
         pool,
         index,
         registry,
-        auth: AuthGate::new(
-            AuthGateConfig::default(),
-            Arc::new(AuthExtension::new(
-                Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
-                Some("root".into()),
-            )),
-        ),
+        auth: ControlAuth::with_static_key("root"),
     }
 }
 

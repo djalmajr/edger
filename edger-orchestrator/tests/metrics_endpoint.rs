@@ -11,10 +11,8 @@ use bytes::Bytes;
 use edger_core::{
     Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig, WorkerManifest,
 };
-use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
 use edger_orchestrator::{
-    build_pipeline, AuthGate, AuthGateConfig, ExtensionRegistry, ManifestIndex, OrchestratorState,
-    ServerState,
+    build_pipeline, ControlAuth, ExtensionRegistry, ManifestIndex, OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -140,13 +138,8 @@ fn test_state() -> OrchestratorState {
     let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(RequestIdEchoFactory));
     server.mark_ready(pool.clone());
 
-    let auth = Arc::new(AuthExtension::new(
-        Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
-        Some("test-root".into()),
-    ));
-
     OrchestratorState {
-        auth: AuthGate::new(AuthGateConfig::default(), auth),
+        auth: ControlAuth::with_static_key("test-root"),
         index,
         pool,
         registry: ExtensionRegistry::new(),

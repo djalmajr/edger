@@ -7,15 +7,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use edger_core::{
-    principal_has_permission, AdminApiKeysResponse, AdminCatalogItem, AdminCatalogResponse,
-    AdminCreateApiKeyRequest, AdminCreateApiKeyResponse, AdminErrorResponse, AdminExtensionInfo,
-    AdminExtensionReconcileRequest, AdminExtensionsResponse, AdminMutationResponse,
-    AdminRevokeApiKeyResponse, AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse,
-    ApiKeyPrincipal, CoreError,
+    principal_has_permission, root_principal, AdminCatalogItem, AdminCatalogResponse,
+    AdminErrorResponse, AdminExtensionInfo, AdminExtensionReconcileRequest,
+    AdminExtensionsResponse, AdminMutationResponse, AdminSessionResponse, AdminWorkerInfo,
+    AdminWorkersResponse, ApiKeyPrincipal, CoreError,
 };
 use serde::Deserialize;
 use serde_json::json;
-use uuid::Uuid;
 
 use crate::deploy::{install_worker_from_zip, rescan_workers};
 use crate::operational_log::log_operational_error;
@@ -23,6 +21,7 @@ use crate::pipeline::OrchestratorState;
 use crate::security::validate_admin_mutation_security;
 use crate::server::request_id_from_headers;
 use crate::wire::MAX_BODY_BYTES;
+use uuid::Uuid;
 
 pub fn router() -> Router<OrchestratorState> {
     Router::new()
@@ -34,8 +33,6 @@ pub fn router() -> Router<OrchestratorState> {
             "/api/admin/extensions/reconcile",
             post(reconcile_extensions),
         )
-        .route("/api/admin/keys", get(list_keys).post(create_key))
-        .route("/api/admin/keys/{id}/revoke", post(revoke_key))
         .route(
             "/api/admin/workers/install",
             post(install_worker).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
@@ -190,53 +187,6 @@ async fn reconcile_extensions(
             .reconcile_extensions(request_id.clone(), &request)
     }) {
         Ok(response) => Json(response).into_response(),
-        Err(err) => admin_error(map_error_status(&err), &err, &headers),
-    }
-}
-
-async fn list_keys(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
-    match require_root(&state, &headers).and_then(|_| state.auth.list_api_keys()) {
-        Ok(keys) => Json(AdminApiKeysResponse { keys }).into_response(),
-        Err(err) => admin_error(map_error_status(&err), &err, &headers),
-    }
-}
-
-async fn create_key(
-    State(state): State<OrchestratorState>,
-    headers: HeaderMap,
-    Json(mut request): Json<AdminCreateApiKeyRequest>,
-) -> Response {
-    match require_root(&state, &headers).and_then(|principal| {
-        validate_admin_mutation_security("POST", &headers, &principal)?;
-        normalize_create_key_request(&mut request)?;
-        let raw_key = generate_api_key();
-        let key = state.auth.create_api_key(&raw_key, &request)?;
-        Ok((raw_key, key))
-    }) {
-        Ok((raw_key, key)) => (
-            StatusCode::CREATED,
-            Json(AdminCreateApiKeyResponse { key, raw_key }),
-        )
-            .into_response(),
-        Err(err) => admin_error(map_error_status(&err), &err, &headers),
-    }
-}
-
-async fn revoke_key(
-    State(state): State<OrchestratorState>,
-    headers: HeaderMap,
-    Path(id): Path<u64>,
-) -> Response {
-    match require_root(&state, &headers).and_then(|principal| {
-        validate_admin_mutation_security("POST", &headers, &principal)?;
-        state.auth.revoke_api_key(id)
-    }) {
-        Ok(revoked) => Json(AdminRevokeApiKeyResponse {
-            id,
-            revoked,
-            status: if revoked { "revoked" } else { "not_found" }.into(),
-        })
-        .into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
 }
@@ -409,9 +359,13 @@ fn authenticate(
     state: &OrchestratorState,
     headers: &HeaderMap,
 ) -> Result<ApiKeyPrincipal, CoreError> {
+    if state.auth.is_open() {
+        return Ok(root_principal());
+    }
+
     state
         .auth
-        .authenticate_headers(headers)?
+        .authenticate_headers(headers)
         .ok_or_else(|| CoreError::new("UNAUTHORIZED", "missing or invalid API key"))
 }
 
@@ -439,40 +393,6 @@ fn require_permission(principal: &ApiKeyPrincipal, permission: &str) -> Result<(
             format!("permission required: {permission}"),
         ))
     }
-}
-
-fn normalize_create_key_request(request: &mut AdminCreateApiKeyRequest) -> Result<(), CoreError> {
-    request.name = request.name.trim().to_string();
-    request.role = request.role.trim().to_string();
-    request.permissions = trim_non_empty("permissions", &request.permissions)?;
-    request.namespaces = trim_non_empty("namespaces", &request.namespaces)?;
-
-    if request.name.is_empty() {
-        return Err(CoreError::new("BAD_REQUEST", "key name is required"));
-    }
-    if request.role.is_empty() {
-        request.role = "viewer".into();
-    }
-    Ok(())
-}
-
-fn trim_non_empty(field: &str, values: &[String]) -> Result<Vec<String>, CoreError> {
-    let mut normalized = Vec::with_capacity(values.len());
-    for value in values {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return Err(CoreError::new(
-                "BAD_REQUEST",
-                format!("{field} cannot contain empty values"),
-            ));
-        }
-        normalized.push(trimmed.to_string());
-    }
-    Ok(normalized)
-}
-
-fn generate_api_key() -> String {
-    format!("edger_{}", Uuid::new_v4().simple())
 }
 
 fn map_error_status(err: &CoreError) -> StatusCode {

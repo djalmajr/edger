@@ -21,7 +21,7 @@
 
 | Story | Arquivo | Objetivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|---|
-| 17.A Control-plane auth stateless (OIDC + root-key) | `01-control-plane-auth.md` | Validador OIDC genérico (discovery+JWKS+claims) opt-in + root-key via Secret-arquivo (hot-reload); deletar `edger-ext-auth`; só gateia `/api/admin/*` | large | not started | — |
+| 17.A Control-plane auth stateless (OIDC + root-key) | `01-control-plane-auth.md` | Validador OIDC genérico (discovery+JWKS+claims) opt-in + root-key via Secret-arquivo (hot-reload); deletar `edger-ext-auth`; só gateia `/api/admin/*` | large | in progress — base root-key entregue (2026-07-03); OIDC pendente | — |
 | 17.B Data plane aberto | `02-data-plane-aberto.md` | Worker recebe request cru (Authorization intacto); só control plane gateia | small | **completed** | — |
 | 17.C Remover estado + bindings | `03-remover-estado-bindings.md` | Deletados keyval/turso/turso-remote + service bindings + DurableSqlProvider; env/secrets + egress mantidos | medium | **completed** | 17.B |
 | 17.D Remover gateway + shell | `04-remover-gateway.md` | Deletar `edger-ext-gateway` **e** o shell routing (`shell_gateway`); ingress/composição → externo | medium | **completed** | — |
@@ -62,4 +62,4 @@ Ordem = da folha para a raiz: primeiro troca a auth (destrava o problema K8s), d
 
 ## Status
 
-**not started** (2026-07-02) — desenho fechado após sequência de decisões do operador: worker soberano, 100% serverless, auth OIDC opt-in + root-key stateless, sem extensões/estado/gateway dentro do edger. Adição de escala (pool por worker + HPA) fica no Epic 18.
+**in progress** (2026-07-03) — 17.A com base root-key entregue (sem `edger-ext-auth`, sem gestão de API keys, gate só no control plane); OIDC genérico segue pendente. Desenho fechado após sequência de decisões do operador: worker soberano, 100% serverless, auth OIDC opt-in + root-key stateless, sem extensões/estado/gateway dentro do edger. Adição de escala (pool por worker + HPA) fica no Epic 18.

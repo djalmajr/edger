@@ -10,10 +10,9 @@ use edger_core::{
     Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig, WorkerRef,
     MAX_HEADERS, MAX_HEADER_VALUE_BYTES,
 };
-use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
 use edger_orchestrator::{
-    build_pipeline, load_manifests_from_dirs, AuthGate, AuthGateConfig, ExtensionRegistry,
-    OrchestratorState, ServerState, MAX_BODY_BYTES,
+    build_pipeline, load_manifests_from_dirs, ControlAuth, ExtensionRegistry, OrchestratorState,
+    ServerState, MAX_BODY_BYTES,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -121,13 +120,7 @@ kind: fetch
         pool,
         index: load_manifests_from_dirs(&[root_path]).unwrap(),
         registry: ExtensionRegistry::new(),
-        auth: AuthGate::new(
-            AuthGateConfig::default(),
-            Arc::new(AuthExtension::new(
-                Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
-                Some("test-root".into()),
-            )),
-        ),
+        auth: ControlAuth::with_static_key("test-root"),
     })
 }
 

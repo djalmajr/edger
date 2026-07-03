@@ -12,7 +12,7 @@ use serde_json::json;
 use tower_http::trace::TraceLayer;
 
 use crate::admin_api;
-use crate::auth::AuthGate;
+use crate::auth::ControlAuth;
 use crate::context::RequestContext;
 use crate::hooks::{
     run_on_request, run_on_response, run_on_worker_complete, run_on_worker_dispatch,
@@ -35,7 +35,7 @@ pub struct OrchestratorState {
     pub pool: WorkerPool,
     pub index: ManifestIndex,
     pub registry: ExtensionRegistry,
-    pub auth: AuthGate,
+    pub auth: ControlAuth,
 }
 
 /// Build the full axum application (health + readiness + pipeline fallback).
@@ -242,11 +242,7 @@ async fn dispatch_worker(
     // stay trustworthy: validate it against the root key so an external client
     // cannot forge it. This authenticates ONLY to gate the internal header — it
     // never blocks access to the worker.
-    let internal_principal = state
-        .auth
-        .authenticate_headers(req.headers())
-        .ok()
-        .flatten();
+    let internal_principal = state.auth.authenticate_headers(req.headers());
     sanitize_internal_headers(&mut req, internal_principal.as_ref());
     let mut serialized = axum_to_serialized(req, request_id.clone()).await?;
     let (original_path, query) = split_path_query(&serialized.uri);
@@ -441,8 +437,7 @@ mod tests {
     use edger_worker::{IsolateFactory, PoolConfig};
     use tower::ServiceExt;
 
-    use crate::auth::{AuthGate, AuthGateConfig};
-    use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
+    use crate::auth::ControlAuth;
 
     struct StubFactory;
     impl IsolateFactory for StubFactory {
@@ -455,6 +450,10 @@ mod tests {
     }
 
     fn pipeline_with_hello() -> OrchestratorState {
+        pipeline_with_auth(ControlAuth::with_static_key("test-root"))
+    }
+
+    fn pipeline_with_auth(auth: ControlAuth) -> OrchestratorState {
         let mut index = ManifestIndex::new();
         index
             .insert(
@@ -474,13 +473,7 @@ mod tests {
             pool,
             index,
             registry: ExtensionRegistry::new(),
-            auth: AuthGate::new(
-                AuthGateConfig::default(),
-                Arc::new(AuthExtension::new(
-                    Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
-                    Some("test-root".into()),
-                )),
-            ),
+            auth,
         }
     }
 
@@ -546,5 +539,67 @@ mod tests {
             .unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(text.contains("fetch:GET /?name=Alice"));
+    }
+
+    #[tokio::test]
+    async fn admin_session_is_open_when_no_root_key_source_exists() {
+        let app = build_pipeline(pipeline_with_auth(ControlAuth::new(Default::default())));
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/admin/session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["principal"]["isRoot"], true);
+    }
+
+    #[tokio::test]
+    async fn admin_workers_requires_configured_root_key() {
+        let app = build_pipeline(pipeline_with_hello());
+        let missing = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/admin/workers")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+        let wrong = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/admin/workers")
+                    .header("x-api-key", "wrong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+
+        let ok = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/admin/workers")
+                    .header("x-api-key", "test-root")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
     }
 }

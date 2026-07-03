@@ -7,54 +7,6 @@ use crate::{ApiKeyPrincipal, ExecutionKind};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct AdminApiKeyInfo {
-    pub created_at: u64,
-    pub expires_at: Option<u64>,
-    pub id: u64,
-    pub is_root: bool,
-    pub key_prefix: String,
-    pub name: String,
-    pub namespaces: Vec<String>,
-    pub permissions: Vec<String>,
-    pub role: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AdminApiKeysResponse {
-    pub keys: Vec<AdminApiKeyInfo>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AdminCreateApiKeyRequest {
-    pub name: String,
-    #[serde(default)]
-    pub role: String,
-    #[serde(default)]
-    pub permissions: Vec<String>,
-    #[serde(default)]
-    pub namespaces: Vec<String>,
-    pub expires_at: Option<u64>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AdminCreateApiKeyResponse {
-    pub key: AdminApiKeyInfo,
-    pub raw_key: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AdminRevokeApiKeyResponse {
-    pub id: u64,
-    pub revoked: bool,
-    pub status: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct AdminErrorResponse {
     pub code: String,
     pub message: String,

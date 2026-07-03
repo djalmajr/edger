@@ -8,11 +8,10 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use edger_core::ExecutionKind;
-use edger_ext_auth::{AuthExtension, SqliteApiKeyStore};
 use edger_isolation::{DenoFacade, DenoIsolate, WasmIsolate};
 use edger_orchestrator::{
-    build_pipeline, load_manifests_from_dirs, AuthGate, AuthGateConfig, ExtensionRegistry,
-    OrchestratorState, ServerState,
+    build_pipeline, load_manifests_from_dirs, ControlAuth, ExtensionRegistry, OrchestratorState,
+    ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -40,13 +39,7 @@ fn state_with_root(root: std::path::PathBuf) -> OrchestratorState {
         pool,
         index: load_manifests_from_dirs(&[root]).unwrap(),
         registry: ExtensionRegistry::new(),
-        auth: AuthGate::new(
-            AuthGateConfig::default(),
-            Arc::new(AuthExtension::new(
-                Arc::new(SqliteApiKeyStore::in_memory().unwrap()),
-                Some("test-root".into()),
-            )),
-        ),
+        auth: ControlAuth::with_static_key("test-root"),
     }
 }
 
@@ -194,10 +187,10 @@ async fn install_rejects_package_without_manifest() {
     assert_eq!(json["code"], "DEPLOY_INVALID_PACKAGE");
 }
 
-// Mutation captured: removing the `workers:install` permission gate lets the
-// viewer key deploy and the 403 assertion goes red.
+// Mutation captured: treating any presented key as root makes the invalid key
+// deploy and the 401 assertion goes red.
 #[tokio::test]
-async fn install_requires_auth_and_permission() {
+async fn install_requires_root_key() {
     let root = tempfile::tempdir().unwrap();
     let app = build_pipeline(state_with_root(root.path().to_path_buf()));
 
@@ -212,30 +205,28 @@ async fn install_requires_auth_and_permission() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    let (status, created, text) = send(
+    let (status, json, _text) = send(
         app.clone(),
         "POST",
-        "/api/admin/keys",
-        Some("test-root"),
-        "application/json",
-        br#"{"name":"viewer","role":"viewer","permissions":["workers:read"],"namespaces":["*"]}"#
-            .to_vec(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
-    let viewer_key = created["rawKey"].as_str().unwrap().to_string();
-
-    let (status, json, _text) = send(
-        app,
-        "POST",
         "/api/admin/workers/install",
-        Some(&viewer_key),
+        Some("not-root"),
         "application/zip",
         app_zip("1.0.0", "x"),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(json["code"], "FORBIDDEN");
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(json["code"], "UNAUTHORIZED");
+
+    let (status, _json, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        app_zip("1.0.0", "x"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
 }
 
 // Mutation captured: dropping the index COLLISION check (or the rollback of

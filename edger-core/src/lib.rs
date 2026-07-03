@@ -4,7 +4,6 @@
 //! Higher crates (`edger-worker`, `edger-isolation`, `edger-orchestrator`) depend on this.
 
 pub mod admin;
-pub mod api_key_store;
 pub mod auth;
 pub mod config;
 pub mod context;
@@ -19,17 +18,15 @@ pub mod wire;
 pub mod worker_ref;
 
 pub use admin::{
-    AdminApiKeyInfo, AdminApiKeysResponse, AdminCatalogItem, AdminCatalogResponse,
-    AdminCreateApiKeyRequest, AdminCreateApiKeyResponse, AdminErrorResponse, AdminExtensionInfo,
+    AdminCatalogItem, AdminCatalogResponse, AdminErrorResponse, AdminExtensionInfo,
     AdminExtensionManifest, AdminExtensionManifestConfig, AdminExtensionManifestMenu,
     AdminExtensionReconcileAction, AdminExtensionReconcileActionKind,
     AdminExtensionReconcileClassification, AdminExtensionReconcileDiagnostics,
     AdminExtensionReconcileRequest, AdminExtensionReconcileResponse,
     AdminExtensionReconcileSummary, AdminExtensionsResponse, AdminMutationResponse,
-    AdminRevokeApiKeyResponse, AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse,
+    AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse,
 };
-pub use api_key_store::ApiKeyStore;
-pub use auth::{extract_api_key_from_pairs, AuthProvider, HeaderPairs};
+pub use auth::{extract_api_key_from_pairs, HeaderPairs};
 pub use config::{
     infer_execution_kind, parse_duration_string_to_ms, parse_duration_to_ms, parse_size_to_bytes,
     parse_worker_config, WorkerConfig,

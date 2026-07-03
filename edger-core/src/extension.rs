@@ -11,8 +11,6 @@ use crate::worker_ref::WorkerRef;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ExtensionCapability {
-    ApiKeys,
-    AuthProvider,
     HostRouting,
     LifecycleHook { hook: ExtensionHook },
     MenuContribution { name: String },
@@ -23,14 +21,8 @@ pub enum ExtensionCapability {
 }
 
 impl ExtensionCapability {
-    pub fn auth_provider() -> Self {
-        Self::AuthProvider
-    }
-
     pub fn label(&self) -> String {
         match self {
-            Self::ApiKeys => "apiKeys".into(),
-            Self::AuthProvider => "authProvider".into(),
             Self::HostRouting => "hostRouting".into(),
             Self::LifecycleHook { hook } => hook.label().into(),
             Self::MenuContribution { name } => format!("menu:{name}"),

@@ -11,8 +11,8 @@ use edger_core::{
     AdminExtensionManifestMenu, AdminExtensionReconcileAction, AdminExtensionReconcileActionKind,
     AdminExtensionReconcileClassification, AdminExtensionReconcileDiagnostics,
     AdminExtensionReconcileRequest, AdminExtensionReconcileResponse,
-    AdminExtensionReconcileSummary, AuthProvider, CoreError, ExtensionCapability,
-    ExtensionDependency, Middleware,
+    AdminExtensionReconcileSummary, CoreError, ExtensionCapability, ExtensionDependency,
+    Middleware,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -21,7 +21,6 @@ use serde_json::{Map, Value};
 #[derive(Clone, Default)]
 pub struct ExtensionRegistry {
     middlewares: Arc<Vec<Arc<dyn Middleware>>>,
-    auth_provider: Arc<Option<Arc<dyn AuthProvider>>>,
     extension_status: Arc<RwLock<BTreeMap<String, bool>>>,
     extension_status_store: Arc<RwLock<Option<PathBuf>>>,
 }
@@ -107,33 +106,6 @@ impl ExtensionRegistry {
             .collect()
     }
 
-    pub fn register_auth_provider(
-        &mut self,
-        provider: Arc<dyn AuthProvider>,
-    ) -> Result<(), CoreError> {
-        let expected = ExtensionCapability::auth_provider();
-        self.ensure_capability_declared(provider.name(), &expected, provider.capabilities())?;
-        self.ensure_dependencies(provider.name(), provider.dependencies())?;
-        let name = provider.name();
-        {
-            let slot = Arc::make_mut(&mut self.auth_provider);
-            if slot.is_some() {
-                return Err(CoreError::new(
-                    "COLLISION",
-                    "auth provider already registered".to_string(),
-                ));
-            }
-            *slot = Some(provider);
-        }
-        self.ensure_status(name);
-        Ok(())
-    }
-
-    pub fn auth_provider(&self) -> Option<Arc<dyn AuthProvider>> {
-        self.registered_auth_provider()
-            .filter(|provider| self.is_extension_enabled(provider.name()))
-    }
-
     pub fn is_extension_enabled(&self, name: &str) -> bool {
         self.extension_status
             .read()
@@ -207,21 +179,6 @@ impl ExtensionRegistry {
                 },
             );
         }
-        if let Some(provider) = self.registered_auth_provider() {
-            upsert_admin_extension(
-                &mut by_name,
-                AdminExtensionRegistration {
-                    capabilities: provider.capabilities(),
-                    dependencies: provider.dependencies(),
-                    diagnostics: provider.diagnostics(),
-                    kind: "authProvider",
-                    name: provider.name(),
-                    priority: provider.priority(),
-                    status: status_label(self.is_extension_enabled(provider.name())),
-                },
-            );
-        }
-
         let mut extensions = by_name.into_values().collect::<Vec<_>>();
 
         extensions.sort_by(|a, b| {
@@ -402,33 +359,7 @@ impl ExtensionRegistry {
         for middleware in self.middlewares() {
             names.insert(middleware.name().to_string());
         }
-        if let Some(provider) = self.registered_auth_provider() {
-            names.insert(provider.name().to_string());
-        }
         names.into_iter().collect()
-    }
-
-    fn registered_auth_provider(&self) -> Option<Arc<dyn AuthProvider>> {
-        (*self.auth_provider).clone()
-    }
-
-    fn ensure_capability_declared(
-        &self,
-        extension_name: &str,
-        expected: &ExtensionCapability,
-        capabilities: Vec<ExtensionCapability>,
-    ) -> Result<(), CoreError> {
-        if capabilities.iter().any(|capability| capability == expected) {
-            Ok(())
-        } else {
-            Err(CoreError::new(
-                "INVALID_EXTENSION",
-                format!(
-                    "extension {extension_name} does not declare capability {}",
-                    expected.label()
-                ),
-            ))
-        }
     }
 
     fn ensure_dependencies(
@@ -452,11 +383,6 @@ impl ExtensionRegistry {
 
     fn has_capability(&self, expected: &ExtensionCapability) -> bool {
         self.active_middlewares().iter().any(|extension| {
-            extension
-                .capabilities()
-                .iter()
-                .any(|capability| capability == expected)
-        }) || self.auth_provider().is_some_and(|extension| {
             extension
                 .capabilities()
                 .iter()
@@ -611,9 +537,7 @@ fn admin_extension_manifest(
             ExtensionCapability::ResponseHook => {
                 push_unique_string(&mut manifest.hooks, capability.label());
             }
-            ExtensionCapability::ApiKeys
-            | ExtensionCapability::AuthProvider
-            | ExtensionCapability::HostRouting
+            ExtensionCapability::HostRouting
             | ExtensionCapability::Middleware
             | ExtensionCapability::WorkerHandler => {
                 push_unique_string(&mut manifest.provides, capability.label());

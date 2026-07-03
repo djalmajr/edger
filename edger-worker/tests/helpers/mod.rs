@@ -2,6 +2,8 @@
 //!
 //! Maps Buntime-style manifest fixtures to `edger-core` config for pool fetch.
 
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use edger_core::{
@@ -12,18 +14,10 @@ use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tempfile::TempDir;
 
 /// Factory producing configurable `MockIsolate` instances (dev-dep only).
+#[derive(Default)]
 pub struct MockIsolateFactory {
     pub slow_fetch_ms: u64,
     pub spa_html: Option<String>,
-}
-
-impl Default for MockIsolateFactory {
-    fn default() -> Self {
-        Self {
-            slow_fetch_ms: 0,
-            spa_html: None,
-        }
-    }
 }
 
 impl IsolateFactory for MockIsolateFactory {

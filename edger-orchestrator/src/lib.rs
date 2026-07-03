@@ -20,7 +20,7 @@ pub mod wire;
 pub mod worker_errors;
 
 pub use admin_api::router as admin_router;
-pub use auth::{extract_api_key, is_public_route, AuthGate, AuthGateConfig};
+pub use auth::{extract_api_key, is_public_route, ControlAuth, ControlAuthConfig};
 pub use context::RequestContext;
 pub use cron::{collect_cron_registrations, CronMetrics, CronScheduler, CronSchedulerConfig};
 pub use deploy::{install_worker_from_zip, rescan_workers, InstalledWorker, RescanReport};
