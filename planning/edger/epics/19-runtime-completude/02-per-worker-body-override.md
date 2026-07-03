@@ -20,17 +20,17 @@
 ## Detail
 
 ### Critérios de aceite
-- [ ] Worker sem override mantém o limite global atual.
-- [ ] Worker com `max_body_bytes` menor rejeita body acima do próprio limite.
-- [ ] Worker com `max_body_bytes` maior aceita body que excederia o limite default, respeitando o teto configurado.
-- [ ] A validação usa o limite efetivo no caminho de execução, não apenas no parse da config.
+- [x] Worker sem override mantém o limite global atual.
+- [x] Worker com `max_body_bytes` menor rejeita body acima do próprio limite.
+- [x] Worker com `max_body_bytes` maior aceita body que excederia o limite default, respeitando o teto configurado.
+- [x] A validação usa o limite efetivo no caminho de execução, não apenas no parse da config.
 
 ## Tasks
 
-- [ ] Mapear onde `max_body_bytes` é normalizado.
-- [ ] Propagar o limite efetivo pelo wire até o pool.
-- [ ] Substituir uso direto do limite global no execute path.
-- [ ] Adicionar testes para limite default e limite por worker.
+- [x] Mapear onde `max_body_bytes` é normalizado.
+- [x] Propagar o limite efetivo pelo wire até o pool.
+- [x] Substituir uso direto do limite global no execute path.
+- [x] Adicionar testes para limite default e limite por worker.
 
 ## Verification
 
@@ -44,4 +44,4 @@ cargo fmt -- --check
 
 ## Status
 
-**pending**
+**completed**

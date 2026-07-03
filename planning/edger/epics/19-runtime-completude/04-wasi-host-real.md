@@ -19,17 +19,17 @@
 ## Detail
 
 ### Critérios de aceite
-- [ ] Módulo wasm recebe método, URL, headers e body necessários para responder.
-- [ ] Response do módulo volta com status, headers e body.
-- [ ] Erros de ABI são tipados e não derrubam o processo do host.
-- [ ] Há teste ponta-a-ponta provando request real entrando e response real saindo.
+- [x] Módulo wasm recebe método, URL, headers e body necessários para responder.
+- [x] Response do módulo volta com status, headers e body.
+- [x] Erros de ABI são tipados e não derrubam o processo do host.
+- [x] Há teste ponta-a-ponta provando request real entrando e response real saindo.
 
 ## Tasks
 
-- [ ] Mapear a ABI estática atual.
-- [ ] Definir a menor ABI request/response necessária.
-- [ ] Ligar a request do runtime ao módulo wasm.
-- [ ] Adicionar teste com módulo wasm simples.
+- [x] Mapear a ABI estática atual.
+- [x] Definir a menor ABI request/response necessária.
+- [x] Ligar a request do runtime ao módulo wasm.
+- [x] Adicionar teste com módulo wasm simples.
 
 ## Verification
 
@@ -42,4 +42,4 @@ cargo fmt -- --check
 
 ## Status
 
-**pending**
+**completed**
