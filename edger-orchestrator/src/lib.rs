@@ -9,6 +9,7 @@ pub mod hooks;
 pub mod manifest_index_stub;
 pub mod manifest_loader;
 pub mod metrics;
+pub mod oidc;
 pub mod operational_log;
 pub mod pipeline;
 pub mod registry;
@@ -31,6 +32,7 @@ pub use hooks::{
 pub use manifest_index_stub::{ManifestEntry, ManifestIndex};
 pub use manifest_loader::{load_manifests_from_dirs, parse_runtime_worker_dirs};
 pub use metrics::pool_metrics_prometheus;
+pub use oidc::{JwksSource, OidcConfig, OidcDiscovery, OidcError, OidcValidator};
 pub use pipeline::{build_pipeline, OrchestratorState};
 pub use registry::{collect_extensions, ExtensionRegistry};
 pub use router::{

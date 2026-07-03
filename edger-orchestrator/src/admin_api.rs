@@ -56,14 +56,14 @@ pub fn router() -> Router<OrchestratorState> {
 }
 
 async fn session(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
-    match authenticate(&state, &headers) {
+    match authenticate(&state, &headers).await {
         Ok(principal) => Json(AdminSessionResponse { principal }).into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
 }
 
 async fn catalog(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
-    match require_root(&state, &headers) {
+    match require_root(&state, &headers).await {
         Ok(_) => Json(AdminCatalogResponse {
             items: build_catalog(
                 state.index.admin_workers(),
@@ -76,7 +76,7 @@ async fn catalog(State(state): State<OrchestratorState>, headers: HeaderMap) -> 
 }
 
 async fn list_workers(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
-    match authenticate(&state, &headers).and_then(|principal| {
+    match authenticate(&state, &headers).await.and_then(|principal| {
         require_permission(&principal, "workers:read")?;
         Ok(principal)
     }) {
@@ -164,7 +164,7 @@ fn catalog_slug(value: &str) -> String {
 }
 
 async fn list_extensions(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
-    match require_root(&state, &headers) {
+    match require_root(&state, &headers).await {
         Ok(_) => Json(AdminExtensionsResponse {
             extensions: state.registry.admin_extensions(),
         })
@@ -180,7 +180,7 @@ async fn reconcile_extensions(
 ) -> Response {
     let request_id =
         request_id_from_headers(&headers).unwrap_or_else(|| Uuid::new_v4().to_string());
-    match require_root(&state, &headers).and_then(|principal| {
+    match require_root(&state, &headers).await.and_then(|principal| {
         validate_admin_mutation_security("POST", &headers, &principal)?;
         state
             .registry
@@ -196,7 +196,7 @@ async fn install_worker(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    match authenticate(&state, &headers).and_then(|principal| {
+    match authenticate(&state, &headers).await.and_then(|principal| {
         require_permission(&principal, "workers:install")?;
         validate_admin_mutation_security("POST", &headers, &principal)?;
         install_worker_from_zip(&state.index, &principal, &body)
@@ -221,7 +221,7 @@ async fn rescan_workers_route(
         .ok()
         .and_then(|request| request.dry_run)
         .unwrap_or(true);
-    match authenticate(&state, &headers).and_then(|principal| {
+    match authenticate(&state, &headers).await.and_then(|principal| {
         require_permission(&principal, "workers:install")?;
         validate_admin_mutation_security("POST", &headers, &principal)?;
         rescan_workers(&state.index, dry_run)
@@ -247,7 +247,7 @@ async fn worker_error_summary(
     State(state): State<OrchestratorState>,
     headers: HeaderMap,
 ) -> Response {
-    match authenticate(&state, &headers).and_then(|principal| {
+    match authenticate(&state, &headers).await.and_then(|principal| {
         require_permission(&principal, "workers:read")?;
         Ok(principal)
     }) {
@@ -262,7 +262,7 @@ async fn worker_errors(
     Path(name): Path<String>,
     Query(query): Query<WorkerErrorsQuery>,
 ) -> Response {
-    match authenticate(&state, &headers).and_then(|principal| {
+    match authenticate(&state, &headers).await.and_then(|principal| {
         require_permission(&principal, "workers:read")?;
         Ok(principal)
     }) {
@@ -281,7 +281,7 @@ async fn enable_worker(
     Path(name): Path<String>,
     Query(query): Query<WorkerVersionQuery>,
 ) -> Response {
-    worker_mutation(state, headers, name, query.version, true)
+    worker_mutation(state, headers, name, query.version, true).await
 }
 
 async fn disable_worker(
@@ -290,7 +290,7 @@ async fn disable_worker(
     Path(name): Path<String>,
     Query(query): Query<WorkerVersionQuery>,
 ) -> Response {
-    worker_mutation(state, headers, name, query.version, false)
+    worker_mutation(state, headers, name, query.version, false).await
 }
 
 async fn enable_extension(
@@ -298,7 +298,7 @@ async fn enable_extension(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Response {
-    extension_mutation(state, headers, name, true)
+    extension_mutation(state, headers, name, true).await
 }
 
 async fn disable_extension(
@@ -306,17 +306,17 @@ async fn disable_extension(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Response {
-    extension_mutation(state, headers, name, false)
+    extension_mutation(state, headers, name, false).await
 }
 
-fn worker_mutation(
+async fn worker_mutation(
     state: OrchestratorState,
     headers: HeaderMap,
     name: String,
     version: Option<String>,
     enabled: bool,
 ) -> Response {
-    match require_root(&state, &headers).and_then(|principal| {
+    match require_root(&state, &headers).await.and_then(|principal| {
         validate_admin_mutation_security("POST", &headers, &principal)?;
         state
             .index
@@ -335,13 +335,13 @@ fn worker_mutation(
     }
 }
 
-fn extension_mutation(
+async fn extension_mutation(
     state: OrchestratorState,
     headers: HeaderMap,
     name: String,
     enabled: bool,
 ) -> Response {
-    match require_root(&state, &headers).and_then(|principal| {
+    match require_root(&state, &headers).await.and_then(|principal| {
         validate_admin_mutation_security("POST", &headers, &principal)?;
         state.registry.set_extension_enabled(&name, enabled)
     }) {
@@ -355,7 +355,7 @@ fn extension_mutation(
     }
 }
 
-fn authenticate(
+async fn authenticate(
     state: &OrchestratorState,
     headers: &HeaderMap,
 ) -> Result<ApiKeyPrincipal, CoreError> {
@@ -366,14 +366,15 @@ fn authenticate(
     state
         .auth
         .authenticate_headers(headers)
+        .await
         .ok_or_else(|| CoreError::new("UNAUTHORIZED", "missing or invalid API key"))
 }
 
-fn require_root(
+async fn require_root(
     state: &OrchestratorState,
     headers: &HeaderMap,
 ) -> Result<ApiKeyPrincipal, CoreError> {
-    let principal = authenticate(state, headers)?;
+    let principal = authenticate(state, headers).await?;
     if principal.is_root {
         Ok(principal)
     } else {

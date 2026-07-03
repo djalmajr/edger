@@ -13,6 +13,7 @@ edger-core = { path = "../edger-core" }
 edger-worker = { path = "../edger-worker" }
 edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "multiproc"] }
 anyhow.workspace = true
+async-trait.workspace = true
 bytes.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -26,15 +27,19 @@ futures-util = { version = "0.3", default-features = false }
 tower-http.workspace = true
 http.workspace = true
 hyper.workspace = true
+jsonwebtoken = "9"
 uuid.workspace = true
 semver.workspace = true
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tempfile = "3"
 
 [dev-dependencies]
+base64 = "0.22"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
-async-trait.workspace = true
 edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "multiproc"] }
+rand = "0.8"
+rsa = { version = "0.9", features = ["pem"] }
 serde_json.workspace = true
 tokio.workspace = true
 tower.workspace = true
