@@ -1,5 +1,9 @@
 # Epic 09: Providers Duráveis Externos
 
+> OBSOLETO desde o Epic 17.C: providers de estado, `DurableSqlProvider` e
+> service bindings foram removidos do runtime. Este epic fica como registro
+> histórico da arquitetura pré-Epic 17, não como backlog atual.
+
 **Origin:** `planning/edger/roadmap.md`, `planning/edger/docs/value-parity-matrix.md`, `planning/edger/epics/08-valor-buntime/00-overview.md`
 
 ## Context
@@ -47,7 +51,7 @@ O Epic 08 provou contratos locais de estado para SQL/KV/queue, mas registrava "T
 |---|---|---|---|---|---|
 | 09.01 Contrato de provider remoto | `01-contrato-provider-sql-remoto.md` | Definir requisitos observáveis para providers SQL remotos sem alterar o contrato core | medium | completed | Epic 08.04 |
 | 09.02 Provider local SQLite | `02-provider-local-sqlite.md` | Clarificar naming, docs e compatibilidade do provider local atual | medium | completed | 09.01 |
-| 09.03 Provider Turso remoto/sync | `03-provider-turso-remoto-sync.md` | Criar implementação remota/sync substituível para `DurableSqlProvider` | large | in progress | 09.01 |
+| 09.03 Provider Turso remoto/sync | `03-provider-turso-remoto-sync.md` | Criar implementação remota/sync substituível para `DurableSqlProvider` | large | obsolete/cancelled (2026-07-03) | 09.01 |
 | 09.04 Wiring por configuração | `04-wiring-provider-configuravel.md` | Selecionar provider durável no composition root sem acoplar o orchestrator | medium | completed | 09.02, 09.03 |
 | 09.05 Provas com consumidores reais | `05-provas-consumidores-duraveis.md` | Provar workers, KV/queue e gateway history usando provider durável externo | large | completed | 09.04 |
 
@@ -100,4 +104,4 @@ flowchart LR
 
 ## Status
 
-in progress (2026-06-29) - criado para materializar a decisão arquitetural de manter Turso remoto/sync fora do escopo interno obrigatório do edger e tratá-lo como provider externo planejado sobre `DurableSqlProvider`. 09.01 concluiu o contrato operacional inicial em `planning/edger/docs/durable-provider-contract.md`; 09.02 concluiu o nome canônico `LocalSqliteProvider` preservando `LocalTursoProvider` como alias legado. 09.03 criou `edger-ext-turso-remote` sobre `libsql`, com testes always-on para contrato/isolamento/redaction e smoke remoto opt-in por env. 09.04 concluiu o wiring por `EDGER_DURABLE_SQL_PROVIDER` no composition root. 09.05 concluiu provas de consumidores reais com worker, KV/queue e gateway history usando o provider externo em testes always-on; a evidência contra Turso remoto real continua opt-in na 09.03.
+obsolete/cancelled (2026-07-03) - Epic 17.C removeu `DurableSqlProvider`, providers de estado e bindings do runtime. A história 09.03 e o restante do Epic 09 ficam como registro histórico da fase pré-Epic 17, não como backlog atual do edger.

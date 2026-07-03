@@ -30,10 +30,10 @@
 
 | Story | Arquivo | Objetivo | Tamanho | Status | Depende de |
 |---|---|---|---|---|---|
-| 18.A Pool N-processos por worker | `01-pool-processos-worker.md` | Manifesto/config para `concurrency`, `minProcesses`, `maxProcesses`; fan-out de `WorkerInstance` por worker; roteamento least-busy/round-robin e spawn sob demanda | large | pending | — |
+| 18.A Pool N-processos por worker | `01-pool-processos-worker.md` | Manifesto/config para `concurrency`, `minProcesses`, `maxProcesses`; fan-out de `WorkerInstance` por worker; roteamento least-busy/round-robin e spawn sob demanda | large | completed (2026-07-03) | — |
 | 18.B Fila e backpressure por worker | `02-fila-backpressure-worker.md` | Fila limitada por worker persistente, timeout de espera, respostas 429/503 tipadas e proteção contra streams longos monopolizando o worker | medium | completed (2026-07-03) | 18.A |
-| 18.C Limites e ciclo de vida por processo | `03-limites-ciclo-vida-processo.md` | Aplicar `ResourceLimits`, TTL/idle/maxRequests, recycle e drain gracioso por processo do pool | medium | pending | 18.A, 18.B |
-| 18.D Observabilidade do pool + cPanel | `04-observabilidade-pool-cpanel.md` | Métricas Prometheus/JSON por worker: processos ativos/ociosos, fila, espera, rejeições; visibilidade na aba Workers do cPanel como should | medium | pending | 18.A, 18.B |
+| 18.C Limites e ciclo de vida por processo | `03-limites-ciclo-vida-processo.md` | Aplicar `ResourceLimits`, TTL/idle/maxRequests, recycle e drain gracioso por processo do pool | medium | completed (2026-07-03) | 18.A, 18.B |
+| 18.D Observabilidade do pool + cPanel | `04-observabilidade-pool-cpanel.md` | Métricas Prometheus/JSON por worker: processos ativos/ociosos, fila, espera, rejeições; visibilidade na aba Workers do cPanel como should | medium | completed (2026-07-03) | 18.A, 18.B |
 | 18.E Prova de escala + docs L1/L2 | `05-prova-escala-docs-hpa.md` | Harness comparando 1 vs N processos sob concorrência; docs de escala L1 pool + L2 HPA; limite explícito L3 não construir | medium | completed (2026-07-03) | 18.A–18.D |
 
 ## Roadmap
@@ -53,15 +53,15 @@ Ordem = primeiro abrir a unidade de concorrência (processos por worker), depois
 
 ## Epic acceptance criteria
 
-- [ ] `WorkerManifest`/`WorkerConfig` aceitam configuração de concorrência/pool por worker com defaults seguros: `concurrency`, `minProcesses`, `maxProcesses`, fila e timeout de espera.
-- [ ] Worker persistente com `maxProcesses: N` processa até N requests concorrentes na mesma réplica, mantendo isolamento por processo Deno e sem reintroduzir bridge v1.
-- [ ] Todos os processos do pool respeitam `ttl`, `idleTimeout`, `timeout`, `maxRequests`, `lowMemory` e reciclagem por erro/OOM.
-- [ ] Quando todos os processos estão ocupados, requests entram em fila limitada por worker ou recebem resposta tipada 429/503; streams longos não causam head-of-line blocking além da capacidade configurada.
-- [ ] `/metrics` e `/metrics/stats` expõem processos ativos/ociosos, ocupação, fila, latência de espera e rejeições por worker sem labels secret-like.
-- [ ] cPanel mostra, no mínimo como should, a visão operacional do pool por worker sem bloquear o runtime headless.
+- [x] `WorkerManifest`/`WorkerConfig` aceitam configuração de concorrência/pool por worker com defaults seguros: `concurrency`, `minProcesses`, `maxProcesses`, fila e timeout de espera.
+- [x] Worker persistente com `maxProcesses: N` processa até N requests concorrentes na mesma réplica, mantendo isolamento por processo Deno e sem reintroduzir bridge v1.
+- [x] Todos os processos do pool respeitam `ttl`, `idleTimeout`, `timeout`, `maxRequests`, `lowMemory` e reciclagem por erro/OOM.
+- [x] Quando todos os processos estão ocupados, requests entram em fila limitada por worker ou recebem resposta tipada 429/503; streams longos não causam head-of-line blocking além da capacidade configurada.
+- [x] `/metrics` e `/metrics/stats` expõem processos ativos/ociosos, ocupação, fila, latência de espera e rejeições por worker sem labels secret-like.
+- [x] cPanel mostra, no mínimo como should, a visão operacional do pool por worker sem bloquear o runtime headless.
 - [x] `edger-orchestrator/tests/perf_harness.rs` cobre comparação 1 vs N sob concorrência e demonstra melhora verificável em p50/p95/throughput ou queda de wait time.
 - [x] Docs explicam Level 1 (pool interno), Level 2 (HPA via `charts/edger`) e declaram Level 3 Knative/FaaS fora de escopo.
-- [ ] Gates esperados: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`; harness de perf ignorado executável explicitamente; validação live com `cargo run -p edger-orchestrator --bin edger` + `curl` para workers concorrentes e `/metrics`.
+- [x] Gates esperados: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`; harness de perf ignorado executável explicitamente; validação live com `cargo run -p edger-orchestrator --bin edger` + `curl` para workers concorrentes e `/metrics`.
 
 ## Risks
 
@@ -76,4 +76,4 @@ Ordem = primeiro abrir a unidade de concorrência (processos por worker), depois
 
 ## Status
 
-**pending** (2026-07-03) — épico planejado a partir do AS-IS real do runtime durável: processo Deno persistente por worker já existe, mas o worker persistente ainda serializa requests por instância/processo. Nenhuma implementação iniciada.
+**completed** (2026-07-03) — Epic 18.A–18.E foi implementado e mergeado: pool de N processos por worker, fila/backpressure 429/503, lifecycle por processo com shutdown gracioso, métricas Prometheus/JSON + cPanel, harness 1-vs-N e docs L1/L2 de escala.

@@ -1,12 +1,16 @@
 # Story 09.03: Provider Turso remoto/sync
 
+> OBSOLETO desde o Epic 17.C: providers de estado, `DurableSqlProvider` e
+> service bindings foram removidos do runtime. Esta story não deve ser retomada
+> no backlog atual.
+
 **Origin:** `planning/edger/epics/09-providers-duraveis-externos/00-overview.md`
 
 ## Context
 
 Turso remoto/sync é útil para estado compartilhado entre processos/pods, mas deve ser uma implementação substituível do contrato de SQL durável. Esta história entrega o provider remoto/sync sem acoplar workers ou orchestrator ao transporte.
 
-**Status:** in progress (2026-06-29) - crate `edger-ext-turso-remote` criado e testado contra libSQL local configurado, com modos `remote` e `sync` implementados sobre `libsql`. Evidência contra Turso remoto real, credencial inválida e timeout permanece opt-in por env porque não há alvo remoto configurado nesta sessão.
+**Status:** obsolete/cancelled (2026-07-03) - Epic 17.C removeu `DurableSqlProvider`, providers de estado e bindings do runtime. Esta história permanece como registro histórico da fase pré-Epic 17 e não deve ser retomada no backlog atual do edger.
 
 ## Traceability
 

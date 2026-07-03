@@ -89,4 +89,4 @@ curl -s -H "authorization: Bearer test-root" http://127.0.0.1:19080/metrics/stat
 
 ## Status
 
-**pending** (2026-07-03) — story planejada; nenhuma implementação iniciada.
+**completed** (2026-07-03) — observabilidade do pool mergeada: métricas Prometheus/JSON por worker/processo/fila/rejeições e cPanel exibindo capacidade, fila, espera, rejeições e processos por worker.

@@ -1,6 +1,6 @@
 # Deployment: API Gateway externo na frente do edger
 
-**Status:** stub — preenchido pela Story 17.D (`epics/17-edger-minimalista/04-remover-gateway.md`).
+**Status:** padrão atual desde a Story 17.D (`epics/17-edger-minimalista/04-remover-gateway.md`).
 
 Padrão-alvo: um API Gateway externo (Kong/APISIX/Envoy/cloud LB) assume a borda —
 auth OIDC, rate limit, cache, redirects, host routing — e encaminha ao edger, que

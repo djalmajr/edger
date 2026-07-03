@@ -1,6 +1,12 @@
 # Shell / micro-frontend protocol
 
-**Status:** v1 entregue (Stories 08.05 + 07.02)
+> OBSOLETO desde o Epic 17: shell routing, `shellExcludes` e gateway interno
+> foram removidos do runtime. Composição/AppShell e políticas de borda ficam em
+> serviços externos ou nos próprios workers. Este arquivo fica como registro
+> histórico da arquitetura pré-Epic 17. Ver
+> `planning/edger/epics/17-edger-minimalista/`.
+
+**Status:** histórico/obsoleto (removido pelo Epic 17)
 **Origin:** `planning/edger/epics/08-valor-buntime/05-shell-gateway-e-experiencia-de-apps.md`, `planning/edger/epics/07-avancado/02-shell-routing.md`
 
 ## Objetivo
