@@ -33,4 +33,6 @@ pub use security::validate_admin_mutation_security;
 pub use server::{port_from_env, router, serve, ServerConfig, ServerState};
 pub use tracing_init::{init_tracing_from_env, TracingInitConfig};
 
-pub use wire::{axum_to_serialized, serialized_to_axum, MAX_BODY_BYTES};
+pub use wire::{
+    axum_to_serialized, axum_to_serialized_with_limit, serialized_to_axum, MAX_BODY_BYTES,
+};

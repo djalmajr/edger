@@ -23,10 +23,8 @@ pub async fn dispatch_execution<I: Isolate + ?Sized>(
         ExecutionKind::WasmModule { .. } => isolate.execute_wasm(req, config).await,
         ExecutionKind::Fullstack { adapter } => Ok(SerializedResponse {
             status: 501,
-            headers: vec![("x-mock-adapter".into(), adapter)],
-            body: Some(bytes::Bytes::from_static(
-                b"fullstack not implemented in mock",
-            )),
+            headers: vec![("x-adapter".into(), adapter)],
+            body: Some(bytes::Bytes::from_static(b"fullstack not implemented")),
         }),
     }
 }

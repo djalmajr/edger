@@ -128,6 +128,16 @@ const WARM_WORKER_DEFAULT_TTL_MS: u64 = 300_000;
 const DEFAULT_WORKER_QUEUE_LIMIT: usize = 8;
 /// Short persistent-worker queue wait before reporting capacity timeout.
 const DEFAULT_WORKER_QUEUE_TIMEOUT_MS: u64 = 1_000;
+/// Default request body cap when a worker manifest does not override it.
+pub const DEFAULT_MAX_BODY_BYTES: u64 = 4 * 1024 * 1024;
+
+pub fn effective_max_body_size_bytes(config: &WorkerConfig) -> u64 {
+    config.max_body_size_bytes.unwrap_or(DEFAULT_MAX_BODY_BYTES)
+}
+
+pub fn effective_max_body_size_bytes_usize(config: &WorkerConfig) -> usize {
+    usize::try_from(effective_max_body_size_bytes(config)).unwrap_or(usize::MAX)
+}
 
 /// Normalize manifest into runtime `WorkerConfig`.
 pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {

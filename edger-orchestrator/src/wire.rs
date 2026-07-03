@@ -2,21 +2,32 @@
 
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Request, Response, StatusCode};
-use edger_core::{validate_headers, CoreError, SerializedRequest, SerializedResponse};
+use edger_core::{
+    validate_headers, CoreError, SerializedRequest, SerializedResponse, DEFAULT_MAX_BODY_BYTES,
+};
 
 /// Max request body bytes accepted by the orchestrator wire layer (stub limit).
-pub const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_BODY_BYTES: usize = DEFAULT_MAX_BODY_BYTES as usize;
 
 /// Convert an axum/hyper request into a `SerializedRequest`.
 pub async fn axum_to_serialized(
     req: Request<Body>,
     request_id: String,
 ) -> Result<SerializedRequest, CoreError> {
+    axum_to_serialized_with_limit(req, request_id, MAX_BODY_BYTES).await
+}
+
+/// Convert an axum/hyper request into a `SerializedRequest` with a worker body cap.
+pub async fn axum_to_serialized_with_limit(
+    req: Request<Body>,
+    request_id: String,
+    max_body_bytes: usize,
+) -> Result<SerializedRequest, CoreError> {
     let (parts, body) = req.into_parts();
     let headers = header_pairs(&parts.headers)?;
     validate_headers(&headers).map_err(|err| CoreError::new("HEADER_TOO_LARGE", err.message))?;
 
-    let body_bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
+    let body_bytes = axum::body::to_bytes(body, max_body_bytes)
         .await
         .map_err(|_| CoreError::new("PAYLOAD_TOO_LARGE", "request body exceeds limit"))?;
 

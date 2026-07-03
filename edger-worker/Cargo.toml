@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 edger-core = { path = "../edger-core" }
+edger-isolation = { path = "../edger-isolation" }
 futures-core.workspace = true
 async-trait.workspace = true
 anyhow.workspace = true

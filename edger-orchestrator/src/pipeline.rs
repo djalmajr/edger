@@ -6,7 +6,10 @@ use axum::http::{header, HeaderMap, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{any, get};
 use axum::{Json, Router};
-use edger_core::{ApiKeyPrincipal, CoreError, ExecutionKind, WorkerRef, INTERNAL_REQUEST_HEADER};
+use edger_core::{
+    effective_max_body_size_bytes_usize, ApiKeyPrincipal, CoreError, ExecutionKind, WorkerRef,
+    INTERNAL_REQUEST_HEADER,
+};
 use edger_worker::{WorkerError, WorkerPool};
 use serde_json::json;
 use tower_http::trace::TraceLayer;
@@ -20,7 +23,7 @@ use crate::router::{resolve_host_route, resolve_route, ReservedPath, ResolvedRou
 use crate::server::{
     request_id_from_headers, request_id_middleware, request_metrics_middleware, ServerState,
 };
-use crate::wire::{axum_to_serialized, serialized_to_axum};
+use crate::wire::{axum_to_serialized_with_limit, serialized_to_axum};
 
 /// Shared orchestrator state for health probes and worker dispatch.
 #[derive(Clone)]
@@ -243,7 +246,9 @@ async fn dispatch_worker(
     // never blocks access to the worker.
     let internal_principal = state.auth.authenticate_headers(req.headers()).await;
     sanitize_internal_headers(&mut req, internal_principal.as_ref());
-    let mut serialized = axum_to_serialized(req, request_id.clone()).await?;
+    let max_body_bytes = effective_max_body_size_bytes_usize(&worker.config);
+    let mut serialized =
+        axum_to_serialized_with_limit(req, request_id.clone(), max_body_bytes).await?;
     let (original_path, query) = split_path_query(&serialized.uri);
     let base_path = base_path.unwrap_or_else(|| worker_base_path(&worker, original_path));
     serialized.uri = append_query(rewritten_path, query);

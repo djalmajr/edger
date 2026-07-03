@@ -91,16 +91,22 @@ impl Isolate for CountingIsolate {
 }
 
 fn test_app(created: Arc<AtomicUsize>) -> axum::Router {
+    test_app_with_manifest(created, "")
+}
+
+fn test_app_with_manifest(created: Arc<AtomicUsize>, manifest_extra: &str) -> axum::Router {
     let root = tempfile::tempdir().unwrap();
     let worker_dir = root.path().join("limited");
     fs::create_dir_all(&worker_dir).unwrap();
     fs::write(
         worker_dir.join("manifest.yaml"),
-        r#"name: limited
+        format!(
+            r#"name: limited
 version: "1.0.0"
 entrypoint: index.ts
 kind: fetch
-"#,
+{manifest_extra}"#
+        ),
     )
     .unwrap();
     fs::write(
@@ -128,6 +134,28 @@ async fn body_text(response: axum::response::Response) -> String {
         .await
         .unwrap();
     String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+#[tokio::test]
+async fn worker_body_override_returns_413_without_worker_dispatch() {
+    let created = Arc::new(AtomicUsize::new(0));
+    let app = test_app_with_manifest(created.clone(), "maxBodySize: 4\n");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/limited")
+                .header("authorization", "Bearer test-root")
+                .body(Body::from(vec![b'x'; 5]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body = body_text(response).await;
+    assert!(body.contains("PAYLOAD_TOO_LARGE"), "{body}");
+    assert_eq!(created.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
