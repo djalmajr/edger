@@ -3,11 +3,14 @@
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use lru::LruCache;
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::instance::WorkerInstance;
+use crate::metrics::MetricsCollector;
 use crate::state::{accepts_dispatch, WorkerState};
 use crate::types::WorkerCacheKey;
 
@@ -23,6 +26,8 @@ pub enum ReservedSlot {
 pub struct WorkerGroup {
     instances: Mutex<Vec<Arc<WorkerInstance>>>,
     next_index: AtomicUsize,
+    queue_waiters: AtomicUsize,
+    queue_notify: Notify,
 }
 
 impl WorkerGroup {
@@ -30,6 +35,8 @@ impl WorkerGroup {
         Self {
             instances: Mutex::new(instances),
             next_index: AtomicUsize::new(0),
+            queue_waiters: AtomicUsize::new(0),
+            queue_notify: Notify::new(),
         }
     }
 
@@ -47,6 +54,52 @@ impl WorkerGroup {
 
     pub fn next_round_robin(&self, len: usize) -> usize {
         self.next_index.fetch_add(1, Ordering::Relaxed) % len.max(1)
+    }
+
+    pub fn queued_waiters(&self) -> usize {
+        self.queue_waiters.load(Ordering::SeqCst)
+    }
+
+    pub fn notify_slot_released(&self) {
+        self.queue_notify.notify_one();
+    }
+
+    pub async fn wait_for_slot_release(&self) {
+        self.queue_notify.notified().await;
+    }
+
+    pub fn try_enter_queue(
+        self: &Arc<Self>,
+        limit: usize,
+        metrics: Arc<MetricsCollector>,
+    ) -> Option<WorkerQueueWaiter> {
+        if limit == 0 {
+            return None;
+        }
+
+        let mut queued = self.queue_waiters.load(Ordering::SeqCst);
+        loop {
+            if queued >= limit {
+                return None;
+            }
+            match self.queue_waiters.compare_exchange(
+                queued,
+                queued + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    metrics.set_worker_queue_queued((queued + 1) as u64);
+                    return Some(WorkerQueueWaiter {
+                        group: Arc::clone(self),
+                        metrics,
+                        started: Instant::now(),
+                        active: true,
+                    });
+                }
+                Err(actual) => queued = actual,
+            }
+        }
     }
 
     pub fn remove_instance(&self, instance_id: Uuid) -> bool {
@@ -107,6 +160,32 @@ impl WorkerGroup {
         wait_candidate
             .map(ReservedSlot::Wait)
             .unwrap_or(ReservedSlot::Unavailable)
+    }
+}
+
+pub struct WorkerQueueWaiter {
+    group: Arc<WorkerGroup>,
+    metrics: Arc<MetricsCollector>,
+    started: Instant,
+    active: bool,
+}
+
+impl WorkerQueueWaiter {
+    fn release(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.active = false;
+        let queued = self.group.queue_waiters.fetch_sub(1, Ordering::SeqCst) - 1;
+        self.metrics.set_worker_queue_queued(queued as u64);
+        self.metrics
+            .record_worker_queue_wait(self.started.elapsed().as_millis() as u64);
+    }
+}
+
+impl Drop for WorkerQueueWaiter {
+    fn drop(&mut self) {
+        self.release();
     }
 }
 

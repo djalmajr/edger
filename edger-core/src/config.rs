@@ -19,6 +19,10 @@ pub struct WorkerConfig {
     pub concurrency: usize,
     pub min_processes: usize,
     pub max_processes: usize,
+    /// Maximum persistent-worker requests waiting after all processes are busy.
+    pub queue_limit: usize,
+    /// Maximum time a persistent-worker request can wait for a process slot.
+    pub queue_timeout_ms: u64,
     pub max_body_size_bytes: Option<u64>,
     pub low_memory: bool,
     pub auto_install: bool,
@@ -112,20 +116,30 @@ pub fn infer_execution_kind(manifest: &WorkerManifest) -> ExecutionKind {
     ExecutionKind::FetchHandler
 }
 
-/// JS/TS and SPA workers default to a sliding TTL (persistent) instead of
-/// ephemeral. A StaticSpa is a pure file server; a FetchHandler/RoutesTable is
-/// backed by a persistent Deno process (Epic 15) whose whole value is being
-/// reused across requests — an ephemeral default would kill the warm process
-/// after every request. Ephemeral stays opt-in via an explicit `ttl: 0`.
+/// Explicit JS/TS and SPA workers default to a sliding TTL (persistent) instead
+/// of ephemeral. A StaticSpa is a pure file server; a FetchHandler/RoutesTable
+/// is backed by a persistent Deno process (Epic 15) whose whole value is being
+/// reused across requests. Bare legacy manifests without `ttl`, `kind`, or an
+/// `entrypoint` stay ephemeral because the parser cannot prove they should use
+/// the warm process path.
 const WARM_WORKER_DEFAULT_TTL_MS: u64 = 300_000;
+/// Small non-zero queue depth preserves 18.A's default "wait briefly" behavior
+/// while bounding memory and surfacing overload under sustained saturation.
+const DEFAULT_WORKER_QUEUE_LIMIT: usize = 8;
+/// Short persistent-worker queue wait before reporting capacity timeout.
+const DEFAULT_WORKER_QUEUE_TIMEOUT_MS: u64 = 1_000;
 
 /// Normalize manifest into runtime `WorkerConfig`.
 pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
     let kind = infer_execution_kind(manifest);
-    let default_ttl_ms = if matches!(
-        kind,
-        ExecutionKind::StaticSpa { .. } | ExecutionKind::FetchHandler | ExecutionKind::RoutesTable
-    ) {
+    let has_explicit_runtime = manifest.kind.is_some() || manifest.entrypoint.is_some();
+    let default_ttl_ms = if has_explicit_runtime
+        && matches!(
+            kind,
+            ExecutionKind::StaticSpa { .. }
+                | ExecutionKind::FetchHandler
+                | ExecutionKind::RoutesTable
+        ) {
         WARM_WORKER_DEFAULT_TTL_MS
     } else {
         0
@@ -163,6 +177,11 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         .unwrap_or(max_processes)
         .clamp(1, max_processes);
     let min_processes = manifest.min_processes.unwrap_or(0).min(max_processes);
+    let queue_timeout_ms = manifest
+        .queue_timeout
+        .as_ref()
+        .and_then(parse_duration_to_ms)
+        .unwrap_or(DEFAULT_WORKER_QUEUE_TIMEOUT_MS);
 
     WorkerConfig {
         enabled: manifest.enabled.unwrap_or(true),
@@ -177,6 +196,8 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         concurrency,
         min_processes,
         max_processes,
+        queue_limit: manifest.queue_limit.unwrap_or(DEFAULT_WORKER_QUEUE_LIMIT),
+        queue_timeout_ms,
         max_body_size_bytes,
         low_memory: manifest.low_memory.unwrap_or(false),
         auto_install: manifest.auto_install.unwrap_or(false),

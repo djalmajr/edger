@@ -302,13 +302,19 @@ fn map_error_status(err: &CoreError) -> StatusCode {
         "PAYLOAD_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
         "HEADER_TOO_LARGE" => StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
         "HEADER_INVALID" => StatusCode::BAD_REQUEST,
+        "WORKER_QUEUE_FULL" => StatusCode::TOO_MANY_REQUESTS,
+        "WORKER_QUEUE_TIMEOUT" => StatusCode::SERVICE_UNAVAILABLE,
         "VALIDATION_ERROR" | "PARSE_ERROR" | "BODY_ERROR" => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
 fn worker_error_to_core(err: WorkerError) -> CoreError {
-    CoreError::new("WORKER_ERROR", err.to_string())
+    match err {
+        WorkerError::WorkerQueueFull => CoreError::new("WORKER_QUEUE_FULL", err.to_string()),
+        WorkerError::WorkerQueueTimeout => CoreError::new("WORKER_QUEUE_TIMEOUT", err.to_string()),
+        _ => CoreError::new("WORKER_ERROR", err.to_string()),
+    }
 }
 
 fn worker_base_path(worker: &WorkerRef, original_path: &str) -> String {

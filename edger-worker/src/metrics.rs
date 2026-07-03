@@ -31,6 +31,16 @@ pub struct PoolMetrics {
     pub ephemeral_queued: u64,
     /// Ephemeral requests rejected (queue full).
     pub ephemeral_rejected: u64,
+    /// Persistent-worker requests currently waiting for a process slot.
+    pub worker_queue_queued: u64,
+    /// Persistent-worker requests admitted into the bounded wait queue.
+    pub worker_queue_enqueued: u64,
+    /// Persistent-worker requests rejected because the bounded wait queue was full.
+    pub worker_queue_rejected: u64,
+    /// Persistent-worker requests that timed out while waiting for a process slot.
+    pub worker_queue_timeout: u64,
+    /// Last persistent-worker queue wait duration (milliseconds).
+    pub worker_queue_wait_ms_last: u64,
     /// Last request duration (milliseconds) — histogram stub.
     pub request_duration_ms_last: u64,
 }
@@ -63,6 +73,11 @@ pub struct MetricsCollector {
     ephemeral_inflight: AtomicU64,
     ephemeral_queued: AtomicU64,
     ephemeral_rejected: AtomicU64,
+    worker_queue_queued: AtomicU64,
+    worker_queue_enqueued: AtomicU64,
+    worker_queue_rejected: AtomicU64,
+    worker_queue_timeout: AtomicU64,
+    worker_queue_wait_ms_last: AtomicU64,
 }
 
 impl Default for MetricsCollector {
@@ -79,6 +94,11 @@ impl Default for MetricsCollector {
             ephemeral_inflight: AtomicU64::new(0),
             ephemeral_queued: AtomicU64::new(0),
             ephemeral_rejected: AtomicU64::new(0),
+            worker_queue_queued: AtomicU64::new(0),
+            worker_queue_enqueued: AtomicU64::new(0),
+            worker_queue_rejected: AtomicU64::new(0),
+            worker_queue_timeout: AtomicU64::new(0),
+            worker_queue_wait_ms_last: AtomicU64::new(0),
         }
     }
 }
@@ -129,6 +149,26 @@ impl MetricsCollector {
         self.ephemeral_rejected.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn set_worker_queue_queued(&self, n: u64) {
+        self.worker_queue_queued.store(n, Ordering::Relaxed);
+    }
+
+    pub fn record_worker_queue_enqueued(&self) {
+        self.worker_queue_enqueued.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_worker_queue_rejected(&self) {
+        self.worker_queue_rejected.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_worker_queue_timeout(&self) {
+        self.worker_queue_timeout.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_worker_queue_wait(&self, ms: u64) {
+        self.worker_queue_wait_ms_last.store(ms, Ordering::Relaxed);
+    }
+
     pub fn snapshot(&self) -> PoolMetrics {
         let p50 = self
             .spawn_samples
@@ -150,6 +190,11 @@ impl MetricsCollector {
             ephemeral_inflight: self.ephemeral_inflight.load(Ordering::Relaxed),
             ephemeral_queued: self.ephemeral_queued.load(Ordering::Relaxed),
             ephemeral_rejected: self.ephemeral_rejected.load(Ordering::Relaxed),
+            worker_queue_queued: self.worker_queue_queued.load(Ordering::Relaxed),
+            worker_queue_enqueued: self.worker_queue_enqueued.load(Ordering::Relaxed),
+            worker_queue_rejected: self.worker_queue_rejected.load(Ordering::Relaxed),
+            worker_queue_timeout: self.worker_queue_timeout.load(Ordering::Relaxed),
+            worker_queue_wait_ms_last: self.worker_queue_wait_ms_last.load(Ordering::Relaxed),
             request_duration_ms_last: self.request_duration_ms_last.load(Ordering::Relaxed),
         }
     }

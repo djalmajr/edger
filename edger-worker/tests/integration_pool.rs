@@ -8,13 +8,14 @@ mod helpers;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use edger_core::{
-    create_worker_ref, ExecutionKind, Isolate, SerializedRequest, SerializedResponse, WorkerConfig,
-    WorkerManifest, WorkerRef,
+    create_worker_ref, BodyStream, ExecutionKind, Isolate, SerializedRequest, SerializedResponse,
+    StreamedResponse, WorkerConfig, WorkerManifest, WorkerRef, WorkerResponse,
 };
 use edger_isolation::MockIsolate;
 use edger_worker::{IsolateFactory, PoolConfig, WorkerError, WorkerPool, WorkerState};
@@ -113,6 +114,103 @@ impl Isolate for NumberedSlowIsolate {
     }
 }
 
+struct NumberedStreamingFactory {
+    next_id: AtomicUsize,
+}
+
+impl NumberedStreamingFactory {
+    fn new() -> Self {
+        Self {
+            next_id: AtomicUsize::new(1),
+        }
+    }
+}
+
+impl IsolateFactory for NumberedStreamingFactory {
+    fn create_isolate(&self, _worker_ref: &WorkerRef) -> Box<dyn edger_core::Isolate> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        Box::new(NumberedStreamingIsolate { id })
+    }
+}
+
+struct NumberedStreamingIsolate {
+    id: usize,
+}
+
+#[async_trait]
+impl Isolate for NumberedStreamingIsolate {
+    async fn execute_fetch(
+        &mut self,
+        _req: SerializedRequest,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        Ok(SerializedResponse {
+            status: 200,
+            headers: vec![],
+            body: Some(Bytes::from(format!("isolate-{}", self.id))),
+        })
+    }
+
+    async fn execute_routes(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+
+    async fn serve_static_spa(
+        &mut self,
+        _path: &str,
+        _base_href: Option<&str>,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        self.execute_fetch(serialized_get("/"), config).await
+    }
+
+    async fn execute_wasm(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, edger_core::IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+
+    async fn execute_fetch_stream(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<WorkerResponse, edger_core::IsolationError> {
+        if req.uri == "/stream" {
+            return Ok(WorkerResponse::Streamed(StreamedResponse {
+                status: 200,
+                headers: vec![],
+                body: pending_body_stream(),
+            }));
+        }
+        self.execute_fetch(req, config)
+            .await
+            .map(WorkerResponse::Buffered)
+    }
+}
+
+struct PendingBody;
+
+impl futures_core::Stream for PendingBody {
+    type Item = Result<Bytes, edger_core::IsolationError>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        Poll::Pending
+    }
+}
+
+fn pending_body_stream() -> BodyStream {
+    Box::pin(PendingBody)
+}
+
 fn numbered_worker_ref(max_processes: usize, min_processes: usize, max_requests: u32) -> WorkerRef {
     create_worker_ref(
         std::path::PathBuf::from("/workers/story18-numbered"),
@@ -121,6 +219,21 @@ fn numbered_worker_ref(max_processes: usize, min_processes: usize, max_requests:
             max_processes: Some(max_processes),
             min_processes: Some(min_processes),
             max_requests: Some(max_requests),
+            ttl: Some(serde_yaml::Value::String("30s".into())),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+fn queued_worker_ref(max_processes: usize, queue_limit: usize, queue_timeout: &str) -> WorkerRef {
+    create_worker_ref(
+        std::path::PathBuf::from("/workers/story18-queue"),
+        WorkerManifest {
+            name: "story18-queue".into(),
+            max_processes: Some(max_processes),
+            queue_limit: Some(queue_limit),
+            queue_timeout: Some(serde_yaml::Value::String(queue_timeout.into())),
             ttl: Some(serde_yaml::Value::String("30s".into())),
             ..Default::default()
         },
@@ -413,6 +526,205 @@ async fn story18_shutdown_drains_all_instances_in_group() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("shut down"));
+}
+
+#[tokio::test]
+async fn story18_queue_limit_zero_rejects_when_process_cap_is_busy() {
+    let factory = Arc::new(NumberedSlowFactory::new(200));
+    let pool = WorkerPool::with_factory(default_pool_config(), factory);
+    let worker_ref = queued_worker_ref(1, 0, "1s");
+
+    let first = tokio::spawn(fetch_numbered(
+        pool.clone(),
+        worker_ref.clone(),
+        "/holding-capacity",
+    ));
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let second = pool
+        .fetch_worker(
+            &worker_ref,
+            serialized_get("/rejected"),
+            Some(ExecutionKind::FetchHandler),
+        )
+        .await;
+
+    assert!(matches!(second, Err(WorkerError::WorkerQueueFull)));
+    assert_eq!(pool.get_metrics().worker_queue_rejected, 1);
+    let _ = first.await.unwrap();
+}
+
+#[tokio::test]
+async fn story18_queue_limit_one_allows_one_waiter_then_rejects_excess() {
+    let factory = Arc::new(NumberedSlowFactory::new(250));
+    let pool = WorkerPool::with_factory(default_pool_config(), factory);
+    let worker_ref = queued_worker_ref(1, 1, "1s");
+
+    let first = tokio::spawn(fetch_numbered(pool.clone(), worker_ref.clone(), "/first"));
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let queued = tokio::spawn(fetch_numbered(pool.clone(), worker_ref.clone(), "/queued"));
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let excess = pool
+        .fetch_worker(
+            &worker_ref,
+            serialized_get("/excess"),
+            Some(ExecutionKind::FetchHandler),
+        )
+        .await;
+
+    assert!(matches!(excess, Err(WorkerError::WorkerQueueFull)));
+    assert_eq!(pool.get_metrics().worker_queue_enqueued, 1);
+    let _ = first.await.unwrap();
+    let queued_id = queued.await.unwrap();
+    assert_eq!(queued_id, 1);
+}
+
+#[tokio::test]
+async fn story18_queue_timeout_returns_typed_error() {
+    let factory = Arc::new(NumberedSlowFactory::new(250));
+    let pool = WorkerPool::with_factory(default_pool_config(), factory);
+    let worker_ref = queued_worker_ref(1, 1, "25ms");
+
+    let first = tokio::spawn(fetch_numbered(pool.clone(), worker_ref.clone(), "/first"));
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let timed_out = pool
+        .fetch_worker(
+            &worker_ref,
+            serialized_get("/timeout"),
+            Some(ExecutionKind::FetchHandler),
+        )
+        .await;
+
+    assert!(matches!(timed_out, Err(WorkerError::WorkerQueueTimeout)));
+    assert_eq!(pool.get_metrics().worker_queue_timeout, 1);
+    let _ = first.await.unwrap();
+}
+
+#[tokio::test]
+async fn story18_ephemeral_ignores_persistent_queue_limit() {
+    let factory = Arc::new(NumberedSlowFactory::new(120));
+    let pool = WorkerPool::with_factory(
+        PoolConfig {
+            max_size: 8,
+            ephemeral_concurrency: 2,
+            ephemeral_queue_limit: 0,
+        },
+        factory,
+    );
+    let worker_ref = create_worker_ref(
+        std::path::PathBuf::from("/workers/story18-ephemeral-queue"),
+        WorkerManifest {
+            name: "story18-ephemeral-queue".into(),
+            max_processes: Some(1),
+            queue_limit: Some(0),
+            ttl: Some(serde_yaml::Value::Number(0.into())),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let first = tokio::spawn(fetch_numbered(pool.clone(), worker_ref.clone(), "/first"));
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let second = pool
+        .fetch_worker(
+            &worker_ref,
+            serialized_get("/second"),
+            Some(ExecutionKind::FetchHandler),
+        )
+        .await;
+
+    assert!(
+        second.is_ok(),
+        "ephemeral dispatch must skip persistent queue"
+    );
+    assert_eq!(pool.get_metrics().worker_queue_rejected, 0);
+    assert_eq!(pool.get_metrics().worker_queue_enqueued, 0);
+    let _ = first.await.unwrap();
+}
+
+#[tokio::test]
+async fn story18_cancelled_queue_waiter_does_not_leak_queue_capacity() {
+    let factory = Arc::new(NumberedSlowFactory::new(250));
+    let pool = WorkerPool::with_factory(default_pool_config(), factory);
+    let worker_ref = queued_worker_ref(1, 1, "1s");
+
+    let first = tokio::spawn(fetch_numbered(pool.clone(), worker_ref.clone(), "/first"));
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let cancelled = tokio::time::timeout(
+        Duration::from_millis(40),
+        pool.fetch_worker(
+            &worker_ref,
+            serialized_get("/cancelled-waiter"),
+            Some(ExecutionKind::FetchHandler),
+        ),
+    )
+    .await;
+    assert!(cancelled.is_err(), "queued waiter future must be cancelled");
+
+    let next = tokio::time::timeout(
+        Duration::from_secs(1),
+        pool.fetch_worker(
+            &worker_ref,
+            serialized_get("/next-waiter"),
+            Some(ExecutionKind::FetchHandler),
+        ),
+    )
+    .await
+    .expect("next waiter must enter the queue instead of seeing a leaked slot")
+    .expect("next waiter must eventually dispatch");
+
+    assert_eq!(next.status, 200);
+    assert_eq!(pool.get_metrics().worker_queue_queued, 0);
+    let _ = first.await.unwrap();
+}
+
+#[tokio::test]
+async fn story18_long_stream_on_one_instance_does_not_block_free_sibling_process() {
+    let pool = WorkerPool::with_factory(
+        default_pool_config(),
+        Arc::new(NumberedStreamingFactory::new()),
+    );
+    let worker_ref = queued_worker_ref(2, 1, "1s");
+
+    let streamed = pool
+        .fetch_worker_stream(
+            &worker_ref,
+            serialized_get("/stream"),
+            Some(ExecutionKind::FetchHandler),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(streamed, WorkerResponse::Streamed(_)));
+
+    let second = tokio::time::timeout(
+        Duration::from_millis(100),
+        pool.fetch_worker(
+            &worker_ref,
+            serialized_get("/fast"),
+            Some(ExecutionKind::FetchHandler),
+        ),
+    )
+    .await
+    .expect("free sibling process should serve while the stream is still open")
+    .unwrap();
+
+    assert_eq!(second.status, 200);
+    assert_eq!(
+        String::from_utf8(second.body.unwrap().to_vec()).unwrap(),
+        "isolate-2"
+    );
+    drop(streamed);
 }
 
 #[tokio::test]

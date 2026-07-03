@@ -25,6 +25,8 @@ fn parse_worker_config_normalizes_buntime_fields() {
     assert_eq!(config.timeout_ms, 30_000);
     assert_eq!(config.idle_timeout_ms, 120_000);
     assert_eq!(config.max_requests, 1000);
+    assert_eq!(config.queue_limit, 8);
+    assert_eq!(config.queue_timeout_ms, 1_000);
     assert_eq!(config.max_body_size_bytes, Some(10 * 1024 * 1024));
     assert!(config.low_memory);
     assert!(!config.auto_install);
@@ -118,4 +120,19 @@ fn ttl_zero_means_ephemeral() {
         ..Default::default()
     };
     assert_eq!(parse_worker_config(&manifest).ttl_ms, 0);
+}
+
+#[test]
+fn parse_worker_config_normalizes_worker_queue_controls() {
+    let manifest = WorkerManifest {
+        name: "queued".into(),
+        queue_limit: Some(0),
+        queue_timeout: Some(serde_yaml::Value::String("25ms".into())),
+        ..Default::default()
+    };
+
+    let config = parse_worker_config(&manifest);
+
+    assert_eq!(config.queue_limit, 0);
+    assert_eq!(config.queue_timeout_ms, 25);
 }

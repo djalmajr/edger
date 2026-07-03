@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::body::Body;
@@ -23,6 +24,67 @@ struct StubFactory;
 impl IsolateFactory for StubFactory {
     fn create_isolate(&self, _worker_ref: &edger_core::WorkerRef) -> Box<dyn edger_core::Isolate> {
         Box::new(MockIsolate::new())
+    }
+}
+
+struct SlowFactory {
+    delay_ms: u64,
+}
+
+impl IsolateFactory for SlowFactory {
+    fn create_isolate(&self, _worker_ref: &edger_core::WorkerRef) -> Box<dyn edger_core::Isolate> {
+        Box::new(SlowIsolate {
+            delay_ms: self.delay_ms,
+        })
+    }
+}
+
+struct SlowIsolate {
+    delay_ms: u64,
+}
+
+#[async_trait]
+impl Isolate for SlowIsolate {
+    async fn execute_fetch(
+        &mut self,
+        req: SerializedRequest,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+        Ok(SerializedResponse {
+            status: 200,
+            headers: vec![],
+            body: Some(Bytes::from(format!("slow:{}", req.uri))),
+        })
+    }
+
+    async fn execute_routes(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+
+    async fn serve_static_spa(
+        &mut self,
+        path: &str,
+        _base_href: Option<&str>,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        Ok(SerializedResponse {
+            status: 200,
+            headers: vec![],
+            body: Some(Bytes::from(format!("slow:{path}"))),
+        })
+    }
+
+    async fn execute_wasm(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(req, config).await
     }
 }
 
@@ -173,6 +235,14 @@ fn orchestrator_with_index_and_factory(
     }
 }
 
+fn request(path: &str) -> Request<Body> {
+    Request::builder()
+        .uri(path)
+        .header("authorization", "Bearer test-root")
+        .body(Body::empty())
+        .unwrap()
+}
+
 #[tokio::test]
 async fn pipeline_worker_fetch_returns_mock_body() {
     let app = build_pipeline(orchestrator_with_worker());
@@ -194,6 +264,82 @@ async fn pipeline_worker_fetch_returns_mock_body() {
     assert!(String::from_utf8(body.to_vec())
         .unwrap()
         .contains("fetch:GET /"));
+}
+
+#[tokio::test]
+async fn pipeline_worker_queue_full_returns_429_with_stable_code() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/workers/busy"),
+            WorkerManifest {
+                max_processes: Some(1),
+                name: "busy".into(),
+                queue_limit: Some(0),
+                queue_timeout: Some(serde_yaml::Value::String("1s".into())),
+                ttl: Some(serde_yaml::Value::String("30s".into())),
+                version: Some("1.0.0".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let app = build_pipeline(orchestrator_with_index_and_factory(
+        index,
+        Arc::new(SlowFactory { delay_ms: 250 }),
+    ));
+
+    let first_app = app.clone();
+    let first = tokio::spawn(async move { first_app.oneshot(request("/busy/first")).await });
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let res = app.oneshot(request("/busy/rejected")).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["code"], "WORKER_QUEUE_FULL");
+    let _ = first.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn pipeline_worker_queue_timeout_returns_503_with_stable_code() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/workers/timeout"),
+            WorkerManifest {
+                max_processes: Some(1),
+                name: "timeout".into(),
+                queue_limit: Some(1),
+                queue_timeout: Some(serde_yaml::Value::String("25ms".into())),
+                ttl: Some(serde_yaml::Value::String("30s".into())),
+                version: Some("1.0.0".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let app = build_pipeline(orchestrator_with_index_and_factory(
+        index,
+        Arc::new(SlowFactory { delay_ms: 250 }),
+    ));
+
+    let first_app = app.clone();
+    let first = tokio::spawn(async move { first_app.oneshot(request("/timeout/first")).await });
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let res = app.oneshot(request("/timeout/queued")).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["code"], "WORKER_QUEUE_TIMEOUT");
+    let _ = first.await.unwrap().unwrap();
 }
 
 #[tokio::test]
