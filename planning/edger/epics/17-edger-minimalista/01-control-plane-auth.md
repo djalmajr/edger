@@ -42,13 +42,21 @@ Decisão (2026-07-03): quando `EDGER_ROOT_KEY_FILE` e `ROOT_API_KEY` estiverem c
 - **Out:** introspection de token opaco (escape hatch documentado); auth no data plane (removida em 17.B, não substituída).
 
 ### Acceptance criteria
-- [x] `EDGER_OIDC_ISSUER`+`AUDIENCE` setados → JWT válido de qualquer provider OIDC autentica `/api/admin/*`; JWT inválido/expirado/assinatura errada → 401. Coberto em 2026-07-03 por `edger-orchestrator/src/oidc.rs`; validação live contra IdP real fica com o harness.
+- [x] `EDGER_OIDC_ISSUER`+`AUDIENCE` setados → JWT válido de qualquer provider OIDC autentica `/api/admin/*`; JWT inválido/expirado/assinatura errada → 401. Coberto em 2026-07-03 por `edger-orchestrator/src/oidc.rs` e validação live contra Keycloak real.
 - [x] Claim de role configurável autoriza (Keycloak `realm_access.roles` e um genérico `groups` cobertos por teste). Coberto em 2026-07-03 por testes sem rede com JWKS estático.
 - [x] `EDGER_ROOT_KEY_FILE` → bearer do arquivo autentica; **alterar o arquivo passa a valer sem restart** (hot-reload).
 - [x] Nenhum configurado → `/api/admin/*` aberto (log de aviso).
 - [x] `edger-ext-auth` deletado; sem store SQLite de chaves; `/api/admin/keys*` removidos; workspace compila.
 - [x] cPanel loga com root-key sem fluxo de gestão de chaves.
-- [x] OIDC genérico (fase 2) entregue em 2026-07-03: discovery + JWKS + claims configuráveis via `EDGER_OIDC_*`; validação live contra um IdP real fica com o harness.
+- [x] OIDC genérico (fase 2) entregue em 2026-07-03: discovery + JWKS + claims configuráveis via `EDGER_OIDC_*`; validação live contra IdP real concluída contra Keycloak 26.0 isolado.
+
+### Validação OIDC contra Keycloak (2026-07-03)
+
+- IdP: Keycloak 26.0 em container descartável isolado, realm `edger-test`, role de realm `edger-admin`, dois clients M2M (`edger-m2m` com a role via service account; `edger-norole` sem a role), ambos com audience mapper `edger-api`.
+- Configuração local do edger: `EDGER_OIDC_ISSUER=.../realms/edger-test`, `EDGER_OIDC_AUDIENCE=edger-api`, `EDGER_OIDC_ROLES_CLAIM=realm_access.roles`, `EDGER_OIDC_REQUIRED_ROLE=edger-admin`, `ROOT_API_KEY=dev`.
+- Matriz `/api/admin/workers` (control plane): JWT client_credentials com role → 200; JWT do mesmo issuer/audience sem a role → 401; JWT com assinatura inválida → 401; root key via `x-api-key` (caminho OR) → 200; sem credencial → 401; data plane aberto → 200.
+- Exercitou de verdade: discovery `.well-known/openid-configuration`, fetch de JWKS, verificação de assinatura RS256, claims `iss`/`aud`/`exp` e autorização por `realm_access.roles` (dois tokens do mesmo issuer com destinos opostos só pela role).
+- Realm/container destruídos ao final; nenhum toque no IdP compartilhado da infra.
 
 ### Dependencies
 - Nenhuma (primeira story do epic).
@@ -61,11 +69,11 @@ Decisão (2026-07-03): quando `EDGER_ROOT_KEY_FILE` e `ROOT_API_KEY` estiverem c
 - [x] Gatear `/api/admin/*`; remover endpoints de chaves; deletar `edger-ext-auth` + `AuthProvider`; simplificar cPanel.
 ### Fase 3 — Doc + prova
 - [x] Testes da fase base: modo aberto, 401 com key errada/ausente, hot-reload da root-key e migração de testes para `ControlAuth`.
-- [x] Testes/docs OIDC (JWT válido/inválido, role por claim, `EDGER_OIDC_*`) cobertos em 2026-07-03; validação live contra IdP real permanece com o harness externo.
+- [x] Testes/docs OIDC (JWT válido/inválido, role por claim, `EDGER_OIDC_*`) cobertos em 2026-07-03; validação live contra IdP real concluída contra Keycloak 26.0 isolado.
 
 ## Verification
 
 ```bash
 cargo test -p edger-orchestrator
-# live: JWT de um Keycloak/Okta de teste em /api/admin/*; editar o arquivo da root-key sem restart
+# live concluído em 2026-07-03: Keycloak 26.0 isolado em /api/admin/workers; editar o arquivo da root-key sem restart
 ```
