@@ -1,7 +1,8 @@
-//! Story 15.E: the persistent worker reads response bodies as a bounded stream.
-//! A finite multi-chunk body comes through whole; an infinite stream is bounded
-//! by the byte cap and does NOT hang or desync the persistent process — a second
-//! request on the same connection still succeeds.
+//! Stories 15.E/16.D: response bodies stream from the persistent worker as
+//! tagged frames (header/chunk/end). Finite bodies come through whole; infinite
+//! streams (SSE) flow chunk-by-chunk INCREMENTALLY via `request_stream`; the
+//! harness byte cap cleanly truncates runaway streams for buffered callers; and
+//! background errors never kill the process.
 
 #![cfg(feature = "multiproc")]
 
@@ -113,65 +114,6 @@ async fn infinite_stream_is_bounded_and_process_survives() {
     assert!((4096..=16384).contains(&len2), "second bounded, got {len2}");
 }
 
-// Mutation captured: dropping the STREAM_MAX_MS total-time budget in
-// `drainBounded` lets this steady SSE-style stream (200 ms gaps, under the idle
-// timeout) run until the 8 MiB byte cap (~38 h), so the request read times out
-// (20 s) and this test goes red. This is the exact hang the builtin preview
-// surfaced on the real `sse` worker (setInterval every 1 s).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn steady_sse_stream_is_bounded_by_total_time() {
-    let dir = tempfile::tempdir().unwrap();
-    write_worker(
-        dir.path(),
-        r#"Deno.serve(() => {
-  const msg = new TextEncoder().encode("data: tick\n\n");
-  let id;
-  const stream = new ReadableStream({
-    start(c) { id = setInterval(() => c.enqueue(msg), 200); },
-    cancel() { clearInterval(id); },
-  });
-  return new Response(stream, { headers: { "content-type": "text/event-stream" } });
-});
-"#,
-    );
-    // Idle high so it never fires; total-time low so IT is what bounds the read.
-    let mut env = HashMap::new();
-    env.insert("EDGER_STREAM_MAX_MS".to_string(), "600".to_string());
-    env.insert("EDGER_STREAM_IDLE_MS".to_string(), "5000".to_string());
-
-    let mut proc = DenoWorkerProcess::spawn(
-        dir.path(),
-        Some("index.ts"),
-        Duration::from_secs(20),
-        &env,
-        None,
-    )
-    .await
-    .expect("spawn");
-
-    let started = std::time::Instant::now();
-    let res = proc
-        .request(get())
-        .await
-        .expect("steady SSE stream returns within the total-time budget, no hang");
-    let elapsed = started.elapsed();
-    assert_eq!(res.status, 200);
-    // A few ticks captured, then bounded — not empty, not runaway.
-    let len = res.body.as_deref().map(<[u8]>::len).unwrap_or(0);
-    assert!(
-        (12..=1200).contains(&len),
-        "bounded SSE snapshot, got {len} bytes"
-    );
-    assert!(
-        elapsed < Duration::from_secs(5),
-        "must return near the 600ms budget, took {elapsed:?}"
-    );
-
-    // Process is not stuck: it serves a second request.
-    let second = proc.request(get()).await.expect("process survives");
-    assert_eq!(second.status, 200);
-}
-
 // Mutation captured: removing the global `unhandledrejection`/`error` handlers
 // from the harness lets a background error thrown by user code AFTER a response
 // (here a `setTimeout` that throws + a floating rejection) terminate the
@@ -216,4 +158,86 @@ async fn background_error_after_response_keeps_process_alive() {
         .expect("process survives a background error from user code");
     assert_eq!(second.status, 200);
     assert_eq!(second.body.as_deref().unwrap(), b"handled");
+}
+
+// Story 16.D — the heart of passthrough streaming. A steady SSE worker (tick
+// every 200 ms) must deliver its chunks INCREMENTALLY: the second chunk arrives
+// measurably later than the first, while the stream is still open. Mutation
+// captured: buffering the body in the harness (H frame only after the stream
+// ends) makes the first chunk wait for a stream that never ends — recv times
+// out and this goes red.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sse_stream_delivers_chunks_incrementally() {
+    let dir = tempfile::tempdir().unwrap();
+    write_worker(
+        dir.path(),
+        r#"Deno.serve(() => {
+  let n = 0;
+  let id;
+  const stream = new ReadableStream({
+    start(c) {
+      id = setInterval(() => c.enqueue(new TextEncoder().encode(`data: tick-${n++}
+
+`)), 200);
+    },
+    cancel() { clearInterval(id); },
+  });
+  return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+});
+"#,
+    );
+    let mut proc = DenoWorkerProcess::spawn(
+        dir.path(),
+        Some("index.ts"),
+        Duration::from_secs(20),
+        &HashMap::new(),
+        None,
+    )
+    .await
+    .expect("spawn");
+
+    let mut streamed = proc
+        .request_stream(get())
+        .await
+        .expect("header resolves before the stream ends");
+    assert_eq!(streamed.status, 200);
+
+    let started = std::time::Instant::now();
+    let first = tokio::time::timeout(Duration::from_secs(5), streamed.chunks.recv())
+        .await
+        .expect("first chunk within 5s")
+        .expect("stream open")
+        .expect("chunk ok");
+    let first_at = started.elapsed();
+    assert!(
+        String::from_utf8_lossy(&first).contains("tick-"),
+        "sse payload"
+    );
+
+    let second = tokio::time::timeout(Duration::from_secs(5), streamed.chunks.recv())
+        .await
+        .expect("second chunk within 5s")
+        .expect("stream open")
+        .expect("chunk ok");
+    let second_at = started.elapsed();
+    assert!(
+        String::from_utf8_lossy(&second).contains("tick-"),
+        "sse payload"
+    );
+
+    // Incremental: the chunks arrived at distinct times (~200ms apart), NOT
+    // together after some collection finished.
+    assert!(
+        second_at >= first_at + Duration::from_millis(100),
+        "chunks must arrive incrementally: first at {first_at:?}, second at {second_at:?}"
+    );
+
+    // Dropping mid-stream poisons the process (frames still in flight): the
+    // next request must fail FAST so the pool respawns a fresh process.
+    drop(streamed);
+    let after = proc.request(get()).await;
+    assert!(
+        after.is_err(),
+        "poisoned process must not serve a desynced socket, got {after:?}"
+    );
 }

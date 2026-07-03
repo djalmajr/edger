@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::config::WorkerConfig;
 use crate::error::IsolationError;
-use crate::wire::{SerializedRequest, SerializedResponse};
+use crate::wire::{SerializedRequest, SerializedResponse, WorkerResponse};
 
 /// Core trait implemented by concrete isolate backends.
 #[async_trait]
@@ -33,6 +33,29 @@ pub trait Isolate: Send + Sync {
         req: SerializedRequest,
         config: &WorkerConfig,
     ) -> Result<SerializedResponse, IsolationError>;
+
+    /// Streaming variants (story 16.D): backends that can stream the response
+    /// body incrementally override these; the default buffers via the regular
+    /// methods so existing isolates are untouched.
+    async fn execute_fetch_stream(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<WorkerResponse, IsolationError> {
+        self.execute_fetch(req, config)
+            .await
+            .map(WorkerResponse::Buffered)
+    }
+
+    async fn execute_routes_stream(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<WorkerResponse, IsolationError> {
+        self.execute_routes(req, config)
+            .await
+            .map(WorkerResponse::Buffered)
+    }
 
     async fn notify_idle(&mut self) -> Result<(), IsolationError> {
         Ok(())

@@ -54,8 +54,8 @@ pub use security::{
     principal_has_permission, require_same_origin, INTERNAL_REQUEST_HEADER,
 };
 pub use wire::{
-    validate_headers, SerializedRequest, SerializedResponse, MAX_HEADERS, MAX_HEADER_BYTES,
-    MAX_HEADER_VALUE_BYTES,
+    validate_headers, BodyStream, SerializedRequest, SerializedResponse, StreamedResponse,
+    WorkerResponse, MAX_HEADERS, MAX_HEADER_BYTES, MAX_HEADER_VALUE_BYTES,
 };
 pub use worker_ref::{create_worker_ref, parse_namespaced_name, WorkerRef};
 

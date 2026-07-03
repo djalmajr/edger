@@ -129,3 +129,15 @@ cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
 ```
+
+## Status
+
+**completed** (2026-07-02, via Epics 15/16) — a execução JS real de produção foi
+entregue pelo Epic 15 (runtime JS durável): processo Deno persistente por worker
+sobre UDS com módulo importado uma vez (p50 ~1.6ms end-to-end, ~25x vs a bridge
+v1 desta story), cap de heap V8 por worker e compat de frameworks
+(Express/Hono/SvelteKit/TanStack). O Epic 16.D completou o streaming passthrough
+(frames H/C/E). A Deno CLI bridge v1 construída aqui permanece como fallback
+legado (`EDGER_JS_RUNTIME=bridge`). O item de gate/README foi coberto pelo
+AGENTS.md atualizado no 15.E. Embutir `deno_core` foi avaliado e descartado com
+medição (decisão registrada em `docs/js-runtime-durable-design.md`).

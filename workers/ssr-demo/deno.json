@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "jsx": "precompile",
+    "jsxImportSource": "hono/jsx"
+  },
+  "imports": {
+    "hono": "npm:hono@4",
+    "hono/jsx": "npm:hono@4/jsx",
+    "hono/jsx/jsx-runtime": "npm:hono@4/jsx/jsx-runtime",
+    "hono/jsx-renderer": "npm:hono@4/jsx-renderer"
+  }
+}

@@ -31,6 +31,7 @@ tracing = "0.1"
 bytes = { version = "1", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
+futures-core = "0.3"
 thiserror = "2"
 postcard = "1"
 lru = "0.12"

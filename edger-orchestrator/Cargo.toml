@@ -27,6 +27,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio.workspace = true
 axum.workspace = true
 tower.workspace = true
+futures-util = { version = "0.3", default-features = false }
 tower-http.workspace = true
 http.workspace = true
 hyper.workspace = true
@@ -43,3 +44,4 @@ edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "mu
 serde_json.workspace = true
 tokio.workspace = true
 tower.workspace = true
+futures-util = { version = "0.3", default-features = false }

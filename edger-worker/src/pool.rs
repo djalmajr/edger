@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use bytes::Bytes;
 use edger_core::{
-    create_worker_ref, ExecutionKind, Isolate, SerializedRequest, SerializedResponse, WorkerConfig,
-    WorkerManifest, WorkerRef,
+    create_worker_ref, BodyStream, ExecutionKind, Isolate, SerializedRequest, SerializedResponse,
+    StreamedResponse, WorkerConfig, WorkerManifest, WorkerRef, WorkerResponse,
 };
 use tracing::Instrument;
 use uuid::Uuid;
@@ -196,6 +196,152 @@ impl WorkerPool {
         self.fetch_worker_inner(worker_ref, req, kind_hint)
             .instrument(span)
             .await
+    }
+
+    /// Streaming pool entry (story 16.D): FetchHandler/RoutesTable on a
+    /// streaming-capable isolate return `WorkerResponse::Streamed` whose body
+    /// carries the dispatch guards until end-of-stream (clean completion) or
+    /// drop (client disconnect -> instance recycled). Everything else falls
+    /// back to the buffered path unchanged.
+    pub async fn fetch_worker_stream(
+        &self,
+        worker_ref: &WorkerRef,
+        req: SerializedRequest,
+        kind_hint: Option<ExecutionKind>,
+    ) -> Result<WorkerResponse, WorkerError> {
+        let span = tracing::info_span!(
+            "pool.fetch_stream",
+            request_id = %req.request_id,
+            worker_name = %worker_ref.name,
+            worker_version = %worker_ref.version,
+            worker_namespace = worker_ref.namespace.as_deref().unwrap_or("")
+        );
+        self.fetch_worker_stream_inner(worker_ref, req, kind_hint)
+            .instrument(span)
+            .await
+    }
+
+    async fn fetch_worker_stream_inner(
+        &self,
+        worker_ref: &WorkerRef,
+        req: SerializedRequest,
+        kind_hint: Option<ExecutionKind>,
+    ) -> Result<WorkerResponse, WorkerError> {
+        let kind = kind_hint
+            .clone()
+            .or(worker_ref.config.kind.clone())
+            .unwrap_or(worker_ref.kind.clone());
+        let streamable = matches!(
+            kind,
+            ExecutionKind::FetchHandler | ExecutionKind::RoutesTable
+        );
+        // Ephemeral workers (ttl 0) hold a lifetimed concurrency permit that
+        // cannot travel inside a 'static body stream — they stay buffered.
+        if !streamable || worker_ref.config.ttl_ms == 0 {
+            return self
+                .fetch_worker_inner(worker_ref, req, kind_hint)
+                .await
+                .map(WorkerResponse::Buffered);
+        }
+
+        self.ensure_active()?;
+        let started = Instant::now();
+
+        let mut worker_ref = worker_ref.clone();
+        let mut config = worker_ref.config.clone();
+        config.worker_dir = Some(worker_ref.dir.clone());
+        worker_ref.config = config.clone();
+
+        const MAX_RESOLVE_ATTEMPTS: usize = 32;
+        let mut attempt = 0;
+        let (instance, dispatch_guard) = loop {
+            attempt += 1;
+            let instance = match self.get_or_create(&worker_ref).await {
+                Ok(instance) => instance,
+                Err(WorkerError::Retired | WorkerError::Evicted)
+                    if attempt < MAX_RESOLVE_ATTEMPTS =>
+                {
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            let dispatch_guard = instance.dispatch_lock().lock_owned().await;
+
+            if instance.state() == WorkerState::Creating {
+                let spawn_start = Instant::now();
+                Supervisor::spawn(&instance).await?;
+                self.inner
+                    .metrics
+                    .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
+            }
+
+            if crate::state::accepts_dispatch(instance.state()) {
+                break (instance, dispatch_guard);
+            }
+
+            drop(dispatch_guard);
+            if attempt >= MAX_RESOLVE_ATTEMPTS {
+                return Err(WorkerError::NotReady);
+            }
+            tokio::task::yield_now().await;
+        };
+
+        Supervisor::on_request_start(&instance).await?;
+
+        let mut cancel_guard = DispatchCancelGuard {
+            pool: self,
+            instance: instance.clone(),
+            armed: true,
+        };
+
+        let mut isolate_guard = instance.isolate().lock_owned().await;
+        let res = match kind {
+            ExecutionKind::RoutesTable => isolate_guard.execute_routes_stream(req, &config).await,
+            _ => isolate_guard.execute_fetch_stream(req, &config).await,
+        };
+
+        match res {
+            Ok(WorkerResponse::Buffered(res)) => {
+                drop(isolate_guard);
+                Supervisor::on_request_complete(instance, &config, self).await?;
+                cancel_guard.armed = false;
+                self.inner
+                    .metrics
+                    .record_request_duration(started.elapsed().as_millis() as u64);
+                self.sync_worker_counts();
+                Ok(WorkerResponse::Buffered(res))
+            }
+            Ok(WorkerResponse::Streamed(streamed)) => {
+                // The guards move INTO the body: the instance stays Active and
+                // the process exclusive until the stream ends or is dropped.
+                cancel_guard.armed = false;
+                let state = StreamDispatchState {
+                    pool: self.clone(),
+                    instance,
+                    config,
+                    started,
+                    _dispatch_guard: dispatch_guard,
+                    isolate_guard: Some(isolate_guard),
+                };
+                Ok(WorkerResponse::Streamed(StreamedResponse {
+                    status: streamed.status,
+                    headers: streamed.headers,
+                    body: Box::pin(GuardedBody {
+                        inner: streamed.body,
+                        state: Some(state),
+                    }),
+                }))
+            }
+            Err(err) => {
+                drop(isolate_guard);
+                cancel_guard.armed = false;
+                let _ = Supervisor::on_critical_error(&instance).await;
+                self.remove_instance(&instance);
+                self.sync_worker_counts();
+                Err(WorkerError::Isolation(err))
+            }
+        }
     }
 
     async fn fetch_worker_inner(
@@ -429,6 +575,91 @@ fn execution_kind_label(kind: &ExecutionKind) -> &'static str {
         ExecutionKind::WasmModule { .. } => "wasm",
         ExecutionKind::Fullstack { .. } => "fullstack",
     }
+}
+
+/// Dispatch context that travels inside a streamed response body: it keeps the
+/// instance `Active` and the isolate/dispatch locks held until the stream ends
+/// (clean completion -> back to `Idle`) or is dropped mid-flight (client
+/// disconnect -> the process socket is desynced, recycle everything).
+struct StreamDispatchState {
+    pool: WorkerPool,
+    instance: Arc<WorkerInstance>,
+    config: WorkerConfig,
+    started: Instant,
+    _dispatch_guard: tokio::sync::OwnedMutexGuard<()>,
+    isolate_guard: Option<tokio::sync::OwnedMutexGuard<Box<dyn Isolate>>>,
+}
+
+/// Body stream wrapper enforcing the lifecycle above.
+struct GuardedBody {
+    inner: BodyStream,
+    state: Option<StreamDispatchState>,
+}
+
+impl futures_core::Stream for GuardedBody {
+    type Item = Result<Bytes, edger_core::IsolationError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        match self.inner.as_mut().poll_next(cx) {
+            std::task::Poll::Ready(Some(Ok(chunk))) => std::task::Poll::Ready(Some(Ok(chunk))),
+            std::task::Poll::Ready(Some(Err(err))) => {
+                if let Some(state) = self.state.take() {
+                    tokio::spawn(recycle_stream_state(state));
+                }
+                std::task::Poll::Ready(Some(Err(err)))
+            }
+            std::task::Poll::Ready(None) => {
+                if let Some(state) = self.state.take() {
+                    tokio::spawn(complete_stream_state(state));
+                }
+                std::task::Poll::Ready(None)
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
+impl Drop for GuardedBody {
+    fn drop(&mut self) {
+        // Dropped before end-of-stream: the client disconnected while frames
+        // were in flight — the process socket cannot be reused.
+        if let Some(state) = self.state.take() {
+            tokio::spawn(recycle_stream_state(state));
+        }
+    }
+}
+
+/// Clean end-of-stream: release the isolate, transition Active -> Idle, record
+/// metrics — the streamed equivalent of the buffered completion path.
+async fn complete_stream_state(state: StreamDispatchState) {
+    let StreamDispatchState {
+        pool,
+        instance,
+        config,
+        started,
+        _dispatch_guard,
+        isolate_guard,
+    } = state;
+    drop(isolate_guard);
+    let _ = Supervisor::on_request_complete(instance, &config, &pool).await;
+    pool.inner
+        .metrics
+        .record_request_duration(started.elapsed().as_millis() as u64);
+    pool.sync_worker_counts();
+}
+
+/// Abnormal end (mid-stream error or client disconnect): the process socket is
+/// desynced — terminate the isolate and evict the instance so the next request
+/// gets a fresh process.
+async fn recycle_stream_state(mut state: StreamDispatchState) {
+    if let Some(mut guard) = state.isolate_guard.take() {
+        let _ = guard.terminate().await;
+    }
+    state.pool.recycle_cancelled(&state.instance);
+    state.pool.sync_worker_counts();
 }
 
 /// RAII guard that recycles an `Active` instance if the dispatch future is
