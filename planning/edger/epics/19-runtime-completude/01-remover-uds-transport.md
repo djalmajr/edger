@@ -19,17 +19,17 @@
 ## Detail
 
 ### Critérios de aceite
-- [ ] `UdsTransport` não existe mais no código do workspace.
-- [ ] Nenhum re-export, teste ou import aponta para `UdsTransport`.
-- [ ] O transporte real em `multiproc.rs` permanece inalterado em comportamento.
-- [ ] O workspace compila sem warnings novos.
+- [x] `UdsTransport` não existe mais no código do workspace.
+- [x] Nenhum re-export, teste ou import aponta para `UdsTransport`.
+- [x] O transporte real em `multiproc.rs` permanece inalterado em comportamento.
+- [x] O workspace compila sem warnings novos.
 
 ## Tasks
 
-- [ ] Buscar referências a `UdsTransport`.
-- [ ] Remover a implementação vestigial de `transport.rs`.
-- [ ] Remover imports/re-exports órfãos.
-- [ ] Ajustar testes apenas se houver referência direta ao símbolo removido.
+- [x] Buscar referências a `UdsTransport`.
+- [x] Remover a implementação vestigial de `transport.rs`.
+- [x] Remover imports/re-exports órfãos.
+- [x] Ajustar testes apenas se houver referência direta ao símbolo removido.
 
 ## Verification
 
@@ -42,4 +42,4 @@ cargo fmt -- --check
 
 ## Status
 
-**pending**
+**completed**
