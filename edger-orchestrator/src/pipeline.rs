@@ -27,7 +27,6 @@ use crate::server::{
     request_id_from_headers, request_id_middleware, request_metrics_middleware, ServerState,
 };
 use crate::service_bindings::{resolve_service_bindings, SERVICE_BINDINGS_HEADER};
-use crate::shell_gateway::resolve_shell_worker;
 use crate::wire::{axum_to_serialized, serialized_to_axum};
 
 /// Shared orchestrator state for health probes and worker dispatch.
@@ -133,37 +132,6 @@ async fn handle_request(
         .and_then(|value| value.to_str().ok());
     if let Some(route) = resolve_host_route(&path, host, &state.index)? {
         return dispatch_resolved_route(state, req, request_id, &path, route).await;
-    }
-
-    if let Some(shell) =
-        resolve_shell_worker(req.method().as_str(), &path, req.headers(), &state.index)
-    {
-        let public_worker = is_public_worker(&shell);
-        let principal = if public_worker {
-            None
-        } else {
-            state.auth.authorize(
-                &path,
-                req.headers(),
-                shell.config.public_routes.as_ref(),
-                shell.namespace.as_deref(),
-            )?
-        };
-        let skip_hooks = public_worker
-            || should_skip_hooks(&path, &state.auth, shell.config.public_routes.as_ref());
-        return dispatch_worker(
-            state,
-            req,
-            DispatchParams {
-                request_id,
-                rewritten_path: path,
-                kind_hint: Some(shell.kind.clone()),
-                principal,
-                skip_hooks,
-                worker: shell,
-            },
-        )
-        .await;
     }
 
     let route = resolve_route(&path, None, &state.index)?;

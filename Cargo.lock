@@ -792,19 +792,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "edger-ext-gateway"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "edger-core",
- "edger-ext-turso-remote",
- "serde_json",
- "sha2",
- "tempfile",
- "tracing",
-]
-
-[[package]]
 name = "edger-ext-keyval"
 version = "0.1.0"
 dependencies = [
@@ -884,7 +871,6 @@ dependencies = [
  "bytes",
  "edger-core",
  "edger-ext-auth",
- "edger-ext-gateway",
  "edger-ext-keyval",
  "edger-ext-turso",
  "edger-ext-turso-remote",

@@ -32,7 +32,6 @@ fn must_preserve_rows_are_published_as_tested() {
         "Ingress body/header limits",
         "Request-id/log correlation",
         "Cron internal requests",
-        "Shell / micro-frontend",
     ] {
         assert_row_status(&matrix, row, "tested");
     }
@@ -41,11 +40,7 @@ fn must_preserve_rows_are_published_as_tested() {
 #[test]
 fn known_partial_rows_remain_explicit() {
     let matrix = compat_matrix();
-    for row in [
-        "Manifest fields",
-        "Infinite/SSE stream",
-        "CommonJS Node server examples",
-    ] {
+    for row in ["Manifest fields", "CommonJS Node server examples"] {
         assert_row_status(&matrix, row, "partial");
     }
 }

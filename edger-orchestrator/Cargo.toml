@@ -11,7 +11,6 @@ path = "src/bin/edger.rs"
 [dependencies]
 edger-core = { path = "../edger-core" }
 edger-ext-auth = { path = "../edger-ext-auth" }
-edger-ext-gateway = { path = "../edger-ext-gateway" }
 edger-ext-keyval = { path = "../edger-ext-keyval" }
 edger-ext-turso = { path = "../edger-ext-turso" }
 edger-ext-turso-remote = { path = "../edger-ext-turso-remote" }

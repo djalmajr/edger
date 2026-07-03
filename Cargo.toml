@@ -6,7 +6,6 @@ members = [
   "edger-isolation",
   "edger-orchestrator",
   "edger-ext-auth",
-  "edger-ext-gateway",
   "edger-ext-turso",
   "edger-ext-turso-remote",
   "edger-ext-keyval",
