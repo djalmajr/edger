@@ -24,6 +24,10 @@ use tokio::net::UnixListener;
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::deno_bundle::{
+    default_deno_executable, entry_needs_bundle, DenoCliBundler, ModuleBundler,
+};
+
 const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
 
 #[derive(Serialize)]
@@ -80,6 +84,8 @@ pub struct DenoWorkerProcess {
     read_half: Option<OwnedReadHalf>,
     restore_rx: Option<oneshot::Receiver<OwnedReadHalf>>,
     timeout: Duration,
+    // Keeps the bundled entrypoint alive for the process lifetime when bundling is required.
+    _bundle_dir: Option<TempDir>,
     // Keeps the socket/harness dir alive for the process lifetime.
     _workdir: TempDir,
 }
@@ -98,7 +104,6 @@ impl DenoWorkerProcess {
             IsolationError::new("UDS_WORKER_DIR", format!("invalid worker_dir: {err}"))
         })?;
         let entry = resolve_entrypoint(&worker_dir, entrypoint)?;
-        let entry_url = format!("file://{}", entry.to_string_lossy());
 
         let workdir = tempfile::Builder::new()
             .prefix("edger-uds-")
@@ -109,12 +114,20 @@ impl DenoWorkerProcess {
         std::fs::write(&harness_path, harness_script()).map_err(|err| {
             IsolationError::new("UDS_HARNESS", format!("write harness failed: {err}"))
         })?;
+        let (entry_url, bundle_dir) = if entry_needs_bundle(&worker_dir, &entry)? {
+            let bundle_dir = create_bundle_dir(&worker_dir, workdir.path())?;
+            let bundler = DenoCliBundler::default();
+            let bundle = bundler.bundle_entrypoint(&worker_dir, &entry, bundle_dir.path())?;
+            (path_to_file_url(Path::new(&bundle.path))?, Some(bundle_dir))
+        } else {
+            (path_to_file_url(&entry)?, None)
+        };
 
         let listener = UnixListener::bind(&socket_path).map_err(|err| {
             IsolationError::new("UDS_BIND", format!("bind {}: {err}", socket_path.display()))
         })?;
 
-        let executable = std::env::var("EDGER_DENO_BIN").unwrap_or_else(|_| "deno".into());
+        let executable = default_deno_executable();
         let mut command = Command::new(&executable);
         command
             .arg("run")
@@ -176,6 +189,7 @@ impl DenoWorkerProcess {
             read_half: Some(read_half),
             restore_rx: None,
             timeout,
+            _bundle_dir: bundle_dir,
             _workdir: workdir,
         };
 
@@ -456,6 +470,31 @@ fn deno_config_path(worker_dir: &Path) -> Option<PathBuf> {
         .iter()
         .map(|name| worker_dir.join(name))
         .find(|path| path.is_file())
+}
+
+fn create_bundle_dir(worker_dir: &Path, fallback_dir: &Path) -> Result<TempDir, IsolationError> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".edger-bundle-");
+    builder
+        .tempdir_in(worker_dir)
+        .or_else(|_| {
+            let mut fallback = tempfile::Builder::new();
+            fallback.prefix("edger-bundle-");
+            fallback.tempdir_in(fallback_dir)
+        })
+        .map_err(|err| {
+            IsolationError::new(
+                "UDS_BUNDLE_TMP",
+                format!("failed to create bundle tempdir: {err}"),
+            )
+        })
+}
+
+fn path_to_file_url(path: &Path) -> Result<String, IsolationError> {
+    let path = path.canonicalize().map_err(|err| {
+        IsolationError::new("UDS_BUNDLE_OUTPUT", format!("invalid bundle output: {err}"))
+    })?;
+    Ok(format!("file://{}", path.to_string_lossy()))
 }
 
 /// Read sandbox for the worker process: its own dir + the ephemeral socket dir,

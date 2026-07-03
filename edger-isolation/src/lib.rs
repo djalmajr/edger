@@ -13,6 +13,10 @@ pub mod mock;
 pub mod static_spa;
 pub mod wire;
 
+#[cfg(any(feature = "deno", feature = "multiproc"))]
+#[path = "deno/bundle.rs"]
+mod deno_bundle;
+
 #[cfg(feature = "deno")]
 pub mod deno;
 

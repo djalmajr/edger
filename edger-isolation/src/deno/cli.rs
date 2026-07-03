@@ -11,6 +11,10 @@ use edger_core::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::deno_bundle::{
+    default_deno_executable, entry_needs_bundle, DenoCliBundler, ModuleBundler,
+};
+
 const RESPONSE_PREFIX: &str = "__EDGER_RESPONSE__";
 
 #[derive(Debug, Clone)]
@@ -36,7 +40,7 @@ struct BridgeResponse {
 impl Default for DenoCliRunner {
     fn default() -> Self {
         Self {
-            executable: std::env::var("EDGER_DENO_BIN").unwrap_or_else(|_| "deno".into()),
+            executable: default_deno_executable(),
         }
     }
 }
@@ -63,7 +67,14 @@ impl DenoCliRunner {
             )
         })?;
         let entrypoint = resolve_entrypoint(&worker_dir, config.entrypoint.as_deref())?;
-        let entry_url = path_to_file_url(&entrypoint)?;
+        let (entry_url, bundle_dir) = if entry_needs_bundle(&worker_dir, &entrypoint)? {
+            let bundle_dir = create_bundle_dir(&worker_dir)?;
+            let bundler = DenoCliBundler::new(self.executable.clone());
+            let bundle = bundler.bundle_entrypoint(&worker_dir, &entrypoint, bundle_dir.path())?;
+            (path_to_file_url(Path::new(&bundle.path))?, Some(bundle_dir))
+        } else {
+            (path_to_file_url(&entrypoint)?, None)
+        };
         let input = BridgeRequest {
             body: req.body.map(|body| body.to_vec()),
             headers: req.headers,
@@ -78,6 +89,7 @@ impl DenoCliRunner {
         })?;
         let output = self.run_bridge(
             &worker_dir,
+            bundle_dir.as_ref().map(|dir| dir.path()),
             &entry_url,
             &input_json,
             Duration::from_millis(config.timeout_ms),
@@ -94,6 +106,7 @@ impl DenoCliRunner {
     fn run_bridge(
         &self,
         worker_dir: &Path,
+        bundle_dir: Option<&Path>,
         entry_url: &str,
         input_json: &[u8],
         timeout: Duration,
@@ -106,7 +119,7 @@ impl DenoCliRunner {
             .arg("--no-check")
             .arg("--no-prompt")
             .env_clear();
-        apply_permission_flags(&mut command, worker_dir);
+        apply_permission_flags(&mut command, worker_dir, bundle_dir);
         inject_runtime_env(&mut command);
         inject_manifest_env(&mut command, manifest_env);
         if let Some(config_path) = deno_config_path(worker_dir) {
@@ -212,13 +225,35 @@ fn write_bridge_script(
     Ok(file)
 }
 
+fn create_bundle_dir(worker_dir: &Path) -> Result<tempfile::TempDir, IsolationError> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".edger-bundle-");
+    builder
+        .tempdir_in(worker_dir)
+        .or_else(|_| {
+            let mut fallback = tempfile::Builder::new();
+            fallback.prefix("edger-bundle-");
+            fallback.tempdir()
+        })
+        .map_err(|err| {
+            IsolationError::new(
+                "DENO_BUNDLE_TMP",
+                format!("failed to create bundle tempdir: {err}"),
+            )
+        })
+}
+
 /// Sandbox policy for worker execution: read access to the worker dir only
 /// and network per `EDGER_DENO_ALLOW_NET` (default: allowed). Env access is
 /// unrestricted because the child environment is cleared and rebuilt from the
 /// filtered manifest keys — Buntime semantics expect a filtered variable to
 /// read as `undefined`, not to throw. Write, run, ffi and sys stay denied.
-fn apply_permission_flags(command: &mut Command, worker_dir: &Path) {
-    command.arg(format!("--allow-read={}", worker_dir.display()));
+fn apply_permission_flags(command: &mut Command, worker_dir: &Path, bundle_dir: Option<&Path>) {
+    let mut read_paths = vec![worker_dir.display().to_string()];
+    if let Some(bundle_dir) = bundle_dir.filter(|path| !path.starts_with(worker_dir)) {
+        read_paths.push(bundle_dir.display().to_string());
+    }
+    command.arg(format!("--allow-read={}", read_paths.join(",")));
     command.arg("--allow-env");
 
     match std::env::var("EDGER_DENO_ALLOW_NET")

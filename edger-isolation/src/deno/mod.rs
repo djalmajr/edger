@@ -4,11 +4,12 @@
 //! It keeps the Rust orchestrator and worker pool on the production path while
 //! the embedded `deno_core` facade is still pending.
 
-mod bundle;
 mod cli;
 mod facade;
 
-pub use bundle::{BundleFormat, ModuleBundle, ModuleBundler, StubBundler};
+pub use crate::deno_bundle::{
+    entry_needs_bundle, BundleFormat, DenoCliBundler, ModuleBundle, ModuleBundler,
+};
 pub use cli::DenoCliRunner;
 pub use facade::DenoFacade;
 
@@ -28,7 +29,7 @@ fn not_impl(method: &str) -> IsolationError {
 /// JS/TS isolate backed by the Deno CLI bridge.
 pub struct DenoIsolate {
     facade: DenoFacade,
-    bundler: StubBundler,
+    bundler: DenoCliBundler,
     runner: DenoCliRunner,
 }
 
@@ -36,7 +37,7 @@ impl DenoIsolate {
     pub fn new(facade: DenoFacade) -> Self {
         Self {
             facade,
-            bundler: StubBundler,
+            bundler: DenoCliBundler::default(),
             runner: DenoCliRunner::default(),
         }
     }
@@ -45,7 +46,7 @@ impl DenoIsolate {
         &self.facade
     }
 
-    pub fn bundler(&self) -> &StubBundler {
+    pub fn bundler(&self) -> &DenoCliBundler {
         &self.bundler
     }
 
