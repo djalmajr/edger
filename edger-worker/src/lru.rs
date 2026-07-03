@@ -23,7 +23,14 @@ pub enum ReservedSlot {
     Unavailable,
 }
 
+pub enum QueueEnterResult {
+    Accepted(WorkerQueueWaiter),
+    Closed,
+    Full,
+}
+
 pub struct WorkerGroup {
+    closed: AtomicUsize,
     instances: Mutex<Vec<Arc<WorkerInstance>>>,
     next_index: AtomicUsize,
     queue_waiters: AtomicUsize,
@@ -33,6 +40,7 @@ pub struct WorkerGroup {
 impl WorkerGroup {
     pub fn new(instances: Vec<Arc<WorkerInstance>>) -> Self {
         Self {
+            closed: AtomicUsize::new(0),
             instances: Mutex::new(instances),
             next_index: AtomicUsize::new(0),
             queue_waiters: AtomicUsize::new(0),
@@ -64,6 +72,15 @@ impl WorkerGroup {
         self.queue_notify.notify_one();
     }
 
+    pub fn close_queue(&self) {
+        self.closed.store(1, Ordering::SeqCst);
+        self.queue_notify.notify_waiters();
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst) != 0
+    }
+
     pub async fn wait_for_slot_release(&self) {
         self.queue_notify.notified().await;
     }
@@ -72,15 +89,21 @@ impl WorkerGroup {
         self: &Arc<Self>,
         limit: usize,
         metrics: Arc<MetricsCollector>,
-    ) -> Option<WorkerQueueWaiter> {
+    ) -> QueueEnterResult {
+        if self.is_closed() {
+            return QueueEnterResult::Closed;
+        }
         if limit == 0 {
-            return None;
+            return QueueEnterResult::Full;
         }
 
         let mut queued = self.queue_waiters.load(Ordering::SeqCst);
         loop {
+            if self.is_closed() {
+                return QueueEnterResult::Closed;
+            }
             if queued >= limit {
-                return None;
+                return QueueEnterResult::Full;
             }
             match self.queue_waiters.compare_exchange(
                 queued,
@@ -90,7 +113,7 @@ impl WorkerGroup {
             ) {
                 Ok(_) => {
                     metrics.set_worker_queue_queued((queued + 1) as u64);
-                    return Some(WorkerQueueWaiter {
+                    return QueueEnterResult::Accepted(WorkerQueueWaiter {
                         group: Arc::clone(self),
                         metrics,
                         started: Instant::now(),
@@ -108,14 +131,40 @@ impl WorkerGroup {
         instances.is_empty()
     }
 
-    pub fn reserve_slot<F>(&self, max_processes: usize, mut create: F) -> ReservedSlot
+    pub fn reserve_slot<F>(&self, max_processes: usize, create: F) -> ReservedSlot
     where
         F: FnMut() -> Arc<WorkerInstance>,
     {
+        self.reserve_slot_with_min(max_processes, 0, create)
+    }
+
+    pub fn reserve_slot_with_min<F>(
+        &self,
+        max_processes: usize,
+        min_processes: usize,
+        mut create: F,
+    ) -> ReservedSlot
+    where
+        F: FnMut() -> Arc<WorkerInstance>,
+    {
+        if self.is_closed() {
+            return ReservedSlot::Unavailable;
+        }
+
         let mut instances = self.instances.lock().expect("worker group lock");
         instances.retain(|instance| instance.state() != WorkerState::Terminated);
 
         if instances.is_empty() {
+            let instance = create();
+            let guard = instance
+                .dispatch_lock()
+                .try_lock_owned()
+                .expect("new worker instance dispatch lock must be free");
+            instances.push(Arc::clone(&instance));
+            return ReservedSlot::Acquired { instance, guard };
+        }
+
+        if instances.len() < min_processes.min(max_processes.max(1)) {
             let instance = create();
             let guard = instance
                 .dispatch_lock()
@@ -246,6 +295,15 @@ impl WorkerLru {
         if remove_group {
             cache.pop(key);
         }
+    }
+
+    pub fn groups_snapshot(&self) -> Vec<Arc<WorkerGroup>> {
+        self.inner
+            .lock()
+            .expect("lru lock")
+            .iter()
+            .map(|(_, group)| Arc::clone(group))
+            .collect()
     }
 
     pub fn find_by_worker_id(&self, worker_id: Uuid) -> Option<Arc<WorkerInstance>> {

@@ -18,7 +18,7 @@ use crate::ephemeral::EphemeralGate;
 use crate::error::WorkerError;
 use crate::factory::IsolateFactory;
 use crate::instance::WorkerInstance;
-use crate::lru::{ReservedSlot, WorkerGroup, WorkerLru};
+use crate::lru::{QueueEnterResult, ReservedSlot, WorkerGroup, WorkerLru};
 use crate::metrics::{MetricsCollector, PoolMetrics, WorkerStats};
 use crate::state::WorkerState;
 use crate::supervisor::Supervisor;
@@ -197,7 +197,7 @@ impl WorkerPool {
         let group = self.get_or_create_group(worker_ref)?;
         let max_processes = worker_ref.config.max_processes.max(1);
 
-        match group.reserve_slot(max_processes, || {
+        match group.reserve_slot_with_min(max_processes, worker_ref.config.min_processes, || {
             let spawn_start = Instant::now();
             let instance = self.create_instance(worker_ref);
             self.inner.metrics.record_miss();
@@ -213,6 +213,9 @@ impl WorkerPool {
             ReservedSlot::Wait(_) => {
                 self.acquire_queued_dispatch_slot(worker_ref, group, max_processes)
                     .await
+            }
+            ReservedSlot::Unavailable if self.inner.shutdown.load(Ordering::SeqCst) => {
+                Err(WorkerError::Shutdown)
             }
             ReservedSlot::Unavailable => Err(WorkerError::Retired),
         }
@@ -241,6 +244,9 @@ impl WorkerPool {
                 let guard = instance.dispatch_lock().lock_owned().await;
                 Ok(DispatchSlot::new(instance, group, guard))
             }
+            ReservedSlot::Unavailable if self.inner.shutdown.load(Ordering::SeqCst) => {
+                Err(WorkerError::Shutdown)
+            }
             ReservedSlot::Unavailable => Err(WorkerError::Retired),
         }
     }
@@ -251,32 +257,47 @@ impl WorkerPool {
         group: Arc<WorkerGroup>,
         max_processes: usize,
     ) -> Result<DispatchSlot, WorkerError> {
-        let Some(_waiter) = group.try_enter_queue(
+        let _waiter = match group.try_enter_queue(
             worker_ref.config.queue_limit,
             Arc::clone(&self.inner.metrics),
-        ) else {
-            self.inner.metrics.record_worker_queue_rejected();
-            return Err(WorkerError::WorkerQueueFull);
+        ) {
+            QueueEnterResult::Accepted(waiter) => waiter,
+            QueueEnterResult::Closed => return Err(WorkerError::Shutdown),
+            QueueEnterResult::Full => {
+                self.inner.metrics.record_worker_queue_rejected();
+                return Err(WorkerError::WorkerQueueFull);
+            }
         };
         self.inner.metrics.record_worker_queue_enqueued();
 
         let deadline =
             tokio::time::Instant::now() + Duration::from_millis(worker_ref.config.queue_timeout_ms);
         loop {
-            match group.reserve_slot(max_processes, || {
-                let spawn_start = Instant::now();
-                let instance = self.create_instance(worker_ref);
-                self.inner.metrics.record_miss();
-                self.inner
-                    .metrics
-                    .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
-                instance
-            }) {
+            if self.inner.shutdown.load(Ordering::SeqCst) || group.is_closed() {
+                return Err(WorkerError::Shutdown);
+            }
+
+            match group.reserve_slot_with_min(
+                max_processes,
+                worker_ref.config.min_processes,
+                || {
+                    let spawn_start = Instant::now();
+                    let instance = self.create_instance(worker_ref);
+                    self.inner.metrics.record_miss();
+                    self.inner
+                        .metrics
+                        .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
+                    instance
+                },
+            ) {
                 ReservedSlot::Acquired { instance, guard } => {
                     self.sync_worker_counts();
                     return Ok(DispatchSlot::new(instance, Arc::clone(&group), guard));
                 }
                 ReservedSlot::Wait(_) => {}
+                ReservedSlot::Unavailable if self.inner.shutdown.load(Ordering::SeqCst) => {
+                    return Err(WorkerError::Shutdown);
+                }
                 ReservedSlot::Unavailable => return Err(WorkerError::Retired),
             }
 
@@ -620,10 +641,31 @@ impl WorkerPool {
     }
 
     pub fn shutdown(&self) {
-        self.inner.shutdown.store(true, Ordering::SeqCst);
+        if self.inner.shutdown.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let groups = self.inner.cache.groups_snapshot();
+        for group in &groups {
+            group.close_queue();
+        }
+        let instances = groups
+            .iter()
+            .flat_map(|group| group.instances_snapshot())
+            .collect::<Vec<_>>();
+
         self.inner.cache.clear();
         self.inner.evicted.lock().expect("evicted lock").clear();
         self.sync_worker_counts();
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(shutdown_instances_after_drain(instances));
+        } else {
+            for instance in instances {
+                instance.cancel_ttl_timer();
+                instance.set_state(WorkerState::Terminated);
+            }
+        }
     }
 
     pub fn get_metrics(&self) -> PoolMetrics {
@@ -835,6 +877,34 @@ async fn recycle_stream_state(mut state: StreamDispatchState) {
     }
     state.pool.recycle_cancelled(&state.instance);
     state.pool.sync_worker_counts();
+}
+
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn shutdown_instances_after_drain(instances: Vec<Arc<WorkerInstance>>) {
+    for instance in instances {
+        instance.cancel_ttl_timer();
+        let dispatch_lock = instance.dispatch_lock();
+        let dispatch_drained =
+            tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, dispatch_lock.lock_owned())
+                .await
+                .ok();
+        drop(dispatch_drained);
+        terminate_shutdown_instance(instance).await;
+    }
+}
+
+async fn terminate_shutdown_instance(instance: Arc<WorkerInstance>) {
+    if instance.state() == WorkerState::Terminated {
+        return;
+    }
+
+    instance.set_state(WorkerState::Terminating);
+    let isolate = instance.isolate();
+    if let Ok(mut guard) = tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, isolate.lock()).await {
+        let _ = guard.terminate().await;
+    }
+    instance.set_state(WorkerState::Terminated);
 }
 
 /// RAII guard that recycles an `Active` instance if the dispatch future is
