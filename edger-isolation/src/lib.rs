@@ -11,7 +11,6 @@ pub mod kinds;
 pub mod limits;
 pub mod mock;
 pub mod static_spa;
-pub mod transport;
 pub mod wire;
 
 #[cfg(feature = "deno")]
@@ -29,7 +28,6 @@ pub use isolate::Isolate;
 pub use kinds::dispatch_execution;
 pub use limits::{execute_with_limits, CpuTimer, LimitGuard, ResourceLimits};
 pub use mock::MockIsolate;
-pub use transport::{InProcessTransport, IsolateTransport, UdsTransport};
 pub use wire::{decode_frame, encode_frame, validate_request};
 
 #[cfg(feature = "deno")]
