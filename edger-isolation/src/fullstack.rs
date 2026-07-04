@@ -77,20 +77,23 @@ pub fn try_serve_fullstack_asset(
         Ok(path) if path.starts_with(&client_root) && path.is_file() => path,
         _ => return Ok(Some(text_response(404, "not found"))),
     };
-    let body = fs::read(&file_path).map_err(|err| {
+    let mut body = fs::read(&file_path).map_err(|err| {
         IsolationError::new(
             "FULLSTACK_ASSET_READ_FAILED",
             format!("failed to read {}: {err}", file_path.display()),
         )
     })?;
+    let content_type = crate::static_spa::content_type_for(&file_path);
+    if content_type.starts_with("text/html") && is_client_index_html(&file_path, &client_root) {
+        let base_path = resolve_base_path(req, &fullstack.base_path);
+        let entry_base_href = base_href(&base_path);
+        body = crate::static_spa::transform_entry_html(body, Some(&entry_base_href), config);
+    }
 
     Ok(Some(SerializedResponse {
         status: 200,
         headers: vec![
-            (
-                "content-type".into(),
-                crate::static_spa::content_type_for(&file_path).into(),
-            ),
+            ("content-type".into(), content_type.into()),
             ("cache-control".into(), cache_control_for(path).into()),
         ],
         body: Some(Bytes::from(body)),
@@ -186,6 +189,11 @@ fn matches_asset_prefix(path: &str, prefixes: &[String]) -> bool {
         }
         path == prefix || path.starts_with(&format!("{prefix}/"))
     })
+}
+
+fn is_client_index_html(file_path: &Path, client_root: &Path) -> bool {
+    file_path.parent() == Some(client_root)
+        && file_path.file_name().and_then(|name| name.to_str()) == Some("index.html")
 }
 
 fn path_has_forbidden_components(path: &str) -> bool {
@@ -329,6 +337,7 @@ fn text_response(status: u16, text: &'static str) -> SerializedResponse {
 mod tests {
     use super::*;
     use edger_core::{parse_worker_config, WorkerManifest};
+    use std::collections::HashMap;
 
     fn config(root: &Path) -> WorkerConfig {
         let manifest = WorkerManifest {
@@ -339,6 +348,12 @@ mod tests {
             ssr_entrypoint: Some("server/server.js".into()),
             ..WorkerManifest::default()
         };
+        let mut config = parse_worker_config(&manifest);
+        config.worker_dir = Some(root.to_path_buf());
+        config
+    }
+
+    fn config_from_manifest(root: &Path, manifest: WorkerManifest) -> WorkerConfig {
         let mut config = parse_worker_config(&manifest);
         config.worker_dir = Some(root.to_path_buf());
         config
@@ -368,6 +383,76 @@ mod tests {
 
         assert_eq!(res.status, 200);
         assert_eq!(res.body.unwrap().as_ref(), b"body{}");
+    }
+
+    #[test]
+    fn fullstack_index_html_injects_public_env_and_auto_base() {
+        // Guards against skipping the fullstack client index transform path.
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client")).unwrap();
+        fs::write(
+            root.path().join("client/index.html"),
+            r#"<!doctype html><html><head><base href="/old/" /></head><body></body></html>"#,
+        )
+        .unwrap();
+        let manifest = WorkerManifest {
+            name: "tanstack-demo".into(),
+            adapter: Some("tanstack".into()),
+            asset_prefixes: vec!["/index.html".into()],
+            client_dir: Some("client".into()),
+            env: Some(HashMap::from([
+                ("PUBLIC_API_URL".into(), "https://api.example.test".into()),
+                ("OPENAI_API_KEY".into(), "sk-secret".into()),
+            ])),
+            kind: Some("fullstack".into()),
+            public_env: vec!["PUBLIC_API_URL".into(), "OPENAI_API_KEY".into()],
+            ssr_entrypoint: Some("server/server.js".into()),
+            ..WorkerManifest::default()
+        };
+        let config = config_from_manifest(root.path(), manifest);
+
+        let res = try_serve_fullstack_asset(&req("/index.html"), &config)
+            .unwrap()
+            .unwrap();
+        let body = String::from_utf8_lossy(res.body.unwrap().as_ref()).into_owned();
+
+        assert!(body.contains(r#"<base href="/tanstack-demo/" />"#));
+        assert!(!body.contains(r#"<base href="/old/" />"#));
+        assert!(body.contains(r#""PUBLIC_API_URL":"https://api.example.test""#));
+        assert!(!body.contains("OPENAI_API_KEY"));
+        assert!(!body.contains("sk-secret"));
+    }
+
+    #[test]
+    fn fullstack_index_html_uses_fixed_base_path() {
+        // Guards against resolving fullstack asset base href only from x-base.
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client")).unwrap();
+        fs::write(
+            root.path().join("client/index.html"),
+            r#"<!doctype html><html><head></head><body></body></html>"#,
+        )
+        .unwrap();
+        let manifest = WorkerManifest {
+            name: "tanstack-demo".into(),
+            adapter: Some("tanstack".into()),
+            asset_prefixes: vec!["/index.html".into()],
+            base_path: Some("/fixed-app".into()),
+            client_dir: Some("client".into()),
+            kind: Some("fullstack".into()),
+            ssr_entrypoint: Some("server/server.js".into()),
+            ..WorkerManifest::default()
+        };
+        let config = config_from_manifest(root.path(), manifest);
+
+        let res = try_serve_fullstack_asset(&req("/index.html"), &config)
+            .unwrap()
+            .unwrap();
+        let body = String::from_utf8_lossy(res.body.unwrap().as_ref()).into_owned();
+
+        assert!(body.contains(r#"<base href="/fixed-app/" />"#));
+        assert!(!body.contains(r#"<base href="/tanstack-demo/" />"#));
+        assert!(!body.contains("window.__env__"));
     }
 
     #[test]

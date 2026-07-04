@@ -4,11 +4,12 @@
 //! injects `<base href>` into HTML when requested. No JS engine involved — a
 //! StaticSpa worker never needs a Deno process.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use bytes::Bytes;
-use edger_core::{IsolationError, SerializedResponse, WorkerConfig};
+use edger_core::{is_sensitive_env_key, IsolationError, SerializedResponse, WorkerConfig};
 
 pub fn serve_static_spa(
     request_path: &str,
@@ -29,7 +30,7 @@ pub fn serve_static_spa(
     let file_path = if requested.is_file() {
         requested
     } else {
-        entrypoint
+        entrypoint.clone()
     };
     let mut body = fs::read(&file_path).map_err(|err| {
         IsolationError::new(
@@ -39,10 +40,8 @@ pub fn serve_static_spa(
     })?;
     let content_type = content_type_for(&file_path);
 
-    if content_type.starts_with("text/html") {
-        if let Some(base) = base_href {
-            body = inject_base_href(&String::from_utf8_lossy(&body), base).into_bytes();
-        }
+    if content_type.starts_with("text/html") && file_path == entrypoint {
+        body = transform_entry_html(body, base_href, config);
     }
 
     Ok(SerializedResponse {
@@ -136,13 +135,121 @@ pub(crate) fn content_type_for(path: &Path) -> &'static str {
     }
 }
 
-fn inject_base_href(html: &str, base_href: &str) -> String {
-    let escaped = escape_html_attr(base_href);
-    if html.contains("<head>") {
-        html.replace("<head>", &format!(r#"<head><base href="{escaped}" />"#))
-    } else {
-        format!(r#"<base href="{escaped}" />{html}"#)
+pub(crate) fn transform_entry_html(
+    body: Vec<u8>,
+    base_href: Option<&str>,
+    config: &WorkerConfig,
+) -> Vec<u8> {
+    let public_env = public_runtime_env(config);
+    if base_href.is_none() && public_env.is_empty() {
+        return body;
     }
+
+    let mut html = String::from_utf8_lossy(&body).into_owned();
+    if let Some(base) = base_href {
+        html = rewrite_base_href(&html, base);
+    }
+    if !public_env.is_empty() {
+        html = inject_public_env_script(&html, &public_env);
+    }
+    html.into_bytes()
+}
+
+fn public_runtime_env(config: &WorkerConfig) -> BTreeMap<String, String> {
+    config
+        .public_env
+        .iter()
+        .filter_map(|key| {
+            let key = key.trim();
+            if key.is_empty() || is_sensitive_env_key(key) {
+                return None;
+            }
+            config
+                .env
+                .get(key)
+                .map(|value| (key.to_string(), value.clone()))
+        })
+        .collect()
+}
+
+fn rewrite_base_href(html: &str, base_href: &str) -> String {
+    let escaped = escape_html_attr(base_href);
+    let base_tag = format!(r#"<base href="{escaped}" />"#);
+    if let Some((start, end)) = find_html_tag(html, "base") {
+        let mut next = String::with_capacity(html.len() + base_tag.len());
+        next.push_str(&html[..start]);
+        next.push_str(&base_tag);
+        next.push_str(&html[end..]);
+        next
+    } else {
+        insert_after_opening_head(html, &base_tag)
+    }
+}
+
+fn inject_public_env_script(html: &str, public_env: &BTreeMap<String, String>) -> String {
+    let json =
+        serde_json::to_string(public_env).expect("string map JSON serialization cannot fail");
+    let json = escape_inline_script_json(&json);
+    let script = format!("<script>window.__env__={json};</script>");
+    insert_before_closing_head(html, &script)
+}
+
+fn insert_after_opening_head(html: &str, fragment: &str) -> String {
+    if let Some((_, end)) = find_html_tag(html, "head") {
+        let mut next = String::with_capacity(html.len() + fragment.len());
+        next.push_str(&html[..end]);
+        next.push_str(fragment);
+        next.push_str(&html[end..]);
+        next
+    } else {
+        format!("{fragment}{html}")
+    }
+}
+
+fn insert_before_closing_head(html: &str, fragment: &str) -> String {
+    if let Some(index) = find_ascii_case_insensitive(html, "</head>") {
+        let mut next = String::with_capacity(html.len() + fragment.len());
+        next.push_str(&html[..index]);
+        next.push_str(fragment);
+        next.push_str(&html[index..]);
+        next
+    } else {
+        format!("{fragment}{html}")
+    }
+}
+
+fn find_html_tag(html: &str, tag: &str) -> Option<(usize, usize)> {
+    let needle = format!("<{tag}");
+    let mut offset = 0;
+    while let Some(relative_start) = find_ascii_case_insensitive(&html[offset..], &needle) {
+        let start = offset + relative_start;
+        let after_name = start + needle.len();
+        let boundary_matches = match html[after_name..].chars().next() {
+            Some(ch) => ch.is_ascii_whitespace() || ch == '>' || ch == '/',
+            None => true,
+        };
+        if boundary_matches {
+            let end = html[after_name..].find('>')? + after_name + 1;
+            return Some((start, end));
+        }
+        offset = after_name;
+    }
+    None
+}
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    haystack
+        .to_ascii_lowercase()
+        .find(&needle.to_ascii_lowercase())
+}
+
+fn escape_inline_script_json(value: &str) -> String {
+    value
+        .replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
 }
 
 fn escape_html_attr(value: &str) -> String {
@@ -158,6 +265,7 @@ fn escape_html_attr(value: &str) -> String {
 mod tests {
     use super::*;
     use edger_core::{parse_worker_config, WorkerManifest};
+    use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
 
@@ -175,10 +283,11 @@ mod tests {
 
     #[test]
     fn static_spa_serves_index_and_assets() {
+        // Guards against applying entry HTML rewrites to non-HTML assets.
         let root = tempfile::tempdir().unwrap();
         fs::write(
             root.path().join("index.html"),
-            r#"<!doctype html><html><head></head><body></body></html>"#,
+            r#"<!doctype html><html><head><base href="/old/" /></head><body></body></html>"#,
         )
         .unwrap();
         fs::write(root.path().join("index.css"), "body{}").unwrap();
@@ -186,8 +295,9 @@ mod tests {
 
         let html = serve_static_spa("/", Some("/todos/"), &config).unwrap();
         assert_eq!(html.status, 200);
-        assert!(String::from_utf8_lossy(html.body.unwrap().as_ref())
-            .contains(r#"<base href="/todos/" />"#));
+        let html_body = String::from_utf8_lossy(html.body.unwrap().as_ref()).into_owned();
+        assert!(html_body.contains(r#"<base href="/todos/" />"#));
+        assert!(!html_body.contains(r#"<base href="/old/" />"#));
 
         let css = serve_static_spa("/index.css", Some("/todos/"), &config).unwrap();
         assert_eq!(
@@ -195,6 +305,55 @@ mod tests {
             vec![("content-type".into(), "text/css; charset=utf-8".into())]
         );
         assert_eq!(css.body.unwrap().as_ref(), b"body{}");
+    }
+
+    #[test]
+    fn static_spa_injects_declared_public_env_and_filters_sensitive_keys() {
+        // Guards against serializing manifest env without the publicEnv allowlist.
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("index.html"),
+            r#"<!doctype html><html><head></head><body></body></html>"#,
+        )
+        .unwrap();
+        let mut config = spa_config(root.path());
+        config.env = HashMap::from([
+            ("PUBLIC_API_URL".into(), "https://api.example.test".into()),
+            ("PUBLIC_FLAG".into(), "enabled".into()),
+            ("OPENAI_API_KEY".into(), "sk-secret".into()),
+            ("ADMIN_PASSWORD".into(), "password-secret".into()),
+        ]);
+        config.public_env = vec![
+            "PUBLIC_API_URL".into(),
+            "PUBLIC_FLAG".into(),
+            "OPENAI_API_KEY".into(),
+            "ADMIN_PASSWORD".into(),
+        ];
+
+        let html = serve_static_spa("/", None, &config).unwrap();
+        let body = String::from_utf8_lossy(html.body.unwrap().as_ref()).into_owned();
+
+        assert!(body.contains("<script>window.__env__="));
+        assert!(body.contains(r#""PUBLIC_API_URL":"https://api.example.test""#));
+        assert!(body.contains(r#""PUBLIC_FLAG":"enabled""#));
+        assert!(!body.contains("OPENAI_API_KEY"));
+        assert!(!body.contains("ADMIN_PASSWORD"));
+        assert!(!body.contains("sk-secret"));
+        assert!(!body.contains("password-secret"));
+    }
+
+    #[test]
+    fn static_spa_does_not_inject_runtime_env_without_public_env() {
+        // Guards against treating every manifest env key as browser-visible.
+        let root = tempfile::tempdir().unwrap();
+        let original = r#"<!doctype html><html><head></head><body>plain</body></html>"#;
+        fs::write(root.path().join("index.html"), original).unwrap();
+        let mut config = spa_config(root.path());
+        config.env = HashMap::from([("PUBLIC_FLAG".into(), "enabled".into())]);
+
+        let html = serve_static_spa("/", None, &config).unwrap();
+
+        assert_eq!(html.body.unwrap().as_ref(), original.as_bytes());
     }
 
     #[test]
