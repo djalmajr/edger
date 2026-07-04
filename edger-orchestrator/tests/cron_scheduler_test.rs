@@ -270,14 +270,14 @@ fn invalid_schedule_fails_startup_validation_with_typed_error() {
     index
         .insert(
             PathBuf::from("/workers/cron-worker"),
-            cron_manifest(None, "0 0 * * *"),
+            cron_manifest(None, "not a cron"),
         )
         .unwrap();
 
     let err = collect_cron_registrations(&index).unwrap_err();
 
     assert_eq!(err.code, "CRON_SCHEDULE_INVALID");
-    assert!(err.message.contains("0 0 * * *"));
+    assert!(err.message.contains("not a cron"));
 }
 
 #[tokio::test]
