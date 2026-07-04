@@ -12,6 +12,7 @@ pub struct WorkerConfig {
     pub entrypoint: Option<String>,
     pub env: std::collections::HashMap<String, String>,
     pub env_prefix: Vec<String>,
+    pub public_env: Vec<String>,
     pub allow_net: Option<Vec<String>>,
     pub ttl_ms: u64,
     pub timeout_ms: u64,
@@ -321,6 +322,7 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         entrypoint: manifest.entrypoint.clone(),
         env: manifest.env.clone().unwrap_or_default(),
         env_prefix: manifest.env_prefix.clone(),
+        public_env: manifest.public_env.clone(),
         allow_net: manifest
             .allow_net
             .as_deref()

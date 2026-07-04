@@ -38,6 +38,34 @@ fn parse_worker_config_normalizes_buntime_fields() {
 }
 
 #[test]
+fn manifest_deserializes_public_env_allowlist() {
+    // Guards against leaving publicEnv out of the manifest/config mapping.
+    let manifest: WorkerManifest = serde_yaml::from_str(
+        r#"name: public-spa
+entrypoint: index.html
+env:
+  PUBLIC_API_URL: https://api.example.test
+  INTERNAL_FLAG: hidden
+publicEnv:
+  - PUBLIC_API_URL
+  - INTERNAL_FLAG
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        manifest.public_env,
+        vec!["PUBLIC_API_URL".to_string(), "INTERNAL_FLAG".to_string()]
+    );
+
+    let config = parse_worker_config(&manifest);
+    assert_eq!(
+        config.public_env,
+        vec!["PUBLIC_API_URL".to_string(), "INTERNAL_FLAG".to_string()]
+    );
+}
+
+#[test]
 fn effective_body_limit_uses_global_default_without_manifest_override() {
     let config = parse_worker_config(&WorkerManifest {
         name: "default-body-limit".into(),

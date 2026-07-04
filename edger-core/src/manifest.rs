@@ -36,6 +36,8 @@ pub struct WorkerManifest {
     pub env: Option<std::collections::HashMap<String, String>>,
     #[serde(default)]
     pub env_prefix: Vec<String>,
+    #[serde(default, alias = "public_env")]
+    pub public_env: Vec<String>,
     #[serde(default, alias = "allow_net")]
     pub allow_net: Option<Vec<String>>,
     pub ttl: Option<serde_yaml::Value>,
