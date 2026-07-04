@@ -13,8 +13,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use edger_core::{
-    is_sensitive_env_key, Isolate, IsolationError, SerializedRequest, SerializedResponse,
-    StreamedResponse, WorkerConfig, WorkerResponse,
+    is_sensitive_env_key, DenoCacheMode, Isolate, IsolationError, SerializedRequest,
+    SerializedResponse, StreamedResponse, WorkerConfig, WorkerResponse,
 };
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
@@ -27,6 +27,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::deno_bundle::{
     default_deno_executable, entry_needs_bundle, DenoCliBundler, ModuleBundler,
 };
+use crate::deno_sandbox_policy::{deno_network_permission_args, read_allowlist, select_deno_dir};
 
 const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
 
@@ -100,6 +101,27 @@ impl DenoWorkerProcess {
         env: &std::collections::HashMap<String, String>,
         memory_mb: Option<u32>,
     ) -> Result<Self, IsolationError> {
+        Self::spawn_with_policy(
+            worker_dir,
+            entrypoint,
+            timeout,
+            env,
+            memory_mb,
+            None,
+            DenoCacheMode::default(),
+        )
+        .await
+    }
+
+    async fn spawn_with_policy(
+        worker_dir: &Path,
+        entrypoint: Option<&str>,
+        timeout: Duration,
+        env: &std::collections::HashMap<String, String>,
+        memory_mb: Option<u32>,
+        allow_net: Option<&[String]>,
+        deno_cache_mode: DenoCacheMode,
+    ) -> Result<Self, IsolationError> {
         let worker_dir = worker_dir.canonicalize().map_err(|err| {
             IsolationError::new("UDS_WORKER_DIR", format!("invalid worker_dir: {err}"))
         })?;
@@ -127,6 +149,22 @@ impl DenoWorkerProcess {
             IsolationError::new("UDS_BIND", format!("bind {}: {err}", socket_path.display()))
         })?;
 
+        let deno_dir = select_deno_dir(
+            &worker_dir,
+            deno_cache_mode,
+            std::env::var("DENO_DIR").ok().as_deref(),
+            std::env::var("HOME").ok().as_deref(),
+            std::env::var("EDGER_DENO_CACHE_ROOT").ok().as_deref(),
+        );
+        if let Some(dir) = deno_dir.env_dir.as_deref() {
+            std::fs::create_dir_all(dir).map_err(|err| {
+                IsolationError::new(
+                    "UDS_DENO_DIR",
+                    format!("create DENO_DIR {}: {err}", dir.display()),
+                )
+            })?;
+        }
+
         let executable = default_deno_executable();
         let mut command = Command::new(&executable);
         command
@@ -135,15 +173,20 @@ impl DenoWorkerProcess {
             .arg("--no-prompt")
             .arg(format!(
                 "--allow-read={}",
-                read_allowlist(&worker_dir, workdir.path())
+                read_allowlist(&worker_dir, workdir.path(), &deno_dir.read_dirs)
             ))
             // Connecting a unix socket needs write on the socket dir.
             .arg(format!("--allow-write={}", workdir.path().display()))
-            .arg("--allow-net")
             .arg("--allow-env")
             // node/npm frameworks (express etc.) may query os/sys info.
             .arg("--allow-sys")
             .env_clear();
+        for arg in deno_network_permission_args(
+            allow_net,
+            std::env::var("EDGER_DENO_ALLOW_NET").ok().as_deref(),
+        ) {
+            command.arg(arg);
+        }
         // Memory cap via the V8 heap limit — the correct, portable enforcement
         // for a V8 process (RLIMIT_AS is unusable: V8 reserves a huge virtual
         // address space and would be killed at boot). A worker that leaks past
@@ -152,7 +195,7 @@ impl DenoWorkerProcess {
         if let Some(mb) = memory_mb {
             command.arg(format!("--v8-flags=--max-old-space-size={mb}"));
         }
-        inject_runtime_env(&mut command);
+        inject_runtime_env(&mut command, deno_dir.env_dir.as_deref());
         inject_manifest_env(&mut command, env);
         if let Some(config_path) = deno_config_path(&worker_dir) {
             command.arg("--config").arg(config_path);
@@ -497,31 +540,16 @@ fn path_to_file_url(path: &Path) -> Result<String, IsolationError> {
     Ok(format!("file://{}", path.to_string_lossy()))
 }
 
-/// Read sandbox for the worker process: its own dir + the ephemeral socket dir,
-/// plus the Deno module cache (`DENO_DIR` or platform default) so `npm:`/`jsr:`
-/// packages resolve. The cache is read-only shared runtime data, not tenant data.
-fn read_allowlist(worker_dir: &Path, workdir: &Path) -> String {
-    let mut paths = vec![
-        worker_dir.display().to_string(),
-        workdir.display().to_string(),
-    ];
-    if let Ok(deno_dir) = std::env::var("DENO_DIR") {
-        if !deno_dir.trim().is_empty() {
-            paths.push(deno_dir);
-        }
-    } else if let Ok(home) = std::env::var("HOME") {
-        paths.push(format!("{home}/Library/Caches/deno")); // macOS
-        paths.push(format!("{home}/.cache/deno")); // Linux
-        paths.push(format!("{home}/.deno"));
-    }
-    paths.join(",")
-}
-
-fn inject_runtime_env(command: &mut Command) {
-    for key in ["PATH", "DENO_DIR", "HOME", "TMPDIR", "TEMP", "TMP"] {
+fn inject_runtime_env(command: &mut Command, deno_dir: Option<&Path>) {
+    for key in ["PATH", "HOME", "TMPDIR", "TEMP", "TMP"] {
         if let Ok(value) = std::env::var(key) {
             command.env(key, value);
         }
+    }
+    if let Some(deno_dir) = deno_dir {
+        command.env("DENO_DIR", deno_dir);
+    } else if let Ok(value) = std::env::var("DENO_DIR") {
+        command.env("DENO_DIR", value);
     }
 }
 
@@ -530,7 +558,7 @@ fn inject_manifest_env(
     manifest_env: &std::collections::HashMap<String, String>,
 ) {
     for (key, value) in manifest_env {
-        if !is_sensitive_env_key(key) {
+        if !is_sensitive_env_key(key) && !key.eq_ignore_ascii_case("DENO_DIR") {
             command.env(key, value);
         }
     }
@@ -563,12 +591,14 @@ impl DenoProcessIsolate {
             })?;
             let timeout = Duration::from_millis(config.timeout_ms.max(1));
             let limits = crate::limits::ResourceLimits::from_config(config);
-            let process = DenoWorkerProcess::spawn(
+            let process = DenoWorkerProcess::spawn_with_policy(
                 worker_dir,
                 config.entrypoint.as_deref(),
                 timeout,
                 &config.env,
                 limits.memory_mb,
+                config.allow_net.as_deref(),
+                config.deno_cache_mode,
             )
             .await?;
             self.process = Some(process);

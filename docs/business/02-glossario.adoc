@@ -33,9 +33,18 @@
   via `EDGER_DENO_ALLOW_NET`, write/run/ffi/sys negados), dentro do diretório
   do worker, usando `deno.json` / `deno.jsonc` local quando presente.
 
+| Processo Deno persistente
+| Backend JS/TS padrão. Mantém um processo Deno por worker, importa o módulo
+  uma vez e despacha por socket Unix. A rede usa `manifest.allowNet` ou
+  `EDGER_DENO_ALLOW_NET`; sem allowlist explícita, segue aberta por
+  compatibilidade. O cache Deno usa `denoCacheMode: per-worker` por padrão para
+  evitar compartilhamento de `DENO_DIR` entre workers, com `shared` disponível
+  como trade-off operacional.
+
 | deno_core
-| Alvo futuro de produção para JS/TS embutido. A bridge Deno CLI comprova o
-  contrato funcional, mas ainda não é a meta final de performance.
+| Alternativa embutida avaliada para JS/TS. O caminho de produção atual é o
+  processo Deno persistente por worker; `deno_core` só voltaria como backend
+  interno futuro se densidade/latência justificarem o custo.
 
 | Wasm ABI v2
 | Contrato para módulos Wasm: exports `memory`, `edger_alloc(len)` e

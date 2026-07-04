@@ -83,7 +83,13 @@ Depois do MVP, a foundation funcional exige:
 - `RUNTIME_WORKER_DIRS`: loader de roots/dirs diretos com `manifest.yaml`, `package.json` e `index.*`.
 - Wasm v1: `workers/wasm-hello/index.wat` executa via wasmtime pelo pipeline Rust.
 - JS/TS v1: `DenoIsolate` executa `Deno.serve` e default fetch via Deno CLI bridge pelo pipeline Rust.
-- Sandbox v1 (2026-07-02): bridge migrada de `deno eval` para `deno run --no-prompt` com `--allow-read=<worker_dir>`, `--allow-env` sobre env limpo/filtrado, `--allow-net` configurável (`EDGER_DENO_ALLOW_NET`); write/run/ffi/sys negados (`edger-isolation/tests/deno_sandbox.rs`).
+- Sandbox Deno (2026-07-03): o processo persistente usa `allowNet` do manifest
+  antes de `EDGER_DENO_ALLOW_NET` e preserva rede aberta quando nada é
+  configurado, por compatibilidade; `allowNet: []` nega egress. O `DENO_DIR`
+  padrão agora é dedicado por worker (`denoCacheMode: per-worker`, raiz em
+  `EDGER_DENO_CACHE_ROOT` ou temp), com `denoCacheMode: shared` como opção
+  explícita de cold-start menor/cache compartilhado. A bridge v1 continua
+  sandboxed via `deno run --no-prompt` e `EDGER_DENO_ALLOW_NET`.
 - `routes` export v1 (2026-07-02): dispatch por path/método com `:param`, `*` wildcard, method map (405), fallback `fetch` e 404 sem fallback (`workers/routes-demo` + E2E).
 - Resiliência de pool (2026-07-02): erro de isolate recicla o worker em vez de deixá-lo preso em `Active` (`pool_error_recovery.rs`).
 - `injectBase: false` respeitado com `kind: spa` explícito (fix `infer_execution_kind`).
