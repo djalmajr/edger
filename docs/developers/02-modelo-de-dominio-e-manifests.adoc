@@ -54,6 +54,17 @@ entrypoints convencionais na ordem `index.html`, `index.ts`, `index.js`,
 | Ambiente do worker. O uso seguro ainda depende do backend de execução e do
   hardening da Fase 7.
 
+| `allowNet`
+| Allowlist opcional de egress para workers Deno persistentes. Quando presente,
+  gera `--allow-net=host1,host2`; lista vazia nega rede. Quando ausente, o
+  runtime usa `EDGER_DENO_ALLOW_NET` e, se ela também estiver ausente, preserva
+  rede aberta por compatibilidade.
+
+| `denoCacheMode`
+| Modo do `DENO_DIR` para workers Deno persistentes: `per-worker` por default
+  para cache dedicado por worker, ou `shared` para usar cache global quando o
+  operador aceita o trade-off de isolamento por cold-start menor.
+
 | `injectBase`
 | Habilita injeção de `<base href>` para SPA/shell. StaticSpa production ainda
   está pendente.
@@ -81,6 +92,13 @@ entrypoints convencionais na ordem `index.html`, `index.ts`, `index.js`,
 
 | `max_requests`
 | `0`.
+
+| `allow_net`
+| `None`; o backend Deno persistente consulta `EDGER_DENO_ALLOW_NET` e mantém
+  rede aberta se nenhuma allowlist for configurada.
+
+| `deno_cache_mode`
+| `PerWorker`.
 
 | `inject_base`
 | `true`.

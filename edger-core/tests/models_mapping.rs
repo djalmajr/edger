@@ -3,7 +3,7 @@
 use edger_core::{
     create_worker_ref, effective_max_body_size_bytes, infer_execution_kind,
     parse_duration_string_to_ms, parse_size_to_bytes, parse_worker_config,
-    validate_worker_manifest, ExecutionKind, FullstackBasePath, WorkerManifest,
+    validate_worker_manifest, DenoCacheMode, ExecutionKind, FullstackBasePath, WorkerManifest,
     DEFAULT_MAX_BODY_BYTES,
 };
 
@@ -227,4 +227,30 @@ fn parse_worker_config_normalizes_worker_queue_controls() {
 
     assert_eq!(config.queue_limit, 0);
     assert_eq!(config.queue_timeout_ms, 25);
+}
+
+#[test]
+fn parse_worker_config_normalizes_deno_sandbox_controls() {
+    let manifest: WorkerManifest = serde_yaml::from_str(
+        r#"name: sandboxed
+entrypoint: index.ts
+allow_net:
+  - api.example.com
+  - "cdn.example.com:443, jsr.io"
+deno_cache_mode: shared
+"#,
+    )
+    .unwrap();
+
+    let config = parse_worker_config(&manifest);
+
+    assert_eq!(
+        config.allow_net,
+        Some(vec![
+            "api.example.com".into(),
+            "cdn.example.com:443".into(),
+            "jsr.io".into()
+        ])
+    );
+    assert_eq!(config.deno_cache_mode, DenoCacheMode::Shared);
 }

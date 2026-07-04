@@ -5,6 +5,8 @@
 //! - `cargo check -p edger-isolation --features wasm` — WasmIsolate skeleton
 
 pub mod backend;
+#[cfg(any(test, feature = "multiproc"))]
+mod deno_sandbox_policy;
 pub mod error;
 pub mod fullstack;
 pub mod isolate;

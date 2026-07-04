@@ -19,8 +19,9 @@ de autenticação estão no escopo da Fase 7.
 
 ==== Isolamento JS/TS
 
-A Deno CLI bridge v1 executa um processo Deno por request. Ela é funcional e
-útil para validar contratos, mas não é o alvo final de produção.
+O runtime JS/TS padrão usa um processo Deno persistente por worker, com módulo
+importado uma vez e dispatch por socket Unix. A Deno CLI bridge v1 permanece
+apenas como fallback legado via `EDGER_JS_RUNTIME=bridge`.
 
 Proteções atuais:
 
@@ -29,13 +30,20 @@ Proteções atuais:
 * execução ocorre com `current_dir` no diretório do worker;
 * timeout mata o processo quando excede `WorkerConfig.timeout_ms`;
 * `deno.json` / `deno.jsonc` local é carregado para import maps e config do
-  worker.
+  worker;
+* rede do Deno persistente respeita `manifest.allowNet` quando configurado,
+  senão `EDGER_DENO_ALLOW_NET`; quando nenhum dos dois existe, mantém
+  `--allow-net` aberto por compatibilidade retroativa;
+* `manifest.allowNet: []` nega rede para o worker;
+* `DENO_DIR` do processo persistente usa cache dedicado por worker por padrão
+  (`denoCacheMode: per-worker`), sob `EDGER_DENO_CACHE_ROOT` ou diretório
+  temporário do host; `denoCacheMode: shared` preserva o cache global para
+  operadores que aceitam o trade-off de isolamento por cold-start menor.
 
 Pendências:
 
-* permissões Deno e política de rede/cache ainda precisam de hardening;
-* `deno_core` embutido ainda precisa substituir o processo por request;
-* passthrough de streaming real ainda não está implementado.
+* hardening adicional de SO, como seccomp/landlock/cgroups em produção;
+* métricas de uso de cache Deno por worker ainda podem ser detalhadas.
 
 ==== Isolamento Wasm
 
@@ -70,5 +78,10 @@ Crates `edger-ext-*` precisam manter fronteiras rígidas:
 * Trate `ROOT_API_KEY` como segredo, mesmo em ambientes temporários.
 * Use `EDGER_AUTH_DB` fora de memória para ambientes persistentes.
 * Não injete segredos em manifests sem uma política de env allowlist.
+* Configure `allowNet` por worker ou `EDGER_DENO_ALLOW_NET` global antes de
+  operar em ambiente multi-tenant; a ausência de allowlist deixa a rede aberta
+  apenas por compatibilidade.
+* Use o cache Deno por worker como padrão; escolha `denoCacheMode: shared`
+  somente quando o ganho de cold-start justificar o cache compartilhado.
 * Não exponha workers protegidos sem TLS em ambiente compartilhado.
 * Não use a Deno CLI bridge v1 como promessa de performance final.

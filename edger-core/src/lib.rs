@@ -28,7 +28,7 @@ pub use config::{
 pub use error::{CoreError, IsolationError};
 pub use execution::{normalize_fullstack_adapter, ExecutionKind, SUPPORTED_FULLSTACK_ADAPTERS};
 pub use isolate::Isolate;
-pub use manifest::{CronJob, WorkerManifest};
+pub use manifest::{CronJob, DenoCacheMode, WorkerManifest};
 pub use principal::{principal_can_access_namespace, root_principal, ApiKeyPrincipal};
 pub use security::{
     is_mutating_method, is_sensitive_env_key, principal_can_access_optional_namespace,

@@ -1,7 +1,7 @@
 //! Normalized worker configuration and parsers.
 
 use crate::execution::{normalize_fullstack_adapter, ExecutionKind};
-use crate::manifest::WorkerManifest;
+use crate::manifest::{DenoCacheMode, WorkerManifest};
 
 /// Runtime-normalized worker configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,6 +12,7 @@ pub struct WorkerConfig {
     pub entrypoint: Option<String>,
     pub env: std::collections::HashMap<String, String>,
     pub env_prefix: Vec<String>,
+    pub allow_net: Option<Vec<String>>,
     pub ttl_ms: u64,
     pub timeout_ms: u64,
     pub idle_timeout_ms: u64,
@@ -26,6 +27,7 @@ pub struct WorkerConfig {
     pub max_body_size_bytes: Option<u64>,
     pub low_memory: bool,
     pub auto_install: bool,
+    pub deno_cache_mode: DenoCacheMode,
     pub inject_base: bool,
     pub cron: Vec<crate::manifest::CronJob>,
     pub kind: Option<ExecutionKind>,
@@ -248,6 +250,16 @@ pub fn effective_max_body_size_bytes_usize(config: &WorkerConfig) -> usize {
     usize::try_from(effective_max_body_size_bytes(config)).unwrap_or(usize::MAX)
 }
 
+fn normalize_allow_net(hosts: &[String]) -> Vec<String> {
+    hosts
+        .iter()
+        .flat_map(|host| host.split(','))
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// Normalize manifest into runtime `WorkerConfig`.
 pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
     let kind = infer_execution_kind(manifest);
@@ -309,6 +321,11 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         entrypoint: manifest.entrypoint.clone(),
         env: manifest.env.clone().unwrap_or_default(),
         env_prefix: manifest.env_prefix.clone(),
+        allow_net: manifest
+            .allow_net
+            .as_deref()
+            .map(normalize_allow_net)
+            .or_else(|| manifest.allow_net.as_ref().map(|_| Vec::new())),
         ttl_ms,
         timeout_ms,
         idle_timeout_ms,
@@ -321,6 +338,7 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         max_body_size_bytes,
         low_memory: manifest.low_memory.unwrap_or(false),
         auto_install: manifest.auto_install.unwrap_or(false),
+        deno_cache_mode: manifest.deno_cache_mode.unwrap_or_default(),
         inject_base: manifest.inject_base.unwrap_or(true),
         cron: manifest.cron.clone().unwrap_or_default(),
         kind: Some(kind),
