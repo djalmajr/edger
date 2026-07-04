@@ -11,6 +11,8 @@ pub use handler::WasmHttpHandler;
 pub use load::load_wasm_from_worker_dir;
 pub use wasi::WasiConfig;
 
+use handler::WasmRuntimeLimits;
+
 use async_trait::async_trait;
 
 use edger_core::{Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig};
@@ -97,8 +99,9 @@ impl Isolate for WasmIsolate {
                 "no wasm module bytes configured on WasmIsolate",
             )
         })?;
+        let limits = WasmRuntimeLimits::from_worker_config(config);
         self.handler
-            .execute_module_with_config(bytes, &req, &self.wasi)
+            .execute_module_with_config_and_limits(bytes, &req, &self.wasi, &limits)
     }
 
     async fn notify_idle(&mut self) -> Result<(), IsolationError> {
