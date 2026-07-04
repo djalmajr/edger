@@ -13,10 +13,13 @@ use crate::oidc::{OidcConfig, OidcValidator};
 
 const ROOT_API_KEY_ENV: &str = "ROOT_API_KEY";
 const EDGER_ROOT_KEY_FILE_ENV: &str = "EDGER_ROOT_KEY_FILE";
+const EDGER_OIDC_ADMIN_ROLE_ENV: &str = "EDGER_OIDC_ADMIN_ROLE";
 const EDGER_OIDC_AUDIENCE_ENV: &str = "EDGER_OIDC_AUDIENCE";
 const EDGER_OIDC_ISSUER_ENV: &str = "EDGER_OIDC_ISSUER";
+const EDGER_OIDC_NAMESPACES_CLAIM_ENV: &str = "EDGER_OIDC_NAMESPACES_CLAIM";
 const EDGER_OIDC_REQUIRED_ROLE_ENV: &str = "EDGER_OIDC_REQUIRED_ROLE";
 const EDGER_OIDC_ROLES_CLAIM_ENV: &str = "EDGER_OIDC_ROLES_CLAIM";
+const DEFAULT_OIDC_NAMESPACES_CLAIM: &str = "namespaces";
 
 /// Auth gate configuration. `EDGER_ROOT_KEY_FILE` takes precedence over `ROOT_API_KEY`.
 #[derive(Clone, Debug, Default)]
@@ -240,8 +243,11 @@ fn oidc_config_from_env() -> Option<OidcConfig> {
         }
     };
     Some(OidcConfig {
+        admin_role: non_empty_env(EDGER_OIDC_ADMIN_ROLE_ENV),
         audience,
         issuer,
+        namespaces_claim: non_empty_env(EDGER_OIDC_NAMESPACES_CLAIM_ENV)
+            .unwrap_or_else(|| DEFAULT_OIDC_NAMESPACES_CLAIM.into()),
         required_role: non_empty_env(EDGER_OIDC_REQUIRED_ROLE_ENV),
         roles_claim: non_empty_env(EDGER_OIDC_ROLES_CLAIM_ENV),
     })

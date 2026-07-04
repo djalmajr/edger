@@ -19,8 +19,10 @@ const JWKS_KID_MISS_REFRESH_LIMIT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OidcConfig {
+    pub admin_role: Option<String>,
     pub audience: String,
     pub issuer: String,
+    pub namespaces_claim: String,
     pub required_role: Option<String>,
     pub roles_claim: Option<String>,
 }
@@ -198,11 +200,16 @@ impl OidcValidator {
     }
 
     fn claims_to_principal(&self, claims: &Value) -> Result<ApiKeyPrincipal, OidcError> {
+        let roles = self
+            .config
+            .roles_claim
+            .as_deref()
+            .and_then(|path| claim_path(claims, path));
         if let (Some(path), Some(required_role)) = (
             self.config.roles_claim.as_deref(),
             self.config.required_role.as_deref(),
         ) {
-            let roles = claim_path(claims, path)
+            let roles = roles
                 .ok_or_else(|| OidcError::new(format!("OIDC roles claim not found: {path}")))?;
             if !claim_contains_role(roles, required_role) {
                 return Err(OidcError::new(format!(
@@ -211,16 +218,34 @@ impl OidcValidator {
             }
         }
 
+        let is_root = self.admin_role().is_some_and(|admin_role| {
+            roles.is_some_and(|roles| claim_contains_role(roles, admin_role))
+        });
+        let namespaces = claim_path(claims, &self.config.namespaces_claim)
+            .map(claim_string_values)
+            .unwrap_or_default();
+
         Ok(ApiKeyPrincipal {
             id: 0,
             name: "oidc".into(),
             key_prefix: "oidc".into(),
-            role: "admin".into(),
-            permissions: vec!["*".into()],
-            namespaces: vec!["*".into()],
-            is_root: true,
+            role: if is_root { "admin" } else { "oidc" }.into(),
+            permissions: if is_root {
+                vec!["*".into()]
+            } else {
+                Vec::new()
+            },
+            namespaces,
+            is_root,
             expires_at: None,
         })
+    }
+
+    fn admin_role(&self) -> Option<&str> {
+        self.config
+            .admin_role
+            .as_deref()
+            .or(self.config.required_role.as_deref())
     }
 }
 
@@ -282,6 +307,27 @@ fn claim_contains_role(value: &Value, required_role: &str) -> bool {
             .any(|item| item.as_str() == Some(required_role)),
         Value::String(role) => role == required_role,
         _ => false,
+    }
+}
+
+fn claim_string_values(value: &Value) -> Vec<String> {
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.as_str())
+            .filter_map(trimmed_string)
+            .collect(),
+        Value::String(value) => trimmed_string(value).into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn trimmed_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -352,8 +398,10 @@ mod tests {
 
     fn oidc_config() -> OidcConfig {
         OidcConfig {
+            admin_role: None,
             audience: AUDIENCE.into(),
             issuer: ISSUER.into(),
+            namespaces_claim: "namespaces".into(),
             required_role: None,
             roles_claim: None,
         }
@@ -416,7 +464,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oidc_valid_token_returns_root_like_principal() {
+    async fn oidc_valid_token_without_scope_claims_returns_non_root_empty_namespaces() {
         let key = test_key("kid-1");
         let source = StaticJwksSource::new(vec![jwks(&[&key])]);
         let validator = validator(oidc_config(), source);
@@ -426,11 +474,76 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(principal.is_root);
+        assert!(!principal.is_root);
         assert_eq!(principal.name, "oidc");
+        assert_eq!(principal.role, "oidc");
+        assert!(principal.permissions.is_empty());
+        assert!(principal.namespaces.is_empty());
+    }
+
+    #[tokio::test]
+    async fn oidc_admin_role_claim_returns_root_principal() {
+        let key = test_key("kid-1");
+        let source = StaticJwksSource::new(vec![jwks(&[&key])]);
+        let mut config = oidc_config();
+        config.admin_role = Some("edger-admin".into());
+        config.roles_claim = Some("groups".into());
+        let validator = validator(config, source);
+        let mut claims = base_claims();
+        claims["groups"] = json!(["edger-admin"]);
+
+        let principal = validator
+            .validate_token(&token(&key, claims))
+            .await
+            .unwrap();
+
+        assert!(principal.is_root);
         assert_eq!(principal.role, "admin");
         assert_eq!(principal.permissions, vec!["*"]);
-        assert_eq!(principal.namespaces, vec!["*"]);
+        assert!(principal.namespaces.is_empty());
+    }
+
+    #[tokio::test]
+    async fn oidc_non_admin_token_uses_scoped_namespaces() {
+        let key = test_key("kid-1");
+        let source = StaticJwksSource::new(vec![jwks(&[&key])]);
+        let mut config = oidc_config();
+        config.admin_role = Some("edger-admin".into());
+        config.namespaces_claim = "edger.namespaces".into();
+        config.roles_claim = Some("groups".into());
+        let validator = validator(config, source);
+        let mut claims = base_claims();
+        claims["edger"] = json!({ "namespaces": ["@acme"] });
+        claims["groups"] = json!(["viewer"]);
+
+        let principal = validator
+            .validate_token(&token(&key, claims))
+            .await
+            .unwrap();
+
+        assert!(!principal.is_root);
+        assert_eq!(principal.role, "oidc");
+        assert!(principal.permissions.is_empty());
+        assert_eq!(principal.namespaces, vec!["@acme"]);
+    }
+
+    #[tokio::test]
+    async fn oidc_namespaces_claim_maps_array_exactly() {
+        let key = test_key("kid-1");
+        let source = StaticJwksSource::new(vec![jwks(&[&key])]);
+        let mut config = oidc_config();
+        config.namespaces_claim = "edger_namespaces".into();
+        let validator = validator(config, source);
+        let mut claims = base_claims();
+        claims["edger_namespaces"] = json!(["@acme", "@beta"]);
+
+        let principal = validator
+            .validate_token(&token(&key, claims))
+            .await
+            .unwrap();
+
+        assert!(!principal.is_root);
+        assert_eq!(principal.namespaces, vec!["@acme", "@beta"]);
     }
 
     #[tokio::test]
@@ -585,7 +698,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(principal.is_root);
+        assert!(!principal.is_root);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }
