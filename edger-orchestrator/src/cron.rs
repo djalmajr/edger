@@ -1,5 +1,6 @@
 //! Native cron scheduler for manifest `cron[]` jobs.
 
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,12 +8,13 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
+use chrono::{DateTime, Utc};
 use edger_core::{
     parse_duration_string_to_ms, CoreError, CronJob, WorkerRef, INTERNAL_REQUEST_HEADER,
 };
+use saffron::Cron;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tokio::time::MissedTickBehavior;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -65,17 +67,17 @@ impl CronSchedulerConfig {
 pub struct CronJobRegistration {
     pub worker: WorkerRef,
     pub job: CronJob,
-    pub interval: Duration,
+    schedule: CronSchedule,
 }
 
 impl CronJobRegistration {
     fn new(worker: WorkerRef, job: CronJob) -> Result<Self, CoreError> {
         validate_job(&worker, &job)?;
-        let interval = parse_schedule_interval(&job.schedule)?;
+        let schedule = CronSchedule::parse(&job.schedule)?;
         Ok(Self {
             worker,
             job,
-            interval,
+            schedule,
         })
     }
 
@@ -85,6 +87,65 @@ impl CronJobRegistration {
 
     pub fn route_path(&self) -> String {
         worker_route_path(&self.worker, &self.job.path)
+    }
+}
+
+#[derive(Clone, Debug)]
+enum CronSchedule {
+    Every(Duration),
+    WallClock { expression: Cron, source: String },
+}
+
+impl CronSchedule {
+    fn parse(schedule: &str) -> Result<Self, CoreError> {
+        let schedule = schedule.trim();
+        if let Some(duration) = schedule.strip_prefix("@every ") {
+            let Some(ms) = parse_duration_string_to_ms(duration) else {
+                return Err(invalid_schedule(schedule));
+            };
+            if ms == 0 {
+                return Err(invalid_schedule(schedule));
+            }
+            return Ok(Self::Every(Duration::from_millis(ms)));
+        }
+
+        let normalized = normalize_standard_cron(schedule)?;
+        let expression = normalized
+            .parse::<Cron>()
+            .map_err(|_| invalid_schedule(schedule))?;
+        if !expression.any() || expression.next_after(Utc::now()).is_none() {
+            return Err(invalid_schedule(schedule));
+        }
+
+        Ok(Self::WallClock {
+            expression,
+            source: schedule.to_owned(),
+        })
+    }
+
+    fn delay_after(&self, now: DateTime<Utc>) -> Result<Duration, CoreError> {
+        match self {
+            Self::Every(interval) => Ok(*interval),
+            Self::WallClock { .. } => self
+                .next_fire_after(now)?
+                .signed_duration_since(now)
+                .to_std()
+                .map_err(|_| CoreError::new("CRON_SCHEDULE_INVALID", "cron fired in the past")),
+        }
+    }
+
+    fn next_fire_after(&self, now: DateTime<Utc>) -> Result<DateTime<Utc>, CoreError> {
+        match self {
+            Self::Every(interval) => {
+                let delta = chrono::Duration::from_std(*interval).map_err(|_| {
+                    CoreError::new("CRON_SCHEDULE_INVALID", "cron interval is too large")
+                })?;
+                Ok(now + delta)
+            }
+            Self::WallClock { expression, source } => expression
+                .next_after(now)
+                .ok_or_else(|| invalid_schedule(source)),
+        }
     }
 }
 
@@ -177,43 +238,92 @@ fn validate_job(worker: &WorkerRef, job: &CronJob) -> Result<(), CoreError> {
     Ok(())
 }
 
-fn parse_schedule_interval(schedule: &str) -> Result<Duration, CoreError> {
-    let schedule = schedule.trim();
-    if let Some(duration) = schedule.strip_prefix("@every ") {
-        let Some(ms) = parse_duration_string_to_ms(duration) else {
-            return Err(invalid_schedule(schedule));
-        };
-        if ms == 0 {
-            return Err(invalid_schedule(schedule));
-        }
-        return Ok(Duration::from_millis(ms));
-    }
-
+fn normalize_standard_cron(schedule: &str) -> Result<String, CoreError> {
     let parts = schedule.split_whitespace().collect::<Vec<_>>();
     if parts.len() != 5 {
         return Err(invalid_schedule(schedule));
     }
-    if parts[1..].iter().any(|part| *part != "*") {
-        return Err(invalid_schedule(schedule));
+
+    let day_of_week =
+        normalize_day_of_week_field(parts[4]).ok_or_else(|| invalid_schedule(schedule))?;
+    Ok(format!(
+        "{} {} {} {} {}",
+        parts[0], parts[1], parts[2], parts[3], day_of_week
+    ))
+}
+
+fn normalize_day_of_week_field(field: &str) -> Option<String> {
+    field
+        .split(',')
+        .map(normalize_day_of_week_part)
+        .collect::<Option<Vec<_>>>()
+        .map(|parts| parts.join(","))
+}
+
+fn normalize_day_of_week_part(part: &str) -> Option<String> {
+    if part.is_empty() || part == "*" || part.starts_with("*/") {
+        return Some(part.to_owned());
+    }
+    if part.chars().any(|ch| ch.is_ascii_alphabetic()) {
+        return Some(part.to_owned());
     }
 
-    let minutes = match parts[0] {
-        "*" => 1,
-        value if value.starts_with("*/") => value
-            .trim_start_matches("*/")
-            .parse::<u64>()
-            .ok()
-            .filter(|value| *value > 0)
-            .ok_or_else(|| invalid_schedule(schedule))?,
-        value => value
-            .parse::<u64>()
-            .ok()
-            .filter(|value| *value <= 59)
-            .map(|_| 60)
-            .ok_or_else(|| invalid_schedule(schedule))?,
-    };
+    let (base, step) = part.split_once('/').unwrap_or((part, ""));
+    if step.is_empty() {
+        return normalize_day_of_week_base(base);
+    }
 
-    Ok(Duration::from_secs(minutes * 60))
+    let step = step.parse::<usize>().ok().filter(|value| *value > 0)?;
+    if let Some((start, end)) = parse_day_of_week_range(base) {
+        let values = (start..=end)
+            .step_by(step)
+            .filter_map(map_standard_day_of_week)
+            .collect::<BTreeSet<_>>();
+        return Some(join_day_of_week_values(values));
+    }
+
+    parse_day_of_week_number(base)
+        .and_then(|value| map_standard_day_of_week(value).map(|mapped| format!("{mapped}/{step}")))
+}
+
+fn normalize_day_of_week_base(base: &str) -> Option<String> {
+    if let Some((start, end)) = parse_day_of_week_range(base) {
+        let values = (start..=end)
+            .filter_map(map_standard_day_of_week)
+            .collect::<BTreeSet<_>>();
+        return Some(join_day_of_week_values(values));
+    }
+
+    parse_day_of_week_number(base)
+        .and_then(map_standard_day_of_week)
+        .map(|value| value.to_string())
+}
+
+fn parse_day_of_week_range(base: &str) -> Option<(u32, u32)> {
+    let (start, end) = base.split_once('-')?;
+    let start = parse_day_of_week_number(start)?;
+    let end = parse_day_of_week_number(end)?;
+    (start <= end).then_some((start, end))
+}
+
+fn parse_day_of_week_number(value: &str) -> Option<u32> {
+    value.parse::<u32>().ok().filter(|value| *value <= 7)
+}
+
+fn map_standard_day_of_week(value: u32) -> Option<u32> {
+    match value {
+        0 | 7 => Some(1),
+        1..=6 => Some(value + 1),
+        _ => None,
+    }
+}
+
+fn join_day_of_week_values(values: BTreeSet<u32>) -> String {
+    values
+        .into_iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn invalid_schedule(schedule: &str) -> CoreError {
@@ -230,16 +340,26 @@ async fn run_job(
     metrics: CronMetrics,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
-    let mut interval = tokio::time::interval(registration.interval);
-    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    interval.tick().await;
-
     loop {
+        let delay = match registration.schedule.delay_after(Utc::now()) {
+            Ok(delay) => delay,
+            Err(err) => {
+                metrics.record_failure();
+                tracing::warn!(
+                    worker = %registration.worker.name,
+                    path = %registration.job.path,
+                    code = %err.code,
+                    "cron schedule failed"
+                );
+                break;
+            }
+        };
+
         tokio::select! {
             _ = shutdown_rx.changed() => {
                 break;
             }
-            _ = interval.tick() => {
+            _ = tokio::time::sleep(delay) => {
                 if let Err(err) =
                     dispatch_cron_request(app.clone(), &registration, root_api_key.as_deref()).await
                 {
@@ -305,6 +425,20 @@ fn worker_route_path(worker: &WorkerRef, job_path: &str) -> String {
 mod tests {
     use super::*;
 
+    use chrono::TimeZone;
+
+    fn datetime(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+        second: u32,
+    ) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(year, month, day, hour, minute, second)
+            .unwrap()
+    }
+
     fn worker() -> WorkerRef {
         edger_core::create_worker_ref(
             "/workers/demo".into(),
@@ -318,23 +452,51 @@ mod tests {
     }
 
     #[test]
-    fn schedule_parser_accepts_short_test_interval_and_minute_cron() {
-        assert_eq!(
-            parse_schedule_interval("@every 50ms").unwrap(),
-            Duration::from_millis(50)
-        );
-        assert_eq!(
-            parse_schedule_interval("*/2 * * * *").unwrap(),
-            Duration::from_secs(120)
-        );
+    fn schedule_parser_accepts_every_interval() {
+        let schedule = CronSchedule::parse("@every 50ms").unwrap();
+
+        assert!(matches!(
+            schedule,
+            CronSchedule::Every(d) if d == Duration::from_millis(50)
+        ));
     }
 
     #[test]
-    fn schedule_parser_rejects_unknown_cron_shapes() {
-        let err = parse_schedule_interval("0 0 * * *").unwrap_err();
+    fn schedule_parser_accepts_standard_midnight_cron() {
+        let schedule = CronSchedule::parse("0 0 * * *").unwrap();
+        let next = schedule
+            .next_fire_after(datetime(2024, 1, 1, 23, 59, 30))
+            .unwrap();
+
+        assert_eq!(next, datetime(2024, 1, 2, 0, 0, 0));
+    }
+
+    #[test]
+    fn schedule_parser_accepts_standard_monday_day_of_week() {
+        let schedule = CronSchedule::parse("0 9 * * 1").unwrap();
+        let next = schedule
+            .next_fire_after(datetime(2024, 1, 7, 8, 0, 0))
+            .unwrap();
+
+        assert_eq!(next, datetime(2024, 1, 8, 9, 0, 0));
+    }
+
+    #[test]
+    fn schedule_parser_accepts_five_minute_step_cron() {
+        let schedule = CronSchedule::parse("*/5 * * * *").unwrap();
+        let next = schedule
+            .next_fire_after(datetime(2024, 1, 1, 0, 2, 30))
+            .unwrap();
+
+        assert_eq!(next, datetime(2024, 1, 1, 0, 5, 0));
+    }
+
+    #[test]
+    fn schedule_parser_rejects_invalid_cron_expression() {
+        let err = CronSchedule::parse("not a cron").unwrap_err();
 
         assert_eq!(err.code, "CRON_SCHEDULE_INVALID");
-        assert!(err.message.contains("0 0 * * *"));
+        assert!(err.message.contains("not a cron"));
     }
 
     #[test]
