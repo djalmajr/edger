@@ -5,26 +5,44 @@
 //! - `edger_alloc(len: i32) -> i32`
 //! - `edger_handle(ptr: i32, len: i32) -> i64`
 
+use std::collections::HashMap;
+use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
+
 use crate::wasm::WasiConfig;
-use edger_core::{validate_headers, IsolationError, SerializedRequest, SerializedResponse};
-use wasmtime::{Engine, Linker, Module, Store};
+use edger_core::{
+    effective_max_body_size_bytes_usize, validate_headers, IsolationError, SerializedRequest,
+    SerializedResponse, WorkerConfig,
+};
+use sha2::{Digest, Sha256};
+use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::preview1::{self, WasiP1Ctx};
 use wasmtime_wasi::WasiCtxBuilder;
 
-const MAX_FRAME_BYTES: usize = 256 * 1024;
+const MAX_REQUEST_FRAME_BYTES: usize = 256 * 1024;
+const MAX_RESPONSE_HEADER_BYTES: usize = 64 * 1024;
+const DEFAULT_RESPONSE_BODY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MODULE_BYTES: usize = 4 * 1024 * 1024;
-const MAX_RESPONSE_BODY_BYTES: usize = 64 * 1024;
 const REQUEST_HEADER_BYTES: usize = 16;
 const RESPONSE_HEADER_BYTES: usize = 12;
+const DEFAULT_WASM_MEMORY_BYTES: usize = 512 * 1024 * 1024;
+const LOW_MEMORY_WASM_MEMORY_BYTES: usize = 128 * 1024 * 1024;
+const DEFAULT_WASM_TABLE_ELEMENTS: usize = 10_000;
+const DEFAULT_WASM_TIMEOUT_MS: u64 = 30_000;
+const WASM_EPOCH_TICK_MS: u64 = 10;
 
 pub struct WasmHttpHandler {
     engine: Engine,
+    module_cache: Mutex<HashMap<ModuleCacheKey, Module>>,
 }
 
 impl WasmHttpHandler {
     pub fn new() -> Self {
+        let engine = build_engine();
+        spawn_epoch_ticker(&engine);
         Self {
-            engine: Engine::default(),
+            engine,
+            module_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -42,15 +60,30 @@ impl WasmHttpHandler {
         req: &SerializedRequest,
         wasi: &WasiConfig,
     ) -> Result<SerializedResponse, IsolationError> {
-        validate_module_bytes(wasm_bytes)?;
-        let module = Module::new(&self.engine, wasm_bytes)
-            .map_err(|e| IsolationError::new("WASM_COMPILE", e.to_string()))?;
-        validate_import_policy(&module)?;
+        self.execute_module_with_config_and_limits(
+            wasm_bytes,
+            req,
+            wasi,
+            &WasmRuntimeLimits::default(),
+        )
+    }
 
-        let mut linker = Linker::<WasiP1Ctx>::new(&self.engine);
-        preview1::add_to_linker_sync(&mut linker, |ctx| ctx)
+    pub(crate) fn execute_module_with_config_and_limits(
+        &self,
+        wasm_bytes: &[u8],
+        req: &SerializedRequest,
+        wasi: &WasiConfig,
+        limits: &WasmRuntimeLimits,
+    ) -> Result<SerializedResponse, IsolationError> {
+        let module = self.compiled_module(wasm_bytes)?;
+
+        let mut linker = Linker::<WasmStoreState>::new(&self.engine);
+        preview1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)
             .map_err(|e| IsolationError::new("WASI_LINK", e.to_string()))?;
-        let mut store = Store::new(&self.engine, build_wasi_context(wasi));
+        let mut store = Store::new(&self.engine, WasmStoreState::new(wasi, limits));
+        store.limiter(|state| &mut state.limits);
+        store.set_epoch_deadline(limits.epoch_deadline_ticks);
+        store.epoch_deadline_trap();
         let instance = linker
             .instantiate(&mut store, &module)
             .map_err(|e| IsolationError::new("WASM_INSTANTIATE", e.to_string()))?;
@@ -79,10 +112,11 @@ impl WasmHttpHandler {
             .call(&mut store, (request_ptr as i32, request_len))
             .map_err(|e| IsolationError::new("WASM_EXEC", e.to_string()))?;
         let (response_ptr, response_len) = unpack_ptr_len(packed)?;
-        if response_len > MAX_FRAME_BYTES {
+        let response_frame_cap = limits.response_frame_bytes();
+        if response_len > response_frame_cap {
             return Err(IsolationError::new(
                 "WASM_ABI",
-                format!("response frame length {response_len} exceeds cap {MAX_FRAME_BYTES}"),
+                format!("response frame length {response_len} exceeds cap {response_frame_cap}"),
             ));
         }
         let mut response_frame = vec![0u8; response_len];
@@ -90,7 +124,34 @@ impl WasmHttpHandler {
             .read(&store, response_ptr, &mut response_frame)
             .map_err(|e| IsolationError::new("WASM_ABI", format!("response read failed: {e}")))?;
 
-        decode_response_frame(&response_frame)
+        decode_response_frame(&response_frame, limits.response_body_bytes)
+    }
+
+    fn compiled_module(&self, wasm_bytes: &[u8]) -> Result<Module, IsolationError> {
+        validate_module_bytes(wasm_bytes)?;
+        let key = ModuleCacheKey::from_bytes(wasm_bytes);
+        if let Some(module) = self.module_cache()?.get(&key).cloned() {
+            return Ok(module);
+        }
+
+        let module = Module::new(&self.engine, wasm_bytes)
+            .map_err(|e| IsolationError::new("WASM_COMPILE", e.to_string()))?;
+        validate_import_policy(&module)?;
+        self.module_cache()?.insert(key, module.clone());
+        Ok(module)
+    }
+
+    fn module_cache(
+        &self,
+    ) -> Result<MutexGuard<'_, HashMap<ModuleCacheKey, Module>>, IsolationError> {
+        self.module_cache
+            .lock()
+            .map_err(|_| IsolationError::new("WASM_CACHE", "module cache lock poisoned"))
+    }
+
+    #[cfg(test)]
+    fn cached_module_count(&self) -> Result<usize, IsolationError> {
+        Ok(self.module_cache()?.len())
     }
 }
 
@@ -98,6 +159,100 @@ impl Default for WasmHttpHandler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct ModuleCacheKey([u8; 32]);
+
+impl ModuleCacheKey {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        let digest: [u8; 32] = Sha256::digest(bytes).into();
+        Self(digest)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct WasmRuntimeLimits {
+    epoch_deadline_ticks: u64,
+    memory_bytes: usize,
+    response_body_bytes: usize,
+    table_elements: usize,
+}
+
+impl WasmRuntimeLimits {
+    pub(crate) fn from_worker_config(config: &WorkerConfig) -> Self {
+        Self {
+            epoch_deadline_ticks: epoch_ticks_for_timeout(config.timeout_ms),
+            memory_bytes: if config.low_memory {
+                LOW_MEMORY_WASM_MEMORY_BYTES
+            } else {
+                DEFAULT_WASM_MEMORY_BYTES
+            },
+            response_body_bytes: effective_max_body_size_bytes_usize(config),
+            table_elements: DEFAULT_WASM_TABLE_ELEMENTS,
+        }
+    }
+
+    fn response_frame_bytes(&self) -> usize {
+        RESPONSE_HEADER_BYTES
+            .saturating_add(MAX_RESPONSE_HEADER_BYTES)
+            .saturating_add(self.response_body_bytes)
+    }
+}
+
+impl Default for WasmRuntimeLimits {
+    fn default() -> Self {
+        Self {
+            epoch_deadline_ticks: epoch_ticks_for_timeout(DEFAULT_WASM_TIMEOUT_MS),
+            memory_bytes: DEFAULT_WASM_MEMORY_BYTES,
+            response_body_bytes: DEFAULT_RESPONSE_BODY_BYTES,
+            table_elements: DEFAULT_WASM_TABLE_ELEMENTS,
+        }
+    }
+}
+
+struct WasmStoreState {
+    limits: StoreLimits,
+    wasi: WasiP1Ctx,
+}
+
+impl WasmStoreState {
+    fn new(wasi: &WasiConfig, limits: &WasmRuntimeLimits) -> Self {
+        Self {
+            limits: StoreLimitsBuilder::new()
+                .memory_size(limits.memory_bytes)
+                .table_elements(limits.table_elements)
+                .build(),
+            wasi: build_wasi_context(wasi),
+        }
+    }
+}
+
+fn build_engine() -> Engine {
+    let mut config = Config::new();
+    config.epoch_interruption(true);
+    Engine::new(&config).expect("static Wasmtime engine config is valid")
+}
+
+fn spawn_epoch_ticker(engine: &Engine) {
+    let weak = engine.weak();
+    let _epoch_ticker = std::thread::Builder::new()
+        .name("edger-wasm-epoch".into())
+        .spawn(move || {
+            while let Some(engine) = weak.upgrade() {
+                std::thread::sleep(Duration::from_millis(WASM_EPOCH_TICK_MS));
+                engine.increment_epoch();
+            }
+        })
+        .expect("edger wasm epoch ticker thread starts");
+}
+
+fn epoch_ticks_for_timeout(timeout_ms: u64) -> u64 {
+    timeout_ms
+        .saturating_add(WASM_EPOCH_TICK_MS - 1)
+        .checked_div(WASM_EPOCH_TICK_MS)
+        .unwrap_or(1)
+        .max(1)
 }
 
 fn validate_import_policy(module: &Module) -> Result<(), IsolationError> {
@@ -176,10 +331,10 @@ fn encode_request_frame(req: &SerializedRequest) -> Result<Vec<u8>, IsolationErr
         .and_then(|len| len.checked_add(headers.len()))
         .and_then(|len| len.checked_add(body.len()))
         .ok_or_else(|| IsolationError::new("WASM_ABI_ENCODE", "request frame length overflow"))?;
-    if frame_len > MAX_FRAME_BYTES {
+    if frame_len > MAX_REQUEST_FRAME_BYTES {
         return Err(IsolationError::new(
             "WASM_ABI_ENCODE",
-            format!("request frame length {frame_len} exceeds cap {MAX_FRAME_BYTES}"),
+            format!("request frame length {frame_len} exceeds cap {MAX_REQUEST_FRAME_BYTES}"),
         ));
     }
     let mut frame = Vec::with_capacity(frame_len);
@@ -194,7 +349,10 @@ fn encode_request_frame(req: &SerializedRequest) -> Result<Vec<u8>, IsolationErr
     Ok(frame)
 }
 
-fn decode_response_frame(frame: &[u8]) -> Result<SerializedResponse, IsolationError> {
+fn decode_response_frame(
+    frame: &[u8],
+    max_body_bytes: usize,
+) -> Result<SerializedResponse, IsolationError> {
     if frame.len() < RESPONSE_HEADER_BYTES {
         return Err(IsolationError::new(
             "WASM_ABI_DECODE",
@@ -210,10 +368,16 @@ fn decode_response_frame(frame: &[u8]) -> Result<SerializedResponse, IsolationEr
     }
     let headers_len = read_u32_le(frame, 4)? as usize;
     let body_len = read_u32_le(frame, 8)? as usize;
-    if body_len > MAX_RESPONSE_BODY_BYTES {
+    if headers_len > MAX_RESPONSE_HEADER_BYTES {
         return Err(IsolationError::new(
             "WASM_ABI_DECODE",
-            format!("body length {body_len} exceeds cap {MAX_RESPONSE_BODY_BYTES}"),
+            format!("headers length {headers_len} exceeds cap {MAX_RESPONSE_HEADER_BYTES}"),
+        ));
+    }
+    if body_len > max_body_bytes {
+        return Err(IsolationError::new(
+            "WASM_ABI_DECODE",
+            format!("body length {body_len} exceeds cap {max_body_bytes}"),
         ));
     }
     let expected_len = RESPONSE_HEADER_BYTES
@@ -429,6 +593,192 @@ mod tests {
             res.body.as_ref().map(|b| b.as_ref()),
             Some(b"wasm path: /from-handler-test".as_ref())
         );
+    }
+
+    #[test]
+    fn repeated_requests_reuse_cached_module() {
+        let wasm_bytes = wat::parse_str(ECHO_URI_WAT).unwrap();
+        let handler = WasmHttpHandler::new();
+        let first = handler
+            .execute_module(&wasm_bytes, &sample_request())
+            .unwrap();
+        let second = handler
+            .execute_module(&wasm_bytes, &sample_request())
+            .unwrap();
+
+        assert_eq!(first.status, 200);
+        assert_eq!(second.status, 200);
+        assert_eq!(handler.cached_module_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn epoch_watchdog_interrupts_infinite_loop() {
+        let wasm_bytes = wat::parse_str(
+            r#"
+            (module
+              (memory (export "memory") 1)
+              (func (export "edger_alloc") (param $len i32) (result i32)
+                i32.const 1024
+              )
+              (func (export "edger_handle") (param $req_ptr i32) (param $req_len i32) (result i64)
+                loop $forever
+                  br $forever
+                end
+                i64.const 0
+              )
+            )
+            "#,
+        )
+        .unwrap();
+        let handler = WasmHttpHandler::new();
+        let limits = WasmRuntimeLimits {
+            epoch_deadline_ticks: 1,
+            ..WasmRuntimeLimits::default()
+        };
+        let started = std::time::Instant::now();
+        let err = handler
+            .execute_module_with_config_and_limits(
+                &wasm_bytes,
+                &sample_request(),
+                &WasiConfig::deny_all(),
+                &limits,
+            )
+            .unwrap_err();
+
+        assert_eq!(err.code, "WASM_EXEC");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn store_limits_reject_memory_above_budget() {
+        let wasm_bytes = wat::parse_str(
+            r#"
+            (module
+              (memory (export "memory") 2)
+              (func (export "edger_alloc") (param $len i32) (result i32)
+                i32.const 1024
+              )
+              (func (export "edger_handle") (param $req_ptr i32) (param $req_len i32) (result i64)
+                i64.const 0
+              )
+            )
+            "#,
+        )
+        .unwrap();
+        let handler = WasmHttpHandler::new();
+        let limits = WasmRuntimeLimits {
+            memory_bytes: 64 * 1024,
+            ..WasmRuntimeLimits::default()
+        };
+        let err = handler
+            .execute_module_with_config_and_limits(
+                &wasm_bytes,
+                &sample_request(),
+                &WasiConfig::deny_all(),
+                &limits,
+            )
+            .unwrap_err();
+
+        assert_eq!(err.code, "WASM_INSTANTIATE");
+    }
+
+    #[test]
+    fn returns_response_body_larger_than_64_kib() {
+        const LARGE_BODY_LEN: usize = 70 * 1024;
+        let frame_len = RESPONSE_HEADER_BYTES + 2 + LARGE_BODY_LEN;
+        let wasm = format!(
+            r#"
+            (module
+              (memory (export "memory") 2)
+              (data (i32.const 1024) "[]")
+
+              (func (export "edger_alloc") (param $len i32) (result i32)
+                i32.const 2048
+              )
+
+              (func $copy (param $dst i32) (param $src i32) (param $len i32)
+                (local $i i32)
+                loop $copy_loop
+                  local.get $i
+                  local.get $len
+                  i32.lt_u
+                  if
+                    local.get $dst
+                    local.get $i
+                    i32.add
+                    local.get $src
+                    local.get $i
+                    i32.add
+                    i32.load8_u
+                    i32.store8
+                    local.get $i
+                    i32.const 1
+                    i32.add
+                    local.set $i
+                    br $copy_loop
+                  end
+                end
+              )
+
+              (func $fill (param $dst i32) (param $len i32)
+                (local $i i32)
+                loop $fill_loop
+                  local.get $i
+                  local.get $len
+                  i32.lt_u
+                  if
+                    local.get $dst
+                    local.get $i
+                    i32.add
+                    i32.const 65
+                    i32.store8
+                    local.get $i
+                    i32.const 1
+                    i32.add
+                    local.set $i
+                    br $fill_loop
+                  end
+                end
+              )
+
+              (func (export "edger_handle") (param $req_ptr i32) (param $req_len i32) (result i64)
+                i32.const 4096
+                i32.const 200
+                i32.store16
+                i32.const 4100
+                i32.const 2
+                i32.store
+                i32.const 4104
+                i32.const {LARGE_BODY_LEN}
+                i32.store
+                i32.const 4108
+                i32.const 1024
+                i32.const 2
+                call $copy
+                i32.const 4110
+                i32.const {LARGE_BODY_LEN}
+                call $fill
+
+                i32.const 4096
+                i64.extend_i32_u
+                i64.const {frame_len}
+                i64.const 32
+                i64.shl
+                i64.or
+              )
+            )
+            "#
+        );
+        let wasm_bytes = wat::parse_str(&wasm).unwrap();
+        let handler = WasmHttpHandler::new();
+        let res = handler
+            .execute_module(&wasm_bytes, &sample_request())
+            .unwrap();
+        let body = res.body.unwrap();
+
+        assert_eq!(res.status, 200);
+        assert_eq!(body.len(), LARGE_BODY_LEN);
+        assert!(body.iter().all(|byte| *byte == b'A'));
     }
 
     #[test]
