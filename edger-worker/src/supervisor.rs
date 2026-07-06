@@ -16,6 +16,18 @@ pub struct Supervisor;
 impl Supervisor {
     /// Mock entrypoint load — transitions `Creating` → `Ready`.
     pub async fn spawn(instance: &WorkerInstance) -> Result<(), WorkerError> {
+        if instance.state() != WorkerState::Creating {
+            return Err(WorkerError::InvalidTransition {
+                from: instance.state(),
+                event: WorkerEvent::ReadySignal,
+            });
+        }
+
+        let isolate = instance.isolate();
+        let mut guard = isolate.lock().await;
+        guard.prepare(&instance.worker_ref.config).await?;
+        drop(guard);
+
         let mut state = instance.state_lock();
         if *state != WorkerState::Creating {
             return Err(WorkerError::InvalidTransition {

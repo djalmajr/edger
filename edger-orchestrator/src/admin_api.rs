@@ -14,7 +14,7 @@ use edger_core::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::deploy::{install_worker_from_zip, rescan_workers};
+use crate::deploy::{install_worker_from_zip, rescan_workers_and_prewarm};
 use crate::operational_log::log_operational_error;
 use crate::pipeline::OrchestratorState;
 use crate::security::validate_admin_mutation_security;
@@ -130,11 +130,14 @@ async fn rescan_workers_route(
         .ok()
         .and_then(|request| request.dry_run)
         .unwrap_or(true);
-    match authenticate(&state, &headers).await.and_then(|principal| {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
         require_permission(&principal, "workers:install")?;
         validate_admin_mutation_security("POST", &headers, &principal)?;
-        rescan_workers(&state.index, dry_run)
-    }) {
+        rescan_workers_and_prewarm(&state.index, &state.pool, dry_run).await
+    }
+    .await;
+    match result {
         Ok(report) => Json(report).into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }

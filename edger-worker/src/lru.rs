@@ -131,6 +131,20 @@ impl WorkerGroup {
         instances.is_empty()
     }
 
+    pub fn ensure_min_processes<F>(&self, target: usize, mut create: F) -> Vec<Arc<WorkerInstance>>
+    where
+        F: FnMut() -> Arc<WorkerInstance>,
+    {
+        let mut instances = self.instances.lock().expect("worker group lock");
+        instances.retain(|instance| instance.state() != WorkerState::Terminated);
+
+        while instances.len() < target {
+            instances.push(create());
+        }
+
+        instances.clone()
+    }
+
     pub fn reserve_slot<F>(&self, max_processes: usize, create: F) -> ReservedSlot
     where
         F: FnMut() -> Arc<WorkerInstance>,

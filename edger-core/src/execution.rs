@@ -31,6 +31,13 @@ pub fn normalize_fullstack_adapter(adapter: &str) -> Option<&'static str> {
 }
 
 impl ExecutionKind {
+    pub fn uses_process_backend(&self) -> bool {
+        matches!(
+            self,
+            Self::FetchHandler | Self::RoutesTable | Self::Fullstack { .. }
+        )
+    }
+
     /// Parse explicit manifest `kind` string into normalized enum.
     pub fn from_manifest_kind(kind: &str) -> Option<Self> {
         Self::from_manifest_kind_with_adapter(kind, None)

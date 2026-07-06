@@ -45,7 +45,7 @@ pub enum ResolvedRoute {
         worker: WorkerRef,
     },
     PluginBase {
-        plugin: PluginRef,
+        plugin: Box<PluginRef>,
         remainder: String,
     },
 }
@@ -154,7 +154,10 @@ pub fn resolve_route(
     }
 
     if let Some((plugin, remainder)) = index.plugin_for_path(&normalized) {
-        return Ok(ResolvedRoute::PluginBase { plugin, remainder });
+        return Ok(ResolvedRoute::PluginBase {
+            plugin: Box::new(plugin),
+            remainder,
+        });
     }
 
     match PathParser::parse(&normalized) {

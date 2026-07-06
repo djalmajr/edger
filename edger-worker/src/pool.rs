@@ -1,6 +1,6 @@
 //! WorkerPool — LRU cache + fetch entry point with supervisor integration.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -39,7 +39,15 @@ struct WorkerPoolInner {
     metrics: Arc<MetricsCollector>,
     ephemeral: EphemeralGate,
     evicted: Mutex<HashSet<WorkerCacheKey>>,
+    circuit_breakers: Mutex<HashMap<WorkerCacheKey, CircuitBreakerState>>,
     shutdown: AtomicBool,
+}
+
+#[derive(Default)]
+struct CircuitBreakerState {
+    consecutive_failures: u32,
+    first_failure_at: Option<Instant>,
+    open_until: Option<Instant>,
 }
 
 /// Shared worker pool — cheaply cloneable for TTL timer callbacks.
@@ -80,6 +88,7 @@ impl WorkerPool {
                 metrics,
                 ephemeral,
                 evicted: Mutex::new(HashSet::new()),
+                circuit_breakers: Mutex::new(HashMap::new()),
                 shutdown: AtomicBool::new(false),
             }),
         }
@@ -114,6 +123,99 @@ impl WorkerPool {
             .map(|_| self.create_instance(worker_ref))
             .collect();
         Arc::new(WorkerGroup::new(instances))
+    }
+
+    fn worker_ref_with_dir(worker_ref: &WorkerRef) -> WorkerRef {
+        let mut worker_ref = worker_ref.clone();
+        worker_ref.config.worker_dir = Some(worker_ref.dir.clone());
+        worker_ref
+    }
+
+    fn ensure_circuit_closed(&self, worker_ref: &WorkerRef) -> Result<(), WorkerError> {
+        if worker_ref.config.circuit_breaker_failures == 0 {
+            return Ok(());
+        }
+
+        let key = WorkerCacheKey::from_worker_ref(worker_ref);
+        let now = Instant::now();
+        let mut circuit_breakers = self.inner.circuit_breakers.lock().expect("breaker lock");
+        let Some(state) = circuit_breakers.get_mut(&key) else {
+            return Ok(());
+        };
+        let Some(open_until) = state.open_until else {
+            return Ok(());
+        };
+
+        if now < open_until {
+            let retry_after_ms = open_until.saturating_duration_since(now).as_millis() as u64;
+            return Err(WorkerError::CircuitOpen { retry_after_ms });
+        }
+
+        circuit_breakers.remove(&key);
+        Ok(())
+    }
+
+    fn record_spawn_success(&self, worker_ref: &WorkerRef) {
+        let key = WorkerCacheKey::from_worker_ref(worker_ref);
+        self.inner
+            .circuit_breakers
+            .lock()
+            .expect("breaker lock")
+            .remove(&key);
+    }
+
+    fn record_spawn_failure(&self, worker_ref: &WorkerRef) {
+        let threshold = worker_ref.config.circuit_breaker_failures;
+        if threshold == 0 {
+            return;
+        }
+
+        let cooldown = Duration::from_millis(worker_ref.config.cooldown_ms);
+        let key = WorkerCacheKey::from_worker_ref(worker_ref);
+        let now = Instant::now();
+        let mut circuit_breakers = self.inner.circuit_breakers.lock().expect("breaker lock");
+        let state = circuit_breakers.entry(key).or_default();
+        let starts_new_window = state
+            .first_failure_at
+            .is_none_or(|first| now.duration_since(first) > cooldown);
+
+        if starts_new_window {
+            state.first_failure_at = Some(now);
+            state.consecutive_failures = 1;
+            state.open_until = None;
+        } else {
+            state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+        }
+
+        if state.consecutive_failures >= threshold {
+            state.open_until = Some(now + cooldown);
+        }
+    }
+
+    async fn spawn_instance(&self, instance: &Arc<WorkerInstance>) -> Result<(), WorkerError> {
+        if let Err(err) = self.ensure_circuit_closed(&instance.worker_ref) {
+            self.remove_instance_with_cause(instance, WorkerRecycleCause::Error);
+            self.sync_worker_counts();
+            return Err(err);
+        }
+        let spawn_start = Instant::now();
+        let result = Supervisor::spawn(instance).await;
+        self.inner
+            .metrics
+            .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
+
+        match result {
+            Ok(()) => {
+                self.record_spawn_success(&instance.worker_ref);
+                Ok(())
+            }
+            Err(err) => {
+                self.record_spawn_failure(&instance.worker_ref);
+                self.remove_instance_with_cause(instance, WorkerRecycleCause::Error);
+                self.sync_worker_counts();
+                Err(err)
+            }
+        }
     }
 
     fn get_or_create_group(&self, worker_ref: &WorkerRef) -> Result<Arc<WorkerGroup>, WorkerError> {
@@ -180,6 +282,46 @@ impl WorkerPool {
         Ok(group)
     }
 
+    pub async fn prewarm_worker(&self, worker_ref: &WorkerRef) -> Result<usize, WorkerError> {
+        self.ensure_active()?;
+        if worker_ref.config.min_processes == 0 || !worker_ref.kind.uses_process_backend() {
+            return Ok(0);
+        }
+
+        let worker_ref = Self::worker_ref_with_dir(worker_ref);
+        self.ensure_circuit_closed(&worker_ref)?;
+        let target = worker_ref
+            .config
+            .min_processes
+            .min(worker_ref.config.max_processes.max(1));
+        let group = self.get_or_create_group(&worker_ref)?;
+        let instances = group.ensure_min_processes(target, || {
+            let spawn_start = Instant::now();
+            let instance = self.create_instance(&worker_ref);
+            self.inner.metrics.record_miss();
+            self.inner
+                .metrics
+                .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
+            instance
+        });
+        self.sync_worker_counts();
+
+        let mut spawned = 0;
+        for instance in instances {
+            let dispatch_lock = instance.dispatch_lock();
+            let _guard = dispatch_lock.lock_owned().await;
+            if instance.state() == WorkerState::Creating {
+                self.spawn_instance(&instance).await?;
+                spawned += 1;
+            }
+            if instance.state() == WorkerState::Ready {
+                instance.set_state(WorkerState::Idle);
+            }
+        }
+        self.sync_worker_counts();
+        Ok(spawned)
+    }
+
     /// Resolve or create a pooled worker instance (new entries start in `Creating`).
     pub async fn get_or_create(
         &self,
@@ -197,6 +339,7 @@ impl WorkerPool {
         &self,
         worker_ref: &WorkerRef,
     ) -> Result<DispatchSlot, WorkerError> {
+        self.ensure_circuit_closed(worker_ref)?;
         if worker_ref.config.ttl_ms == 0 {
             return self.acquire_ephemeral_dispatch_slot(worker_ref).await;
         }
@@ -446,12 +589,7 @@ impl WorkerPool {
             .clone()
             .or(worker_ref.config.kind.clone())
             .unwrap_or(worker_ref.kind.clone());
-        let streamable = matches!(
-            kind,
-            ExecutionKind::FetchHandler
-                | ExecutionKind::RoutesTable
-                | ExecutionKind::Fullstack { .. }
-        );
+        let streamable = kind.uses_process_backend();
         // Ephemeral workers (ttl 0) hold a lifetimed concurrency permit that
         // cannot travel inside a 'static body stream — they stay buffered.
         if !streamable || worker_ref.config.ttl_ms == 0 {
@@ -494,11 +632,7 @@ impl WorkerPool {
             let instance = Arc::clone(&dispatch_slot.instance);
 
             if instance.state() == WorkerState::Creating {
-                let spawn_start = Instant::now();
-                Supervisor::spawn(&instance).await?;
-                self.inner
-                    .metrics
-                    .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
+                self.spawn_instance(&instance).await?;
             }
 
             if crate::state::accepts_dispatch(instance.state()) {
@@ -593,6 +727,13 @@ impl WorkerPool {
             .or(config.kind.clone())
             .or(Some(worker_ref.kind.clone()))
             .unwrap_or(ExecutionKind::FetchHandler);
+        if let ExecutionKind::StaticSpa { inject_base } = &kind {
+            let response = serve_static_spa_request(&req, &config, *inject_base)?;
+            self.inner
+                .metrics
+                .record_request_duration(started.elapsed().as_millis() as u64);
+            return Ok(response);
+        }
         if matches!(kind, ExecutionKind::Fullstack { .. }) {
             if let Some(asset) =
                 try_serve_fullstack_asset(&req, &config).map_err(WorkerError::Isolation)?
@@ -629,11 +770,7 @@ impl WorkerPool {
             let instance = Arc::clone(&dispatch_slot.instance);
 
             if instance.state() == WorkerState::Creating {
-                let spawn_start = Instant::now();
-                Supervisor::spawn(&instance).await?;
-                self.inner
-                    .metrics
-                    .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
+                self.spawn_instance(&instance).await?;
             }
 
             if crate::state::accepts_dispatch(instance.state()) {
@@ -739,6 +876,11 @@ impl WorkerPool {
 
         self.inner.cache.clear();
         self.inner.evicted.lock().expect("evicted lock").clear();
+        self.inner
+            .circuit_breakers
+            .lock()
+            .expect("breaker lock")
+            .clear();
         self.sync_worker_counts();
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -924,6 +1066,20 @@ fn execution_kind_label(kind: &ExecutionKind) -> &'static str {
         ExecutionKind::WasmModule { .. } => "wasm",
         ExecutionKind::Fullstack { .. } => "fullstack",
     }
+}
+
+fn serve_static_spa_request(
+    req: &SerializedRequest,
+    config: &WorkerConfig,
+    inject_base: bool,
+) -> Result<SerializedResponse, WorkerError> {
+    let base = if inject_base {
+        Some(req.base_href.as_deref().unwrap_or("/"))
+    } else {
+        None
+    };
+    edger_isolation::static_spa::serve_static_spa(&req.uri, base, config)
+        .map_err(WorkerError::Isolation)
 }
 
 /// Dispatch context that travels inside a streamed response body: it keeps the

@@ -309,6 +309,7 @@ fn map_error_status(err: &CoreError) -> StatusCode {
         "HEADER_INVALID" => StatusCode::BAD_REQUEST,
         "WORKER_QUEUE_FULL" => StatusCode::TOO_MANY_REQUESTS,
         "WORKER_QUEUE_TIMEOUT" => StatusCode::SERVICE_UNAVAILABLE,
+        "WORKER_CIRCUIT_OPEN" => StatusCode::SERVICE_UNAVAILABLE,
         "VALIDATION_ERROR" | "PARSE_ERROR" | "BODY_ERROR" => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -318,6 +319,7 @@ fn worker_error_to_core(err: WorkerError) -> CoreError {
     match err {
         WorkerError::WorkerQueueFull => CoreError::new("WORKER_QUEUE_FULL", err.to_string()),
         WorkerError::WorkerQueueTimeout => CoreError::new("WORKER_QUEUE_TIMEOUT", err.to_string()),
+        WorkerError::CircuitOpen { .. } => CoreError::new("WORKER_CIRCUIT_OPEN", err.to_string()),
         _ => CoreError::new("WORKER_ERROR", err.to_string()),
     }
 }

@@ -2,6 +2,17 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Process lifecycle isolation policy for a worker.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkerIsolation {
+    /// Reuse a warm process according to ttl/maxRequests.
+    #[default]
+    Persistent,
+    /// Recycle the process after exactly one request.
+    Oneshot,
+}
+
 /// Deno module-cache isolation mode for persistent JS/TS workers.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -47,6 +58,10 @@ pub struct WorkerManifest {
     pub concurrency: Option<usize>,
     pub min_processes: Option<usize>,
     pub max_processes: Option<usize>,
+    #[serde(default, alias = "circuit_breaker_failures")]
+    pub circuit_breaker_failures: Option<u32>,
+    pub cooldown: Option<serde_yaml::Value>,
+    pub isolation: Option<WorkerIsolation>,
     pub queue_limit: Option<usize>,
     pub queue_timeout: Option<serde_yaml::Value>,
     pub max_body_size: Option<String>,

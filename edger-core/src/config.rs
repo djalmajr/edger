@@ -1,7 +1,7 @@
 //! Normalized worker configuration and parsers.
 
 use crate::execution::{normalize_fullstack_adapter, ExecutionKind};
-use crate::manifest::{DenoCacheMode, WorkerManifest};
+use crate::manifest::{DenoCacheMode, WorkerIsolation, WorkerManifest};
 
 /// Runtime-normalized worker configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +21,11 @@ pub struct WorkerConfig {
     pub concurrency: usize,
     pub min_processes: usize,
     pub max_processes: usize,
+    /// Consecutive spawn/ready failures before opening the worker circuit.
+    pub circuit_breaker_failures: u32,
+    /// Circuit-breaker failure window and cooldown duration.
+    pub cooldown_ms: u64,
+    pub isolation: WorkerIsolation,
     /// Maximum persistent-worker requests waiting after all processes are busy.
     pub queue_limit: usize,
     /// Maximum time a persistent-worker request can wait for a process slot.
@@ -240,6 +245,8 @@ const WARM_WORKER_DEFAULT_TTL_MS: u64 = 300_000;
 const DEFAULT_WORKER_QUEUE_LIMIT: usize = 8;
 /// Short persistent-worker queue wait before reporting capacity timeout.
 const DEFAULT_WORKER_QUEUE_TIMEOUT_MS: u64 = 1_000;
+const DEFAULT_CIRCUIT_BREAKER_FAILURES: u32 = 3;
+const DEFAULT_CIRCUIT_BREAKER_COOLDOWN_MS: u64 = 30_000;
 /// Default request body cap when a worker manifest does not override it.
 pub const DEFAULT_MAX_BODY_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -315,6 +322,17 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         .as_ref()
         .and_then(parse_duration_to_ms)
         .unwrap_or(DEFAULT_WORKER_QUEUE_TIMEOUT_MS);
+    let cooldown_ms = manifest
+        .cooldown
+        .as_ref()
+        .and_then(parse_duration_to_ms)
+        .unwrap_or(DEFAULT_CIRCUIT_BREAKER_COOLDOWN_MS);
+    let isolation = manifest.isolation.unwrap_or_default();
+    let max_requests = if isolation == WorkerIsolation::Oneshot {
+        1
+    } else {
+        manifest.max_requests.unwrap_or(0)
+    };
 
     WorkerConfig {
         enabled: manifest.enabled.unwrap_or(true),
@@ -331,10 +349,15 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         ttl_ms,
         timeout_ms,
         idle_timeout_ms,
-        max_requests: manifest.max_requests.unwrap_or(0),
+        max_requests,
         concurrency,
         min_processes,
         max_processes,
+        circuit_breaker_failures: manifest
+            .circuit_breaker_failures
+            .unwrap_or(DEFAULT_CIRCUIT_BREAKER_FAILURES),
+        cooldown_ms,
+        isolation,
         queue_limit: manifest.queue_limit.unwrap_or(DEFAULT_WORKER_QUEUE_LIMIT),
         queue_timeout_ms,
         max_body_size_bytes,
