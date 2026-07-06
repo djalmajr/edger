@@ -3,8 +3,8 @@
 use edger_core::{
     create_worker_ref, effective_max_body_size_bytes, infer_execution_kind,
     parse_duration_string_to_ms, parse_size_to_bytes, parse_worker_config,
-    validate_worker_manifest, DenoCacheMode, ExecutionKind, FullstackBasePath, WorkerManifest,
-    DEFAULT_MAX_BODY_BYTES,
+    validate_worker_manifest, DenoCacheMode, ExecutionKind, FullstackBasePath, WorkerIsolation,
+    WorkerManifest, DEFAULT_MAX_BODY_BYTES,
 };
 
 const SAMPLE_YAML: &str = include_str!("fixtures/sample_manifest.yaml");
@@ -27,6 +27,9 @@ fn parse_worker_config_normalizes_buntime_fields() {
     assert_eq!(config.timeout_ms, 30_000);
     assert_eq!(config.idle_timeout_ms, 120_000);
     assert_eq!(config.max_requests, 1000);
+    assert_eq!(config.circuit_breaker_failures, 3);
+    assert_eq!(config.cooldown_ms, 30_000);
+    assert_eq!(config.isolation, WorkerIsolation::Persistent);
     assert_eq!(config.queue_limit, 8);
     assert_eq!(config.queue_timeout_ms, 1_000);
     assert_eq!(config.max_body_size_bytes, Some(10 * 1024 * 1024));
@@ -35,6 +38,30 @@ fn parse_worker_config_normalizes_buntime_fields() {
     assert!(config.inject_base);
     assert_eq!(config.cron.len(), 1);
     assert_eq!(config.kind, Some(ExecutionKind::FetchHandler));
+}
+
+#[test]
+fn parse_worker_config_normalizes_circuit_breaker_and_oneshot_isolation() {
+    let manifest: WorkerManifest = serde_yaml::from_str(
+        r#"name: crashy
+entrypoint: index.ts
+maxRequests: 99
+circuitBreakerFailures: 2
+cooldown: 250ms
+isolation: oneshot
+"#,
+    )
+    .unwrap();
+
+    let config = parse_worker_config(&manifest);
+
+    assert_eq!(config.circuit_breaker_failures, 2);
+    assert_eq!(config.cooldown_ms, 250);
+    assert_eq!(config.isolation, WorkerIsolation::Oneshot);
+    assert_eq!(
+        config.max_requests, 1,
+        "oneshot isolation must force recycle after exactly one request"
+    );
 }
 
 #[test]

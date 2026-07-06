@@ -670,6 +670,10 @@ impl futures_core::Stream for ReceiverBody {
 
 #[async_trait]
 impl Isolate for DenoProcessIsolate {
+    async fn prepare(&mut self, config: &WorkerConfig) -> Result<(), IsolationError> {
+        self.ensure_process(config).await
+    }
+
     async fn execute_fetch(
         &mut self,
         req: SerializedRequest,

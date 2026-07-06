@@ -5,7 +5,7 @@
 
 mod helpers;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -14,8 +14,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use edger_core::{
-    create_worker_ref, BodyStream, ExecutionKind, Isolate, SerializedRequest, SerializedResponse,
-    StreamedResponse, WorkerConfig, WorkerManifest, WorkerRef, WorkerResponse,
+    create_worker_ref, BodyStream, ExecutionKind, Isolate, IsolationError, SerializedRequest,
+    SerializedResponse, StreamedResponse, WorkerConfig, WorkerIsolation, WorkerManifest, WorkerRef,
+    WorkerResponse,
 };
 use edger_isolation::MockIsolate;
 use edger_worker::{IsolateFactory, PoolConfig, WorkerError, WorkerPool, WorkerState};
@@ -65,6 +66,79 @@ impl IsolateFactory for NumberedSlowFactory {
             delay_ms: self.delay_ms,
             id,
         })
+    }
+}
+
+#[derive(Default)]
+struct FailingPrepareFactory {
+    created: AtomicUsize,
+    prepare_attempts: Arc<AtomicUsize>,
+}
+
+impl FailingPrepareFactory {
+    fn created_count(&self) -> usize {
+        self.created.load(Ordering::SeqCst)
+    }
+
+    fn prepare_count(&self) -> usize {
+        self.prepare_attempts.load(Ordering::SeqCst)
+    }
+}
+
+impl IsolateFactory for FailingPrepareFactory {
+    fn create_isolate(&self, _worker_ref: &WorkerRef) -> Box<dyn edger_core::Isolate> {
+        self.created.fetch_add(1, Ordering::SeqCst);
+        Box::new(FailingPrepareIsolate {
+            prepare_attempts: Arc::clone(&self.prepare_attempts),
+        })
+    }
+}
+
+struct FailingPrepareIsolate {
+    prepare_attempts: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Isolate for FailingPrepareIsolate {
+    async fn prepare(&mut self, _config: &WorkerConfig) -> Result<(), IsolationError> {
+        self.prepare_attempts.fetch_add(1, Ordering::SeqCst);
+        Err(IsolationError::new(
+            "UDS_WORKER_FAILED",
+            "ready handshake failed",
+        ))
+    }
+
+    async fn execute_fetch(
+        &mut self,
+        _req: SerializedRequest,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        unreachable!("dispatch must not run when prepare fails")
+    }
+
+    async fn execute_routes(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+
+    async fn serve_static_spa(
+        &mut self,
+        _path: &str,
+        _base_href: Option<&str>,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(serialized_get("/"), config).await
+    }
+
+    async fn execute_wasm(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(req, config).await
     }
 }
 
@@ -296,6 +370,35 @@ fn numbered_worker_ref(max_processes: usize, min_processes: usize, max_requests:
     .unwrap()
 }
 
+fn circuit_breaker_worker_ref(failures: u32, cooldown: &str) -> WorkerRef {
+    create_worker_ref(
+        std::path::PathBuf::from("/workers/story20-crashy"),
+        WorkerManifest {
+            name: "story20-crashy".into(),
+            circuit_breaker_failures: Some(failures),
+            cooldown: Some(serde_yaml::Value::String(cooldown.into())),
+            max_processes: Some(1),
+            ttl: Some(serde_yaml::Value::String("30s".into())),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+fn oneshot_worker_ref() -> WorkerRef {
+    create_worker_ref(
+        std::path::PathBuf::from("/workers/story20-oneshot"),
+        WorkerManifest {
+            name: "story20-oneshot".into(),
+            isolation: Some(WorkerIsolation::Oneshot),
+            max_processes: Some(1),
+            ttl: Some(serde_yaml::Value::String("30s".into())),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
 fn queued_worker_ref(max_processes: usize, queue_limit: usize, queue_timeout: &str) -> WorkerRef {
     create_worker_ref(
         std::path::PathBuf::from("/workers/story18-queue"),
@@ -455,12 +558,22 @@ kind: wasm
 
 #[tokio::test]
 async fn integration_spa_static_injects_base_href() {
-    let (dir, config, manifest) = temp_worker_dir(FIXTURE_SPA);
+    let (dir, mut config, manifest) = temp_worker_dir(FIXTURE_SPA);
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<html><head></head><body>spa</body></html>",
+    )
+    .unwrap();
+    config.env = HashMap::from([
+        ("PUBLIC_API_URL".into(), "https://api.example.test".into()),
+        ("OPENAI_API_KEY".into(), "sk-secret".into()),
+    ]);
+    config.public_env = vec!["PUBLIC_API_URL".into(), "OPENAI_API_KEY".into()];
     let kind = execution_kind_from_manifest(&manifest);
+    let created_refs = Arc::new(Mutex::new(Vec::new()));
     let pool = pool_with_factory(
-        Arc::new(MockIsolateFactory {
-            spa_html: Some("<html><head></head><body>spa</body></html>".into()),
-            ..Default::default()
+        Arc::new(RecordingFactory {
+            created_refs: Arc::clone(&created_refs),
         }),
         default_pool_config(),
     );
@@ -472,9 +585,13 @@ async fn integration_spa_static_injects_base_href() {
 
     let body = String::from_utf8(res.body.unwrap().to_vec()).unwrap();
     assert!(
-        body.contains(r#"base href="/@app/""#),
+        body.contains(r#"<base href="/@app/" />"#),
         "SPA base href injected"
     );
+    assert!(body.contains("<script>window.__env__="));
+    assert!(body.contains(r#""PUBLIC_API_URL":"https://api.example.test""#));
+    assert!(!body.contains("OPENAI_API_KEY"));
+    assert!(created_refs.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -499,6 +616,68 @@ async fn integration_max_requests_retires_then_respawns() {
         .await
         .unwrap();
     assert!(pool.get_metrics().cache_misses > misses);
+}
+
+// Mutation captured: counting regular handler failures instead of prepare
+// failures would keep creating fresh isolates on the third request.
+#[tokio::test]
+async fn story20_circuit_breaker_opens_after_configured_spawn_failures() {
+    let factory = Arc::new(FailingPrepareFactory::default());
+    let pool = WorkerPool::with_factory(default_pool_config(), factory.clone());
+    let worker_ref = circuit_breaker_worker_ref(2, "5s");
+
+    let first = pool
+        .fetch_worker(
+            &worker_ref,
+            serialized_get("/first"),
+            Some(ExecutionKind::FetchHandler),
+        )
+        .await;
+    assert!(matches!(first, Err(WorkerError::Isolation(_))));
+
+    let second = pool
+        .fetch_worker(
+            &worker_ref,
+            serialized_get("/second"),
+            Some(ExecutionKind::FetchHandler),
+        )
+        .await;
+    assert!(matches!(second, Err(WorkerError::Isolation(_))));
+    assert_eq!(factory.created_count(), 2);
+    assert_eq!(factory.prepare_count(), 2);
+
+    let third = pool
+        .fetch_worker(
+            &worker_ref,
+            serialized_get("/fast-fail"),
+            Some(ExecutionKind::FetchHandler),
+        )
+        .await;
+    assert!(matches!(third, Err(WorkerError::CircuitOpen { .. })));
+    assert_eq!(
+        factory.created_count(),
+        2,
+        "open breaker must fail fast without respawning"
+    );
+    assert_eq!(factory.prepare_count(), 2);
+}
+
+// Mutation captured: forgetting to map isolation=oneshot to maxRequests=1
+// leaves the first process warm and makes the second request reuse isolate-1.
+#[tokio::test]
+async fn story20_oneshot_isolation_recycles_after_exactly_one_request() {
+    let factory = Arc::new(NumberedSlowFactory::new(0));
+    let pool = WorkerPool::with_factory(default_pool_config(), factory.clone());
+    let worker_ref = oneshot_worker_ref();
+
+    let first = fetch_numbered(pool.clone(), worker_ref.clone(), "/first").await;
+    assert_eq!(first, 1);
+    assert_eq!(pool.len(), 0);
+    assert_eq!(pool.get_metrics().terminated_total, 1);
+
+    let second = fetch_numbered(pool.clone(), worker_ref, "/second").await;
+    assert_eq!(second, 2);
+    assert_eq!(factory.created_count(), 2);
 }
 
 #[tokio::test]

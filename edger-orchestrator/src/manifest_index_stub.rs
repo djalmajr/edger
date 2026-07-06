@@ -223,6 +223,24 @@ impl ManifestIndex {
             .collect()
     }
 
+    pub fn worker_refs(&self) -> Vec<WorkerRef> {
+        let Ok(state) = self.inner.read() else {
+            return Vec::new();
+        };
+        let mut workers = state
+            .entries
+            .values()
+            .flat_map(|entries| entries.iter().map(|entry| entry.worker.clone()))
+            .collect::<Vec<_>>();
+        workers.sort_by(|a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| a.version.cmp(&b.version))
+                .then_with(|| a.dir.cmp(&b.dir))
+        });
+        workers
+    }
+
     pub fn enabled_cron_jobs(&self) -> Vec<(WorkerRef, Vec<CronJob>)> {
         let Ok(state) = self.inner.read() else {
             return Vec::new();

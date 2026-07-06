@@ -20,7 +20,10 @@ pub mod worker_errors;
 pub use admin_api::router as admin_router;
 pub use auth::{extract_api_key, ControlAuth, ControlAuthConfig};
 pub use cron::{collect_cron_registrations, CronMetrics, CronScheduler, CronSchedulerConfig};
-pub use deploy::{install_worker_from_zip, rescan_workers, InstalledWorker, RescanReport};
+pub use deploy::{
+    install_worker_from_zip, prewarm_min_process_workers, rescan_workers,
+    rescan_workers_and_prewarm, InstalledWorker, RescanReport,
+};
 pub use manifest_index_stub::{ManifestEntry, ManifestIndex};
 pub use manifest_loader::{load_manifests_from_dirs, parse_runtime_worker_dirs};
 pub use metrics::pool_metrics_prometheus;

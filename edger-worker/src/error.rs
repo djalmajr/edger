@@ -23,6 +23,8 @@ pub enum WorkerError {
     WorkerQueueFull,
     #[error("worker queue timeout (all processes busy)")]
     WorkerQueueTimeout,
+    #[error("worker circuit breaker open; retry after {retry_after_ms}ms")]
+    CircuitOpen { retry_after_ms: u64 },
     #[error("worker retired (max_requests reached)")]
     Retired,
     #[error("isolation error: {0}")]

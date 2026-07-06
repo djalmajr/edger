@@ -20,8 +20,8 @@ use edger_core::ExecutionKind;
 use edger_isolation::{DenoFacade, DenoIsolate, DenoProcessIsolate, WasiConfig, WasmIsolate};
 use edger_orchestrator::{
     build_pipeline, collect_cron_registrations, init_tracing_from_env, load_manifests_from_dirs,
-    parse_runtime_worker_dirs, port_from_env, serve, ControlAuth, CronScheduler,
-    CronSchedulerConfig, OrchestratorState, ServerConfig, ServerState,
+    parse_runtime_worker_dirs, port_from_env, prewarm_min_process_workers, serve, ControlAuth,
+    CronScheduler, CronSchedulerConfig, OrchestratorState, ServerConfig, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 
@@ -66,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
     server.mark_ready(pool.clone());
     let worker_dirs = worker_dirs_from_env();
     let index = load_manifests_from_dirs(&worker_dirs)?;
+    prewarm_min_process_workers(&index, &pool).await?;
 
     let auth = ControlAuth::from_env();
     if auth.is_open() {

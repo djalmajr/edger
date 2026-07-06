@@ -9,6 +9,10 @@ use crate::wire::{SerializedRequest, SerializedResponse, WorkerResponse};
 /// Core trait implemented by concrete isolate backends.
 #[async_trait]
 pub trait Isolate: Send + Sync {
+    async fn prepare(&mut self, _config: &WorkerConfig) -> Result<(), IsolationError> {
+        Ok(())
+    }
+
     async fn execute_fetch(
         &mut self,
         req: SerializedRequest,

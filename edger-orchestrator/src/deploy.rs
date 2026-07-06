@@ -9,6 +9,7 @@ use edger_core::{
     create_worker_ref, principal_can_access_optional_namespace, ApiKeyPrincipal, CoreError,
     WorkerManifest,
 };
+use edger_worker::{WorkerError, WorkerPool};
 use serde::Serialize;
 
 use crate::manifest_index_stub::ManifestIndex;
@@ -141,6 +142,44 @@ pub fn rescan_workers(index: &ManifestIndex, dry_run: bool) -> Result<RescanRepo
         removed,
         unchanged,
     })
+}
+
+pub async fn rescan_workers_and_prewarm(
+    index: &ManifestIndex,
+    pool: &WorkerPool,
+    dry_run: bool,
+) -> Result<RescanReport, CoreError> {
+    let report = rescan_workers(index, dry_run)?;
+    if !dry_run {
+        prewarm_min_process_workers(index, pool).await?;
+    }
+    Ok(report)
+}
+
+pub async fn prewarm_min_process_workers(
+    index: &ManifestIndex,
+    pool: &WorkerPool,
+) -> Result<usize, CoreError> {
+    let mut spawned = 0;
+    for worker in index.worker_refs() {
+        if worker.config.enabled
+            && worker.config.min_processes > 0
+            && worker.kind.uses_process_backend()
+        {
+            spawned += pool
+                .prewarm_worker(&worker)
+                .await
+                .map_err(|err| prewarm_error(&worker.name, &worker.version, err))?;
+        }
+    }
+    Ok(spawned)
+}
+
+fn prewarm_error(name: &str, version: &str, err: WorkerError) -> CoreError {
+    CoreError::new(
+        "WORKER_PREWARM_FAILED",
+        format!("failed to prewarm {name}@{version}: {err}"),
+    )
 }
 
 fn install_root(index: &ManifestIndex) -> Result<PathBuf, CoreError> {
