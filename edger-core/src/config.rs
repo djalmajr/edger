@@ -10,6 +10,8 @@ pub struct WorkerConfig {
     /// Worker directory on disk (set by pool at fetch time; pure path metadata).
     pub worker_dir: Option<std::path::PathBuf>,
     pub entrypoint: Option<String>,
+    /// Release command (migrations etc.) run once per version before serving.
+    pub release_command: Option<String>,
     pub env: std::collections::HashMap<String, String>,
     pub env_prefix: Vec<String>,
     pub public_env: Vec<String>,
@@ -359,6 +361,7 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         enabled: manifest.enabled.unwrap_or(true),
         worker_dir: None,
         entrypoint: manifest.entrypoint.clone(),
+        release_command: manifest.release.clone(),
         env: manifest.env.clone().unwrap_or_default(),
         env_prefix: manifest.env_prefix.clone(),
         public_env: manifest.public_env.clone(),

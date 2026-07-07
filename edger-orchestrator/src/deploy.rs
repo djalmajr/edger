@@ -4,10 +4,12 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
 
 use edger_core::{
     create_worker_ref, principal_can_access_optional_namespace, ApiKeyPrincipal, CoreError,
-    WorkerManifest,
+    WorkerConfig, WorkerManifest,
 };
 use edger_worker::{WorkerError, WorkerPool};
 use serde::Serialize;
@@ -151,6 +153,7 @@ pub async fn rescan_workers_and_prewarm(
 ) -> Result<RescanReport, CoreError> {
     let report = rescan_workers(index, dry_run)?;
     if !dry_run {
+        run_pending_releases(index).await?;
         prewarm_min_process_workers(index, pool).await?;
     }
     Ok(report)
@@ -180,6 +183,82 @@ fn prewarm_error(name: &str, version: &str, err: WorkerError) -> CoreError {
         "WORKER_PREWARM_FAILED",
         format!("failed to prewarm {name}@{version}: {err}"),
     )
+}
+
+/// Release timeout: migrations may be slow, but a hung command must not wedge the
+/// deploy forever.
+const RELEASE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Runs each worker's `release` command once per deployed version, before it
+/// serves — the place for migrations (edger owns the WHEN, the app owns the HOW).
+/// The versioned worker dir plus a `.edger-release` marker make it idempotent per
+/// node; the command itself must stay safe under concurrency (e.g. a pg advisory
+/// lock) for multi-node deploys.
+pub async fn run_pending_releases(index: &ManifestIndex) -> Result<usize, CoreError> {
+    let mut ran = 0;
+    for worker in index.worker_refs() {
+        if worker.config.enabled && run_release(&worker.dir, &worker.config).await? {
+            ran += 1;
+        }
+    }
+    Ok(ran)
+}
+
+/// Runs `config.release_command` once (guarded by a `.edger-release` marker in
+/// `dir`), with the worker's full manifest env (DATABASE_URL etc. — delivered
+/// since server workers receive all declared env). The command is
+/// operator-declared and runs as a trusted subprocess in `dir`. Returns whether
+/// it actually ran. A non-zero exit fails the deploy so a broken migration never
+/// reaches serving.
+async fn run_release(dir: &Path, config: &WorkerConfig) -> Result<bool, CoreError> {
+    let Some(command) = config.release_command.as_deref() else {
+        return Ok(false);
+    };
+    if command.trim().is_empty() {
+        return Ok(false);
+    }
+    let marker = dir.join(".edger-release");
+    if marker.exists() {
+        return Ok(false); // already released for this version
+    }
+
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c")
+        .arg(command)
+        .current_dir(dir)
+        .envs(&config.env) // manifest env overlays the inherited toolchain env (PATH/HOME/...)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let output = match tokio::time::timeout(RELEASE_TIMEOUT, cmd.output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => {
+            return Err(CoreError::new(
+                "RELEASE_SPAWN_FAILED",
+                format!("release command failed to run: {err}"),
+            ));
+        }
+        Err(_) => {
+            return Err(CoreError::new(
+                "RELEASE_TIMEOUT",
+                format!("release command exceeded {}s", RELEASE_TIMEOUT.as_secs()),
+            ));
+        }
+    };
+    if !output.status.success() {
+        return Err(CoreError::new(
+            "RELEASE_FAILED",
+            format!(
+                "release command exited with {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        ));
+    }
+    fs::write(&marker, "released\n")
+        .map_err(|err| deploy_io(format!("failed to write release marker: {err}")))?;
+    Ok(true)
 }
 
 fn install_root(index: &ManifestIndex) -> Result<PathBuf, CoreError> {
@@ -320,4 +399,53 @@ fn kind_label(kind: &edger_core::ExecutionKind) -> String {
 
 fn deploy_io(message: String) -> CoreError {
     CoreError::new("DEPLOY_IO", message)
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+    use edger_core::parse_worker_config;
+
+    #[tokio::test]
+    async fn run_release_runs_once_and_marks_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = WorkerManifest {
+            name: "rel".into(),
+            release: Some("echo hi > out.txt".into()),
+            ..Default::default()
+        };
+        let config = parse_worker_config(&manifest);
+
+        // First run executes the command and writes the marker.
+        assert!(run_release(dir.path(), &config).await.unwrap());
+        assert!(dir.path().join("out.txt").exists());
+        assert!(dir.path().join(".edger-release").exists());
+
+        // Second run is a no-op (marker present) — once per version.
+        assert!(!run_release(dir.path(), &config).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn run_release_without_command_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = parse_worker_config(&WorkerManifest {
+            name: "no-rel".into(),
+            ..Default::default()
+        });
+        assert!(!run_release(dir.path(), &config).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn run_release_propagates_failure_without_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = WorkerManifest {
+            name: "bad".into(),
+            release: Some("exit 3".into()),
+            ..Default::default()
+        };
+        let config = parse_worker_config(&manifest);
+        assert!(run_release(dir.path(), &config).await.is_err());
+        // No marker on failure — the deploy must not be considered released.
+        assert!(!dir.path().join(".edger-release").exists());
+    }
 }

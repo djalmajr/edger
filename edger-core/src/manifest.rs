@@ -44,6 +44,8 @@ pub struct WorkerManifest {
     pub version: Option<String>,
     pub enabled: Option<bool>,
     pub entrypoint: Option<String>,
+    /// Command run once per deployed version before the worker serves (migrations, etc.).
+    pub release: Option<String>,
     pub env: Option<std::collections::HashMap<String, String>>,
     #[serde(default)]
     pub env_prefix: Vec<String>,
