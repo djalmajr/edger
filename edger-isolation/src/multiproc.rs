@@ -13,8 +13,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use edger_core::{
-    is_sensitive_env_key, DenoCacheMode, Isolate, IsolationError, SerializedRequest,
-    SerializedResponse, StreamedResponse, WorkerConfig, WorkerResponse,
+    DenoCacheMode, Isolate, IsolationError, SerializedRequest, SerializedResponse,
+    StreamedResponse, WorkerConfig, WorkerResponse,
 };
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
@@ -600,8 +600,12 @@ fn inject_manifest_env(
     command: &mut Command,
     manifest_env: &std::collections::HashMap<String, String>,
 ) {
+    // Server workers are a trusted server-side context: inject ALL operator-declared
+    // manifest env (DATABASE_URL, API keys, ...). Secrets never reach the browser —
+    // that path is gated separately by the publicEnv allowlist (static_spa.rs).
+    // DENO_DIR is reserved for the runtime cache dir and set by inject_runtime_env.
     for (key, value) in manifest_env {
-        if !is_sensitive_env_key(key) && !key.eq_ignore_ascii_case("DENO_DIR") {
+        if !key.eq_ignore_ascii_case("DENO_DIR") {
             command.env(key, value);
         }
     }

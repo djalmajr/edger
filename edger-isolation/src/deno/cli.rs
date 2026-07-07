@@ -6,9 +6,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use edger_core::{
-    is_sensitive_env_key, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig,
-};
+use edger_core::{IsolationError, SerializedRequest, SerializedResponse, WorkerConfig};
 use serde::{Deserialize, Serialize};
 
 use crate::deno_bundle::{
@@ -282,10 +280,10 @@ fn inject_manifest_env(
     command: &mut Command,
     manifest_env: &std::collections::HashMap<String, String>,
 ) {
+    // Trusted server context: inject all operator-declared env. Browser exposure is
+    // gated separately by the publicEnv allowlist (static_spa.rs).
     for (key, value) in manifest_env {
-        if !is_sensitive_env_key(key) {
-            command.env(key, value);
-        }
+        command.env(key, value);
     }
 }
 

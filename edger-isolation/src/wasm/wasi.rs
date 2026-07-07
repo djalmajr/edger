@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use edger_core::{is_sensitive_env_key, WorkerConfig};
+use edger_core::WorkerConfig;
 
 /// WASI sandbox capabilities for Wasm workers (defaults deny-all).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -21,10 +21,10 @@ impl WasiConfig {
     }
 
     pub fn from_worker_config(config: &WorkerConfig) -> Self {
+        // Inject all operator-declared env into the wasm worker (trusted server side).
         let env = config
             .env
             .iter()
-            .filter(|(key, _)| !is_sensitive_env_key(key))
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect::<HashMap<_, _>>();
 
@@ -56,7 +56,10 @@ mod tests {
     }
 
     #[test]
-    fn filters_sensitive_worker_env() {
+    fn injects_all_declared_worker_env() {
+        // Server-side workers are a trusted context: ALL operator-declared env is
+        // injected, including secrets like DATABASE_URL. Browser exposure is gated
+        // separately by the publicEnv allowlist (static_spa.rs), never here.
         let mut manifest = WorkerManifest {
             name: "wasm-env".into(),
             ..Default::default()
@@ -64,13 +67,8 @@ mod tests {
         manifest.env = Some(HashMap::from([
             ("AWS_REGION".into(), "us-east-1".into()),
             ("DATABASE_URL".into(), "postgres://example".into()),
-            ("DB_URL".into(), "postgres://example".into()),
             ("GITHUB_TOKEN".into(), "hidden".into()),
-            ("OPENAI_API_KEY".into(), "hidden".into()),
             ("PUBLIC_FLAG".into(), "true".into()),
-            ("ROOT_SECRET".into(), "hidden".into()),
-            ("SERVICE_KEY".into(), "hidden".into()),
-            ("ADMIN_PASSWORD".into(), "hidden".into()),
         ]));
 
         let config = parse_worker_config(&manifest);
@@ -80,14 +78,19 @@ mod tests {
             wasi.env.get("PUBLIC_FLAG").map(String::as_str),
             Some("true")
         );
-        assert!(!wasi.env.contains_key("AWS_REGION"));
-        assert!(!wasi.env.contains_key("DATABASE_URL"));
-        assert!(!wasi.env.contains_key("DB_URL"));
-        assert!(!wasi.env.contains_key("GITHUB_TOKEN"));
-        assert!(!wasi.env.contains_key("OPENAI_API_KEY"));
-        assert!(!wasi.env.contains_key("ROOT_SECRET"));
-        assert!(!wasi.env.contains_key("SERVICE_KEY"));
-        assert!(!wasi.env.contains_key("ADMIN_PASSWORD"));
+        assert_eq!(
+            wasi.env.get("DATABASE_URL").map(String::as_str),
+            Some("postgres://example")
+        );
+        assert_eq!(
+            wasi.env.get("AWS_REGION").map(String::as_str),
+            Some("us-east-1")
+        );
+        assert_eq!(
+            wasi.env.get("GITHUB_TOKEN").map(String::as_str),
+            Some("hidden")
+        );
+        assert_eq!(wasi.env.len(), 4);
         assert!(wasi.allow_env);
     }
 }
