@@ -89,6 +89,9 @@ pub struct DenoWorkerProcess {
     _bundle_dir: Option<TempDir>,
     // Keeps the socket/harness dir alive for the process lifetime.
     _workdir: TempDir,
+    // CPU/RSS limit sampler task (Linux only; no-op elsewhere). Self-terminates
+    // when the process pid disappears, so no explicit abort is required.
+    _limit_monitor: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl DenoWorkerProcess {
@@ -109,10 +112,12 @@ impl DenoWorkerProcess {
             memory_mb,
             None,
             DenoCacheMode::default(),
+            None,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_with_policy(
         worker_dir: &Path,
         entrypoint: Option<&str>,
@@ -121,6 +126,7 @@ impl DenoWorkerProcess {
         memory_mb: Option<u32>,
         allow_net: Option<&[String]>,
         deno_cache_mode: DenoCacheMode,
+        caps: Option<crate::limits::ResourceLimits>,
     ) -> Result<Self, IsolationError> {
         let worker_dir = worker_dir.canonicalize().map_err(|err| {
             IsolationError::new("UDS_WORKER_DIR", format!("invalid worker_dir: {err}"))
@@ -234,6 +240,7 @@ impl DenoWorkerProcess {
             timeout,
             _bundle_dir: bundle_dir,
             _workdir: workdir,
+            _limit_monitor: None,
         };
 
         let ready_bytes = match tokio::time::timeout(
@@ -253,6 +260,42 @@ impl DenoWorkerProcess {
                 .error
                 .unwrap_or_else(|| "worker failed to start".into());
             return Err(process.fail(detail).await);
+        }
+
+        // Start the CPU/RSS limit monitor once the process is ready. On Linux
+        // it samples /proc and SIGKILLs the process on a hard breach (the pool
+        // then respawns it); on other platforms the sampler yields nothing and
+        // the task exits immediately.
+        if let Some(caps) = caps {
+            if caps.has_process_caps() {
+                if let Some(pid) = process.child.id() {
+                    let handle = tokio::spawn(async move {
+                        crate::limits::monitor_process(
+                            pid,
+                            caps,
+                            crate::limits::ProcFsSampler,
+                            Duration::from_millis(500),
+                            |breach| {
+                                eprintln!(
+                                    "[edger] worker pid {pid} soft resource limit reached: {breach:?}"
+                                );
+                            },
+                            move |breach| {
+                                eprintln!(
+                                    "[edger] worker pid {pid} hard resource limit exceeded ({breach:?}); killing"
+                                );
+                                #[cfg(unix)]
+                                // SAFETY: SIGKILL to a child pid we spawned.
+                                unsafe {
+                                    libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                                }
+                            },
+                        )
+                        .await;
+                    });
+                    process._limit_monitor = Some(handle);
+                }
+            }
         }
 
         Ok(process)
@@ -599,6 +642,7 @@ impl DenoProcessIsolate {
                 limits.memory_mb,
                 config.allow_net.as_deref(),
                 config.deno_cache_mode,
+                Some(limits.clone()),
             )
             .await?;
             self.process = Some(process);

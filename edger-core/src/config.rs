@@ -32,6 +32,14 @@ pub struct WorkerConfig {
     pub queue_timeout_ms: u64,
     pub max_body_size_bytes: Option<u64>,
     pub low_memory: bool,
+    /// Hard RSS cap (MB); process killed above it. Falls back to a low/normal default.
+    pub memory_mb: Option<u32>,
+    /// Soft RSS threshold (MB) for preventive recycle. Below `memory_mb`.
+    pub rss_soft_mb: Option<u32>,
+    /// Soft CPU-time budget (ms) for preventive recycle.
+    pub cpu_soft_ms: Option<u64>,
+    /// Hard CPU-time budget (ms); process killed above it.
+    pub cpu_hard_ms: Option<u64>,
     pub auto_install: bool,
     pub deno_cache_mode: DenoCacheMode,
     pub inject_base: bool,
@@ -362,6 +370,10 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         queue_timeout_ms,
         max_body_size_bytes,
         low_memory: manifest.low_memory.unwrap_or(false),
+        memory_mb: manifest.memory_mb,
+        rss_soft_mb: manifest.rss_soft_mb,
+        cpu_soft_ms: manifest.cpu_soft_ms,
+        cpu_hard_ms: manifest.cpu_hard_ms,
         auto_install: manifest.auto_install.unwrap_or(false),
         deno_cache_mode: manifest.deno_cache_mode.unwrap_or_default(),
         inject_base: manifest.inject_base.unwrap_or(true),
