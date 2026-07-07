@@ -309,8 +309,9 @@ Deno.serve(() => new Response("ok"));
     );
 }
 
-// Deno KV: workers get --unstable-kv + a per-worker EDGER_KV_PATH. A counter kept
-// in KV survives across requests, proving the store is enabled, wired and writable.
+// Deno KV: --unstable-kv is enabled, so Deno.openKv() works. An in-memory KV
+// opened once at module scope keeps a counter across requests, proving the API is
+// available. The backend (a path the app manages, or remote) is the app's choice.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deno_kv_persists_across_requests() {
@@ -321,7 +322,7 @@ async fn deno_kv_persists_across_requests() {
     let dir = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
-        r#"const kv = await Deno.openKv(Deno.env.get("EDGER_KV_PATH"));
+        r#"const kv = await Deno.openKv(":memory:");
 Deno.serve(async () => {
   const cur = (await kv.get(["counter"])).value ?? 0;
   const next = (cur as number) + 1;

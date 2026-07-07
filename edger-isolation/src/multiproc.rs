@@ -190,34 +190,21 @@ impl DenoWorkerProcess {
         }
 
         let executable = default_deno_executable();
-
-        // Per-worker Deno KV data dir. Persists across process restarts (lives in
-        // the worker dir, not the ephemeral socket dir); the app opens it via the
-        // injected EDGER_KV_PATH. `--unstable-kv` enables Deno.openKv().
-        let kv_dir = worker_dir.join(".edger-kv");
-        std::fs::create_dir_all(&kv_dir).map_err(|err| {
-            IsolationError::new(
-                "UDS_KV_DIR",
-                format!("create KV dir {}: {err}", kv_dir.display()),
-            )
-        })?;
-
         let mut command = Command::new(&executable);
         command
             .arg("run")
             .arg("--no-check")
             .arg("--no-prompt")
+            // Enables Deno.openKv(). The app chooses the backend itself (:memory:,
+            // a path it manages, or a remote KV Connect endpoint) — edger does not
+            // prescribe or manage a KV location.
             .arg("--unstable-kv")
             .arg(format!(
                 "--allow-read={}",
                 read_allowlist(&worker_dir, workdir.path(), &deno_dir.read_dirs)
             ))
-            // The unix socket connect and the Deno KV SQLite file both need write.
-            .arg(format!(
-                "--allow-write={},{}",
-                workdir.path().display(),
-                kv_dir.display()
-            ))
+            // Connecting a unix socket needs write on the socket dir.
+            .arg(format!("--allow-write={}", workdir.path().display()))
             .arg("--allow-env")
             // node/npm frameworks (express etc.) may query os/sys info.
             .arg("--allow-sys")
@@ -238,7 +225,6 @@ impl DenoWorkerProcess {
         }
         inject_runtime_env(&mut command, deno_dir.env_dir.as_deref());
         inject_manifest_env(&mut command, env);
-        command.env("EDGER_KV_PATH", kv_dir.join("kv.sqlite"));
         if let Some(config_path) = deno_config_path(&worker_dir) {
             command.arg("--config").arg(config_path);
         }

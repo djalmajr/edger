@@ -22,23 +22,12 @@ addEventListener("beforeunload", (ev: Event) => {
   })());
 });
 
-// Deno KV (enabled by edger via --unstable-kv + a per-worker EDGER_KV_PATH).
-let kvPromise: Promise<Deno.Kv> | null = null;
-const getKv = () => (kvPromise ??= Deno.openKv(Deno.env.get("EDGER_KV_PATH")));
-
 export default {
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname.endsWith("/health")) {
       const [{ ok }] = await sql`select 1 as ok`;
       return Response.json({ ok, via: "pgbouncer" });
-    }
-    if (url.pathname.endsWith("/kv")) {
-      const kv = await getKv();
-      const cur = ((await kv.get(["counter"])).value as number) ?? 0;
-      const next = cur + 1;
-      await kv.set(["counter"], next);
-      return Response.json({ count: next });
     }
     const tenant = url.searchParams.get("tenant") ?? "11111111-1111-1111-1111-111111111111";
     const rows = await sql`
