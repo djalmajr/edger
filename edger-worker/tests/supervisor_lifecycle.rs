@@ -14,6 +14,19 @@ impl IsolateFactory for MockFactory {
     }
 }
 
+/// Factory whose isolates yield during `terminate()`, so the TTL-timer
+/// self-cancellation window is exercised (a real Deno isolate yields on
+/// process-shutdown I/O; an all-inline mock would not).
+struct SlowTerminateFactory {
+    terminate_ms: u64,
+}
+
+impl IsolateFactory for SlowTerminateFactory {
+    fn create_isolate(&self, _worker_ref: &edger_core::WorkerRef) -> Box<dyn edger_core::Isolate> {
+        Box::new(MockIsolate::new().with_slow_terminate_ms(self.terminate_ms))
+    }
+}
+
 fn sample_req(uri: &str) -> SerializedRequest {
     SerializedRequest {
         method: "GET".into(),
@@ -134,6 +147,66 @@ async fn idle_ttl_expiry_triggers_termination() {
     Supervisor::on_ttl_expired(&instance, &pool).await.unwrap();
 
     assert_eq!(pool.len(), 0);
+}
+
+/// Regression: when the real (spawned) TTL timer fires, the termination must
+/// run to completion — mark the instance `Terminated` and remove it from the
+/// pool — so the pool can cold-start a fresh instance on the next request.
+///
+/// The bug: `begin_termination` ran *inside* the fired timer task and called
+/// `cancel_ttl_timer()`, which `abort()`ed that very task. The abort landed at
+/// the `terminate().await` yield, cancelling cleanup before `Terminated` +
+/// `remove_instance`. The instance stayed wedged in `Terminating`, resident in
+/// the group, so every later dispatch returned `WorkerError::Retired`
+/// ("worker retired (max_requests reached)") forever, until process restart.
+///
+/// Unlike `idle_ttl_expiry_triggers_termination`, this goes through the real
+/// `schedule_ttl_timer` spawn path (not a direct `on_ttl_expired` call) and
+/// uses a terminate that yields, so it actually reproduces the self-abort.
+#[tokio::test]
+async fn ttl_timer_firing_removes_instance_and_pool_recovers() {
+    let worker_ref = make_worker_ref(PathBuf::from("/workers/ttlfire"), "ttlfire", 80, 0);
+    let pool = WorkerPool::with_factory(
+        PoolConfig {
+            max_size: 8,
+            ephemeral_concurrency: 4,
+            ephemeral_queue_limit: 8,
+        },
+        Arc::new(SlowTerminateFactory { terminate_ms: 60 }),
+    );
+
+    // Serve one request: Active -> Idle schedules the real 80ms TTL timer.
+    pool.fetch(
+        &worker_ref.dir,
+        &worker_ref.config,
+        sample_req("/"),
+        Some(ExecutionKind::FetchHandler),
+    )
+    .await
+    .unwrap();
+    assert_eq!(pool.len(), 1);
+
+    // Let the timer fire and its cleanup (incl. the 60ms terminate) finish.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    // Fixed: fully terminated and removed. Buggy: wedged in `Terminating` -> 1.
+    assert_eq!(
+        pool.len(),
+        0,
+        "TTL-expired instance must be removed, not wedged in Terminating"
+    );
+
+    // And the pool must cold-start a fresh instance instead of 500 Retired.
+    pool.fetch(
+        &worker_ref.dir,
+        &worker_ref.config,
+        sample_req("/"),
+        Some(ExecutionKind::FetchHandler),
+    )
+    .await
+    .expect("pool must cold-start after TTL recycle, not return Retired");
+    let instance = pool.get_or_create(&worker_ref).await.unwrap();
+    assert_eq!(instance.state(), WorkerState::Idle);
 }
 
 #[tokio::test]

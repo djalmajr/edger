@@ -25,7 +25,10 @@ pub enum WorkerError {
     WorkerQueueTimeout,
     #[error("worker circuit breaker open; retry after {retry_after_ms}ms")]
     CircuitOpen { retry_after_ms: u64 },
-    #[error("worker retired (max_requests reached)")]
+    // NOTE: despite the historical name, this is returned for *any* unavailable
+    // dispatch slot (`ReservedSlot::Unavailable`), never for a real max_requests
+    // retirement (that path terminates + removes without surfacing an error).
+    #[error("worker unavailable (no idle instance and process capacity reached)")]
     Retired,
     #[error("isolation error: {0}")]
     Isolation(#[from] edger_core::IsolationError),

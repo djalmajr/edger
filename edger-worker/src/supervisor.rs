@@ -136,7 +136,11 @@ impl Supervisor {
         pool: &WorkerPool,
         event: WorkerEvent,
     ) -> Result<(), WorkerError> {
-        instance.cancel_ttl_timer();
+        // Detach (do NOT abort): this runs inside the fired TTL timer task, so
+        // aborting its own handle here would cancel the termination before
+        // `cleanup()` -> `Terminated` -> `remove_instance` complete, leaving the
+        // instance wedged in `Terminating` and permanently `WorkerError::Retired`.
+        instance.clear_ttl_timer();
         {
             let mut state = instance.state_lock();
             *state = transition(*state, event)?;
@@ -187,6 +191,11 @@ impl Supervisor {
         let timer_instance = Arc::clone(&instance);
         let handle = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(ttl_ms)).await;
+            // Detach our own handle BEFORE running termination. `sleep` returned
+            // and no `.await` precedes this `clear`, so it runs atomically: from
+            // here on neither `begin_termination` nor a racing request's
+            // `cancel_ttl_timer()` can `abort()` this task mid-`cleanup()`.
+            timer_instance.clear_ttl_timer();
             let _ = Supervisor::on_ttl_expired(&timer_instance, &pool).await;
         });
         instance.set_ttl_handle(handle);

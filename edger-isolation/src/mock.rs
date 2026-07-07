@@ -12,6 +12,7 @@ pub struct MockIsolate {
     idle_calls: u32,
     fail_on_terminate: bool,
     slow_fetch_ms: u64,
+    slow_terminate_ms: u64,
 }
 
 impl MockIsolate {
@@ -22,11 +23,20 @@ impl MockIsolate {
             idle_calls: 0,
             fail_on_terminate: false,
             slow_fetch_ms: 0,
+            slow_terminate_ms: 0,
         }
     }
 
     pub fn with_slow_fetch_ms(mut self, ms: u64) -> Self {
         self.slow_fetch_ms = ms;
+        self
+    }
+
+    /// Make `terminate()` await (yield to the scheduler) before returning. Used
+    /// to exercise cancellation windows in the termination path — a real Deno
+    /// isolate yields on process shutdown I/O, an all-inline mock does not.
+    pub fn with_slow_terminate_ms(mut self, ms: u64) -> Self {
+        self.slow_terminate_ms = ms;
         self
     }
 
@@ -128,6 +138,9 @@ impl Isolate for MockIsolate {
         self.terminate_calls += 1;
         if self.fail_on_terminate && self.terminate_calls == 1 {
             return Err(IsolationError::new("TERMINATE_FAIL", "injected failure"));
+        }
+        if self.slow_terminate_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(self.slow_terminate_ms)).await;
         }
         Ok(())
     }

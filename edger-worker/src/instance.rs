@@ -103,4 +103,13 @@ impl WorkerInstance {
             handle.abort();
         }
     }
+
+    /// Drop the stored TTL timer handle WITHOUT aborting the task. Used by the
+    /// timer task itself once it has fired: it is running *on* that handle, so
+    /// `cancel_ttl_timer()`'s `abort()` would cancel the in-flight termination
+    /// mid-`cleanup()` and wedge the instance in `Terminating`. Detaching only
+    /// clears the slot so neither the task nor a racing request can abort it.
+    pub fn clear_ttl_timer(&self) {
+        let _ = self.ttl_handle.lock().expect("ttl_handle lock").take();
+    }
 }

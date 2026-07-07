@@ -191,6 +191,7 @@ impl WorkerGroup {
         let len = instances.len();
         let offset = self.next_round_robin(len);
         let mut wait_candidate = None;
+        let mut reclaim: Vec<Uuid> = Vec::new();
 
         for step in 0..len {
             let instance = Arc::clone(&instances[(offset + step) % len]);
@@ -201,6 +202,15 @@ impl WorkerGroup {
                     {
                         return ReservedSlot::Acquired { instance, guard };
                     }
+                    // Lock is free but the instance can neither accept dispatch
+                    // nor is it starting up — it is wedged (e.g. stuck in
+                    // `Terminating` after a termination task was cancelled
+                    // mid-cleanup). It holds a slot yet can never serve nor be
+                    // waited on, which would otherwise make this report
+                    // `Unavailable` forever. Reclaim it so a fresh instance can
+                    // take its slot below (defense in depth).
+                    drop(guard);
+                    reclaim.push(instance.id());
                 }
                 Err(_) => {
                     if wait_candidate.is_none() {
@@ -208,6 +218,10 @@ impl WorkerGroup {
                     }
                 }
             }
+        }
+
+        if !reclaim.is_empty() {
+            instances.retain(|instance| !reclaim.contains(&instance.id()));
         }
 
         if instances.len() < max_processes.max(1) {
