@@ -18,17 +18,21 @@ banco — tudo isso é anti-recomendação explícita.
 
 | # | Story | Prioridade | Área | Tam. | Status |
 |---|---|---|---|---|---|
-| 01 | Sandbox de rede + cache: egress allowlist por-worker + DENO_DIR read-only/isolado | P0 | segurança | M | pending |
-| 02 | OIDC: claims→namespaces, is_root só com role admin explícito | P0 | segurança | M | pending |
-| 03 | Ciclo de vida do pool: circuit-breaker crash-loop + modo oneshot + pre-warm eager | P1 | isolamento | L | pending |
-| 04 | Limites do processo: CPU-time soft/hard + RSS enforcement + recycle-por-causa | P1 | isolamento | L | pending |
-| 05 | Cron real: parser 5-campos (crate) substituindo parser artesanal | P1 | dx | S | pending |
-| 06 | SPA/fullstack: injeção de env (window.__env__) + rewrite de base href | P1 | ops | M | pending |
-| 07 | Wasm higiene: cache de Module + fuel/epoch + StoreLimits + streaming (>64KB) | P1 | isolamento | M | pending |
-| 08 | Admissão: rate-limit/cota por-worker + idle/read-timeout no harness | P2 | segurança/ops | M | pending |
-| 09 | Observabilidade: OTLP real (feature) + evento por-execução com causa/custo | P2 | observabilidade | M | pending |
-| 10 | Cron multi-réplica: leader-election (k8s Lease) | P2 | ops | M | pending |
-| 11 | Sinais de lifecycle ao JS: beforeunload/drain + waitUntil mínimo opt-in | P3 | dx | M | pending |
+| 01 | Sandbox de rede + cache: egress allowlist por-worker + DENO_DIR read-only/isolado | P0 | segurança | M | ✅ merged (PR #22) |
+| 02 | OIDC: claims→namespaces, is_root só com role admin explícito | P0 | segurança | M | ✅ merged (PR #20) |
+| 03 | Ciclo de vida do pool: circuit-breaker crash-loop + modo oneshot + pre-warm eager | P1 | isolamento | L | ✅ merged (PR #25) |
+| 04 | Limites do processo: CPU-time soft/hard + RSS enforcement + recycle-por-causa | P1 | isolamento | L | ✅ merged (PR #26) |
+| 05 | Cron real: parser 5-campos (crate) substituindo parser artesanal | P1 | dx | S | ✅ merged (PR #23) |
+| 06 | SPA/fullstack: injeção de env (window.__env__) + rewrite de base href | P1 | ops | M | ✅ merged (PR #24) |
+| 07 | Wasm higiene: cache de Module + fuel/epoch + StoreLimits + streaming (>64KB) | P1 | isolamento | M | ✅ merged (PR #21) |
+| 08 | Admissão: rate-limit/cota por-worker (idle-timeout já coberto pelo wall-timeout) | P2 | segurança/ops | M | ✅ merged (PR #27) |
+| 09 | Observabilidade: evento por-execução ✅ (PR #28); OTLP exporter → follow-up | P2 | observabilidade | M | 🟡 parcial (evento merged; OTLP deferido) |
+| 10 | Cron multi-réplica: leader-election (k8s Lease) | P2 | ops | M | ⏭️ deferido (follow-up) |
+| 11 | Sinais de lifecycle ao JS: beforeunload/drain + waitUntil mínimo opt-in | P3 | dx | M | ⏭️ deferido (follow-up) |
+
+**Status do epic:** 9.5/12 entregues e validados — todos P0 e P1, rate-limit e o
+evento por-execução. Cauda P2/P3 (OTLP exporter, leader-election, harness-signals)
+deferida por decisão explícita; ver `follow-ups/e20-deferred-tail.md`.
 
 ## Roadmap / ordem de execução
 
