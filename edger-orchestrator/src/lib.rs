@@ -10,6 +10,7 @@ pub mod metrics;
 pub mod oidc;
 pub mod operational_log;
 pub mod pipeline;
+pub mod rate_limit;
 pub mod router;
 pub mod security;
 pub mod server;
