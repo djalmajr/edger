@@ -67,12 +67,16 @@ echo "$PARAMS" | grep -q '"count":3'      || fail "B1 /params count (via pgbounc
 echo "$PARAMS" | grep -q '"featureFlags"' || fail "B1 /params content: $PARAMS"
 echo "PASS B1  /params -> count:3 (parameterized query via pgbouncer)"
 
-# B2: idle > TTL recycles the worker via terminate() -> beforeunload -> waitUntil(drain).
-echo "==> waiting for TTL recycle (idle > 3s) to trigger the shutdown drain"
-for i in $(seq 1 12); do [ "$(count "select count(*) from e2e_shutdown_log")" -ge 1 ] && break; sleep 1; done
+# B2: graceful SIGTERM drains the live worker. main() awaits the pool drain before
+# exiting, so beforeunload + EdgeRuntime.waitUntil run the same cleanup as a recycle.
+# The worker is warm + connected from the B1 curls; its long TTL keeps it live.
+echo "==> sending SIGTERM (graceful shutdown must drain the live worker before exit)"
+kill -TERM "$EDGER_PID" 2>/dev/null || true
+for i in $(seq 1 20); do kill -0 "$EDGER_PID" 2>/dev/null && sleep 1 || break; done
+EDGER_PID="" # already exited; don't double-kill in cleanup
 [ "$(count "select count(*) from e2e_shutdown_log where reason='terminate'")" -ge 1 ] \
-  || fail "B2 beforeunload drain did not write e2e_shutdown_log (reason=terminate)"
-echo "PASS B2  TTL recycle drained the pool (e2e_shutdown_log reason=terminate)"
+  || fail "B2 SIGTERM did not drain the worker (no e2e_shutdown_log reason=terminate)"
+echo "PASS B2  SIGTERM drained the pool before exit (e2e_shutdown_log reason=terminate)"
 
 echo
-echo "E2E PASSED — B1 (env + pgbouncer query) · B2 (shutdown drain) · B3 (release migrations)"
+echo "E2E PASSED — B1 (env + pgbouncer) · B2 (graceful SIGTERM drain) · B3 (release migrations)"

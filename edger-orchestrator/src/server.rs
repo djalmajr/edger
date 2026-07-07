@@ -74,10 +74,13 @@ impl ServerState {
             && self.inner.pool.read().expect("pool lock").is_some()
     }
 
-    pub fn shutdown_pool(&self) {
-        if let Some(pool) = self.inner.pool.read().expect("pool lock").as_ref() {
-            pool.shutdown();
-        }
+    pub fn shutdown_pool(&self) -> Option<tokio::task::JoinHandle<()>> {
+        self.inner
+            .pool
+            .read()
+            .expect("pool lock")
+            .as_ref()
+            .and_then(|pool| pool.shutdown())
     }
 
     pub fn pool_metrics(&self) -> Option<edger_worker::PoolMetrics> {

@@ -5,7 +5,7 @@ Reproducible e2e for the runtime capabilities added for the `parameters-v2` app:
 - **B1** — server workers receive all declared env (`DATABASE_URL`); the worker
   queries Postgres **via PgBouncer** (transaction mode).
 - **B2** — `beforeunload` + `EdgeRuntime.waitUntil` drain the pool on graceful
-  recycle (TTL), before the process is killed.
+  shutdown (SIGTERM) and on TTL/idle recycle, before the process is killed.
 - **B3** — the **release phase** runs migrations once per version before serving.
 
 ## Run
@@ -28,7 +28,7 @@ Requires: `docker`, `deno`, `cargo`.
 | `/param-e2e/health` → `{"ok":1}` | worker got `DATABASE_URL`, `select 1` via PgBouncer (B1) |
 | `e2e_release_marker` + `_migrations` ≥ 2 + `.edger-release` | release ran migrations once (B3) |
 | `/param-e2e/?tenant=…` → `count:3` | parameterized query (`$1`) via PgBouncer (B1) |
-| `e2e_shutdown_log` row `reason=terminate` | beforeunload drain fired on TTL recycle (B2) |
+| `e2e_shutdown_log` row `reason=terminate` | beforeunload drain fired on graceful SIGTERM (B2) |
 
 ## Complementary in-repo unit/integration tests
 
@@ -43,5 +43,3 @@ These run under plain `cargo test` (the ones needing a Deno process are gated by
 
 - Scoped `allowNet` breaks the multiproc backend (harness needs net to its unix
   socket; Deno can't scope a unix path in `--allow-net`). This worker uses full net.
-- The platform SIGTERM / `pool.shutdown` path does not route through
-  `Isolate::terminate()`, so the drain only fires on TTL/idle/max-requests recycle.

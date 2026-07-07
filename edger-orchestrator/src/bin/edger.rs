@@ -100,7 +100,11 @@ async fn main() -> anyhow::Result<()> {
     let serve_result = serve(config, app, shutdown_signal()).await;
     tracing::info!("HTTP server stopped; shutting down cron scheduler and worker pool");
     cron_scheduler.shutdown().await;
-    server.shutdown_pool();
+    // Await the graceful worker drain (beforeunload + waitUntil) before exiting so
+    // platform shutdown/scale-down runs the same cleanup as a TTL/idle recycle.
+    if let Some(drain) = server.shutdown_pool() {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(15), drain).await;
+    }
     serve_result
 }
 

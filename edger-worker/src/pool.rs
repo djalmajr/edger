@@ -855,9 +855,12 @@ impl WorkerPool {
         self.sync_worker_counts();
     }
 
-    pub fn shutdown(&self) {
+    /// Begins graceful shutdown and returns the drain task handle (when a Tokio
+    /// runtime is present) so the caller can AWAIT the beforeunload/waitUntil drain
+    /// before exiting. Fire-and-forget would let the process exit mid-drain.
+    pub fn shutdown(&self) -> Option<tokio::task::JoinHandle<()>> {
         if self.inner.shutdown.swap(true, Ordering::SeqCst) {
-            return;
+            return None;
         }
 
         let groups = self.inner.cache.groups_snapshot();
@@ -884,12 +887,13 @@ impl WorkerPool {
         self.sync_worker_counts();
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(shutdown_instances_after_drain(instances));
+            Some(handle.spawn(shutdown_instances_after_drain(instances)))
         } else {
             for instance in instances {
                 instance.cancel_ttl_timer();
                 instance.set_state(WorkerState::Terminated);
             }
+            None
         }
     }
 
