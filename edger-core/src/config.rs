@@ -40,6 +40,8 @@ pub struct WorkerConfig {
     pub cpu_soft_ms: Option<u64>,
     /// Hard CPU-time budget (ms); process killed above it.
     pub cpu_hard_ms: Option<u64>,
+    /// Per-worker admission ceiling in requests/second (0/None = unlimited).
+    pub rate_limit_rps: Option<u32>,
     pub auto_install: bool,
     pub deno_cache_mode: DenoCacheMode,
     pub inject_base: bool,
@@ -374,6 +376,7 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         rss_soft_mb: manifest.rss_soft_mb,
         cpu_soft_ms: manifest.cpu_soft_ms,
         cpu_hard_ms: manifest.cpu_hard_ms,
+        rate_limit_rps: manifest.rate_limit_rps,
         auto_install: manifest.auto_install.unwrap_or(false),
         deno_cache_mode: manifest.deno_cache_mode.unwrap_or_default(),
         inject_base: manifest.inject_base.unwrap_or(true),

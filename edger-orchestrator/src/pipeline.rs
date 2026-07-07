@@ -233,6 +233,18 @@ async fn dispatch_worker(
         base_path,
     } = params;
 
+    // Per-worker admission ceiling (Epic 20.08): protects an individual worker
+    // from a single abusive caller exhausting its queue/slots before the pool's
+    // backpressure engages. Ops-of-runtime; the worker still owns app auth.
+    if let Some(rps) = worker.config.rate_limit_rps {
+        if !crate::rate_limit::allow(&worker.name, rps) {
+            return Err(CoreError::new(
+                "RATE_LIMITED",
+                format!("worker '{}' rate limit exceeded ({rps}/s)", worker.name),
+            ));
+        }
+    }
+
     tracing::info!(
         request_id = %request_id,
         worker_name = %worker.name,
@@ -308,6 +320,7 @@ fn map_error_status(err: &CoreError) -> StatusCode {
         "HEADER_TOO_LARGE" => StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
         "HEADER_INVALID" => StatusCode::BAD_REQUEST,
         "WORKER_QUEUE_FULL" => StatusCode::TOO_MANY_REQUESTS,
+        "RATE_LIMITED" => StatusCode::TOO_MANY_REQUESTS,
         "WORKER_QUEUE_TIMEOUT" => StatusCode::SERVICE_UNAVAILABLE,
         "WORKER_CIRCUIT_OPEN" => StatusCode::SERVICE_UNAVAILABLE,
         "VALIDATION_ERROR" | "PARSE_ERROR" | "BODY_ERROR" => StatusCode::BAD_REQUEST,

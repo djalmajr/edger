@@ -74,6 +74,8 @@ pub struct WorkerManifest {
     pub cpu_soft_ms: Option<u64>,
     #[serde(default, alias = "cpu_hard_ms")]
     pub cpu_hard_ms: Option<u64>,
+    #[serde(default, alias = "rate_limit_rps")]
+    pub rate_limit_rps: Option<u32>,
     pub auto_install: Option<bool>,
     #[serde(default, alias = "deno_cache_mode")]
     pub deno_cache_mode: Option<DenoCacheMode>,
