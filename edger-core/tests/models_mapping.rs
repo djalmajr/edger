@@ -238,6 +238,12 @@ basePath: auto
         })
     );
     assert_eq!(config.ttl_ms, 300_000);
+    // Regression (fullstack SSR spawn): the raw config `entrypoint` must mirror
+    // `ssrEntrypoint`. The process backend spawns eagerly (Supervisor::spawn ->
+    // Isolate::prepare) with this raw config, BEFORE the per-request fullstack
+    // transform wires the entrypoint — a `None` here made the Deno SSR process
+    // fail resolution with UDS_ENTRYPOINT_MISSING before ever serving a request.
+    assert_eq!(config.entrypoint.as_deref(), Some("server/server.js"));
     let fullstack = config.fullstack.unwrap();
     assert_eq!(fullstack.adapter, "tanstack");
     assert_eq!(

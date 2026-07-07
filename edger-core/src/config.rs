@@ -357,10 +357,22 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         manifest.max_requests.unwrap_or(0)
     };
 
+    let fullstack = fullstack_config_from_manifest(manifest);
+    // Fullstack workers declare their SSR module via `ssrEntrypoint`, not the
+    // top-level `entrypoint`. The process backend spawns eagerly (Supervisor::spawn
+    // → Isolate::prepare) using this raw config BEFORE the per-request fullstack
+    // transform (`prepare_fullstack_request`) wires the entrypoint, so mirror the
+    // SSR entrypoint here — otherwise the Deno process spawns with no entrypoint and
+    // fails resolution with UDS_ENTRYPOINT_MISSING before ever serving a request.
+    let entrypoint = manifest
+        .entrypoint
+        .clone()
+        .or_else(|| fullstack.as_ref().and_then(|f| f.ssr_entrypoint.clone()));
+
     WorkerConfig {
         enabled: manifest.enabled.unwrap_or(true),
         worker_dir: None,
-        entrypoint: manifest.entrypoint.clone(),
+        entrypoint,
         release_command: manifest.release.clone(),
         env: manifest.env.clone().unwrap_or_default(),
         env_prefix: manifest.env_prefix.clone(),
@@ -397,6 +409,6 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         inject_base: manifest.inject_base.unwrap_or(true),
         cron: manifest.cron.clone().unwrap_or_default(),
         kind: Some(kind),
-        fullstack: fullstack_config_from_manifest(manifest),
+        fullstack,
     }
 }
