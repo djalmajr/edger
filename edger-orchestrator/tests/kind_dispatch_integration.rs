@@ -315,7 +315,7 @@ Deno.serve(() => new Response(message));
 }
 
 #[tokio::test]
-async fn deno_backend_injects_only_filtered_manifest_env() {
+async fn deno_backend_injects_all_manifest_env() {
     let root = tempfile::tempdir().unwrap();
     let worker_dir = root.path().join("env-worker");
     fs::create_dir_all(&worker_dir).unwrap();
@@ -364,12 +364,14 @@ env:
         String::from_utf8_lossy(&body)
     );
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    // Server workers receive ALL declared env, including secrets (B1). Browser
+    // exposure stays gated separately by the publicEnv allowlist (static_spa).
     assert_eq!(json["publicFlag"], "visible");
-    assert_eq!(json["databaseUrl"], serde_json::Value::Null);
-    assert_eq!(json["openaiApiKey"], serde_json::Value::Null);
-    assert_eq!(json["githubToken"], serde_json::Value::Null);
-    assert_eq!(json["serviceKey"], serde_json::Value::Null);
-    assert_eq!(json["adminPassword"], serde_json::Value::Null);
+    assert_eq!(json["databaseUrl"], "postgres://secret");
+    assert_eq!(json["openaiApiKey"], "sk-secret");
+    assert_eq!(json["githubToken"], "gh-secret");
+    assert_eq!(json["serviceKey"], "service-secret");
+    assert_eq!(json["adminPassword"], "password-secret");
 }
 
 #[tokio::test]
