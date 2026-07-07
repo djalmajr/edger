@@ -245,6 +245,7 @@ async fn dispatch_worker(
         }
     }
 
+    let started = std::time::Instant::now();
     tracing::info!(
         request_id = %request_id,
         worker_name = %worker.name,
@@ -276,16 +277,36 @@ async fn dispatch_worker(
     {
         Ok(response) => response,
         Err(err) => {
+            let status = map_error_status(&err).as_u16();
             state.server.worker_errors().record(
                 &worker.name,
                 &request_id,
-                map_error_status(&err).as_u16(),
+                status,
                 &err.code,
                 &err.message,
+            );
+            crate::operational_log::log_dispatch_event(
+                &request_id,
+                &worker.name,
+                &worker.version,
+                worker.namespace.as_deref().unwrap_or(""),
+                &err.code,
+                started.elapsed().as_millis() as u64,
+                status,
             );
             return Err(err);
         }
     };
+
+    crate::operational_log::log_dispatch_event(
+        &request_id,
+        &worker.name,
+        &worker.version,
+        worker.namespace.as_deref().unwrap_or(""),
+        "ok",
+        started.elapsed().as_millis() as u64,
+        200,
+    );
 
     match worker_response {
         edger_core::WorkerResponse::Buffered(response) => serialized_to_axum(response),
