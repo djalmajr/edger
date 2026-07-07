@@ -1,0 +1,34 @@
+name: edger-e2e
+
+# Postgres + PgBouncer (transaction mode) for the release/pooler/shutdown e2e.
+# Ports are exposed on localhost so the edger binary runs on the host.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.23.1-p3
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: app
+      DB_PASSWORD: app
+      DB_NAME: app
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      MAX_PREPARED_STATEMENTS: "200"
+      LISTEN_PORT: "6432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports: ["6432:6432"]

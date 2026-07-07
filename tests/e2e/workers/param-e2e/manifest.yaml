@@ -1,0 +1,20 @@
+name: param-e2e
+version: "1.0.0"
+kind: fetch
+entrypoint: index.ts
+minProcesses: 1
+ttl: "3s" # short TTL so an idle worker recycles via terminate() -> beforeunload (B2)
+
+# NOTE: scoped allowNet currently breaks the multiproc backend — the harness needs
+# net access to its unix socket and Deno cannot scope a unix path in --allow-net.
+# Omitting allowNet grants full net (covers the UDS + pgbouncer). Follow-up: reconcile.
+
+env:
+  DATABASE_URL: "postgres://app:app@localhost:6432/app"        # via pgbouncer (pooler)
+  DIRECT_DATABASE_URL: "postgres://app:app@localhost:5432/app" # direct (release/migrations)
+
+# B3: run migrations once per version before serving, over the direct connection.
+release: "deno run --allow-net --allow-env --allow-read db/migrate.ts"
+
+# B2: grace budget for the beforeunload drain before the process is killed.
+shutdownGrace: 5s
