@@ -66,6 +66,14 @@ pub struct WorkerManifest {
     pub queue_timeout: Option<serde_yaml::Value>,
     pub max_body_size: Option<String>,
     pub low_memory: Option<bool>,
+    #[serde(default, alias = "memory_mb")]
+    pub memory_mb: Option<u32>,
+    #[serde(default, alias = "rss_soft_mb")]
+    pub rss_soft_mb: Option<u32>,
+    #[serde(default, alias = "cpu_soft_ms")]
+    pub cpu_soft_ms: Option<u64>,
+    #[serde(default, alias = "cpu_hard_ms")]
+    pub cpu_hard_ms: Option<u64>,
     pub auto_install: Option<bool>,
     #[serde(default, alias = "deno_cache_mode")]
     pub deno_cache_mode: Option<DenoCacheMode>,

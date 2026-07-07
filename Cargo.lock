@@ -644,6 +644,7 @@ dependencies = [
  "bytes",
  "edger-core",
  "futures-core",
+ "libc",
  "postcard",
  "serde",
  "serde_json",
