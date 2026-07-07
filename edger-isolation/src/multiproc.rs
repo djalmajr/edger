@@ -48,6 +48,24 @@ struct WireResponseHeader {
     headers: Vec<(String, String)>,
 }
 
+/// Control frame telling the worker to run `beforeunload` and drain
+/// `EdgeRuntime.waitUntil()` within a grace budget before the process is killed.
+#[derive(Serialize)]
+struct WireShutdown {
+    #[serde(rename = "__control")]
+    control: &'static str,
+    reason: String,
+    #[serde(rename = "graceMs")]
+    grace_ms: u64,
+}
+
+/// The worker's shutdown ack (untagged JSON frame with the drained count).
+#[derive(Deserialize)]
+struct WireShutdownAck {
+    #[serde(default)]
+    drained: u64,
+}
+
 #[derive(Deserialize, Default)]
 struct WireEndFrame {
     #[serde(default)]
@@ -462,6 +480,45 @@ impl DenoWorkerProcess {
         })
     }
 
+    /// Graceful shutdown: send a control frame so the worker fires its
+    /// `beforeunload` handlers and drains `EdgeRuntime.waitUntil()` promises
+    /// within `grace`, then return so the caller can drop (kill) the process.
+    ///
+    /// The grace budget is SEPARATE from the request timeout: it runs after the
+    /// last response, so it never counts against a request's wall-clock. Only
+    /// possible when idle (read half available); mid-stream/poisoned processes
+    /// skip straight to the kill. Returns the number of drained `waitUntil`
+    /// promises the worker reported, when the ack arrives in time.
+    pub async fn shutdown(&mut self, reason: &str, grace: Duration) -> Option<u64> {
+        // Reclaim the read half the same way a request does — after a request it
+        // rests in `restore_rx`, not in `self.read_half`. A poisoned/mid-stream
+        // process can't be reclaimed: skip straight to the kill.
+        let mut read_half = self.reclaim_read_half().await.ok()?;
+        let payload = serde_json::to_vec(&WireShutdown {
+            control: "shutdown",
+            reason: reason.to_string(),
+            grace_ms: grace.as_millis() as u64,
+        })
+        .ok()?;
+        if tokio::time::timeout(
+            Duration::from_secs(1),
+            write_frame(&mut self.write_half, &payload),
+        )
+        .await
+        .is_err()
+        {
+            return None;
+        }
+        // Wait for the worker's drain ack, bounded by grace + a small margin.
+        let deadline = grace.saturating_add(Duration::from_millis(500));
+        match tokio::time::timeout(deadline, read_frame(&mut read_half)).await {
+            Ok(Ok(frame)) => serde_json::from_slice::<WireShutdownAck>(&frame)
+                .ok()
+                .map(|ack| ack.drained),
+            _ => None,
+        }
+    }
+
     /// Kill the process, surfacing any stderr as an error message.
     async fn fail(mut self, context: String) -> IsolationError {
         let _ = self.child.start_kill();
@@ -624,6 +681,8 @@ fn harness_script() -> &'static str {
 #[derive(Default)]
 pub struct DenoProcessIsolate {
     process: Option<DenoWorkerProcess>,
+    /// Grace budget for the beforeunload drain on graceful termination.
+    shutdown_grace: Duration,
 }
 
 impl DenoProcessIsolate {
@@ -632,6 +691,7 @@ impl DenoProcessIsolate {
     }
 
     async fn ensure_process(&mut self, config: &WorkerConfig) -> Result<(), IsolationError> {
+        self.shutdown_grace = Duration::from_millis(config.shutdown_grace_ms);
         if self.process.is_none() {
             let worker_dir = config.worker_dir.as_ref().ok_or_else(|| {
                 IsolationError::new("UDS_WORKER_DIR", "worker_dir is required for Deno process")
@@ -779,6 +839,11 @@ impl Isolate for DenoProcessIsolate {
     }
 
     async fn terminate(&mut self) -> Result<(), IsolationError> {
+        if let Some(process) = self.process.as_mut() {
+            // Best-effort graceful drain (beforeunload + waitUntil) before the
+            // process is dropped (killed). Bounded by the shutdown grace budget.
+            process.shutdown("terminate", self.shutdown_grace).await;
+        }
         // Dropping the process kills it (kill_on_drop).
         self.process = None;
         Ok(())

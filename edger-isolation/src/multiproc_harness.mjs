@@ -23,6 +23,35 @@ globalThis.addEventListener?.("error", (event) => {
   console.error("worker uncaught error:", event.error ?? event.message);
 });
 
+// --- Graceful shutdown lifecycle (story 20.11) ---
+// EdgeRuntime.waitUntil(promise) lets `beforeunload` handlers extend the process
+// just long enough to drain background work (e.g. a DB pool). On a shutdown
+// control frame the orchestrator sends a grace budget; we fire `beforeunload`,
+// await the collected promises up to that budget, then ack and exit.
+const pendingWaitUntil = [];
+globalThis.EdgeRuntime = globalThis.EdgeRuntime ?? {};
+globalThis.EdgeRuntime.waitUntil = (promise) => {
+  const tracked = Promise.resolve(promise);
+  pendingWaitUntil.push(tracked);
+  return tracked;
+};
+
+async function handleShutdown(reason, graceMs) {
+  try {
+    globalThis.dispatchEvent(new CustomEvent("beforeunload", { detail: { reason } }));
+  } catch (_) {
+    // no listeners / dispatch unsupported — nothing to drain.
+  }
+  const pending = pendingWaitUntil.splice(0);
+  if (pending.length > 0 && graceMs > 0) {
+    await Promise.race([
+      Promise.allSettled(pending),
+      new Promise((resolve) => setTimeout(resolve, graceMs)),
+    ]);
+  }
+  return pending.length;
+}
+
 let conn;
 
 async function writeFrame(payload) {
@@ -463,10 +492,23 @@ async function main() {
     const frame = await readFrame();
     if (frame === null) break; // orchestrator closed the connection
     const raw = JSON.parse(new TextDecoder().decode(frame));
+    // A shutdown control frame is not a request: drain and exit cleanly.
+    if (raw && raw.__control === "shutdown") {
+      const drained = await handleShutdown(raw.reason ?? "shutdown", raw.graceMs ?? 0);
+      try {
+        await sendJson({ shutdown: "done", drained });
+      } catch (_) {
+        // socket already closed — nothing to ack.
+      }
+      break;
+    }
     // respond() writes the tagged H/C.../E frames itself and never throws for
     // handler errors; a throw here means the socket broke — exit the loop.
     await respond(handler, raw);
   }
+  // Explicit exit so the native `beforeunload` cannot double-fire the handlers
+  // we already dispatched above.
+  Deno.exit(0);
 }
 
 main().catch((err) => {

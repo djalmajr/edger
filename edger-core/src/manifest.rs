@@ -54,6 +54,8 @@ pub struct WorkerManifest {
     pub ttl: Option<serde_yaml::Value>,
     pub timeout: Option<String>,
     pub idle_timeout: Option<String>,
+    #[serde(default, alias = "shutdown_grace")]
+    pub shutdown_grace: Option<serde_yaml::Value>,
     pub max_requests: Option<u32>,
     pub concurrency: Option<usize>,
     pub min_processes: Option<usize>,

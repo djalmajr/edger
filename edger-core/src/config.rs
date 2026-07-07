@@ -17,6 +17,8 @@ pub struct WorkerConfig {
     pub ttl_ms: u64,
     pub timeout_ms: u64,
     pub idle_timeout_ms: u64,
+    /// Grace budget (ms) for the beforeunload/waitUntil drain on graceful shutdown.
+    pub shutdown_grace_ms: u64,
     pub max_requests: u32,
     pub concurrency: usize,
     pub min_processes: usize,
@@ -312,6 +314,15 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         .and_then(|s| parse_duration_string_to_ms(s))
         .unwrap_or(60_000);
 
+    // Grace budget for the graceful shutdown drain (beforeunload + waitUntil).
+    // Default 0 = fire beforeunload but do not wait for async waitUntil work
+    // (opt-in via manifest `shutdownGrace`), keeping recycle latency unchanged.
+    let shutdown_grace_ms = manifest
+        .shutdown_grace
+        .as_ref()
+        .and_then(parse_duration_to_ms)
+        .unwrap_or(0);
+
     let max_body_size_bytes = manifest
         .max_body_size
         .as_ref()
@@ -359,6 +370,7 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         ttl_ms,
         timeout_ms,
         idle_timeout_ms,
+        shutdown_grace_ms,
         max_requests,
         concurrency,
         min_processes,

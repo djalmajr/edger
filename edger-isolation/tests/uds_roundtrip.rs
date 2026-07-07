@@ -262,3 +262,49 @@ async fn warm_worker_latency_probe() {
         samples.len()
     );
 }
+
+// Story 20.11: a graceful shutdown fires the worker's `beforeunload` handler and
+// drains its `EdgeRuntime.waitUntil()` promises within the grace budget, acking
+// the drained count. Without the control frame + harness dispatch the process
+// would just be killed and no cleanup would run.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn graceful_shutdown_dispatches_beforeunload_and_drains_wait_until() {
+    if find_deno_executable().is_none() {
+        eprintln!("skipping graceful_shutdown_dispatches_beforeunload: deno not found");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    write_worker(
+        dir.path(),
+        r#"addEventListener("beforeunload", () => {
+  EdgeRuntime.waitUntil(new Promise((resolve) => setTimeout(resolve, 50)));
+});
+Deno.serve(() => new Response("ok"));
+"#,
+    );
+
+    let mut worker = DenoWorkerProcess::spawn(
+        dir.path(),
+        Some("index.ts"),
+        Duration::from_secs(20),
+        &HashMap::new(),
+        None,
+    )
+    .await
+    .expect("worker spawns and becomes ready");
+
+    let res = worker
+        .request(request("GET", "/", None))
+        .await
+        .expect("request");
+    assert_eq!(res.status, 200);
+
+    // Graceful shutdown, 2s budget: the worker registered exactly one waitUntil.
+    let drained = worker.shutdown("terminate", Duration::from_secs(2)).await;
+    assert_eq!(
+        drained,
+        Some(1),
+        "beforeunload fired and one waitUntil promise was drained"
+    );
+}
