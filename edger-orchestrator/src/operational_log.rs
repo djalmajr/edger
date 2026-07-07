@@ -19,3 +19,30 @@ pub fn log_operational_error(
         "operational request failed"
     );
 }
+
+/// Per-execution structured event (Epic 20.09): emitted once per worker
+/// dispatch with the outcome and cost so a single request can be traced end to
+/// end. `outcome` is "ok" on success or the error code (timeout/cpu/memory/
+/// rate-limited/...) on failure. Feeds the OTLP exporter when linked.
+#[allow(clippy::too_many_arguments)]
+pub fn log_dispatch_event(
+    request_id: &str,
+    worker: &str,
+    version: &str,
+    namespace: &str,
+    outcome: &str,
+    wall_ms: u64,
+    status: u16,
+) {
+    tracing::info!(
+        target: "edger.dispatch",
+        request_id,
+        worker,
+        version,
+        namespace,
+        outcome,
+        wall_ms,
+        status,
+        "worker execution"
+    );
+}
