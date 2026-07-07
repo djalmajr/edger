@@ -1,6 +1,8 @@
 # Follow-up: scoped `allowNet` is incompatible with the multiproc UDS transport
 
-**Status:** open · surfaced by `tests/e2e/run.sh` · needs a design decision (security-sensitive)
+**Status:** deferred by decision — egress scoping isn't needed for now, so workers run with
+`allowNet` unset (full net). Revisit if/when host-level egress scoping is required. The
+root cause + options below are kept for that day.
 
 ## Symptom
 

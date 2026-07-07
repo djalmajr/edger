@@ -7,6 +7,7 @@ Reproducible e2e for the runtime capabilities added for the `parameters-v2` app:
 - **B2** — `beforeunload` + `EdgeRuntime.waitUntil` drain the pool on graceful
   shutdown (SIGTERM) and on TTL/idle recycle, before the process is killed.
 - **B3** — the **release phase** runs migrations once per version before serving.
+- **KV** — workers get **Deno KV** (`--unstable-kv` + a per-worker `EDGER_KV_PATH`).
 
 ## Run
 
@@ -29,6 +30,7 @@ Requires: `docker`, `deno`, `cargo`.
 | `e2e_release_marker` + `_migrations` ≥ 2 + `.edger-release` | release ran migrations once (B3) |
 | `/param-e2e/?tenant=…` → `count:3` | parameterized query (`$1`) via PgBouncer (B1) |
 | `e2e_shutdown_log` row `reason=terminate` | beforeunload drain fired on graceful SIGTERM (B2) |
+| `/param-e2e/kv` → `count` increments 1→2 | Deno KV enabled + persistent per-worker `EDGER_KV_PATH` |
 
 ## Complementary in-repo unit/integration tests
 

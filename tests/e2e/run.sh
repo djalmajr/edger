@@ -27,7 +27,7 @@ cleanup() {
   [ -n "$EDGER_PID" ] && kill "$EDGER_PID" 2>/dev/null || true
   lsof -ti:"$PORT" 2>/dev/null | xargs kill -9 2>/dev/null || true
   "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
-  rm -f "$WORKER_DIR/.edger-release" "$SCRIPT_DIR/edger.log"
+  rm -rf "$WORKER_DIR/.edger-release" "$WORKER_DIR/.edger-kv" "$SCRIPT_DIR/edger.log"
 }
 trap cleanup EXIT
 
@@ -43,7 +43,7 @@ echo "==> starting Postgres + PgBouncer (fresh volume)"
 for i in $(seq 1 30); do psql_c "select 1" | grep -q 1 && break; sleep 1; [ "$i" = 30 ] && fail "postgres never became ready"; done
 
 echo "==> booting edger (release phase applies migrations before serving)"
-rm -f "$WORKER_DIR/.edger-release"
+rm -rf "$WORKER_DIR/.edger-release" "$WORKER_DIR/.edger-kv"
 lsof -ti:"$PORT" 2>/dev/null | xargs kill -9 2>/dev/null || true
 ( cd "$REPO_ROOT" && ROOT_API_KEY=test-root PORT="$PORT" \
     RUNTIME_WORKER_DIRS="$SCRIPT_DIR/workers" RUST_LOG=warn ./target/debug/edger ) \
@@ -66,6 +66,14 @@ PARAMS="$(curl -s -H "$AUTH" "$BASE/param-e2e/?tenant=11111111-1111-1111-1111-11
 echo "$PARAMS" | grep -q '"count":3'      || fail "B1 /params count (via pgbouncer): $PARAMS"
 echo "$PARAMS" | grep -q '"featureFlags"' || fail "B1 /params content: $PARAMS"
 echo "PASS B1  /params -> count:3 (parameterized query via pgbouncer)"
+
+# KV: Deno KV enabled (--unstable-kv) + a per-worker EDGER_KV_PATH. The counter
+# persists across requests, proving the store is wired and writable.
+K1="$(curl -s -H "$AUTH" "$BASE/param-e2e/kv")"
+K2="$(curl -s -H "$AUTH" "$BASE/param-e2e/kv")"
+echo "$K1" | grep -q '"count":1' && echo "$K2" | grep -q '"count":2' \
+  || fail "KV counter did not persist across requests: $K1 / $K2"
+echo "PASS KV  Deno KV counter persisted ($K1 → $K2)"
 
 # B2: graceful SIGTERM drains the live worker. main() awaits the pool drain before
 # exiting, so beforeunload + EdgeRuntime.waitUntil run the same cleanup as a recycle.

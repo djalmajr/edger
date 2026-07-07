@@ -308,3 +308,50 @@ Deno.serve(() => new Response("ok"));
         "beforeunload fired and one waitUntil promise was drained"
     );
 }
+
+// Deno KV: workers get --unstable-kv + a per-worker EDGER_KV_PATH. A counter kept
+// in KV survives across requests, proving the store is enabled, wired and writable.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deno_kv_persists_across_requests() {
+    if find_deno_executable().is_none() {
+        eprintln!("skipping deno_kv_persists_across_requests: deno not found");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    write_worker(
+        dir.path(),
+        r#"const kv = await Deno.openKv(Deno.env.get("EDGER_KV_PATH"));
+Deno.serve(async () => {
+  const cur = (await kv.get(["counter"])).value ?? 0;
+  const next = (cur as number) + 1;
+  await kv.set(["counter"], next);
+  return Response.json({ count: next });
+});
+"#,
+    );
+
+    let mut worker = DenoWorkerProcess::spawn(
+        dir.path(),
+        Some("index.ts"),
+        Duration::from_secs(20),
+        &HashMap::new(),
+        None,
+    )
+    .await
+    .expect("worker spawns");
+
+    let r1 = worker
+        .request(request("GET", "/", None))
+        .await
+        .expect("req1");
+    let b1: serde_json::Value = serde_json::from_slice(r1.body.as_deref().unwrap()).unwrap();
+    assert_eq!(b1["count"], 1);
+
+    let r2 = worker
+        .request(request("GET", "/", None))
+        .await
+        .expect("req2");
+    let b2: serde_json::Value = serde_json::from_slice(r2.body.as_deref().unwrap()).unwrap();
+    assert_eq!(b2["count"], 2, "KV counter did not persist across requests");
+}
