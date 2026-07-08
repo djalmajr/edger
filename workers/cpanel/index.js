@@ -1,7 +1,7 @@
 import { unzipSync, zipSync } from "fflate";
 import { html } from "htm/preact";
 import { render } from "preact";
-import { useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert.js";
 import { Badge } from "~/components/ui/badge.js";
 import { Button } from "~/components/ui/button.js";
@@ -22,6 +22,13 @@ import {
   DialogTitle,
   openDialog,
 } from "~/components/ui/dialog.js";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "~/components/ui/dropdown-menu.js";
 import { Icon } from "~/components/ui/icon.js";
 import { Input } from "~/components/ui/input.js";
 import { Label } from "~/components/ui/label.js";
@@ -178,32 +185,123 @@ function visibilityBadge(visibility) {
   return html`<${Badge} variant=${isPublic ? "default" : "secondary"}>${visibility || "-"}<//>`;
 }
 
-function OverviewView({ data }) {
-  const { principal, workers } = data;
+function StatTile({ dot, icon, label, sub, tone, value }) {
+  const border = tone === "warn" ? "border-amber-300/70 bg-amber-50/40" : "border-border";
+  const numCls = tone === "warn" ? "text-amber-700" : "";
+  return html`
+    <div class=${`rounded-xl border ${border} p-4`}>
+      <div class="text-muted-foreground flex items-center gap-2 text-[11px] font-semibold tracking-wide uppercase">
+        ${dot ? html`<span class=${`inline-block size-2 rounded-full ${dot}`}></span>` : html`<${Icon} icon=${icon} size="15" />`}
+        <span>${label}</span>
+      </div>
+      <div class=${`mt-3 text-3xl leading-none font-bold tracking-tight ${numCls}`}>${value}</div>
+      ${sub && html`<div class="text-muted-foreground mt-2 text-xs">${sub}</div>`}
+    </div>
+  `;
+}
+
+function PoolStat({ label, unit, value }) {
+  return html`
+    <div class="grid gap-1">
+      <span class="text-muted-foreground text-[11px] font-semibold tracking-wide uppercase">${label}</span>
+      <span class="text-lg font-bold">${value}${unit && html`<span class="text-muted-foreground ml-0.5 text-sm font-medium">${unit}</span>`}</span>
+    </div>
+  `;
+}
+
+function StatusRow({ label, value }) {
+  return html`
+    <div class="border-border/70 flex items-center justify-between border-b py-2 last:border-0">
+      <span class="text-muted-foreground text-sm">${label}</span>
+      <span class="text-sm font-medium">${value}</span>
+    </div>
+  `;
+}
+
+function OverviewView({ data, onGoToWorkers }) {
+  const { metricsStats, principal, workerErrors, workers } = data;
+  const pool = metricsStats?.pool || {};
+  const apps = new Set(workers.map((worker) => worker.name));
+  const enabled = workers.filter((worker) => worker.status !== "disabled");
+  const disabled = workers.filter((worker) => worker.status === "disabled");
+  const errored = Object.entries(workerErrors || {}).filter(([, info]) => info && info.count > 0);
+  const attention = disabled.length + errored.length;
+  const cacheTotal = (pool.cacheHits || 0) + (pool.cacheMisses || 0);
+  const cacheHit = cacheTotal ? Math.round((100 * (pool.cacheHits || 0)) / cacheTotal) : 100;
+  const hot = (metricsStats?.workers || []).reduce((sum, worker) => sum + (worker.activeProcesses || 0), 0);
+
   return html`
     <div class="grid gap-4">
-      <div class="grid gap-4 md:grid-cols-2">
-        <${MetricCard}
-          help="Loaded from RUNTIME_WORKER_DIRS"
-          icon="lucide:cpu"
-          label="Workers"
-          value=${String(workers.length)}
-        />
-        <${MetricCard}
-          help="Built-in root-key gate"
-          icon="lucide:fingerprint"
-          label="Control plane"
-          value=${principal?.isRoot ? "root" : "restricted"}
-        />
+      <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <${StatTile} icon="lucide:layout-grid" label="Workers" sub=${html`Loaded from <code class="bg-muted rounded px-1 py-0.5 text-[11px]">RUNTIME_WORKER_DIRS</code>`} value=${String(workers.length)} />
+        <${StatTile} icon="lucide:box" label="Apps" sub="distinct apps, each version on its own URL" value=${String(apps.size)} />
+        <${StatTile} dot="bg-emerald-500" label="Serving" sub="enabled versions" value=${String(enabled.length)} />
+        <${StatTile} icon="lucide:triangle-alert" label="Needs attention" sub=${`${disabled.length} disabled · ${errored.length} with errors`} tone=${attention > 0 ? "warn" : null} value=${String(attention)} />
       </div>
-      <${Section} description="Session principal resolved by the runtime auth gate." title="Runtime status">
-        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <${DetailItem} label="Principal" value=${principal?.name || "-"} />
-          <${DetailItem} label="Role" value=${principal?.role || "-"} />
-          <${DetailItem} label="Namespaces" value=${listText(principal?.namespaces)} />
-          <${DetailItem} label="Permissions" value=${listText(principal?.permissions)} />
-          <${DetailItem} label="Remote deploy" value="not included" />
-        </div>
+
+      <div class="grid gap-4 lg:grid-cols-3">
+        <${Card} className="lg:col-span-2">
+          <${CardHeader}>
+            <${CardTitle}>Pool health<//>
+            <${CardAction}><code class="text-muted-foreground text-[11px]">live · /metrics/stats</code><//>
+          <//>
+          <${CardContent}>
+            <div class="grid grid-cols-3 gap-y-5">
+              <${PoolStat} label="Hot processes" value=${String(hot)} />
+              <${PoolStat} label="Idle workers" value=${String(pool.idleWorkers ?? 0)} />
+              <${PoolStat} label="In-flight" value=${String(pool.activeRequests ?? 0)} />
+              <${PoolStat} label="Cache hit" unit="%" value=${String(cacheHit)} />
+              <${PoolStat} label="Spawn p50" unit="ms" value=${String(pool.spawnLatencyMsP50 ?? 0)} />
+              <${PoolStat} label="Terminated" value=${String(pool.terminatedTotal ?? 0)} />
+            </div>
+          <//>
+        <//>
+        <${Card}>
+          <${CardHeader}><${CardTitle}>Runtime status<//><//>
+          <${CardContent} className="py-0">
+            <${StatusRow} label="Principal" value=${principal?.name || "-"} />
+            <${StatusRow} label="Role" value=${principal?.role || "-"} />
+            <${StatusRow} label="Namespaces" value=${html`<code class="text-xs">${listText(principal?.namespaces)}</code>`} />
+            <${StatusRow} label="Control plane" value="root-key gate" />
+            <${StatusRow} label="Remote deploy" value=${html`<span class="text-muted-foreground">not included</span>`} />
+          <//>
+        <//>
+      </div>
+
+      <${Card}>
+        <${CardHeader}>
+          <${CardTitle}>
+            <span class="flex items-center gap-2">Needs attention ${attention > 0 && html`<${Badge} variant="secondary">${attention}<//>`}</span>
+          <//>
+        <//>
+        <${CardContent} className="py-0">
+          ${attention === 0 &&
+          html`<p class="text-muted-foreground py-4 text-sm">Everything looks healthy — no disabled versions or recent errors.</p>`}
+          ${disabled.map(
+            (worker) => html`
+              <div class="border-border/70 flex items-center gap-3 border-b py-3 last:border-0" key=${`d-${worker.name}@${worker.version}`}>
+                <span class="flex size-8 shrink-0 items-center justify-center rounded-md bg-amber-100 text-amber-700"><${Icon} icon="lucide:triangle-alert" size="16" /></span>
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2 text-sm font-semibold">${worker.name}<code class="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-700">${worker.version}</code></div>
+                  <p class="text-muted-foreground truncate text-xs">Disabled — this version returns 404.</p>
+                </div>
+                <${Button} className="ml-auto" onClick=${onGoToWorkers} size="sm" type="button" variant="outline">Review<//>
+              </div>
+            `,
+          )}
+          ${errored.map(
+            ([name, info]) => html`
+              <div class="border-border/70 flex items-center gap-3 border-b py-3 last:border-0" key=${`e-${name}`}>
+                <span class="flex size-8 shrink-0 items-center justify-center rounded-md bg-destructive/10 text-destructive"><${Icon} icon="lucide:circle-alert" size="16" /></span>
+                <div class="min-w-0">
+                  <div class="text-sm font-semibold">${name}</div>
+                  <p class="text-muted-foreground truncate text-xs">${info.count} recent dispatch error${info.count > 1 ? "s" : ""}${info.latest ? ` — ${info.latest.code}` : ""}.</p>
+                </div>
+                <${Button} className="ml-auto" onClick=${onGoToWorkers} size="sm" type="button" variant="outline">Review<//>
+              </div>
+            `,
+          )}
+        <//>
       <//>
     </div>
   `;
@@ -221,8 +319,115 @@ function compareSemver(a, b) {
 }
 
 const WORKER_ERRORS_DIALOG_ID = "worker-errors-dialog";
+const FILES_DIALOG_ID = "worker-files-dialog";
 
-function WorkersView({ apiKey, data, onDeployed }) {
+function workerUrl(worker, isLatest) {
+  const scoped = worker.namespace ? `@${worker.namespace}/${worker.name}` : worker.name;
+  return isLatest ? `/${scoped}` : `/${scoped}@${worker.version}`;
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${unit === 0 ? value : value.toFixed(1)} ${units[unit]}`;
+}
+
+function FilesView({ apiKey, onUpload, path, reload, setPath, status, target }) {
+  const [listing, setListing] = useState({ loading: true });
+  const [dragging, setDragging] = useState(false);
+  const targetKey = target ? `${target.name}@${target.version}` : null;
+
+  useEffect(() => {
+    if (!target) return undefined;
+    let cancelled = false;
+    setListing({ loading: true });
+    const query = new URLSearchParams({ path, version: target.version });
+    apiJson(apiKey, `/api/admin/workers/${encodeURIComponent(target.name)}/files?${query}`)
+      .then((data) => !cancelled && setListing({ entries: data.entries || [] }))
+      .catch((err) => !cancelled && setListing({ error: err.message }));
+    return () => {
+      cancelled = true;
+    };
+  }, [apiKey, targetKey, path, reload]);
+
+  const handleDrop = async (event) => {
+    event.preventDefault();
+    setDragging(false);
+    const files = [...event.dataTransfer.files];
+    if (files.length === 1 && files[0].name.endsWith(".zip")) {
+      onUpload(new Uint8Array(await files[0].arrayBuffer()));
+      return;
+    }
+    const fileMap = await collectDroppedFiles(event.dataTransfer);
+    if (Object.keys(fileMap).length) onUpload(zipSync(fileMap));
+  };
+
+  const crumbs = path ? path.split("/") : [];
+
+  return html`
+    <div
+      class="relative grid gap-4"
+      onDragLeave=${() => setDragging(false)}
+      onDragOver=${(event) => { event.preventDefault(); setDragging(true); }}
+      onDrop=${handleDrop}
+    >
+      ${path &&
+      html`<div class="text-muted-foreground flex flex-wrap items-center gap-1.5 text-sm">
+        <button class="hover:text-foreground cursor-pointer" onClick=${() => setPath("")} type="button">${target?.name}</button>
+        ${crumbs.map((crumb, index) =>
+          index === crumbs.length - 1
+            ? html`<span class="text-border">/</span><span class="text-foreground font-mono">${crumb}</span>`
+            : html`<span class="text-border">/</span><button class="hover:text-foreground cursor-pointer font-mono" onClick=${() => setPath(crumbs.slice(0, index + 1).join("/"))} type="button">${crumb}</button>`,
+        )}
+      </div>`}
+      ${status?.error &&
+      html`<${Alert} variant="destructive"><${AlertTitle}>Upload failed<//><${AlertDescription}>${status.error}<//><//>`}
+      <div class="border-border overflow-hidden rounded-lg border">
+        <div class="text-muted-foreground bg-muted/40 border-border grid grid-cols-[1fr_90px] gap-4 border-b p-4 text-[11px] font-semibold tracking-wide uppercase">
+          <span>Name</span><span class="text-right">Size</span>
+        </div>
+        <div class="max-h-[calc(100vh-260px)] overflow-y-auto">
+          ${listing.loading && html`<div class="flex justify-center p-4"><${Spinner} size="18" /></div>`}
+          ${listing.error && html`<div class="text-destructive p-4 text-sm">${listing.error}</div>`}
+          ${listing.entries &&
+          !listing.entries.length &&
+          html`<div class="text-muted-foreground p-4 text-center text-sm">This folder is empty.</div>`}
+          ${path &&
+          listing.entries &&
+          html`<button class="border-border/60 hover:bg-accent flex w-full items-center gap-2 border-b p-4 text-left text-sm" onClick=${() => setPath(crumbs.slice(0, -1).join("/"))} type="button"><${Icon} className="text-muted-foreground" icon="lucide:corner-left-up" size="16" /><span class="text-muted-foreground">..</span></button>`}
+          ${listing.entries?.map((entry) => {
+            const isDir = entry.kind === "dir";
+            return html`
+              <div
+                class=${`border-border/60 grid grid-cols-[1fr_90px] items-center gap-4 border-b p-4 last:border-0 ${isDir ? "hover:bg-accent cursor-pointer" : ""}`}
+                key=${entry.name}
+                onClick=${isDir ? () => setPath(path ? `${path}/${entry.name}` : entry.name) : undefined}
+              >
+                <span class="flex items-center gap-2 truncate text-sm">
+                  <${Icon} className=${isDir ? "text-amber-500" : "text-muted-foreground"} icon=${isDir ? "lucide:folder" : "lucide:file"} size="16" />
+                  <span class="truncate font-mono">${entry.name}</span>
+                </span>
+                <span class="text-muted-foreground text-right text-xs">${isDir ? "—" : formatBytes(entry.size)}</span>
+              </div>
+            `;
+          })}
+        </div>
+      </div>
+      ${dragging &&
+      html`<div class="border-primary bg-primary/10 pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed">
+        <span class="text-primary flex items-center gap-2 text-sm font-medium"><${Icon} icon="lucide:upload-cloud" size="18" /> Drop to publish to ${target?.name}@${target?.version}</span>
+      </div>`}
+    </div>
+  `;
+}
+
+function WorkersView({ apiKey, data, onDeployed, onViewFiles }) {
   const [busy, setBusy] = useState(null);
   const [errorsView, setErrorsView] = useState(null);
   const workerErrors = data.workerErrors || {};
@@ -280,120 +485,92 @@ function WorkersView({ apiKey, data, onDeployed }) {
     }
   };
 
-  const deployAction = html`
-    <${Button} onClick=${openDialog(DEPLOY_DIALOG_ID)} size="sm" type="button">
-      <${Icon} icon="lucide:upload-cloud" size="14" /> Deploy app
-    <//>
-  `;
+  // Group the flat worker list into apps, newest version first.
+  const groups = [];
+  const byName = new Map();
+  for (const worker of data.workers) {
+    let group = byName.get(worker.name);
+    if (!group) {
+      group = { name: worker.name, versions: [] };
+      byName.set(worker.name, group);
+      groups.push(group);
+    }
+    group.versions.push(worker);
+  }
+  for (const group of groups) {
+    group.versions.sort((a, b) => compareSemver(b.version, a.version));
+  }
+
   return html`
-    <${Section}
-      action=${deployAction}
-      description="Every worker discovered by the manifest loader. Refresh reconciles the workers folder."
-      title="Workers"
-    >
+    <div>
       <${DeployDialog} apiKey=${apiKey} onDeployed=${onDeployed} />
-      <${Table}>
-        <${TableHeader}>
-          <${TableRow}>
-            <${TableHead}>Name<//>
-            <${TableHead}>Version<//>
-            <${TableHead}>Kind<//>
-            <${TableHead}>Visibility<//>
-            <${TableHead}>Status<//>
-            <${TableHead}>Capacity<//>
-            <${TableHead}>Queue<//>
-            <${TableHead}>Processes<//>
-            <${TableHead}>Source<//>
-            <${TableHead} className="text-right">Actions<//>
-          <//>
-        <//>
-        <${TableBody}>
-          ${data.workers.map((worker) => {
-            const multiVersion = versionCount.get(worker.name) > 1;
-            const serving = multiVersion && servingVersion.get(worker.name) === worker.version;
-            const disabled = worker.status === "disabled";
-            const errorInfo = workerErrors[worker.name];
-            const runtime = runtimeFor(worker);
-            const rowKey = `${worker.name}@${worker.version}`;
-            return html`
-              <${TableRow} key=${rowKey}>
-                <${TableCell}><code class="bg-muted rounded px-1.5 py-0.5 text-xs">${worker.name}</code><//>
-                <${TableCell}>
-                  <span class="flex items-center gap-2">
-                    ${worker.version || "-"}
-                    ${serving && html`<${Badge} variant="default">serving<//>`}
-                  </span>
-                <//>
-                <${TableCell}>${kindLabel(worker.kind)}<//>
-                <${TableCell}>${visibilityBadge(worker.visibility)}<//>
-                <${TableCell}>
-                  <span class="flex items-center gap-2">
-                    <${Badge} variant=${disabled ? "secondary" : "outline"}>${worker.status || "-"}<//>
-                    ${errorInfo &&
-                    errorInfo.count > 0 &&
-                    html`
-                      <button
-                        class="inline-flex items-center gap-1"
-                        onClick=${() => openErrors(worker.name)}
-                        title=${errorInfo.latest ? `${errorInfo.latest.status} ${errorInfo.latest.code} — ${errorInfo.latest.message}` : "View errors"}
-                        type="button"
-                      >
-                        <${Badge} variant="destructive">
-                          <${Icon} icon="lucide:triangle-alert" size="11" />
-                          ${errorInfo.count} error${errorInfo.count > 1 ? "s" : ""}
-                        <//>
-                      </button>
-                    `}
-                  </span>
-                <//>
-                <${TableCell}>
-                  <span class="text-sm">
-                    ${runtime ? `${runtime.activeProcesses}/${runtime.maxProcesses || runtime.totalProcesses || 1}` : "0/-"}
-                  </span>
-                <//>
-                <${TableCell}>
-                  <span class="text-muted-foreground text-xs">
-                    ${runtime ? `${runtime.queued} queued · ${runtime.waitMs}ms · ${runtime.rejectedTotal} rejected` : "-"}
-                  </span>
-                <//>
-                <${TableCell}>
-                  <span class="flex flex-wrap gap-1">
-                    ${runtime?.processes?.length
-                      ? runtime.processes.map(
-                          (process, index) => html`
-                            <${Badge} key=${index} variant=${process.unhealthy ? "destructive" : "outline"}>
-                              ${process.state}
-                            <//>
-                          `,
-                        )
-                      : html`<span class="text-muted-foreground text-xs">none</span>`}
-                  </span>
-                <//>
-                <${TableCell} className="text-muted-foreground">${worker.source || "-"}<//>
-                <${TableCell} className="text-right">
-                  ${multiVersion
-                    ? html`
-                        <${Button}
-                          disabled=${busy === rowKey}
-                          onClick=${() => toggle(worker, disabled)}
-                          size="sm"
-                          title=${disabled ? "Enable this version" : "Disable this version (rollback traffic to another)"}
-                          type="button"
-                          variant=${disabled ? "outline" : "ghost"}
-                        >
-                          ${busy === rowKey
-                            ? html`<${Spinner} size="14" />`
-                            : html`<${Icon} icon=${disabled ? "lucide:rotate-ccw" : "lucide:power-off"} size="14" />`}
-                          ${disabled ? "Enable" : "Disable"}
-                        <//>
-                      `
-                    : html`<span class="text-muted-foreground text-xs">—</span>`}
-                <//>
-              <//>
-            `;
-          })}
-        <//>
-      <//>
+      <div class="grid gap-3">
+        ${groups.map((group) => {
+          const serving = servingVersion.get(group.name);
+          const kind = kindLabel(group.versions[0].kind);
+          const scope = group.versions[0].namespace;
+          const errorInfo = workerErrors[group.name];
+          return html`
+            <div class="border-border bg-card rounded-xl border" key=${group.name}>
+              <div class="flex items-center gap-3 px-4 py-3">
+                <span class="bg-primary/10 text-primary flex size-9 shrink-0 items-center justify-center rounded-lg"><${Icon} icon="lucide:box" size="18" /></span>
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2">
+                    <span class="font-semibold">${group.name}</span>
+                    <${Badge} variant="secondary">${kind}<//>
+                  </div>
+                  <p class="text-muted-foreground truncate text-xs">
+                    ${scope ? html`<span class="font-mono">@${scope}</span> · ` : ""}${group.versions.length} version${group.versions.length > 1 ? "s" : ""}
+                  </p>
+                </div>
+                <div class="ml-auto flex items-center gap-2">
+                  ${serving &&
+                  html`<span class="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700"><span class="size-1.5 rounded-full bg-emerald-500"></span>latest → <span class="font-mono">${serving}</span></span>`}
+                  <${Button} onClick=${openDialog(DEPLOY_DIALOG_ID)} size="sm" type="button" variant="outline"><${Icon} icon="lucide:upload" size="14" /> New version<//>
+                </div>
+              </div>
+              <div class="text-muted-foreground bg-muted/30 border-border/70 grid grid-cols-[150px_1fr_130px_44px] gap-4 border-t px-4 py-2 text-[11px] font-semibold tracking-wide uppercase">
+                <span>Version</span><span>URL</span><span>Status</span><span></span>
+              </div>
+              ${group.versions.map((worker) => {
+                const isLatest = serving === worker.version;
+                const disabled = worker.status === "disabled";
+                const url = workerUrl(worker, isLatest);
+                const rowKey = `${worker.name}@${worker.version}`;
+                return html`
+                  <div class="border-border/60 grid grid-cols-[150px_1fr_130px_44px] items-center gap-4 border-t px-4 py-2.5" key=${rowKey}>
+                    <span class=${`flex items-center gap-2 font-mono text-sm ${disabled ? "text-muted-foreground" : ""}`}>
+                      ${worker.version}
+                      ${isLatest && html`<${Badge} variant="default" className="px-1.5 text-[10px]">latest<//>`}
+                    </span>
+                    <a class=${`truncate font-mono text-sm hover:underline ${isLatest ? "text-primary" : "text-foreground/80"} ${disabled ? "line-through opacity-60" : ""}`} href=${url} rel="noreferrer" target="_blank">${url}</a>
+                    <span class="text-sm">
+                      ${disabled
+                        ? html`<span class="flex items-center gap-1.5 text-amber-700"><span class="size-2 rounded-full bg-amber-500"></span>Disabled</span>`
+                        : isLatest
+                          ? html`<span class="flex items-center gap-1.5 font-medium text-emerald-700"><span class="size-2 rounded-full bg-emerald-500 ring-2 ring-emerald-100"></span>Serving</span>`
+                          : html`<span class="text-muted-foreground flex items-center gap-1.5"><span class="border-muted-foreground/40 size-2 rounded-full border-2"></span>Enabled</span>`}
+                    </span>
+                    <${DropdownMenu} className="justify-self-end">
+                      <${DropdownMenuTrigger} className="text-muted-foreground" size="icon" variant="ghost"><${Icon} icon="lucide:ellipsis-vertical" size="16" /><//>
+                      <${DropdownMenuContent} align="end">
+                        <${DropdownMenuItem} onClick=${() => onViewFiles(worker, isLatest)}><${Icon} icon="lucide:folder" size="15" /> View files<//>
+                        <${DropdownMenuItem} onClick=${() => window.open(url, "_blank", "noopener")}><${Icon} icon="lucide:external-link" size="15" /> Open URL<//>
+                        <${DropdownMenuItem} onClick=${() => navigator.clipboard?.writeText(location.origin + url)}><${Icon} icon="lucide:copy" size="15" /> Copy URL<//>
+                        <${DropdownMenuSeparator} />
+                        <${DropdownMenuItem} disabled=${busy === rowKey} onClick=${() => toggle(worker, disabled)}><${Icon} icon=${disabled ? "lucide:rotate-ccw" : "lucide:power-off"} size="15" /> ${disabled ? "Enable version" : "Disable version"}<//>
+                        ${errorInfo &&
+                        errorInfo.count > 0 &&
+                        html`<${DropdownMenuItem} className="text-destructive" onClick=${() => openErrors(worker.name)}><${Icon} icon="lucide:triangle-alert" size="15" /> View errors (${errorInfo.count})<//>`}
+                      <//>
+                    <//>
+                  </div>
+                `;
+              })}
+            </div>
+          `;
+        })}
+      </div>
       <${Dialog} id=${WORKER_ERRORS_DIALOG_ID} className="max-w-xl">
         <${DialogContent} className="max-w-xl">
           <${DialogHeader}>
@@ -427,7 +604,7 @@ function WorkersView({ apiKey, data, onDeployed }) {
           </div>
         <//>
       <//>
-    <//>
+    </div>
   `;
 }
 
@@ -717,8 +894,49 @@ function DeployDialog({ apiKey, onDeployed }) {
 
 function Shell({ apiKey, data, onLogout, onRefresh, refreshing }) {
   const [view, setView] = useState("overview");
+  const [filesTarget, setFilesTarget] = useState(null);
+  const [filesPath, setFilesPath] = useState("");
+  const [filesReload, setFilesReload] = useState(0);
+  const [filesStatus, setFilesStatus] = useState(null);
+  const filesInput = useRef(null);
+  const folderInput = useRef(null);
   const active = VIEWS.find((entry) => entry.id === view) || VIEWS[0];
   const principal = data.principal;
+
+  const openFiles = (worker, isLatest) => {
+    setFilesTarget({ name: worker.name, url: workerUrl(worker, isLatest), version: worker.version });
+    setFilesPath("");
+    setFilesStatus(null);
+    setView("files");
+  };
+  const isFiles = view === "files" && filesTarget;
+  const headerTitle = isFiles ? filesTarget.name : active.title;
+  const headerDescription = isFiles ? `Version ${filesTarget.version} · files` : active.description;
+
+  const uploadZip = async (zipBytes) => {
+    if (!filesTarget) return;
+    setFilesStatus({ uploading: true });
+    try {
+      const query = new URLSearchParams({ path: filesPath, version: filesTarget.version });
+      await apiJson(apiKey, `/api/admin/workers/${encodeURIComponent(filesTarget.name)}/files?${query}`, {
+        body: zipBytes,
+        headers: { "content-type": "application/zip" },
+        method: "POST",
+      });
+      setFilesStatus(null);
+      setFilesReload((value) => value + 1);
+    } catch (err) {
+      setFilesStatus({ error: err.message });
+    }
+  };
+  const handlePick = async (event) => {
+    const fileMap = {};
+    for (const file of [...event.currentTarget.files]) {
+      fileMap[file.webkitRelativePath || file.name] = new Uint8Array(await file.arrayBuffer());
+    }
+    if (Object.keys(fileMap).length) uploadZip(zipSync(fileMap));
+    event.currentTarget.value = "";
+  };
 
   return html`
     <div class="flex h-full w-full overflow-hidden">
@@ -737,7 +955,7 @@ function Shell({ apiKey, data, onLogout, onRefresh, refreshing }) {
             ${VIEWS.map(
               (entry) => html`
                 <${SidebarMenuItem} key=${entry.id}>
-                  <${SidebarMenuButton} isActive=${view === entry.id} onClick=${() => setView(entry.id)}>
+                  <${SidebarMenuButton} isActive=${view === entry.id || (view === "files" && entry.id === "workers")} onClick=${() => setView(entry.id)}>
                     <${Icon} icon=${entry.icon} size="16" />
                     <span>${entry.title}</span>
                   <//>
@@ -764,21 +982,39 @@ function Shell({ apiKey, data, onLogout, onRefresh, refreshing }) {
       <//>
       <${SidebarInset} className="min-w-0">
         <header class="border-border flex items-center justify-between gap-4 border-b px-6 py-4">
-          <div class="min-w-0">
-            <h1 class="truncate text-lg font-semibold">${active.title}</h1>
-            <p class="text-muted-foreground truncate text-sm">${active.description}</p>
+          <div class="flex min-w-0 items-center gap-3">
+            ${isFiles &&
+            html`<${Button} onClick=${() => setView("workers")} size="icon-sm" title="Back to Workers" type="button" variant="ghost"><${Icon} icon="lucide:arrow-left" size="16" /><span class="sr-only">Back</span><//>`}
+            <div class="min-w-0">
+              <h1 class="truncate text-lg font-semibold">${headerTitle}</h1>
+              <p class="text-muted-foreground truncate text-sm">${headerDescription}</p>
+            </div>
           </div>
           <div class="flex items-center gap-2">
-            <${Button} disabled=${refreshing} onClick=${onRefresh} size="sm" type="button" variant="outline">
-              ${refreshing ? html`<${Spinner} size="14" />` : html`<${Icon} icon="lucide:refresh-cw" size="14" />`}
+            ${isFiles &&
+            filesStatus?.uploading &&
+            html`<span class="text-muted-foreground flex items-center gap-1.5 text-xs"><${Spinner} size="14" /> Publishing…</span>`}
+            <${Button} disabled=${refreshing && !isFiles} onClick=${isFiles ? () => setFilesReload((value) => value + 1) : onRefresh} size="sm" type="button" variant="outline">
+              ${refreshing && !isFiles ? html`<${Spinner} size="14" />` : html`<${Icon} icon="lucide:refresh-cw" size="14" />`}
               Refresh
             <//>
+            ${view === "workers" &&
+            html`<${Button} onClick=${openDialog(DEPLOY_DIALOG_ID)} size="sm" type="button"><${Icon} icon="lucide:upload-cloud" size="14" /> Deploy app<//>`}
+            ${isFiles &&
+            html`
+              <${Button} onClick=${() => filesInput.current?.click()} size="sm" type="button" variant="outline"><${Icon} icon="lucide:upload" size="14" /> Upload files<//>
+              <${Button} onClick=${() => folderInput.current?.click()} size="sm" type="button" variant="outline"><${Icon} icon="lucide:folder-up" size="14" /> Upload folder<//>
+              <input class="hidden" multiple onChange=${handlePick} ref=${filesInput} type="file" />
+              <input class="hidden" onChange=${handlePick} ref=${folderInput} type="file" webkitdirectory />
+            `}
           </div>
         </header>
         <div class="min-h-0 flex-1 overflow-y-auto p-6">
-          ${view === "overview" && html`<${OverviewView} data=${data} />`}
+          ${view === "overview" && html`<${OverviewView} data=${data} onGoToWorkers=${() => setView("workers")} />`}
           ${view === "workers" &&
-          html`<${WorkersView} apiKey=${apiKey} data=${data} onDeployed=${onRefresh} />`}
+          html`<${WorkersView} apiKey=${apiKey} data=${data} onDeployed=${onRefresh} onViewFiles=${openFiles} />`}
+          ${isFiles &&
+          html`<${FilesView} apiKey=${apiKey} onUpload=${uploadZip} path=${filesPath} reload=${filesReload} setPath=${setFilesPath} status=${filesStatus} target=${filesTarget} />`}
         </div>
       <//>
     </div>
