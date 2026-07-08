@@ -1,4 +1,12 @@
 //! Deno module bundling hooks (Edge Runtime `eszip_trait` alignment).
+//!
+//! The eszip/precompiled artifact-loading surface (`BundleFormat::Eszip` /
+//! `Precompiled`, `ModuleBundler::load_eszip` / `load_precompiled`,
+//! `load_existing_artifact`, and the `DenoCliBundler::new` constructor) mirrors
+//! the Edge Runtime eszip trait for a planned artifact-cache integration. It is
+//! deliberate API-shape scaffolding not yet wired to a caller, so allow the
+//! resulting dead-code here rather than collapsing the aligned surface.
+#![allow(dead_code)]
 
 use std::collections::HashSet;
 use std::env;
