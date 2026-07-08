@@ -356,3 +356,53 @@ Deno.serve(async () => {
     let b2: serde_json::Value = serde_json::from_slice(r2.body.as_deref().unwrap()).unwrap();
     assert_eq!(b2["count"], 2, "KV counter did not persist across requests");
 }
+
+// CommonJS support: the harness loads the user module via dynamic `import()`, and
+// Deno only auto-detects a `"type":"commonjs"` package as CJS for the process MAIN
+// module -- dynamically-imported `.js` files need `--unstable-detect-cjs` to get
+// `require`. Without that flag this worker fails at load with "require is not
+// defined" and never becomes ready (reproduced live on the `commonjs` worker). The
+// node:http server it starts is captured by the harness node adapter (no real port
+// bind) and dispatched as a fetch handler. Guards the spawn flag against removal.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn commonjs_worker_with_require_loads_and_serves() {
+    if find_deno_executable().is_none() {
+        eprintln!("skipping commonjs_worker_with_require_loads_and_serves: deno not found");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("package.json"), r#"{"type":"commonjs"}"#).unwrap();
+    fs::write(
+        dir.path().join("index.js"),
+        r#"const http = require("http");
+http.createServer((req, res) => {
+  res.writeHead(200, { "content-type": "text/plain" });
+  res.end("commonjs " + req.method);
+}).listen(8080);
+"#,
+    )
+    .unwrap();
+
+    let mut worker = DenoWorkerProcess::spawn(
+        dir.path(),
+        Some("index.js"),
+        Duration::from_secs(20),
+        &HashMap::new(),
+        None,
+    )
+    .await
+    .expect("commonjs worker should spawn and become ready");
+
+    let res = worker
+        .request(request("GET", "/", None))
+        .await
+        .expect("commonjs request");
+    assert_eq!(
+        res.status,
+        200,
+        "body: {}",
+        String::from_utf8_lossy(res.body.as_deref().unwrap_or(b""))
+    );
+    assert_eq!(res.body.unwrap().as_ref(), b"commonjs GET");
+}

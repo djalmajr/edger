@@ -199,6 +199,14 @@ impl DenoWorkerProcess {
             // a path it manages, or a remote KV Connect endpoint) — edger does not
             // prescribe or manage a KV location.
             .arg("--unstable-kv")
+            // The harness loads the user module via dynamic `import(entryUrl)`, so
+            // the worker is NEVER the process main module. Deno auto-detects a
+            // `"type": "commonjs"` package as CommonJS only for the MAIN module;
+            // dynamically-imported `.js` files need this flag to get `require`,
+            // `module`, `exports` and `__dirname`. Without it, CommonJS workers
+            // (node:http servers, @hono/node-server) fail at load with
+            // `ReferenceError: require is not defined`. ESM workers are unaffected.
+            .arg("--unstable-detect-cjs")
             .arg(format!(
                 "--allow-read={}",
                 read_allowlist(&worker_dir, workdir.path(), &deno_dir.read_dirs)
