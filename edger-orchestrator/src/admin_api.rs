@@ -14,7 +14,7 @@ use edger_core::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::deploy::{install_worker_from_zip, rescan_workers_and_prewarm};
+use crate::deploy::{extract_zip, install_worker_from_zip, rescan_workers_and_prewarm};
 use crate::operational_log::log_operational_error;
 use crate::pipeline::OrchestratorState;
 use crate::security::validate_admin_mutation_security;
@@ -38,6 +38,12 @@ pub fn router() -> Router<OrchestratorState> {
         .route("/api/admin/workers/{name}/errors", get(worker_errors))
         .route("/api/admin/workers/{name}/enable", post(enable_worker))
         .route("/api/admin/workers/{name}/disable", post(disable_worker))
+        .route(
+            "/api/admin/workers/{name}/files",
+            get(worker_files)
+                .post(upload_worker_files)
+                .layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
 }
 
 async fn session(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
@@ -229,6 +235,171 @@ async fn worker_mutation(
         .into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerFilesQuery {
+    version: Option<String>,
+    path: Option<String>,
+}
+
+async fn worker_files(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(query): Query<WorkerFilesQuery>,
+) -> Response {
+    match authenticate(&state, &headers).await.and_then(|principal| {
+        require_permission(&principal, "workers:read")?;
+        list_worker_files(
+            &state,
+            &principal,
+            &name,
+            query.version.as_deref(),
+            query.path.as_deref(),
+        )
+    }) {
+        Ok(payload) => Json(payload).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+// Drop-to-publish: extracts an uploaded zip (client-zipped files/folders) into
+// the version's directory at `path`, overwriting in place. Same gate as
+// install; `extract_zip` rejects zip-slip on every entry name.
+async fn upload_worker_files(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(query): Query<WorkerFilesQuery>,
+    body: Bytes,
+) -> Response {
+    match authenticate(&state, &headers).await.and_then(|principal| {
+        require_permission(&principal, "workers:install")?;
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        write_worker_files(
+            &state,
+            &principal,
+            &name,
+            query.version.as_deref(),
+            query.path.as_deref(),
+            &body,
+        )
+    }) {
+        Ok(payload) => Json(payload).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+// Canonical on-disk directory for a worker@version the principal can see.
+fn resolve_worker_dir(
+    state: &OrchestratorState,
+    principal: &ApiKeyPrincipal,
+    name: &str,
+    version: Option<&str>,
+) -> Result<(std::path::PathBuf, String), CoreError> {
+    let workers = state.index.admin_workers_for_principal(principal);
+    let worker = workers
+        .iter()
+        .find(|worker| worker.name == name && version.is_none_or(|value| worker.version == value))
+        .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker {name} not found")))?;
+    let base = std::fs::canonicalize(&worker.source).map_err(|err| {
+        CoreError::new("NOT_FOUND", format!("worker directory unavailable: {err}"))
+    })?;
+    Ok((base, worker.version.clone()))
+}
+
+// Canonicalize base + sub_path and confirm the result stays within base.
+fn resolve_within(base: &std::path::Path, sub_path: &str) -> Result<std::path::PathBuf, CoreError> {
+    let requested = if sub_path.is_empty() {
+        base.to_path_buf()
+    } else {
+        base.join(sub_path)
+    };
+    let target = std::fs::canonicalize(&requested)
+        .map_err(|err| CoreError::new("NOT_FOUND", format!("path not found: {err}")))?;
+    if !target.starts_with(base) {
+        return Err(CoreError::new(
+            "FORBIDDEN",
+            "path escapes the worker directory",
+        ));
+    }
+    Ok(target)
+}
+
+fn write_worker_files(
+    state: &OrchestratorState,
+    principal: &ApiKeyPrincipal,
+    name: &str,
+    version: Option<&str>,
+    sub_path: Option<&str>,
+    zip_bytes: &[u8],
+) -> Result<serde_json::Value, CoreError> {
+    let (base, _) = resolve_worker_dir(state, principal, name, version)?;
+    let rel = sub_path.unwrap_or("").trim_matches('/');
+    if rel.split('/').any(|segment| segment == "..") {
+        return Err(CoreError::new(
+            "FORBIDDEN",
+            "path escapes the worker directory",
+        ));
+    }
+    let requested = if rel.is_empty() {
+        base.clone()
+    } else {
+        base.join(rel)
+    };
+    std::fs::create_dir_all(&requested)
+        .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot create path: {err}")))?;
+    let dest = resolve_within(&base, rel)?;
+    extract_zip(zip_bytes, &dest)?;
+    list_worker_files(state, principal, name, version, sub_path)
+}
+
+// Read-only browse of a deployed version's directory. The dir comes from the
+// admin index (`source`), scoped to what the principal can see; the requested
+// subpath is canonicalized and checked to stay within that dir (no traversal).
+fn list_worker_files(
+    state: &OrchestratorState,
+    principal: &ApiKeyPrincipal,
+    name: &str,
+    version: Option<&str>,
+    sub_path: Option<&str>,
+) -> Result<serde_json::Value, CoreError> {
+    let (base, resolved_version) = resolve_worker_dir(state, principal, name, version)?;
+    let rel = sub_path.unwrap_or("").trim_matches('/');
+    let target = resolve_within(&base, rel)?;
+
+    let read = std::fs::read_dir(&target)
+        .map_err(|err| CoreError::new("BAD_REQUEST", format!("not a directory: {err}")))?;
+    let mut entries = Vec::new();
+    for entry in read.flatten() {
+        let meta = entry.metadata().ok();
+        let is_dir = meta.as_ref().is_some_and(|meta| meta.is_dir());
+        let size = meta.as_ref().map(|meta| meta.len()).unwrap_or(0);
+        entries.push(json!({
+            "kind": if is_dir { "dir" } else { "file" },
+            "name": entry.file_name().to_string_lossy(),
+            "size": size,
+        }));
+    }
+    entries.sort_by(|a, b| {
+        let a_dir = a["kind"] == "dir";
+        let b_dir = b["kind"] == "dir";
+        b_dir.cmp(&a_dir).then_with(|| {
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
+        })
+    });
+
+    Ok(json!({
+        "entries": entries,
+        "name": name,
+        "path": rel,
+        "version": resolved_version,
+    }))
 }
 
 async fn authenticate(
