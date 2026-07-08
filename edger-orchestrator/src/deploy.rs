@@ -273,7 +273,7 @@ fn install_root(index: &ManifestIndex) -> Result<PathBuf, CoreError> {
         .map_err(|err| deploy_io(format!("worker root unavailable: {err}")))
 }
 
-fn extract_zip(bytes: &[u8], destination: &Path) -> Result<(), CoreError> {
+pub(crate) fn extract_zip(bytes: &[u8], destination: &Path) -> Result<(), CoreError> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|err| CoreError::new("DEPLOY_INVALID_PACKAGE", format!("invalid zip: {err}")))?;
     if archive.is_empty() {
