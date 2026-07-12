@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+        with:
+          components: clippy,rustfmt
+      - uses: denoland/setup-deno@v2
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo fmt -- --check
+
+  otel:
+    name: Optional OTLP integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: denoland/setup-deno@v2
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p edger-orchestrator --features otel
+
+  project-gates:
+    name: cPanel and planning contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install planning gate tools
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: planning/edger/scripts/cpanel-ui-gate.sh
+      - name: Run planning gates
+        shell: bash
+        run: |
+          scratch="${RUNNER_TEMP}/edger-planning-gates"
+          mkdir -p "$scratch"
+          set +e
+          python3 planning/edger/scripts/refinement-lint.py \
+            --scope planning/edger \
+            --round github-ci >"$scratch/refinement-report.txt"
+          refinement_status=$?
+          set -e
+          cat "$scratch/refinement-report.txt"
+          test "$refinement_status" -eq 0
+          SCRATCH="$scratch" planning/edger/scripts/run-gates.sh
+
+  helm:
+    name: Helm and Rancher assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint charts/edger
+      - run: helm template edger charts/edger >/tmp/edger-default.yaml
+      - name: Render optional OTLP and existing Secret
+        run: >-
+          helm template edger charts/edger
+          --set otel.enabled=true
+          --set otel.endpoint=http://otel-collector:4318
+          --set rootKey.source=existing
+          --set rootKey.existingSecret=edger-root-key
+          >/tmp/edger-otel.yaml
+
+  image:
+    name: Container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: edger:ci
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=O'Saasy-1.0
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+  dependencies:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check advisories licenses

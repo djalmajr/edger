@@ -1,0 +1,7 @@
+name: lifecycle-demo
+version: "1.0.0"
+entrypoint: index.ts
+kind: fetch
+release: "true"
+ttl: 250ms
+shutdownGrace: 100ms

@@ -17,7 +17,7 @@ pub fn validate_request(
         if body.len() as u64 > max {
             return Err(IsolationError::new(
                 "PAYLOAD_TOO_LARGE",
-                format!("body exceeds max {} bytes", max),
+                format!("body exceeds max {max} bytes"),
             ));
         }
     }

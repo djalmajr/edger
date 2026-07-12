@@ -1,5 +1,6 @@
 //! Built-in control-plane auth gate.
 
+use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
@@ -28,6 +29,17 @@ pub struct ControlAuthConfig {
     root_key_source: RootKeySource,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControlAuthConfigError(String);
+
+impl Display for ControlAuthConfigError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ControlAuthConfigError {}
+
 #[derive(Clone, Debug, Default)]
 enum RootKeySource {
     #[default]
@@ -52,7 +64,7 @@ pub struct ControlAuth {
 }
 
 impl ControlAuthConfig {
-    pub fn from_env() -> Self {
+    pub fn from_env() -> Result<Self, ControlAuthConfigError> {
         let root_key_file = non_empty_env(EDGER_ROOT_KEY_FILE_ENV).map(PathBuf::from);
         let root_key = non_empty_env(ROOT_API_KEY_ENV);
         let root_key_source = match (root_key_file, root_key) {
@@ -60,11 +72,11 @@ impl ControlAuthConfig {
             (None, Some(key)) => RootKeySource::Env(key),
             (None, None) => RootKeySource::Open,
         };
-        let oidc = oidc_config_from_env();
-        Self {
+        let oidc = oidc_config_from_env()?;
+        Ok(Self {
             oidc,
             root_key_source,
-        }
+        })
     }
 
     fn with_static_key(key: impl Into<String>) -> Self {
@@ -89,8 +101,8 @@ impl ControlAuth {
         }
     }
 
-    pub fn from_env() -> Self {
-        Self::new(ControlAuthConfig::from_env())
+    pub fn from_env() -> Result<Self, ControlAuthConfigError> {
+        ControlAuthConfig::from_env().map(Self::new)
     }
 
     pub fn with_static_key(key: impl Into<String>) -> Self {
@@ -231,18 +243,12 @@ fn non_empty_env(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn oidc_config_from_env() -> Option<OidcConfig> {
-    let issuer = non_empty_env(EDGER_OIDC_ISSUER_ENV)?;
-    let audience = match non_empty_env(EDGER_OIDC_AUDIENCE_ENV) {
-        Some(audience) => audience,
-        None => {
-            tracing::warn!(
-                "EDGER_OIDC_ISSUER is configured but EDGER_OIDC_AUDIENCE is missing; OIDC disabled"
-            );
-            return None;
-        }
-    };
-    Some(OidcConfig {
+fn oidc_config_from_env() -> Result<Option<OidcConfig>, ControlAuthConfigError> {
+    let pair = validate_oidc_pair(
+        non_empty_env(EDGER_OIDC_ISSUER_ENV),
+        non_empty_env(EDGER_OIDC_AUDIENCE_ENV),
+    )?;
+    Ok(pair.map(|(issuer, audience)| OidcConfig {
         admin_role: non_empty_env(EDGER_OIDC_ADMIN_ROLE_ENV),
         audience,
         issuer,
@@ -250,7 +256,23 @@ fn oidc_config_from_env() -> Option<OidcConfig> {
             .unwrap_or_else(|| DEFAULT_OIDC_NAMESPACES_CLAIM.into()),
         required_role: non_empty_env(EDGER_OIDC_REQUIRED_ROLE_ENV),
         roles_claim: non_empty_env(EDGER_OIDC_ROLES_CLAIM_ENV),
-    })
+    }))
+}
+
+fn validate_oidc_pair(
+    issuer: Option<String>,
+    audience: Option<String>,
+) -> Result<Option<(String, String)>, ControlAuthConfigError> {
+    match (issuer, audience) {
+        (None, None) => Ok(None),
+        (Some(issuer), Some(audience)) => Ok(Some((issuer, audience))),
+        (Some(_), None) => Err(ControlAuthConfigError(
+            "EDGER_OIDC_ISSUER requires EDGER_OIDC_AUDIENCE".into(),
+        )),
+        (None, Some(_)) => Err(ControlAuthConfigError(
+            "EDGER_OIDC_AUDIENCE requires EDGER_OIDC_ISSUER".into(),
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -318,5 +340,16 @@ mod tests {
         assert!(auth.authenticate_headers(&headers).await.is_none());
         headers.insert("x-api-key", HeaderValue::from_static("k2"));
         assert!(auth.authenticate_headers(&headers).await.unwrap().is_root);
+    }
+
+    #[test]
+    fn partial_oidc_configuration_is_rejected() {
+        assert!(validate_oidc_pair(Some("issuer".into()), None).is_err());
+        assert!(validate_oidc_pair(None, Some("audience".into())).is_err());
+        assert_eq!(validate_oidc_pair(None, None).unwrap(), None);
+        assert_eq!(
+            validate_oidc_pair(Some("issuer".into()), Some("audience".into())).unwrap(),
+            Some(("issuer".into(), "audience".into()))
+        );
     }
 }

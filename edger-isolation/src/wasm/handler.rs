@@ -221,7 +221,9 @@ impl WasmStoreState {
         Self {
             limits: StoreLimitsBuilder::new()
                 .memory_size(limits.memory_bytes)
+                .memories(1)
                 .table_elements(limits.table_elements)
+                .tables(1)
                 .build(),
             wasi: build_wasi_context(wasi),
         }
@@ -677,6 +679,47 @@ mod tests {
                 &WasiConfig::deny_all(),
                 &limits,
             )
+            .unwrap_err();
+
+        assert_eq!(err.code, "WASM_INSTANTIATE");
+    }
+
+    #[test]
+    fn store_limits_reject_multiple_memories() {
+        let wasm_bytes = wat::parse_str(
+            r#"
+            (module
+              (memory (export "memory") 1)
+              (memory 1)
+              (func (export "edger_alloc") (param $len i32) (result i32) i32.const 1024)
+              (func (export "edger_handle") (param $req_ptr i32) (param $req_len i32) (result i64) i64.const 0)
+            )
+            "#,
+        )
+        .unwrap();
+        let err = WasmHttpHandler::new()
+            .execute_module(&wasm_bytes, &sample_request())
+            .unwrap_err();
+
+        assert_eq!(err.code, "WASM_INSTANTIATE");
+    }
+
+    #[test]
+    fn store_limits_reject_multiple_tables() {
+        let wasm_bytes = wat::parse_str(
+            r#"
+            (module
+              (memory (export "memory") 1)
+              (table 1 funcref)
+              (table 1 funcref)
+              (func (export "edger_alloc") (param $len i32) (result i32) i32.const 1024)
+              (func (export "edger_handle") (param $req_ptr i32) (param $req_len i32) (result i64) i64.const 0)
+            )
+            "#,
+        )
+        .unwrap();
+        let err = WasmHttpHandler::new()
+            .execute_module(&wasm_bytes, &sample_request())
             .unwrap_err();
 
         assert_eq!(err.code, "WASM_INSTANTIATE");

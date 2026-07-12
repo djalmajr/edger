@@ -12,7 +12,7 @@
 
 ## Traceability
 - **Source docs:** `planning/edger/docs/value-parity-matrix.md`, `planning/edger/docs/extensions.md`, `planning/edger/epics/08-valor-buntime/02-api-operacional-workers-e-plugins.md`
-- **Buntime refs:** `/Users/djalmajr/Developer/djalmajr/buntime/apps/site/src/content/docs/concepts/plugin-system.mdx`, especialmente enable/disable runtime e a separacao entre reload persistente e superfice dinamica por request.
+- **Buntime refs:** `<buntime-repo>/apps/site/src/content/docs/concepts/plugin-system.mdx`, especialmente enable/disable runtime e a separacao entre reload persistente e superfice dinamica por request.
 - **Prototype refs:** none; this is an operator API workflow.
 - **Business rules:** extensoes continuam registradas explicitamente; toggles em memoria nao devem fingir persistencia nem clonar o modelo Bun.
 

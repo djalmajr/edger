@@ -34,6 +34,17 @@ runtime:
 cron:
   enabled: true
 
+otel:
+  enabled: false
+  endpoint: ""
+  protocol: grpc
+  tracesSampler: parentbased_traceidratio
+  tracesSamplerArg: "0.1"
+  required: false
+  headersSecret:
+    name: ""
+    key: headers
+
 rootKey:
   source: generated
   value: ""

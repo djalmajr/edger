@@ -5,7 +5,13 @@ interface reqPayload {
 console.info("server started modified");
 
 Deno.serve(async (req: Request) => {
-  const { name }: reqPayload = await req.json();
+  let name = "World";
+  if (req.body) {
+    const payload = await req.json().catch(() => null) as reqPayload | null;
+    if (payload && typeof payload.name === "string" && payload.name.trim()) {
+      name = payload.name.trim();
+    }
+  }
   const data = {
     message: `Hello ${name} from foo!`,
   };
@@ -15,7 +21,6 @@ Deno.serve(async (req: Request) => {
     {
       headers: {
         "Content-Type": "application/json",
-        "Connection": "keep-alive",
       },
     },
   );

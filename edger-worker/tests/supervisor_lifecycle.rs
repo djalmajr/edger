@@ -234,7 +234,9 @@ async fn critical_error_marks_unhealthy_and_terminates() {
     let instance = pool.get_or_create(&worker_ref).await.unwrap();
     Supervisor::spawn(&instance).await.unwrap();
     Supervisor::on_request_start(&instance).await.unwrap();
-    Supervisor::on_critical_error(&instance).await.unwrap();
+    Supervisor::on_critical_error(&instance, &pool)
+        .await
+        .unwrap();
     assert!(instance.is_unhealthy());
     assert_eq!(instance.state(), WorkerState::Terminated);
 }

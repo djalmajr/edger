@@ -1,0 +1,8 @@
+name: sse
+version: "latest"
+entrypoint: index.ts
+kind: fetch
+minProcesses: 1
+maxProcesses: 4
+queueLimit: 16
+queueTimeout: 10s

@@ -3,7 +3,7 @@
 **Author:** edger team  
 **Date:** 2026-06-28  
 **Status:** Foundation-locked (planning complete)
-**Project Location:** `/Users/djalmajr/Developer/djalmajr/edger`  
+**Project Location:** `<repo>`
 **Version:** 0.1 (Foundation Architecture)
 
 ---
@@ -788,7 +788,7 @@ The architecture and implementation plans incorporate final user decisions on al
 
 ## References
 
-- Intake: `/Users/djalmajr/Developer/djalmajr/edger/planning/edger/intake.md`
+- Intake: `<repo>/planning/edger/intake.md`
 - Buntime (claims verified via direct source reads + ai-memory wiki recall with explicit scopes + Buntime MCP tools):
   - `wiki/apps/runtime.md` (request pipeline, manifests, design principles)
   - `wiki/apps/plugin-system.md` (hooks, modes, topological sort, manifests)

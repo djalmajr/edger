@@ -19,7 +19,9 @@ use edger_core::{
     WorkerResponse,
 };
 use edger_isolation::MockIsolate;
-use edger_worker::{IsolateFactory, PoolConfig, WorkerError, WorkerPool, WorkerState};
+use edger_worker::{
+    IsolateFactory, PoolConfig, WorkerError, WorkerLifecycleEventKind, WorkerPool, WorkerState,
+};
 use helpers::{
     default_pool_config, execution_kind_from_manifest, pool_with_factory, serialized_get,
     temp_worker_dir, MockIsolateFactory,
@@ -947,6 +949,34 @@ async fn story18_shutdown_drains_all_instances_in_group() {
 }
 
 #[tokio::test]
+async fn shutdown_emits_bounded_lifecycle_sequence_per_worker_version() {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
+    let pool = WorkerPool::with_factory_and_lifecycle(
+        default_pool_config(),
+        Arc::new(NumberedSlowFactory::new(1)),
+        Some(sender),
+    );
+    let worker_ref = numbered_worker_ref(1, 0, 0);
+    fetch_numbered(pool.clone(), worker_ref.clone(), "/warm").await;
+
+    pool.shutdown().expect("shutdown task").await.unwrap();
+    let mut events = Vec::new();
+    while let Ok(event) = receiver.try_recv() {
+        events.push(event);
+    }
+
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].kind, WorkerLifecycleEventKind::DrainStarted);
+    assert_eq!(events[1].kind, WorkerLifecycleEventKind::DrainCompleted);
+    assert_eq!(events[2].kind, WorkerLifecycleEventKind::Terminated);
+    assert!(events.iter().all(|event| {
+        event.worker_ref.name == worker_ref.name
+            && event.worker_ref.version == worker_ref.version
+            && event.reason == "shutdown"
+    }));
+}
+
+#[tokio::test]
 async fn story18_queue_limit_zero_rejects_when_process_cap_is_busy() {
     let factory = Arc::new(NumberedSlowFactory::new(200));
     let pool = WorkerPool::with_factory(default_pool_config(), factory);
@@ -1089,6 +1119,12 @@ async fn story18_cancelled_queue_waiter_does_not_leak_queue_capacity() {
     )
     .await;
     assert!(cancelled.is_err(), "queued waiter future must be cancelled");
+    let cancelled_stats = pool.get_metrics().worker_groups;
+    assert_eq!(cancelled_stats.len(), 1);
+    assert_eq!(
+        cancelled_stats[0].queued, 0,
+        "cancelled queue waiters must disappear from per-worker observability"
+    );
 
     let next = tokio::time::timeout(
         Duration::from_secs(1),

@@ -95,14 +95,17 @@ impl Supervisor {
         Ok(())
     }
 
-    pub async fn on_critical_error(instance: &WorkerInstance) -> Result<(), WorkerError> {
+    pub async fn on_critical_error(
+        instance: &WorkerInstance,
+        pool: &WorkerPool,
+    ) -> Result<(), WorkerError> {
         instance.mark_unhealthy();
         instance.cancel_ttl_timer();
         {
             let mut state = instance.state_lock();
             *state = transition(*state, WorkerEvent::CriticalError)?;
         }
-        Self::cleanup(instance).await?;
+        Self::cleanup(instance, pool, "critical_error").await?;
         Ok(())
     }
 
@@ -122,10 +125,8 @@ impl Supervisor {
         pool: &WorkerPool,
     ) -> Result<(), WorkerError> {
         instance.set_state(WorkerState::Terminating);
-        let isolate = instance.isolate();
-        let mut guard = isolate.lock().await;
-        let _ = guard.terminate().await;
-        drop(guard);
+        pool.terminate_isolate_with_lifecycle(instance, "max_requests")
+            .await;
         instance.set_state(WorkerState::Terminated);
         pool.remove_instance(instance);
         Ok(())
@@ -145,7 +146,7 @@ impl Supervisor {
             let mut state = instance.state_lock();
             *state = transition(*state, event)?;
         }
-        Self::cleanup(instance).await?;
+        Self::cleanup(instance, pool, "ttl_expired").await?;
         pool.remove_instance(instance);
         Ok(())
     }
@@ -154,10 +155,8 @@ impl Supervisor {
         instance: &WorkerInstance,
         pool: &WorkerPool,
     ) -> Result<(), WorkerError> {
-        let isolate = instance.isolate();
-        let mut guard = isolate.lock().await;
-        let _ = guard.terminate().await;
-        drop(guard);
+        pool.terminate_isolate_with_lifecycle(instance, "ephemeral_complete")
+            .await;
 
         instance.set_state(transition(
             WorkerState::EphemeralTerm,
@@ -167,7 +166,11 @@ impl Supervisor {
         Ok(())
     }
 
-    async fn cleanup(instance: &WorkerInstance) -> Result<(), WorkerError> {
+    async fn cleanup(
+        instance: &WorkerInstance,
+        pool: &WorkerPool,
+        reason: &'static str,
+    ) -> Result<(), WorkerError> {
         {
             let mut state = instance.state_lock();
             if *state != WorkerState::Terminating {
@@ -175,10 +178,8 @@ impl Supervisor {
             }
         }
 
-        let isolate = instance.isolate();
-        let mut guard = isolate.lock().await;
-        let _ = guard.terminate().await;
-        drop(guard);
+        pool.terminate_isolate_with_lifecycle(instance, reason)
+            .await;
 
         instance.set_state(transition(
             WorkerState::Terminating,

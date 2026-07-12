@@ -1,6 +1,6 @@
 # Intake: edger
 
-**Origin:** Solicitação direta do usuário durante conversa sobre viabilidade de forkar/adaptar Edge Runtime para a proposta do Buntime. Decidido criar novo projeto independente chamado "edger" usando visão/conceitos do Buntime + estrutura de código/crates do Edge Runtime. Caminho do projeto: `/Users/djalmajr/Developer/djalmajr/edger`. Nomeação de crates como `edger-{core,worker,...}`.
+**Origin:** Solicitação direta do usuário durante conversa sobre viabilidade de forkar/adaptar Edge Runtime para a proposta do Buntime. Decidido criar novo projeto independente chamado "edger" usando visão/conceitos do Buntime + estrutura de código/crates do Edge Runtime. Caminho do projeto: `<repo>`. Nomeação de crates como `edger-{core,worker,...}`.
 
 ## Context
 - **Problem/opportunity:** O runtime atual do Buntime (baseado em Bun + TypeScript com Web Workers) tem limitações significativas para rodar aplicações mais completas (SSR, full-stack, frameworks pesados como Next.js ou TanStack Router de forma mais nativa). A camada de orquestração fica em userland TS (Hono + WorkerPool), o que limita controle profundo sobre isolamento, recursos e customização. Há necessidade de um orquestrador mais confiável e customizável no core.

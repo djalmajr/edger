@@ -3,18 +3,24 @@
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use edger_core::{
     principal_has_permission, root_principal, AdminCatalogItem, AdminCatalogResponse,
     AdminErrorResponse, AdminMutationResponse, AdminSessionResponse, AdminWorkerInfo,
-    AdminWorkersResponse, ApiKeyPrincipal, CoreError,
+    AdminWorkersResponse, ApiKeyPrincipal, CoreError, SerializedRequest,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::VecDeque;
+use std::convert::Infallible;
+use std::fs;
+use std::path::PathBuf;
+use std::time::Duration;
 
-use crate::deploy::{extract_zip, install_worker_from_zip, rescan_workers_and_prewarm};
+use crate::deploy::{extract_zip, install_worker_from_zip};
 use crate::operational_log::log_operational_error;
 use crate::pipeline::OrchestratorState;
 use crate::security::validate_admin_mutation_security;
@@ -36,8 +42,18 @@ pub fn router() -> Router<OrchestratorState> {
             get(worker_error_summary),
         )
         .route("/api/admin/workers/{name}/errors", get(worker_errors))
+        .route("/api/admin/observability/events", get(observability_events))
+        .route("/api/admin/observability/series", get(observability_series))
+        .route(
+            "/api/admin/observability/events/stream",
+            get(observability_events_stream),
+        )
         .route("/api/admin/workers/{name}/enable", post(enable_worker))
         .route("/api/admin/workers/{name}/disable", post(disable_worker))
+        .route(
+            "/api/admin/workers/{name}/health-check",
+            post(run_health_check),
+        )
         .route(
             "/api/admin/workers/{name}/files",
             get(worker_files)
@@ -111,17 +127,75 @@ async fn install_worker(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    match authenticate(&state, &headers).await.and_then(|principal| {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
         require_permission(&principal, "workers:install")?;
         validate_admin_mutation_security("POST", &headers, &principal)?;
-        install_worker_from_zip(&state.index, &principal, &body)
-    }) {
+        let installed = install_worker_from_zip(&state.index, &principal, &body)?;
+        let candidate = state
+            .index
+            .worker_refs()
+            .into_iter()
+            .find(|worker| worker.name == installed.name && worker.version == installed.version)
+            .ok_or_else(|| CoreError::new("DEPLOY_INTERNAL", "installed worker was not indexed"))?;
+        if candidate
+            .config
+            .health_check
+            .as_ref()
+            .is_some_and(|check| check.mode == edger_core::WorkerHealthCheckMode::OnDeploy)
+        {
+            let check = execute_worker_health_check(
+                &state,
+                &installed.name,
+                &installed.version,
+                "on-deploy",
+            )
+            .await?;
+            if !check.healthy {
+                rollback_failed_install(&state, &installed)?;
+                return Err(CoreError::new(
+                    "DEPLOY_HEALTH_CHECK_FAILED",
+                    format!(
+                        "health check failed for {}@{}: {}",
+                        installed.name, installed.version, check.message
+                    ),
+                ));
+            }
+            state
+                .index
+                .set_worker_enabled(&installed.name, Some(&installed.version), true)?;
+        }
+        Ok(installed)
+    }
+    .await;
+    match result {
         Ok(installed) => (StatusCode::CREATED, Json(installed)).into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+fn rollback_failed_install(
+    state: &OrchestratorState,
+    installed: &crate::deploy::InstalledWorker,
+) -> Result<(), CoreError> {
+    state
+        .index
+        .remove_worker(&installed.name, &installed.version)?;
+    let source = PathBuf::from(&installed.source);
+    fs::remove_dir_all(&source).map_err(|error| {
+        CoreError::new(
+            "DEPLOY_ROLLBACK_FAILED",
+            format!(
+                "failed to remove rejected candidate {}@{} from {}: {error}",
+                installed.name,
+                installed.version,
+                source.display()
+            ),
+        )
+    })
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RescanRequest {
     dry_run: Option<bool>,
@@ -140,7 +214,13 @@ async fn rescan_workers_route(
         let principal = authenticate(&state, &headers).await?;
         require_permission(&principal, "workers:install")?;
         validate_admin_mutation_security("POST", &headers, &principal)?;
-        rescan_workers_and_prewarm(&state.index, &state.pool, dry_run).await
+        crate::deploy::rescan_workers_and_prewarm_with_events(
+            &state.index,
+            &state.pool,
+            &state.server.operational_events(),
+            dry_run,
+        )
+        .await
     }
     .await;
     match result {
@@ -155,10 +235,87 @@ struct WorkerVersionQuery {
     version: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerHealthCheckResult {
+    worker: String,
+    version: String,
+    path: String,
+    method: String,
+    trigger: &'static str,
+    healthy: bool,
+    status: Option<u16>,
+    duration_ms: u64,
+    code: Option<String>,
+    message: String,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkerErrorsQuery {
     limit: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObservabilityEventsQuery {
+    before: Option<u64>,
+    limit: Option<usize>,
+    since_ms: Option<u128>,
+    until_ms: Option<u128>,
+    namespace: Option<String>,
+    worker: Option<String>,
+    version: Option<String>,
+    process_id: Option<String>,
+    source: Option<String>,
+    kind: Option<String>,
+    level: Option<String>,
+    outcome: Option<String>,
+    status: Option<u16>,
+    request_id: Option<String>,
+    trace_id: Option<String>,
+    cursor: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObservabilitySeriesQuery {
+    namespace: Option<String>,
+    worker: Option<String>,
+    version: Option<String>,
+    window_ms: Option<u64>,
+    bucket_ms: Option<u64>,
+}
+
+struct EventTailState {
+    store: crate::observability::OperationalStore,
+    receiver: tokio::sync::broadcast::Receiver<u64>,
+    query: crate::observability::OperationalEventQuery,
+    cursor: u64,
+    pending: VecDeque<crate::observability::OperationalEvent>,
+    gap_pending: Option<(Option<u64>, Option<u64>)>,
+}
+
+impl From<ObservabilityEventsQuery> for crate::observability::OperationalEventQuery {
+    fn from(query: ObservabilityEventsQuery) -> Self {
+        Self {
+            before: query.before,
+            limit: query.limit,
+            since_ms: query.since_ms,
+            until_ms: query.until_ms,
+            namespace: query.namespace,
+            worker: query.worker,
+            version: query.version,
+            process_id: query.process_id,
+            source: query.source,
+            kind: query.kind,
+            level: query.level,
+            outcome: query.outcome,
+            status: query.status,
+            request_id: query.request_id,
+            trace_id: query.trace_id,
+        }
+    }
 }
 
 async fn worker_error_summary(
@@ -193,6 +350,120 @@ async fn worker_errors(
     }
 }
 
+async fn observability_events(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Query(query): Query<ObservabilityEventsQuery>,
+) -> Response {
+    match require_root(&state, &headers).await {
+        Ok(_) => Json(state.server.operational_events().query(query.into())).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn observability_series(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Query(query): Query<ObservabilitySeriesQuery>,
+) -> Response {
+    if let Err(err) = require_root(&state, &headers).await {
+        return admin_error(map_error_status(&err), &err, &headers);
+    }
+    let event_query = crate::observability::OperationalEventQuery {
+        namespace: query.namespace,
+        worker: query.worker,
+        version: query.version,
+        ..Default::default()
+    };
+    Json(state.server.operational_events().series(
+        event_query,
+        query.window_ms.unwrap_or(5 * 60_000),
+        query.bucket_ms.unwrap_or(15_000),
+    ))
+    .into_response()
+}
+
+async fn observability_events_stream(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Query(query): Query<ObservabilityEventsQuery>,
+) -> Response {
+    if let Err(err) = require_root(&state, &headers).await {
+        return admin_error(map_error_status(&err), &err, &headers);
+    }
+    let cursor = query.cursor.or_else(|| {
+        headers
+            .get("last-event-id")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse().ok())
+    });
+    let store = state.server.operational_events();
+    let receiver = store.subscribe();
+    let stream = futures_util::stream::unfold(
+        EventTailState {
+            store,
+            receiver,
+            query: query.into(),
+            cursor: cursor.unwrap_or_default(),
+            pending: VecDeque::new(),
+            gap_pending: None,
+        },
+        |mut state| async move {
+            loop {
+                if let Some((oldest, newest)) = state.gap_pending.take() {
+                    let payload = json!({
+                        "gap": true,
+                        "oldestAvailable": oldest,
+                        "newestAvailable": newest,
+                    });
+                    return Some((
+                        Ok::<_, Infallible>(
+                            Event::default().event("gap").data(payload.to_string()),
+                        ),
+                        state,
+                    ));
+                }
+                if let Some(event) = state.pending.pop_front() {
+                    state.cursor = event.id;
+                    let payload = serde_json::to_string(&event).unwrap_or_else(|_| "{}".into());
+                    return Some((
+                        Ok::<_, Infallible>(
+                            Event::default()
+                                .id(event.id.to_string())
+                                .event("operational_event")
+                                .data(payload),
+                        ),
+                        state,
+                    ));
+                }
+
+                let tail = state.store.tail(state.query.clone(), state.cursor);
+                if tail.gap {
+                    state.gap_pending = Some((tail.oldest_available, tail.newest_available));
+                    if let Some(oldest) = tail.oldest_available {
+                        state.cursor = oldest.saturating_sub(1);
+                    }
+                }
+                state.pending = tail.events.into();
+                if state.gap_pending.is_some() || !state.pending.is_empty() {
+                    continue;
+                }
+                match state.receiver.recv().await {
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        },
+    );
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keep-alive"),
+        )
+        .into_response()
+}
+
 async fn enable_worker(
     State(state): State<OrchestratorState>,
     headers: HeaderMap,
@@ -209,6 +480,136 @@ async fn disable_worker(
     Query(query): Query<WorkerVersionQuery>,
 ) -> Response {
     worker_mutation(state, headers, name, query.version, false).await
+}
+
+async fn run_health_check(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(query): Query<WorkerVersionQuery>,
+) -> Response {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "workers:read")?;
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        if principal.role != "admin" {
+            return Err(CoreError::new("FORBIDDEN", "admin role required"));
+        }
+        let version = query
+            .version
+            .as_deref()
+            .ok_or_else(|| CoreError::validation("version", "version is required"))?;
+        execute_worker_health_check(&state, &name, version, "manual").await
+    }
+    .await;
+    match result {
+        Ok(result) => Json(result).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn execute_worker_health_check(
+    state: &OrchestratorState,
+    name: &str,
+    version: &str,
+    trigger: &'static str,
+) -> Result<WorkerHealthCheckResult, CoreError> {
+    let worker = state
+        .index
+        .worker_refs()
+        .into_iter()
+        .find(|worker| worker.name == name && worker.version == version)
+        .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker {name}@{version} not found")))?;
+    let check = worker.config.health_check.clone().ok_or_else(|| {
+        CoreError::new(
+            "HEALTH_CHECK_NOT_CONFIGURED",
+            format!("worker {name}@{version} has no healthCheck configuration"),
+        )
+    })?;
+    let request_id = format!("health-check-{}", uuid::Uuid::new_v4());
+    let request = SerializedRequest {
+        method: check.method.clone(),
+        uri: check.path.clone(),
+        headers: vec![
+            ("x-request-id".into(), request_id.clone()),
+            ("x-edger-health-check".into(), trigger.into()),
+        ],
+        body: None,
+        request_id: request_id.clone(),
+        base_href: Some(format!("/{name}/")),
+    };
+    let started = std::time::Instant::now();
+    let dispatch = tokio::time::timeout(
+        Duration::from_millis(check.timeout_ms),
+        state
+            .pool
+            .fetch_worker(&worker, request, Some(worker.kind.clone())),
+    )
+    .await;
+    let duration_ms = started.elapsed().as_millis().max(1) as u64;
+    let (healthy, status, code, message) = match dispatch {
+        Ok(Ok(response)) if (200..400).contains(&response.status) => (
+            true,
+            Some(response.status),
+            None,
+            "Health check completed successfully".into(),
+        ),
+        Ok(Ok(response)) => (
+            false,
+            Some(response.status),
+            Some("HEALTH_CHECK_STATUS".into()),
+            format!("Health check returned status {}", response.status),
+        ),
+        Ok(Err(error)) => (
+            false,
+            None,
+            Some("HEALTH_CHECK_DISPATCH".into()),
+            format!("Health check dispatch failed: {error}"),
+        ),
+        Err(_) => (
+            false,
+            None,
+            Some("HEALTH_CHECK_TIMEOUT".into()),
+            format!("Health check exceeded {}ms", check.timeout_ms),
+        ),
+    };
+    state
+        .server
+        .operational_events()
+        .record(crate::observability::OperationalEventInput {
+            source: crate::observability::OperationalEventSource::Runtime,
+            kind: "health_check".into(),
+            level: if healthy {
+                crate::observability::OperationalEventLevel::Info
+            } else {
+                crate::observability::OperationalEventLevel::Error
+            },
+            namespace: worker.namespace.clone(),
+            worker: Some(worker.name.clone()),
+            version: Some(worker.version.clone()),
+            process_id: None,
+            request_id: Some(request_id),
+            trace_id: None,
+            outcome: Some(if healthy { "healthy" } else { "failed" }.into()),
+            status,
+            duration_ms: Some(duration_ms),
+            code: code.clone(),
+            message: Some(message.clone()),
+            truncated: None,
+            dropped_count: None,
+        });
+    Ok(WorkerHealthCheckResult {
+        worker: worker.name,
+        version: worker.version,
+        path: check.path,
+        method: check.method,
+        trigger,
+        healthy,
+        status,
+        duration_ms,
+        code,
+        message,
+    })
 }
 
 async fn worker_mutation(
@@ -445,11 +846,17 @@ fn require_permission(principal: &ApiKeyPrincipal, permission: &str) -> Result<(
 
 fn map_error_status(err: &CoreError) -> StatusCode {
     match err.code.as_str() {
-        "BAD_REQUEST" | "DEPLOY_INVALID_PACKAGE" | "DEPLOY_PATH_DENIED" => StatusCode::BAD_REQUEST,
+        "BAD_REQUEST" | "VALIDATION_ERROR" | "DEPLOY_INVALID_PACKAGE" | "DEPLOY_PATH_DENIED" => {
+            StatusCode::BAD_REQUEST
+        }
         "UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
         "CSRF_DENIED" | "FORBIDDEN" => StatusCode::FORBIDDEN,
-        "COLLISION" | "DEPLOY_TARGET_EXISTS" => StatusCode::CONFLICT,
+        "COLLISION"
+        | "CPANEL_DEFAULT_REQUIRED"
+        | "DEPLOY_TARGET_EXISTS"
+        | "DEPLOY_HEALTH_CHECK_FAILED"
+        | "HEALTH_CHECK_NOT_CONFIGURED" => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

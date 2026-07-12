@@ -189,3 +189,33 @@ fn deno_cli_bundler_inlines_relative_imports() {
     );
     assert_eq!(run_bundle(bundle_path, &bundler), "hello from dependency");
 }
+
+#[test]
+fn deno_cli_bundler_rejects_cross_worker_relative_import() {
+    let workers = tempfile::tempdir().expect("create workers root");
+    let worker_dir = workers.path().join("alpha");
+    let sibling_dir = workers.path().join("beta");
+    fs::create_dir_all(&worker_dir).unwrap();
+    fs::create_dir_all(&sibling_dir).unwrap();
+    let entrypoint = worker_dir.join("index.ts");
+    fs::write(
+        &entrypoint,
+        r#"import { secret } from "../beta/secret.ts";
+Deno.serve(() => new Response(secret));
+"#,
+    )
+    .unwrap();
+    fs::write(
+        sibling_dir.join("secret.ts"),
+        "export const secret = 'private';",
+    )
+    .unwrap();
+    let output_dir = tempfile::tempdir().expect("create bundle output dir");
+
+    let error = DenoCliBundler::default()
+        .bundle_entrypoint(&worker_dir, &entrypoint, output_dir.path())
+        .unwrap_err();
+
+    assert_eq!(error.code, "DENO_BUNDLE_GRAPH_DENIED");
+    assert!(error.message.contains("escapes worker_dir"));
+}

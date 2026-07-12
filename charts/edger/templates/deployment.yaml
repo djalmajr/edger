@@ -1,4 +1,4 @@
-{{- $hasRootKey := or .Values.rootKey.value .Values.rootKey.existingSecret }}
+{{- $hasRootKey := or (eq .Values.rootKey.source "generated") (and (eq .Values.rootKey.source "existing") .Values.rootKey.existingSecret) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -40,11 +40,18 @@ spec:
             {{- with .Values.extraEnvFrom }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- if or $hasRootKey .Values.extraEnv }}
+          {{- if or $hasRootKey .Values.extraEnv (and .Values.otel.enabled .Values.otel.headersSecret.name) }}
           env:
             {{- if $hasRootKey }}
             - name: EDGER_ROOT_KEY_FILE
               value: {{ include "edger.rootKeyFilePath" . | quote }}
+            {{- end }}
+            {{- if and .Values.otel.enabled .Values.otel.headersSecret.name }}
+            - name: OTEL_EXPORTER_OTLP_HEADERS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.otel.headersSecret.name | quote }}
+                  key: {{ .Values.otel.headersSecret.key | quote }}
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

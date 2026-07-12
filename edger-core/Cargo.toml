@@ -2,7 +2,13 @@
 name = "edger-core"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Core vocabulary and contracts for the EdgeR worker runtime"
+publish = false
 
 [dependencies]
 # Pure vocabulary crate: NO sibling crates, no I/O.

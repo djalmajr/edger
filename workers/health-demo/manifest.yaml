@@ -1,0 +1,9 @@
+name: health-demo
+version: "1.0.0"
+entrypoint: index.ts
+kind: fetch
+healthCheck:
+  path: /health
+  method: GET
+  mode: manual
+  timeout: 1s

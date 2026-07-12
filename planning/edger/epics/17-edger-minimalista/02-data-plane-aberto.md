@@ -38,7 +38,7 @@
 ## Verification
 ```bash
 cargo test -p edger-orchestrator
-curl -H "Authorization: Bearer qualquer-coisa" http://127.0.0.1:3000/<worker>  # worker decide
+curl -H "Authorization: Bearer qualquer-coisa" http://127.0.0.1:3000/<worker>  # worker decide; gitleaks:allow
 ```
 
 ## Status

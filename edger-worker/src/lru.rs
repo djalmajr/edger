@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::instance::WorkerInstance;
-use crate::metrics::MetricsCollector;
+use crate::metrics::{MetricsCollector, WorkerGroupIdentity};
 use crate::state::{accepts_dispatch, WorkerState};
 use crate::types::WorkerCacheKey;
 
@@ -89,6 +89,7 @@ impl WorkerGroup {
         self: &Arc<Self>,
         limit: usize,
         metrics: Arc<MetricsCollector>,
+        worker_identity: WorkerGroupIdentity,
     ) -> QueueEnterResult {
         if self.is_closed() {
             return QueueEnterResult::Closed;
@@ -118,6 +119,7 @@ impl WorkerGroup {
                         metrics,
                         started: Instant::now(),
                         active: true,
+                        worker_identity,
                     });
                 }
                 Err(actual) => queued = actual,
@@ -245,6 +247,7 @@ pub struct WorkerQueueWaiter {
     metrics: Arc<MetricsCollector>,
     started: Instant,
     active: bool,
+    worker_identity: WorkerGroupIdentity,
 }
 
 impl WorkerQueueWaiter {
@@ -255,6 +258,8 @@ impl WorkerQueueWaiter {
         self.active = false;
         let queued = self.group.queue_waiters.fetch_sub(1, Ordering::SeqCst) - 1;
         self.metrics.set_worker_queue_queued(queued as u64);
+        self.metrics
+            .set_worker_group_queued(&self.worker_identity, queued as u64);
         self.metrics
             .record_worker_queue_wait(self.started.elapsed().as_millis() as u64);
     }

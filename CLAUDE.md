@@ -12,6 +12,7 @@
 - Update this, roadmap, epics and status when state changes.
 - Use explicit memory scopes (workspace: "djalmajr", project: "edger") for ai-memory.
 - For buntime cross-ref use zommehq/buntime scope explicitly.
+- Persist important validated architectural, operational and product findings in ai-memory after verification; do not save transient hypotheses or routine progress as durable knowledge.
 
 ## Extensions (edger-ext-*)
 - Crates `edger-ext-*` depend only on `edger-core` — never on `edger-orchestrator`.

@@ -7,6 +7,55 @@ use edger_core::{
     WorkerManifest, DEFAULT_MAX_BODY_BYTES,
 };
 
+#[test]
+fn health_check_is_validated_and_normalized_without_periodic_mode() {
+    let manifest = WorkerManifest {
+        name: "health-worker".into(),
+        health_check: Some(edger_core::WorkerHealthCheck {
+            path: "/health".into(),
+            method: Some("head".into()),
+            mode: edger_core::WorkerHealthCheckMode::OnDeploy,
+            timeout: Some("750ms".into()),
+        }),
+        ..Default::default()
+    };
+    validate_worker_manifest(&manifest).unwrap();
+    let config = parse_worker_config(&manifest);
+    let check = config.health_check.expect("normalized health check");
+    assert_eq!(check.path, "/health");
+    assert_eq!(check.method, "HEAD");
+    assert_eq!(check.timeout_ms, 750);
+    assert_eq!(check.mode, edger_core::WorkerHealthCheckMode::OnDeploy);
+
+    for invalid in [
+        edger_core::WorkerHealthCheck {
+            path: "health".into(),
+            method: None,
+            mode: Default::default(),
+            timeout: None,
+        },
+        edger_core::WorkerHealthCheck {
+            path: "/health".into(),
+            method: Some("POST".into()),
+            mode: Default::default(),
+            timeout: None,
+        },
+        edger_core::WorkerHealthCheck {
+            path: "/health".into(),
+            method: None,
+            mode: Default::default(),
+            timeout: Some("30s".into()),
+        },
+    ] {
+        let invalid_manifest = WorkerManifest {
+            name: "invalid-health".into(),
+            health_check: Some(invalid),
+            ..Default::default()
+        };
+        assert!(validate_worker_manifest(&invalid_manifest).is_err());
+    }
+}
+
 const SAMPLE_YAML: &str = include_str!("fixtures/sample_manifest.yaml");
 
 #[test]

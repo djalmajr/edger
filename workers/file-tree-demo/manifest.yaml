@@ -1,0 +1,4 @@
+name: file-tree-demo
+version: "1.0.0"
+entrypoint: index.js
+kind: fetch

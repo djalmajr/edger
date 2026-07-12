@@ -1,10 +1,13 @@
-FROM rust:1-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 
 WORKDIR /src
 COPY . .
 RUN cargo build --release -p edger-orchestrator --bin edger
 
 FROM denoland/deno:debian
+
+LABEL org.opencontainers.image.source="https://github.com/djalmajr/edger" \
+      org.opencontainers.image.licenses="O'Saasy-1.0"
 
 USER root
 WORKDIR /app

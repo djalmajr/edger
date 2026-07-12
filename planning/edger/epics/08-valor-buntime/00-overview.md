@@ -4,7 +4,7 @@
 
 ## Traceability
 - **Source docs edger:** `planning/edger/runtime-functional-plan.md`, `planning/edger/docs/compat-matrix.md`, `planning/edger/docs/pendencies-epic-07.md`, `planning/edger/epics/07-avancado/00-overview.md`
-- **Source docs Buntime:** `/Users/djalmajr/Developer/djalmajr/buntime/apps/site/src/content/docs/concepts/runtime.md`, `/Users/djalmajr/Developer/djalmajr/buntime/apps/site/src/content/docs/concepts/worker-pool.md`, `/Users/djalmajr/Developer/djalmajr/buntime/apps/site/src/content/docs/concepts/plugin-system.mdx`, `/Users/djalmajr/Developer/djalmajr/buntime/apps/site/src/content/docs/concepts/storage.md`, `/Users/djalmajr/Developer/djalmajr/buntime/apps/site/src/content/docs/ops/security.md`
+- **Source docs Buntime:** `<buntime-repo>/apps/site/src/content/docs/concepts/runtime.md`, `<buntime-repo>/apps/site/src/content/docs/concepts/worker-pool.md`, `<buntime-repo>/apps/site/src/content/docs/concepts/plugin-system.mdx`, `<buntime-repo>/apps/site/src/content/docs/concepts/storage.md`, `<buntime-repo>/apps/site/src/content/docs/ops/security.md`
 - **Prototype refs:** none required for this epic; admin/shell UI prototypes become inputs only after the service contracts are stable.
 - **Business rules:** Buntime compatibility is treated as observable product value, not source-level parity. The hard rule remains: no Bun adapter fallback in edger.
 - **Depends on epics:** `planning/edger/epics/07-avancado/00-overview.md` for runtime execution foundation.

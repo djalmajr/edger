@@ -26,13 +26,13 @@ banco — tudo isso é anti-recomendação explícita.
 | 06 | SPA/fullstack: injeção de env (window.__env__) + rewrite de base href | P1 | ops | M | ✅ merged (PR #24) |
 | 07 | Wasm higiene: cache de Module + fuel/epoch + StoreLimits + streaming (>64KB) | P1 | isolamento | M | ✅ merged (PR #21) |
 | 08 | Admissão: rate-limit/cota por-worker (idle-timeout já coberto pelo wall-timeout) | P2 | segurança/ops | M | ✅ merged (PR #27) |
-| 09 | Observabilidade: evento por-execução ✅ (PR #28); OTLP exporter → follow-up | P2 | observabilidade | M | 🟡 parcial (evento merged; OTLP deferido) |
+| 09 | Observabilidade: evento por-execução ✅ (PR #28); OTLP exporter → Epic 21.08 | P2 | observabilidade | M | ✅ concluída via 21.08 |
 | 10 | Cron multi-réplica: leader-election (k8s Lease) | P2 | ops | M | ⏭️ deferido (follow-up) |
-| 11 | Sinais de lifecycle ao JS: beforeunload/drain + waitUntil mínimo opt-in | P3 | dx | M | ⏭️ deferido (follow-up) |
+| 11 | Sinais de lifecycle ao JS: beforeunload/drain + waitUntil mínimo opt-in | P3 | dx | M | ✅ concluída via 21.11 |
 
-**Status do epic:** 9.5/12 entregues e validados — todos P0 e P1, rate-limit e o
-evento por-execução. Cauda P2/P3 (OTLP exporter, leader-election, harness-signals)
-deferida por decisão explícita; ver `follow-ups/e20-deferred-tail.md`.
+**Status do epic:** 10/11 entregues e validados — todos P0 e P1, rate-limit,
+evento por execução, OTLP e sinais de lifecycle/drain. A única cauda deferida é
+leader election de cron multi-réplica; ver `follow-ups/e20-deferred-tail.md`.
 
 ## Roadmap / ordem de execução
 
@@ -41,26 +41,35 @@ Arquivos-quentes compartilhados: `edger-core/src/config.rs` + `manifest.rs`,
 `edger-worker/src/pool.rs`. Por isso o cluster multiproc/pool/limits/harness roda
 majoritariamente SEQUENCIAL; stories de arquivos disjuntos rodam em paralelo.
 
-- **Onda 1 (paralela, disjunta):** 02 (oidc.rs), 05 (cron.rs), 09-OTLP (tracing_init.rs), 06 (fullstack/static_spa), 07 (wasm/*).
+- **Onda 1 (paralela, disjunta):** 02 (oidc.rs), 05 (cron.rs), 06 (fullstack/static_spa), 07 (wasm/*). A cauda 09-OTLP foi consolidada na Story 21.08.
 - **Onda 2 (P0 sandbox):** 01 (multiproc + config) — sozinha por tocar config/multiproc.
 - **Onda 3 (cluster pool/limits, sequencial):** 03 → 04 → 08.
 - **Onda 4:** 10 (cron leader-election, depende de 05) → 11 (harness signals, depois de 08).
 
 Caminho crítico de segurança: 01, 02 primeiro (P0).
 
-## Critérios de aceite do epic
+## Epic acceptance criteria
 
-- [ ] Egress do worker é allowlist por-worker; `--allow-net` aberto só é opt-in
-- [ ] DENO_DIR não é gravável cross-tenant (read-only pós-warm ou por-worker)
-- [ ] Nenhum JWT válido vira root sem role admin explícito; namespaces escopados
-- [ ] CPU-time soft/hard aplicado (recycle/kill); RSS enforced pelo runtime
-- [ ] Modo oneshot disponível; crash-loop tem backoff/circuit-breaker
-- [ ] Parser de cron aceita `0 0 * * *` e shapes canônicos; leader-election evita duplicação
-- [ ] SPA serve env em runtime sem rebuild
-- [ ] Wasm não recompila por request; tem limite de CPU/memória; body >64KB
-- [ ] rate-limit por-worker; idle-timeout no harness
-- [ ] OTLP exporta traces quando configurado; evento por-execução com causa/custo
-- [ ] `fmt`/`clippy -D warnings`/`test --workspace` verdes; validação viva por feature
+- [x] Egress do worker é allowlist por-worker; `--allow-net` aberto só é opt-in
+- [x] DENO_DIR não é gravável cross-tenant (read-only pós-warm ou por-worker)
+- [x] Nenhum JWT válido vira root sem role admin explícito; namespaces escopados
+- [x] CPU-time soft/hard aplicado (recycle/kill); RSS enforced pelo runtime
+- [x] Modo oneshot disponível; crash-loop tem backoff/circuit-breaker
+- [ ] Parser de cron aceita shapes canônicos; leader election evita duplicação multi-réplica
+- [x] SPA serve env em runtime sem rebuild
+- [x] Wasm não recompila por request; tem limite de CPU/memória; body >64KB
+- [x] rate-limit por-worker; idle-timeout no harness
+- [x] OTLP exporta traces quando configurado (Story 21.08); evento por-execução com causa/custo entregue
+- [x] Sinais `beforeunload`/drain e `waitUntil` bounded são observáveis (Story 21.11)
+- [x] `fmt`/`clippy -D warnings`/`test --workspace` verdes; validação viva por feature
+
+## Status
+
+partially completed — 10 de 11 stories estão concluídas. O runtime está
+endurecido para operação em instância única e exportação OTLP opt-in. A Story
+20.10, leader election para cron em múltiplas réplicas, permanece deferida e não
+é requisito para o produto local; deve voltar ao backlog somente com cenário
+multi-réplica real e contrato de coordenação aprovado.
 
 ## Riscos
 

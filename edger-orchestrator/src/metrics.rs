@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use edger_worker::metrics::{WorkerGroupMetrics, WorkerProcessMetrics};
+use edger_worker::metrics::{WorkerGroupMetrics, WorkerHealthMetrics, WorkerProcessMetrics};
 use edger_worker::{PoolMetrics, WorkerState, WorkerStats};
 use serde::Serialize;
 
@@ -41,6 +41,7 @@ pub struct MetricsPoolStats {
 pub struct MetricsWorkerStats {
     pub active_processes: usize,
     pub app: String,
+    pub health: MetricsWorkerHealthStats,
     pub id: String,
     pub idle_processes: usize,
     pub max_processes: usize,
@@ -50,6 +51,9 @@ pub struct MetricsWorkerStats {
     pub queued: u64,
     pub recycle: MetricsWorkerRecycleStats,
     pub rejected_total: u64,
+    pub request_duration_ms_last: u64,
+    pub request_duration_ms_p95: u64,
+    pub request_total: u64,
     pub requests: u32,
     pub state: &'static str,
     pub terminating_processes: usize,
@@ -61,6 +65,21 @@ pub struct MetricsWorkerStats {
     pub wait_ms: u64,
     pub wait_ms_p50: u64,
     pub wait_ms_p95: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricsWorkerHealthStats {
+    pub consecutive_failures: u64,
+    pub failure_count: u64,
+    pub last_failure_at_ms: Option<u64>,
+    pub last_failure_code: Option<String>,
+    pub last_success_at_ms: Option<u64>,
+    pub observed_at_ms: Option<u64>,
+    pub sample_count: u64,
+    pub status: &'static str,
+    pub success_count: u64,
+    pub window_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -323,6 +342,7 @@ fn metrics_worker_stats_from_group(
     MetricsWorkerStats {
         active_processes: group.active_processes,
         app: format!("{}@{}", group.name, group.version),
+        health: metrics_health_stats(&group.health),
         id: matching_worker
             .map(|worker| worker.worker_id.to_string())
             .unwrap_or_default(),
@@ -339,6 +359,9 @@ fn metrics_worker_stats_from_group(
             ttl: group.recycle_ttl_total,
         },
         rejected_total: group.rejected_total,
+        request_duration_ms_last: group.request_duration_ms_last,
+        request_duration_ms_p95: group.request_duration_ms_p95,
+        request_total: group.request_total,
         requests,
         state: worker_group_state_label(group),
         terminating_processes: group.terminating_processes,
@@ -363,6 +386,7 @@ fn metrics_worker_stats_from_instance(worker: &WorkerStats) -> MetricsWorkerStat
     MetricsWorkerStats {
         active_processes: usize::from(worker.state == WorkerState::Active),
         app: worker.app.clone(),
+        health: metrics_health_stats(&WorkerHealthMetrics::default()),
         id: worker.worker_id.to_string(),
         idle_processes: usize::from(worker.state == WorkerState::Idle),
         max_processes: 1,
@@ -372,6 +396,9 @@ fn metrics_worker_stats_from_instance(worker: &WorkerStats) -> MetricsWorkerStat
         queued: 0,
         recycle: MetricsWorkerRecycleStats::default(),
         rejected_total: 0,
+        request_duration_ms_last: 0,
+        request_duration_ms_p95: 0,
+        request_total: worker.request_count as u64,
         requests: worker.request_count,
         state: worker_state_label(worker.state),
         terminating_processes: usize::from(worker.state == WorkerState::Terminating),
@@ -383,6 +410,21 @@ fn metrics_worker_stats_from_instance(worker: &WorkerStats) -> MetricsWorkerStat
         wait_ms: 0,
         wait_ms_p50: 0,
         wait_ms_p95: 0,
+    }
+}
+
+fn metrics_health_stats(health: &WorkerHealthMetrics) -> MetricsWorkerHealthStats {
+    MetricsWorkerHealthStats {
+        consecutive_failures: health.consecutive_failures,
+        failure_count: health.failure_count,
+        last_failure_at_ms: health.last_failure_at_ms,
+        last_failure_code: health.last_failure_code.clone(),
+        last_success_at_ms: health.last_success_at_ms,
+        observed_at_ms: health.observed_at_ms,
+        sample_count: health.sample_count,
+        status: health.status.label(),
+        success_count: health.success_count,
+        window_ms: health.window_ms,
     }
 }
 

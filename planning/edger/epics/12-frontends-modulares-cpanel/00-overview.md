@@ -56,7 +56,7 @@ Definir e entregar a primeira estrutura de frontends modulares do edger: cPanel/
 
 ## Status
 
-completed (2026-07-01) - cPanel/admin UI minimo foi entregue em `workers/cpanel`, empacotado como Static SPA worker e validado no Browser in-app com login root e criacao/revogacao de chave descartavel. Shell/catalogo v1 foi entregue em `workers/shell-demo` com `GET /api/admin/catalog`, derivado do `ManifestIndex` e de `MenuContribution` de extensoes. Cobertura: `edger-orchestrator/tests/shell_gateway.rs`, `admin_workers_plugins.rs` e `registry_providers.rs`; gate de planejamento verde em `planning/edger/status/evidence/run-gates.log`.
+completed (2026-07-01) - cPanel/admin UI minimo foi entregue em `workers/cpanel`, empacotado como Static SPA worker e validado no Browser in-app com login root e criacao/revogacao de chave descartavel. Shell/catalogo v1 foi entregue em `workers/shell-demo` com `GET /api/admin/catalog`, derivado do `ManifestIndex` e de `MenuContribution` de extensoes. Cobertura: `edger-orchestrator/tests/shell_gateway.rs`, `admin_workers_plugins.rs` e `registry_providers.rs`; gate de planejamento verde em `planning/edger/status/evidence/refinement-report.txt`.
 
 ### Refinamento cPanel (2026-07-02)
 

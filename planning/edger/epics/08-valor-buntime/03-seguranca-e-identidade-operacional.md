@@ -13,7 +13,7 @@ completed (2026-06-29) — segurança operacional v1 entregue: listagem de worke
 
 ## Traceability
 - **Source docs:** `planning/edger/epics/07-avancado/07-hardening-compat-matrix.md`, `planning/edger/docs/value-parity-matrix.md`
-- **Buntime refs:** `/Users/djalmajr/Developer/djalmajr/buntime/apps/site/src/content/docs/ops/security.md`
+- **Buntime refs:** `<buntime-repo>/apps/site/src/content/docs/ops/security.md`
 - **Prototype refs:** none.
 - **Business rules:** mutação operacional depende de auth; namespace limita acesso mesmo com chave válida.
 

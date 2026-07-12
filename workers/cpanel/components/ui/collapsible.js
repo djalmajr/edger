@@ -15,12 +15,12 @@ export function Collapsible({ open = false, className = "", children, ...props }
   `;
 }
 
-export function CollapsibleTrigger({ className = "", children, ...props }) {
+export function CollapsibleTrigger({ interactive = true, className = "", children, ...props }) {
   return html`
     <summary
       data-slot="collapsible-trigger"
       class=${cn(
-        "list-none cursor-pointer [&::-webkit-details-marker]:hidden",
+        `list-none ${interactive ? "cursor-pointer" : "cursor-default"} [&::-webkit-details-marker]:hidden`,
         className,
       )}
       ...${props}
@@ -34,7 +34,7 @@ export function CollapsibleContent({ className = "", children, ...props }) {
   return html`
     <div
       data-slot="collapsible-content"
-      class=${cn("overflow-hidden", className)}
+      class=${cn("overflow-visible", className)}
       ...${props}
     >
       ${children}

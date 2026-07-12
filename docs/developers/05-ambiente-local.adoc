@@ -3,7 +3,7 @@
 
 ==== Requisitos
 
-* Rust toolchain compatível com `rust-version = "1.80"`.
+* Rust toolchain compatível com `rust-version = "1.88"`.
 * `cargo`.
 * `deno` no `PATH` para workers JS/TS, ou `EDGER_DENO_BIN`.
 * `curl` para validação manual.

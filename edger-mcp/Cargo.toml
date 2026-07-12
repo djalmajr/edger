@@ -2,7 +2,13 @@
 name = "edger-mcp"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "MCP authoring and discovery tools for local EdgeR workers"
+publish = false
 
 [[bin]]
 name = "edger-mcp"

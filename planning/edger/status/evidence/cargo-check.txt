@@ -1,4 +1,4 @@
-    Checking edger-isolation v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-isolation)
-    Checking edger-orchestrator v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-orchestrator)
-    Checking edger-mcp v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-mcp)
+    Checking edger-isolation v0.1.0 (<repo>/edger-isolation)
+    Checking edger-orchestrator v0.1.0 (<repo>/edger-orchestrator)
+    Checking edger-mcp v0.1.0 (<repo>/edger-mcp)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.23s

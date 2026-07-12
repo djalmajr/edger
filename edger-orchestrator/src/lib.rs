@@ -7,6 +7,7 @@ pub mod deploy;
 pub mod manifest_index_stub;
 pub mod manifest_loader;
 pub mod metrics;
+pub mod observability;
 pub mod oidc;
 pub mod operational_log;
 pub mod pipeline;
@@ -23,7 +24,8 @@ pub use auth::{extract_api_key, ControlAuth, ControlAuthConfig};
 pub use cron::{collect_cron_registrations, CronMetrics, CronScheduler, CronSchedulerConfig};
 pub use deploy::{
     install_worker_from_zip, prewarm_min_process_workers, rescan_workers,
-    rescan_workers_and_prewarm, run_pending_releases, InstalledWorker, RescanReport,
+    rescan_workers_and_prewarm, rescan_workers_and_prewarm_with_events, run_pending_releases,
+    run_pending_releases_with_events, InstalledWorker, RescanReport,
 };
 pub use manifest_index_stub::{ManifestEntry, ManifestIndex};
 pub use manifest_loader::{load_manifests_from_dirs, parse_runtime_worker_dirs};

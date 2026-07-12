@@ -13,7 +13,7 @@ completed (2026-06-29) — matriz inicial expandida a partir das fontes Buntime 
 
 ## Traceability
 - **Source docs:** `planning/edger/docs/compat-matrix.md`, `planning/edger/runtime-functional-plan.md`, `planning/edger/docs/pendencies-epic-07.md`
-- **Buntime refs:** docs locais de runtime, worker-pool, plugins, storage e security em `/Users/djalmajr/Developer/djalmajr/buntime/apps/site/src/content/docs/`
+- **Buntime refs:** docs locais de runtime, worker-pool, plugins, storage e security em `<buntime-repo>/apps/site/src/content/docs/`
 - **Prototype refs:** none.
 - **Business rules:** valor é descrito por fluxo e contrato, não por estrutura interna do Buntime.
 

@@ -6,6 +6,30 @@ use crate::config::WorkerConfig;
 use crate::error::IsolationError;
 use crate::wire::{SerializedRequest, SerializedResponse, WorkerResponse};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminationOutcome {
+    Completed,
+    TimedOut,
+    NotRunning,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminationReport {
+    pub outcome: TerminationOutcome,
+    pub process_id: Option<String>,
+    pub drained_count: Option<u64>,
+}
+
+impl Default for TerminationReport {
+    fn default() -> Self {
+        Self {
+            outcome: TerminationOutcome::Completed,
+            process_id: None,
+            drained_count: None,
+        }
+    }
+}
+
 /// Core trait implemented by concrete isolate backends.
 #[async_trait]
 pub trait Isolate: Send + Sync {
@@ -67,5 +91,10 @@ pub trait Isolate: Send + Sync {
 
     async fn terminate(&mut self) -> Result<(), IsolationError> {
         Ok(())
+    }
+
+    async fn terminate_with_report(&mut self) -> Result<TerminationReport, IsolationError> {
+        self.terminate().await?;
+        Ok(TerminationReport::default())
     }
 }

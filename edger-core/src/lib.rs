@@ -17,18 +17,22 @@ pub mod worker_ref;
 
 pub use admin::{
     AdminCatalogItem, AdminCatalogResponse, AdminErrorResponse, AdminMutationResponse,
-    AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse,
+    AdminSessionResponse, AdminWorkerHealthCheckInfo, AdminWorkerInfo, AdminWorkersResponse,
 };
 pub use auth::{extract_api_key_from_pairs, HeaderPairs};
 pub use config::{
     effective_max_body_size_bytes, effective_max_body_size_bytes_usize, infer_execution_kind,
     parse_duration_string_to_ms, parse_duration_to_ms, parse_size_to_bytes, parse_worker_config,
-    FullstackBasePath, FullstackConfig, WorkerConfig, DEFAULT_MAX_BODY_BYTES,
+    FullstackBasePath, FullstackConfig, WorkerConfig, WorkerHealthCheckConfig,
+    DEFAULT_MAX_BODY_BYTES,
 };
 pub use error::{CoreError, IsolationError};
 pub use execution::{normalize_fullstack_adapter, ExecutionKind, SUPPORTED_FULLSTACK_ADAPTERS};
-pub use isolate::Isolate;
-pub use manifest::{CronJob, DenoCacheMode, WorkerIsolation, WorkerManifest};
+pub use isolate::{Isolate, TerminationOutcome, TerminationReport};
+pub use manifest::{
+    CronJob, DenoCacheMode, WorkerHealthCheck, WorkerHealthCheckMode, WorkerIsolation,
+    WorkerManifest,
+};
 pub use principal::{principal_can_access_namespace, root_principal, ApiKeyPrincipal};
 pub use security::{
     is_mutating_method, is_sensitive_env_key, principal_can_access_optional_namespace,

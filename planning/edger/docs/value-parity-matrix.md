@@ -72,9 +72,9 @@ valor de produto e operação. Uma linha só fecha quando as duas visões não s
 contradizem.
 
 ## Fontes usadas na classificação inicial
-- `/Users/djalmajr/Developer/djalmajr/buntime/apps/site/src/content/docs/concepts/runtime.md`
-- `/Users/djalmajr/Developer/djalmajr/buntime/apps/site/src/content/docs/concepts/worker-pool.md`
-- `/Users/djalmajr/Developer/djalmajr/buntime/apps/site/src/content/docs/concepts/plugin-system.mdx`
-- `/Users/djalmajr/Developer/djalmajr/buntime/apps/site/src/content/docs/concepts/storage.md`
-- `/Users/djalmajr/Developer/djalmajr/buntime/apps/site/src/content/docs/ops/security.md`
-- `/Users/djalmajr/Developer/djalmajr/buntime/apps/site/src/content/docs/ops/performance.md`
+- `<buntime-repo>/apps/site/src/content/docs/concepts/runtime.md`
+- `<buntime-repo>/apps/site/src/content/docs/concepts/worker-pool.md`
+- `<buntime-repo>/apps/site/src/content/docs/concepts/plugin-system.mdx`
+- `<buntime-repo>/apps/site/src/content/docs/concepts/storage.md`
+- `<buntime-repo>/apps/site/src/content/docs/ops/security.md`
+- `<buntime-repo>/apps/site/src/content/docs/ops/performance.md`

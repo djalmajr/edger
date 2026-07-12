@@ -18,6 +18,7 @@ use crate::admin_api;
 use crate::auth::ControlAuth;
 use crate::manifest_index_stub::ManifestIndex;
 use crate::metrics::{cron_metrics_prometheus, metrics_stats_response, pool_metrics_prometheus};
+use crate::observability::{OperationalEventInput, OperationalEventLevel, OperationalEventSource};
 use crate::operational_log::log_operational_error;
 use crate::router::{resolve_host_route, resolve_route, ReservedPath, ResolvedRoute};
 use crate::server::{
@@ -219,11 +220,24 @@ struct DispatchParams {
     base_path: Option<String>,
 }
 
+#[tracing::instrument(
+    name = "worker.dispatch",
+    skip_all,
+    fields(
+        request_id = %params.request_id,
+        worker.name = %params.worker.name,
+        worker.version = %params.worker.version,
+        worker.namespace = params.worker.namespace.as_deref().unwrap_or("")
+    )
+)]
 async fn dispatch_worker(
     state: &OrchestratorState,
     mut req: Request<Body>,
     params: DispatchParams,
 ) -> Result<Response<Body>, CoreError> {
+    let trace_id = trace_id_from_headers(req.headers());
+    #[cfg(feature = "otel")]
+    attach_remote_trace_parent(req.headers());
     let DispatchParams {
         request_id,
         worker,
@@ -269,12 +283,31 @@ async fn dispatch_worker(
     set_header(&mut serialized.headers, "x-request-id", &request_id);
     set_header(&mut serialized.headers, "x-base", &base_path);
 
-    let worker_response = match state
+    let retry_request = serialized.clone();
+    let retry_kind_hint = kind_hint.clone();
+    let request_method = serialized.method.clone();
+    let first_attempt = state
         .pool
         .fetch_worker_stream(&worker, serialized, kind_hint)
-        .await
-        .map_err(worker_error_to_core)
-    {
+        .await;
+    let worker_result = match first_attempt {
+        Err(err) if should_retry_worker_transport(&request_method, &err) => {
+            tracing::warn!(
+                request_id = %request_id,
+                worker_name = %worker.name,
+                worker_version = %worker.version,
+                error = %err,
+                "retrying idempotent worker request after transient transport failure"
+            );
+            state
+                .pool
+                .fetch_worker_stream(&worker, retry_request, retry_kind_hint)
+                .await
+        }
+        result => result,
+    };
+
+    let worker_response = match worker_result.map_err(worker_error_to_core) {
         Ok(response) => response,
         Err(err) => {
             let status = map_error_status(&err).as_u16();
@@ -285,6 +318,27 @@ async fn dispatch_worker(
                 &err.code,
                 &err.message,
             );
+            state
+                .server
+                .operational_events()
+                .record(OperationalEventInput {
+                    source: OperationalEventSource::Runtime,
+                    kind: "dispatch".into(),
+                    level: OperationalEventLevel::Error,
+                    namespace: worker.namespace.clone(),
+                    worker: Some(worker.name.clone()),
+                    version: Some(worker.version.clone()),
+                    process_id: None,
+                    request_id: Some(request_id.clone()),
+                    trace_id: trace_id.clone(),
+                    outcome: Some(err.code.clone()),
+                    status: Some(status),
+                    duration_ms: Some(started.elapsed().as_millis() as u64),
+                    code: Some(err.code.clone()),
+                    message: Some(err.message.clone()),
+                    truncated: None,
+                    dropped_count: None,
+                });
             crate::operational_log::log_dispatch_event(
                 &request_id,
                 &worker.name,
@@ -298,20 +352,109 @@ async fn dispatch_worker(
         }
     };
 
+    let response_status = match &worker_response {
+        edger_core::WorkerResponse::Buffered(response) => response.status,
+        edger_core::WorkerResponse::Streamed(response) => response.status,
+    };
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    state
+        .server
+        .operational_events()
+        .record(OperationalEventInput {
+            source: OperationalEventSource::Runtime,
+            kind: "dispatch".into(),
+            level: if response_status >= 500 {
+                OperationalEventLevel::Error
+            } else {
+                OperationalEventLevel::Info
+            },
+            namespace: worker.namespace.clone(),
+            worker: Some(worker.name.clone()),
+            version: Some(worker.version.clone()),
+            process_id: None,
+            request_id: Some(request_id.clone()),
+            trace_id,
+            outcome: Some(if response_status >= 500 {
+                "http_5xx".into()
+            } else {
+                "ok".into()
+            }),
+            status: Some(response_status),
+            duration_ms: Some(duration_ms),
+            code: None,
+            message: None,
+            truncated: None,
+            dropped_count: None,
+        });
+
     crate::operational_log::log_dispatch_event(
         &request_id,
         &worker.name,
         &worker.version,
         worker.namespace.as_deref().unwrap_or(""),
         "ok",
-        started.elapsed().as_millis() as u64,
-        200,
+        duration_ms,
+        response_status,
     );
 
     match worker_response {
         edger_core::WorkerResponse::Buffered(response) => serialized_to_axum(response),
         edger_core::WorkerResponse::Streamed(streamed) => crate::wire::streamed_to_axum(streamed),
     }
+}
+
+fn trace_id_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
+    let value = headers.get("traceparent")?.to_str().ok()?;
+    let mut parts = value.split('-');
+    let version = parts.next()?;
+    let trace_id = parts.next()?;
+    let parent_id = parts.next()?;
+    let flags = parts.next()?;
+    if parts.next().is_some()
+        || version.len() != 2
+        || trace_id.len() != 32
+        || parent_id.len() != 16
+        || flags.len() != 2
+        || trace_id.bytes().all(|byte| byte == b'0')
+        || !trace_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !parent_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !flags.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some(trace_id.to_ascii_lowercase())
+}
+
+#[cfg(feature = "otel")]
+fn attach_remote_trace_parent(headers: &axum::http::HeaderMap) {
+    use opentelemetry::global;
+    use opentelemetry::propagation::Extractor;
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+    struct HeaderExtractor<'a>(&'a axum::http::HeaderMap);
+    impl Extractor for HeaderExtractor<'_> {
+        fn get(&self, key: &str) -> Option<&str> {
+            self.0.get(key).and_then(|value| value.to_str().ok())
+        }
+        fn keys(&self) -> Vec<&str> {
+            self.0.keys().map(axum::http::HeaderName::as_str).collect()
+        }
+    }
+
+    let parent =
+        global::get_text_map_propagator(|propagator| propagator.extract(&HeaderExtractor(headers)));
+    let _ = tracing::Span::current().set_parent(parent);
+}
+
+fn should_retry_worker_transport(method: &str, err: &WorkerError) -> bool {
+    let is_idempotent = method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD");
+    is_idempotent
+        && matches!(
+            err,
+            WorkerError::Isolation(isolation)
+                if matches!(isolation.code.as_str(), "UDS_IO" | "UDS_POISONED")
+        )
 }
 
 fn handle_reserved(kind: ReservedPath) -> Result<Response<Body>, CoreError> {

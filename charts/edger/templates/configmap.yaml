@@ -9,6 +9,14 @@ data:
   RUNTIME_WORKER_DIRS: {{ .Values.runtime.workerDirs | quote }}
   EDGER_CRON_ENABLED: {{ .Values.cron.enabled | quote }}
   EDGER_JS_RUNTIME: {{ .Values.runtime.jsRuntime | quote }}
+  {{- if .Values.otel.enabled }}
+  EDGER_OTEL_ENABLED: "true"
+  EDGER_OTEL_REQUIRED: {{ .Values.otel.required | quote }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ required "otel.endpoint is required when otel.enabled=true" .Values.otel.endpoint | quote }}
+  OTEL_EXPORTER_OTLP_PROTOCOL: {{ .Values.otel.protocol | quote }}
+  OTEL_TRACES_SAMPLER: {{ .Values.otel.tracesSampler | quote }}
+  OTEL_TRACES_SAMPLER_ARG: {{ .Values.otel.tracesSamplerArg | quote }}
+  {{- end }}
   HOME: "/tmp"
   DENO_DIR: "/tmp/deno"
   {{- if .Values.oidc.enabled }}
