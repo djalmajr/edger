@@ -380,6 +380,7 @@ fn path_to_file_url(path: &Path) -> Result<String, IsolationError> {
 
 fn bridge_script(entry_url: &str, max_response_body_bytes: u64) -> String {
     let entry_json = serde_json::to_string(entry_url).expect("entry URL serializes");
+    let response_prefix = RESPONSE_PREFIX;
     format!(
         r#"
 const RESPONSE_PREFIX = {response_prefix:?};
@@ -778,10 +779,7 @@ const out = {{
   status: response.status,
 }};
 console.log(RESPONSE_PREFIX + JSON.stringify(out));
-"#,
-        response_prefix = RESPONSE_PREFIX,
-        entry_json = entry_json,
-        max_response_body_bytes = max_response_body_bytes,
+"#
     )
 }
 

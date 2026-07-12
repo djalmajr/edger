@@ -62,6 +62,13 @@ GitHub repository visibility, publishing an image, or creating a release.
 - Final rerun after security remediation: canonical Rust gate, MSRV check,
   optional OTLP test suite, cPanel UI gate, all planning gates, Helm lint and
   default/existing-secret/OTLP renders: PASS.
+- The first complete GitHub Actions run passed six of seven jobs, including the
+  previously blocked container image build. Rust tests passed, while Clippy on
+  the pinned 1.88 toolchain exposed three uninlined format arguments in the
+  security-remediation code plus two equivalent call sites in isolation code.
+  Those call sites were corrected and the exact pinned-toolchain gate
+  (`cargo +1.88.0 test --workspace`, Clippy with warnings denied, and rustfmt)
+  now passes locally before the remote rerun.
 
 ## External verification limitation
 

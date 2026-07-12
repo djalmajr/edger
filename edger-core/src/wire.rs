@@ -67,7 +67,7 @@ pub fn validate_headers(headers: &[(String, String)]) -> Result<(), crate::error
     if headers.len() > MAX_HEADERS {
         return Err(crate::error::CoreError::validation(
             "headers",
-            format!("exceeds max count {}", MAX_HEADERS),
+            format!("exceeds max count {MAX_HEADERS}"),
         ));
     }
     let mut total = 0usize;
@@ -76,14 +76,14 @@ pub fn validate_headers(headers: &[(String, String)]) -> Result<(), crate::error
         if value.len() > MAX_HEADER_VALUE_BYTES {
             return Err(crate::error::CoreError::validation(
                 "headers",
-                format!("header value exceeds {} bytes", MAX_HEADER_VALUE_BYTES),
+                format!("header value exceeds {MAX_HEADER_VALUE_BYTES} bytes"),
             ));
         }
     }
     if total > MAX_HEADER_BYTES {
         return Err(crate::error::CoreError::validation(
             "headers",
-            format!("total header bytes exceed {}", MAX_HEADER_BYTES),
+            format!("total header bytes exceed {MAX_HEADER_BYTES}"),
         ));
     }
     Ok(())
