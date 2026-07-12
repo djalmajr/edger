@@ -12,13 +12,23 @@
 //   </DropdownMenu>
 
 import { html } from "htm/preact";
+import { useEffect, useRef } from "preact/hooks";
 import { cn } from "./utils.js";
 
 export function DropdownMenu({ className = "", children, ...props }) {
+  const rootRef = useRef(null);
+  useEffect(() => {
+    const handlePointerDown = (event) => {
+      if (!rootRef.current?.contains(event.target)) rootRef.current?.removeAttribute("open");
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, []);
   // tabIndex + onBlur closes when focus is lost. setTimeout gives inner items
   // a chance to receive the click before close.
   return html`
     <details
+      ref=${rootRef}
       data-slot="dropdown-menu"
       class=${cn("relative inline-block", className)}
       onBlur=${(e) => {

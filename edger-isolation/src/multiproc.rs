@@ -6,15 +6,18 @@
 //! request). The Rust<->Deno wire is length-prefixed JSON (u32 LE + UTF-8) —
 //! postcard is reserved for a future Rust-worker boundary.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use edger_core::{
     DenoCacheMode, Isolate, IsolationError, SerializedRequest, SerializedResponse,
-    StreamedResponse, WorkerConfig, WorkerResponse,
+    StreamedResponse, TerminationOutcome, TerminationReport, WorkerConfig, WorkerResponse,
 };
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
@@ -30,6 +33,83 @@ use crate::deno_bundle::{
 use crate::deno_sandbox_policy::{deno_network_permission_args, read_allowlist, select_deno_dir};
 
 const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
+pub const CONSOLE_LINE_MAX_BYTES: usize = 4 * 1024;
+pub const CONSOLE_LINES_PER_SECOND: usize = 100;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsoleStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConsoleLogContext {
+    pub namespace: Option<String>,
+    pub worker: String,
+    pub version: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConsoleLogRecord {
+    pub at_ms: u128,
+    pub context: ConsoleLogContext,
+    pub process_id: String,
+    pub stream: ConsoleStream,
+    pub message: String,
+    pub truncated: bool,
+    pub dropped_before: u64,
+}
+
+pub type ConsoleLogSender = mpsc::Sender<ConsoleLogRecord>;
+
+static PROCESS_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn sanitize_console_line(bytes: &[u8]) -> (String, bool) {
+    let truncated = bytes.len() > CONSOLE_LINE_MAX_BYTES;
+    let bytes = &bytes[..bytes.len().min(CONSOLE_LINE_MAX_BYTES)];
+    let input = String::from_utf8_lossy(bytes);
+    let mut clean = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for sequence in chars.by_ref() {
+                if sequence.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            continue;
+        }
+        if !ch.is_control() || ch == '\t' {
+            clean.push(ch);
+        }
+    }
+    let lower = clean.to_ascii_lowercase();
+    if [
+        "authorization",
+        "cookie",
+        "password",
+        "secret",
+        "token",
+        "api_key",
+        "api-key",
+        "file://",
+        "/users/",
+        "/home/",
+        "/var/",
+        "/tmp/",
+        "\\users\\",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        return ("[redacted]".into(), truncated);
+    }
+    if truncated {
+        clean.push('…');
+    }
+    (clean, truncated)
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,6 +144,14 @@ struct WireShutdown {
 struct WireShutdownAck {
     #[serde(default)]
     drained: u64,
+    #[serde(default, rename = "timedOut")]
+    timed_out: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProcessDrainReport {
+    pub drained: u64,
+    pub timed_out: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -110,6 +198,9 @@ pub struct DenoWorkerProcess {
     // CPU/RSS limit sampler task (Linux only; no-op elsewhere). Self-terminates
     // when the process pid disappears, so no explicit abort is required.
     _limit_monitor: Option<tokio::task::JoinHandle<()>>,
+    _console_tasks: Vec<tokio::task::JoinHandle<()>>,
+    stderr_tail: Arc<Mutex<VecDeque<String>>>,
+    process_id: String,
 }
 
 impl DenoWorkerProcess {
@@ -131,6 +222,32 @@ impl DenoWorkerProcess {
             None,
             DenoCacheMode::default(),
             None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    pub async fn spawn_with_console(
+        worker_dir: &Path,
+        entrypoint: Option<&str>,
+        timeout: Duration,
+        env: &std::collections::HashMap<String, String>,
+        memory_mb: Option<u32>,
+        console_sender: ConsoleLogSender,
+        console_context: ConsoleLogContext,
+    ) -> Result<Self, IsolationError> {
+        Self::spawn_with_policy(
+            worker_dir,
+            entrypoint,
+            timeout,
+            env,
+            memory_mb,
+            None,
+            DenoCacheMode::default(),
+            None,
+            Some(console_sender),
+            Some(console_context),
         )
         .await
     }
@@ -145,6 +262,8 @@ impl DenoWorkerProcess {
         allow_net: Option<&[String]>,
         deno_cache_mode: DenoCacheMode,
         caps: Option<crate::limits::ResourceLimits>,
+        console_sender: Option<ConsoleLogSender>,
+        console_context: Option<ConsoleLogContext>,
     ) -> Result<Self, IsolationError> {
         let worker_dir = worker_dir.canonicalize().map_err(|err| {
             IsolationError::new("UDS_WORKER_DIR", format!("invalid worker_dir: {err}"))
@@ -236,13 +355,17 @@ impl DenoWorkerProcess {
         if let Some(config_path) = deno_config_path(&worker_dir) {
             command.arg("--config").arg(config_path);
         }
-        let child = command
+        let mut child = command
             .arg(&harness_path)
             .arg(&socket_path)
             .arg(&entry_url)
             .current_dir(&worker_dir)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(if console_sender.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
@@ -250,14 +373,47 @@ impl DenoWorkerProcess {
                 IsolationError::new("UDS_SPAWN", format!("spawn {executable}: {err}"))
             })?;
 
+        let process_id = format!(
+            "{}-{}",
+            child.id().unwrap_or_default(),
+            PROCESS_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(20)));
+        let mut console_tasks = Vec::new();
+        if let Some(stderr) = child.stderr.take() {
+            console_tasks.push(tokio::spawn(drain_console(
+                stderr,
+                ConsoleStream::Stderr,
+                console_sender.clone(),
+                console_context.clone(),
+                process_id.clone(),
+                Some(Arc::clone(&stderr_tail)),
+            )));
+        }
+        if let Some(stdout) = child.stdout.take() {
+            console_tasks.push(tokio::spawn(drain_console(
+                stdout,
+                ConsoleStream::Stdout,
+                console_sender,
+                console_context,
+                process_id.clone(),
+                None,
+            )));
+        }
+
         // Accept the harness connection and read the ready handshake.
         let stream = match tokio::time::timeout(timeout, listener.accept()).await {
             Ok(Ok((stream, _))) => stream,
             Ok(Err(err)) => {
-                return Err(spawn_error(child, format!("accept failed: {err}")).await);
+                return Err(spawn_error(child, format!("accept failed: {err}"), stderr_tail).await);
             }
             Err(_) => {
-                return Err(spawn_error(child, "worker did not connect in time".into()).await);
+                return Err(spawn_error(
+                    child,
+                    "worker did not connect in time".into(),
+                    stderr_tail,
+                )
+                .await);
             }
         };
 
@@ -271,6 +427,9 @@ impl DenoWorkerProcess {
             _bundle_dir: bundle_dir,
             _workdir: workdir,
             _limit_monitor: None,
+            _console_tasks: console_tasks,
+            stderr_tail,
+            process_id,
         };
 
         let ready_bytes = match tokio::time::timeout(
@@ -502,6 +661,16 @@ impl DenoWorkerProcess {
     /// skip straight to the kill. Returns the number of drained `waitUntil`
     /// promises the worker reported, when the ack arrives in time.
     pub async fn shutdown(&mut self, reason: &str, grace: Duration) -> Option<u64> {
+        self.shutdown_report(reason, grace)
+            .await
+            .map(|report| report.drained)
+    }
+
+    pub async fn shutdown_report(
+        &mut self,
+        reason: &str,
+        grace: Duration,
+    ) -> Option<ProcessDrainReport> {
         // Reclaim the read half the same way a request does — after a request it
         // rests in `restore_rx`, not in `self.read_half`. A poisoned/mid-stream
         // process can't be reclaimed: skip straight to the kill.
@@ -526,7 +695,10 @@ impl DenoWorkerProcess {
         match tokio::time::timeout(deadline, read_frame(&mut read_half)).await {
             Ok(Ok(frame)) => serde_json::from_slice::<WireShutdownAck>(&frame)
                 .ok()
-                .map(|ack| ack.drained),
+                .map(|ack| ProcessDrainReport {
+                    drained: ack.drained,
+                    timed_out: ack.timed_out,
+                }),
             _ => None,
         }
     }
@@ -534,24 +706,159 @@ impl DenoWorkerProcess {
     /// Kill the process, surfacing any stderr as an error message.
     async fn fail(mut self, context: String) -> IsolationError {
         let _ = self.child.start_kill();
-        let stderr = drain_stderr(&mut self.child).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let stderr = stderr_tail_text(&self.stderr_tail);
         IsolationError::new("UDS_WORKER_FAILED", format!("{context}: {stderr}"))
     }
 }
 
-async fn spawn_error(mut child: Child, context: String) -> IsolationError {
+async fn spawn_error(
+    mut child: Child,
+    context: String,
+    stderr_tail: Arc<Mutex<VecDeque<String>>>,
+) -> IsolationError {
     let _ = child.start_kill();
-    let stderr = drain_stderr(&mut child).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let stderr = stderr_tail_text(&stderr_tail);
     IsolationError::new("UDS_WORKER_FAILED", format!("{context}: {stderr}"))
 }
 
-async fn drain_stderr(child: &mut Child) -> String {
-    let Some(mut stderr) = child.stderr.take() else {
-        return String::new();
+fn stderr_tail_text(tail: &Arc<Mutex<VecDeque<String>>>) -> String {
+    tail.lock()
+        .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join(" | "))
+        .unwrap_or_default()
+}
+
+async fn drain_console<R>(
+    mut reader: R,
+    stream: ConsoleStream,
+    sender: Option<ConsoleLogSender>,
+    context: Option<ConsoleLogContext>,
+    process_id: String,
+    stderr_tail: Option<Arc<Mutex<VecDeque<String>>>>,
+) where
+    R: AsyncRead + Unpin,
+{
+    let mut chunk = [0u8; 4 * 1024];
+    let mut line = Vec::with_capacity(CONSOLE_LINE_MAX_BYTES);
+    let mut truncated = false;
+    let mut window_started = Instant::now();
+    let mut emitted = 0usize;
+    let mut dropped = 0u64;
+    loop {
+        let read = match reader.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        for byte in &chunk[..read] {
+            if *byte == b'\n' {
+                emit_console_line(
+                    &line,
+                    truncated,
+                    stream,
+                    sender.as_ref(),
+                    context.as_ref(),
+                    &process_id,
+                    stderr_tail.as_ref(),
+                    &mut window_started,
+                    &mut emitted,
+                    &mut dropped,
+                );
+                line.clear();
+                truncated = false;
+            } else if line.len() < CONSOLE_LINE_MAX_BYTES {
+                line.push(*byte);
+            } else {
+                truncated = true;
+            }
+        }
+    }
+    if !line.is_empty() {
+        emit_console_line(
+            &line,
+            truncated,
+            stream,
+            sender.as_ref(),
+            context.as_ref(),
+            &process_id,
+            stderr_tail.as_ref(),
+            &mut window_started,
+            &mut emitted,
+            &mut dropped,
+        );
+    }
+    if dropped > 0 {
+        if let (Some(sender), Some(context)) = (sender, context) {
+            let _ = sender.try_send(ConsoleLogRecord {
+                at_ms: now_ms(),
+                context,
+                process_id,
+                stream,
+                message: format!("[{dropped} console lines dropped]"),
+                truncated: false,
+                dropped_before: dropped,
+            });
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_console_line(
+    bytes: &[u8],
+    already_truncated: bool,
+    stream: ConsoleStream,
+    sender: Option<&ConsoleLogSender>,
+    context: Option<&ConsoleLogContext>,
+    process_id: &str,
+    stderr_tail: Option<&Arc<Mutex<VecDeque<String>>>>,
+    window_started: &mut Instant,
+    emitted: &mut usize,
+    dropped: &mut u64,
+) {
+    let (message, truncated_by_sanitizer) = sanitize_console_line(bytes);
+    let truncated = already_truncated || truncated_by_sanitizer;
+    if let Some(tail) = stderr_tail {
+        if let Ok(mut tail) = tail.lock() {
+            if tail.len() == 20 {
+                tail.pop_front();
+            }
+            tail.push_back(message.clone());
+        }
+    }
+    if window_started.elapsed() >= Duration::from_secs(1) {
+        *window_started = Instant::now();
+        *emitted = 0;
+    }
+    let (Some(sender), Some(context)) = (sender, context) else {
+        return;
     };
-    let mut buf = Vec::new();
-    let _ = tokio::time::timeout(Duration::from_millis(500), stderr.read_to_end(&mut buf)).await;
-    String::from_utf8_lossy(&buf).trim().to_string()
+    if *emitted >= CONSOLE_LINES_PER_SECOND {
+        *dropped = dropped.saturating_add(1);
+        return;
+    }
+    let record = ConsoleLogRecord {
+        at_ms: now_ms(),
+        context: context.clone(),
+        process_id: process_id.to_string(),
+        stream,
+        message,
+        truncated,
+        dropped_before: *dropped,
+    };
+    match sender.try_send(record) {
+        Ok(()) => {
+            *emitted += 1;
+            *dropped = 0;
+        }
+        Err(_) => *dropped = dropped.saturating_add(1),
+    }
+}
+
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
 }
 
 fn split_tag(frame: &[u8]) -> Result<(u8, &[u8]), IsolationError> {
@@ -695,11 +1002,21 @@ pub struct DenoProcessIsolate {
     process: Option<DenoWorkerProcess>,
     /// Grace budget for the beforeunload drain on graceful termination.
     shutdown_grace: Duration,
+    console_sender: Option<ConsoleLogSender>,
+    console_context: Option<ConsoleLogContext>,
 }
 
 impl DenoProcessIsolate {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_console(sender: ConsoleLogSender, context: ConsoleLogContext) -> Self {
+        Self {
+            console_sender: Some(sender),
+            console_context: Some(context),
+            ..Self::default()
+        }
     }
 
     async fn ensure_process(&mut self, config: &WorkerConfig) -> Result<(), IsolationError> {
@@ -719,6 +1036,8 @@ impl DenoProcessIsolate {
                 config.allow_net.as_deref(),
                 config.deno_cache_mode,
                 Some(limits.clone()),
+                self.console_sender.clone(),
+                self.console_context.clone(),
             )
             .await?;
             self.process = Some(process);
@@ -851,13 +1170,57 @@ impl Isolate for DenoProcessIsolate {
     }
 
     async fn terminate(&mut self) -> Result<(), IsolationError> {
+        self.terminate_with_report().await.map(|_| ())
+    }
+
+    async fn terminate_with_report(&mut self) -> Result<TerminationReport, IsolationError> {
         if let Some(process) = self.process.as_mut() {
             // Best-effort graceful drain (beforeunload + waitUntil) before the
             // process is dropped (killed). Bounded by the shutdown grace budget.
-            process.shutdown("terminate", self.shutdown_grace).await;
+            let process_id = process.process_id.clone();
+            let drain = process
+                .shutdown_report("terminate", self.shutdown_grace)
+                .await;
+            let outcome = match drain {
+                Some(report) if !report.timed_out => TerminationOutcome::Completed,
+                _ => TerminationOutcome::TimedOut,
+            };
+            self.process = None;
+            return Ok(TerminationReport {
+                outcome,
+                process_id: Some(process_id),
+                drained_count: drain.map(|report| report.drained),
+            });
         }
         // Dropping the process kills it (kill_on_drop).
         self.process = None;
-        Ok(())
+        Ok(TerminationReport {
+            outcome: TerminationOutcome::NotRunning,
+            process_id: None,
+            drained_count: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod console_tests {
+    use super::{sanitize_console_line, CONSOLE_LINE_MAX_BYTES};
+
+    #[test]
+    fn console_line_is_bounded_sanitized_and_redacted() {
+        let long = vec![b'x'; CONSOLE_LINE_MAX_BYTES + 128];
+        let (line, truncated) = sanitize_console_line(&long);
+        assert!(truncated);
+        assert!(line.len() <= CONSOLE_LINE_MAX_BYTES + 3);
+
+        let (line, truncated) = sanitize_console_line(b"\x1b[31mboom\x1b[0m\0\xff");
+        assert!(!truncated);
+        assert_eq!(line, "boom�");
+
+        let (line, _) = sanitize_console_line(b"authorization=Bearer secret-value");
+        assert_eq!(line, "[redacted]");
+
+        let (line, _) = sanitize_console_line(b"at file:///Users/operator/workers/app.ts:1");
+        assert_eq!(line, "[redacted]");
     }
 }

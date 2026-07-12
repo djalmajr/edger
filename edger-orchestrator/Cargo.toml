@@ -2,7 +2,23 @@
 name = "edger-orchestrator"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "EdgeR HTTP runtime, control plane, deploy and observability"
+publish = false
+
+[features]
+default = []
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry-appender-tracing",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry_sdk",
+    "dep:tracing-opentelemetry",
+]
 
 [[bin]]
 name = "edger"
@@ -22,6 +38,11 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+opentelemetry = { version = "0.32", features = ["trace"], optional = true }
+opentelemetry-appender-tracing = { version = "0.32", optional = true }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "logs", "grpc-tonic", "http-proto", "reqwest-client", "reqwest-rustls"], optional = true }
+opentelemetry_sdk = { version = "0.32", features = ["experimental_logs_batch_log_processor_with_async_runtime", "experimental_trace_batch_span_processor_with_async_runtime", "logs", "rt-tokio", "trace"], optional = true }
+tracing-opentelemetry = { version = "0.33", optional = true }
 tokio.workspace = true
 axum.workspace = true
 tower.workspace = true

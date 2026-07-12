@@ -330,6 +330,14 @@ async fn metrics_stats_returns_pool_and_worker_snapshot_without_secrets() {
     assert_eq!(worker["app"], "echo@1.0.0");
     assert_eq!(worker["name"], "echo");
     assert_eq!(worker["version"], "1.0.0");
+    assert!(worker["requestTotal"].is_number());
+    assert!(worker["requestDurationMsLast"].is_number());
+    assert!(worker["requestDurationMsP95"].is_number());
+    assert_eq!(worker["health"]["status"], "healthy");
+    assert_eq!(worker["health"]["windowMs"], 300_000);
+    assert_eq!(worker["health"]["sampleCount"], 2);
+    assert_eq!(worker["health"]["successCount"], 2);
+    assert_eq!(worker["health"]["failureCount"], 0);
     assert_eq!(worker["state"], "idle");
     assert_eq!(worker["requests"], 2);
     assert_eq!(worker["activeProcesses"], 0);

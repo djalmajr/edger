@@ -33,6 +33,12 @@ fn state_with_auth(auth: ControlAuth) -> OrchestratorState {
             WorkerManifest {
                 name: "hello".into(),
                 version: Some("1.0.0".into()),
+                health_check: Some(edger_core::WorkerHealthCheck {
+                    path: "/health".into(),
+                    method: Some("GET".into()),
+                    mode: edger_core::WorkerHealthCheckMode::Manual,
+                    timeout: Some("1s".into()),
+                }),
                 ..Default::default()
             },
         )
@@ -48,6 +54,44 @@ fn state_with_auth(auth: ControlAuth) -> OrchestratorState {
         index,
         auth,
     }
+}
+
+#[tokio::test]
+async fn manual_health_check_is_explicit_root_only_and_observable() {
+    let state = root_state();
+    let app = build_pipeline(state.clone());
+    let uri = "/api/admin/workers/hello/health-check?version=1.0.0";
+
+    let (status, json, _) = send(app.clone(), "POST", uri, None, Body::empty()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(json["code"], "UNAUTHORIZED");
+
+    let (status, json, text) = send(app, "POST", uri, Some(ROOT_KEY), Body::empty()).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(json["healthy"], true);
+    assert_eq!(json["trigger"], "manual");
+    assert_eq!(json["path"], "/health");
+
+    let events = state.server.operational_events().query(
+        edger_orchestrator::observability::OperationalEventQuery {
+            worker: Some("hello".into()),
+            version: Some("1.0.0".into()),
+            kind: Some("health_check".into()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(events.events.len(), 1);
+    assert_eq!(events.events[0].outcome.as_deref(), Some("healthy"));
+
+    let group = state
+        .pool
+        .get_metrics()
+        .worker_groups
+        .into_iter()
+        .find(|group| group.name == "hello" && group.version == "1.0.0")
+        .expect("health check should create a worker process");
+    assert_eq!(group.request_total, 0);
+    assert_eq!(group.health.sample_count, 0);
 }
 
 fn root_state() -> OrchestratorState {

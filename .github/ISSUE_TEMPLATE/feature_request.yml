@@ -1,0 +1,34 @@
+name: Feature request
+description: Propose a focused EdgeR capability or contract change
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What operator or worker problem should EdgeR solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Describe the observable result rather than only an implementation.
+    validations:
+      required: true
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: Likely boundary
+      options:
+        - Community runtime
+        - External integration or provider
+        - Documentation or tooling
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

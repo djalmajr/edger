@@ -6,7 +6,7 @@
 
 ## Context
 - **Roadmap objective:** Construir uma fundação sólida para o runtime "edger" em Rust, com orquestrador nativo no core (sem camada main-service separada em TS/Deno), seguindo a visão de produto do Buntime (workers como unidades de primeira classe, manifests, extensibilidade via crates para Open/Closed, suporte a JS/TS/Node compat, serverless/fullstack/SSR, Wasm, multi-tenancy, shell) e a estrutura/engenharia do Edge Runtime (separação em crates, isolates/supervisores, limites de recursos) + melhores práticas de ai-memory (core como vocabulário puro, testes de integração fortes, disciplina de gate local, documentação canônica, padrões como single-writer actor).
-- **Project/product:** edger (novo projeto em /Users/djalmajr/Developer/djalmajr/edger)
+- **Project/product:** edger (novo projeto em <repo>)
 - **Horizon:** Fundação (6-9 meses estimado para base executável + migração básica), com fases sequenciadas. Não é quarterly fixo, mas trajetória para ter um runtime funcional.
 - **Constraints and assumptions:**
   - Projeto novo e independente (não fork direto).
@@ -48,6 +48,7 @@
 | Fase 13: MCP e Authoring AI-native Local | [`epics/13-mcp-authoring-ai-native/`](epics/13-mcp-authoring-ai-native/00-overview.md) | 5 | **completed** | Fase 8, Fase 10, Fase 12 |
 | Fase 14: Deploy de Apps (mini Vercel local) | [`epics/14-deploy-apps/`](epics/14-deploy-apps/00-overview.md) | 5 | **completed** (install + rescan + DnD + versões/rollback + transparência; validado no preview 2026-07-02) | Fase 8.02, Fase 10.02, Fase 12 |
 | Fase 15: Runtime JS Durável (multi-processo) | [`epics/15-runtime-js-duravel/`](epics/15-runtime-js-duravel/00-overview.md) | 5 | in-progress (design aprovado após medição de perf; reorienta 07.04 para UDS multi-processo; Fase A autorizada) | Fase 7.04, Fase 4, Fase 14 |
+| Fase 21: Observabilidade de Workers e OTEL | [`epics/21-observabilidade-workers-cpanel/`](epics/21-observabilidade-workers-cpanel/00-overview.md) | 12 | **completed** (observabilidade local-first, logs/live tail, health passivo, release/drain, probe opt-in e OTLP opt-in) | Fase 12, Fase 15, Epic 18, Story 20.09 |
 
 ## Suggested sequence
 1. Fase 1 (Fundação) -- Alinha o skeleton real e estabelece cultura (AGENTS, testes, gate). Alta prioridade porque desbloqueia tudo e evita dívida técnica.
@@ -64,6 +65,7 @@
 12. Fase 12 (Frontends Modulares e cPanel) -- Assume cPanel/admin UI, shell, catálogo de módulos, packaging de frontends e E2E local.
 13. Fase 13 (MCP e Authoring AI-native Local) -- Assume MCP/tools, contratos machine-readable e fluxo funcional local para agentes criarem/modificarem workers e prepararem commits/PRs.
 14. Fase 14 (Deploy de Apps) -- Materializa a promessa de produto "mini Vercel/Cloudflare local": install API (upload zip), rescan de workers em runtime, deploy drag-and-drop no cPanel, versões/rollback e transparência pós-deploy.
+15. Fase 21 (Observabilidade) -- Converte sinais atuais em diagnóstico local navegável, captura console com limites e adiciona exportação OTLP opt-in sem tornar Collector uma dependência do runtime.
 
 Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador podem avançar com mocks. Extensões podem começar protótipos cedo.
 

@@ -13,7 +13,7 @@ completed (2026-06-29) — contratos puros de binding/SQL/KV/queue, provider loc
 
 ## Traceability
 - **Source docs:** `planning/edger/docs/extensions.md`, `planning/edger/docs/value-parity-matrix.md`
-- **Buntime refs:** storage docs e manifests de `plugin-turso`, `plugin-keyval`, `plugin-gateway` em `/Users/djalmajr/Developer/djalmajr/buntime/plugins/`
+- **Buntime refs:** storage docs e manifests de `plugin-turso`, `plugin-keyval`, `plugin-gateway` em `<buntime-repo>/plugins/`
 - **Prototype refs:** none.
 - **Business rules:** estado precisa de isolamento por namespace e worker.
 

@@ -1,6 +1,7 @@
 //! End-to-end pipeline tests (story 05.03 / 06.02).
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -41,6 +42,78 @@ impl IsolateFactory for SlowFactory {
 
 struct SlowIsolate {
     delay_ms: u64,
+}
+
+#[derive(Clone, Default)]
+struct FlakyTransportFactory {
+    attempts: Arc<AtomicUsize>,
+}
+
+impl FlakyTransportFactory {
+    fn attempts(&self) -> usize {
+        self.attempts.load(Ordering::SeqCst)
+    }
+}
+
+struct FlakyTransportIsolate {
+    attempts: Arc<AtomicUsize>,
+}
+
+impl IsolateFactory for FlakyTransportFactory {
+    fn create_isolate(&self, _worker_ref: &WorkerRef) -> Box<dyn Isolate> {
+        Box::new(FlakyTransportIsolate {
+            attempts: self.attempts.clone(),
+        })
+    }
+}
+
+#[async_trait]
+impl Isolate for FlakyTransportIsolate {
+    async fn execute_fetch(
+        &mut self,
+        req: SerializedRequest,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+        if attempt == 0 {
+            return Err(IsolationError::new("UDS_IO", "read failed: early eof"));
+        }
+
+        Ok(SerializedResponse {
+            status: 200,
+            headers: vec![],
+            body: Some(Bytes::from(format!("recovered:{}", req.uri))),
+        })
+    }
+
+    async fn execute_routes(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+
+    async fn serve_static_spa(
+        &mut self,
+        path: &str,
+        _base_href: Option<&str>,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        Ok(SerializedResponse {
+            status: 200,
+            headers: vec![],
+            body: Some(Bytes::from(format!("recovered:{path}"))),
+        })
+    }
+
+    async fn execute_wasm(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(req, config).await
+    }
 }
 
 #[async_trait]
@@ -241,6 +314,65 @@ fn request(path: &str) -> Request<Body> {
         .header("authorization", "Bearer test-root")
         .body(Body::empty())
         .unwrap()
+}
+
+#[tokio::test]
+async fn pipeline_retries_idempotent_request_after_transient_uds_disconnect() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/workers/flaky"),
+            WorkerManifest {
+                name: "flaky".into(),
+                version: Some("1.0.0".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let factory = FlakyTransportFactory::default();
+    let app = build_pipeline(orchestrator_with_index_and_factory(
+        index,
+        Arc::new(factory.clone()),
+    ));
+
+    let res = app.oneshot(request("/flaky")).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(body, Bytes::from_static(b"recovered:/"));
+    assert_eq!(factory.attempts(), 2);
+}
+
+#[tokio::test]
+async fn pipeline_does_not_retry_non_idempotent_request_after_uds_disconnect() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/workers/flaky-post"),
+            WorkerManifest {
+                name: "flaky-post".into(),
+                version: Some("1.0.0".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let factory = FlakyTransportFactory::default();
+    let app = build_pipeline(orchestrator_with_index_and_factory(
+        index,
+        Arc::new(factory.clone()),
+    ));
+    let req = Request::builder()
+        .method("POST")
+        .uri("/flaky-post")
+        .body(Body::from("side-effect"))
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(factory.attempts(), 1);
 }
 
 #[tokio::test]

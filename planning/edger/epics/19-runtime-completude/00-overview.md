@@ -47,7 +47,7 @@ OTLP export; Cloudflare Tunnel/CD.
 
 Caminho crítico: 02 → 05.
 
-## Critérios de aceite do epic
+## Epic acceptance criteria
 
 - [x] Nenhum stub `501` para `kind: fullstack` (ou variante removida com decisão registrada)
 - [x] `UdsTransport` removido; workspace compila sem re-exports órfãos
@@ -57,6 +57,12 @@ Caminho crítico: 02 → 05.
 - [x] `kind: fullstack, adapter: tanstack|hono|sveltekit` serve app sem wrapper manual
 - [x] `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace` verdes
 - [x] Validação viva fora do sandbox por feature (coordenador)
+
+## Status
+
+completed — as cinco stories foram entregues e validadas. O runtime não mantém
+stubs `501` ou transportes vestigiais para as capacidades cobertas por este
+epic; adapters adicionais de framework permanecem fora do escopo declarado.
 
 ## Riscos
 

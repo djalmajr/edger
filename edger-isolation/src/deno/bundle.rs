@@ -100,6 +100,35 @@ impl ModuleBundler for DenoCliBundler {
         let mut spawn_errors = Vec::new();
 
         for executable in &candidates {
+            match validate_bundle_graph(executable, &worker_dir, &entrypoint) {
+                Ok(()) => {}
+                Err(BundleCommandError::Spawn(err))
+                    if err.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    spawn_errors.push(format!("{executable}: {err}"));
+                    continue;
+                }
+                Err(BundleCommandError::Spawn(err)) => {
+                    return Err(IsolationError::new(
+                        "DENO_BUNDLE_GRAPH_FAILED",
+                        format!("failed to inspect bundle graph with {executable}: {err}"),
+                    ));
+                }
+                Err(BundleCommandError::Status {
+                    code,
+                    stderr,
+                    stdout,
+                }) => {
+                    return Err(IsolationError::new(
+                        "DENO_BUNDLE_GRAPH_DENIED",
+                        format!(
+                            "bundle dependency graph rejected with status {code:?}; stderr={}; stdout={}",
+                            stderr.trim(),
+                            stdout.trim()
+                        ),
+                    ));
+                }
+            }
             match run_bundle_command(executable, &worker_dir, &entrypoint, &output_path) {
                 Ok(()) => {
                     return bundle_from_output(&output_path);
@@ -166,6 +195,71 @@ impl ModuleBundler for DenoCliBundler {
     fn load_precompiled(&self, path: &str) -> Result<ModuleBundle, IsolationError> {
         load_existing_artifact(path, BundleFormat::Precompiled)
     }
+}
+
+fn validate_bundle_graph(
+    executable: &str,
+    worker_dir: &Path,
+    entrypoint: &Path,
+) -> Result<(), BundleCommandError> {
+    let mut command = Command::new(executable);
+    command
+        .arg("info")
+        .arg("--json")
+        .current_dir(worker_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(config_path) = deno_config_path(worker_dir) {
+        command.arg("--config").arg(config_path);
+    }
+    command.arg(entrypoint);
+
+    let output = command.output().map_err(BundleCommandError::Spawn)?;
+    if !output.status.success() {
+        return Err(BundleCommandError::Status {
+            code: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        });
+    }
+    validate_dependency_graph_json(worker_dir, &output.stdout).map_err(|message| {
+        BundleCommandError::Status {
+            code: output.status.code(),
+            stderr: message,
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        }
+    })
+}
+
+fn validate_dependency_graph_json(worker_dir: &Path, raw: &[u8]) -> Result<(), String> {
+    let graph: serde_json::Value = serde_json::from_slice(raw)
+        .map_err(|err| format!("Deno dependency graph JSON is invalid: {err}"))?;
+    let modules = graph
+        .get("modules")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Deno dependency graph has no modules array".to_string())?;
+    for module in modules {
+        let Some(specifier) = module.get("specifier").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if !specifier.starts_with("file:") {
+            continue;
+        }
+        let local = module
+            .get("local")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("local module has no filesystem path: {specifier}"))?;
+        let local = Path::new(local)
+            .canonicalize()
+            .map_err(|err| format!("invalid local module {local}: {err}"))?;
+        if !local.starts_with(worker_dir) {
+            return Err(format!(
+                "local module escapes worker_dir: {}",
+                local.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn entry_needs_bundle(worker_dir: &Path, entrypoint: &Path) -> Result<bool, IsolationError> {
@@ -648,4 +742,51 @@ fn binary_exists_on_path(binary: &str) -> bool {
         return false;
     };
     env::split_paths(&path_var).any(|dir| dir.join(binary).is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dependency_graph_rejects_sibling_worker_file() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = root.path().join("alpha");
+        let sibling = root.path().join("beta");
+        std::fs::create_dir_all(&worker).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let entry = worker.join("index.ts");
+        let secret = sibling.join("secret.ts");
+        std::fs::write(&entry, "export default () => null;").unwrap();
+        std::fs::write(&secret, "export const secret = 1;").unwrap();
+        let worker = worker.canonicalize().unwrap();
+        let graph = serde_json::json!({
+            "modules": [
+                {"specifier": format!("file://{}", entry.display()), "local": entry},
+                {"specifier": format!("file://{}", secret.display()), "local": secret}
+            ]
+        });
+
+        let error =
+            validate_dependency_graph_json(&worker, graph.to_string().as_bytes()).unwrap_err();
+        assert!(error.contains("escapes worker_dir"));
+    }
+
+    #[test]
+    fn dependency_graph_allows_worker_files_and_remote_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = root.path().join("alpha");
+        std::fs::create_dir_all(&worker).unwrap();
+        let entry = worker.join("index.ts");
+        std::fs::write(&entry, "export default () => null;").unwrap();
+        let worker = worker.canonicalize().unwrap();
+        let graph = serde_json::json!({
+            "modules": [
+                {"specifier": format!("file://{}", entry.display()), "local": entry},
+                {"specifier": "https://example.test/mod.ts", "local": "/tmp/deno-cache/mod.ts"}
+            ]
+        });
+
+        validate_dependency_graph_json(&worker, graph.to_string().as_bytes()).unwrap();
+    }
 }

@@ -17,27 +17,40 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use edger_core::ExecutionKind;
-use edger_isolation::{DenoFacade, DenoIsolate, DenoProcessIsolate, WasiConfig, WasmIsolate};
+use edger_isolation::{
+    ConsoleLogContext, ConsoleLogSender, ConsoleStream, DenoFacade, DenoIsolate,
+    DenoProcessIsolate, WasiConfig, WasmIsolate,
+};
+use edger_orchestrator::observability::{
+    OperationalEventInput, OperationalEventLevel, OperationalEventSource, OperationalStore,
+};
 use edger_orchestrator::{
     build_pipeline, collect_cron_registrations, init_tracing_from_env, load_manifests_from_dirs,
-    parse_runtime_worker_dirs, port_from_env, prewarm_min_process_workers, run_pending_releases,
-    serve, ControlAuth, CronScheduler, CronSchedulerConfig, OrchestratorState, ServerConfig,
-    ServerState,
+    parse_runtime_worker_dirs, port_from_env, prewarm_min_process_workers,
+    run_pending_releases_with_events, serve, ControlAuth, CronScheduler, CronSchedulerConfig,
+    OrchestratorState, ServerConfig, ServerState,
 };
-use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
+use edger_worker::{
+    IsolateFactory, LifecycleEventSender, PoolConfig, WorkerLifecycleEvent,
+    WorkerLifecycleEventKind, WorkerPool,
+};
 
 /// Selects the JS/TS backend. Default is the durable persistent-process runtime
 /// (Epic 15); `EDGER_JS_RUNTIME=bridge` forces the legacy per-request CLI bridge.
 struct RuntimeIsolateFactory {
+    console_sender: Option<ConsoleLogSender>,
     js_uses_process: bool,
 }
 
 impl RuntimeIsolateFactory {
-    fn from_env() -> Self {
+    fn from_env(console_sender: Option<ConsoleLogSender>) -> Self {
         let js_uses_process = std::env::var("EDGER_JS_RUNTIME")
             .map(|value| !value.trim().eq_ignore_ascii_case("bridge"))
             .unwrap_or(true);
-        Self { js_uses_process }
+        Self {
+            console_sender,
+            js_uses_process,
+        }
     }
 }
 
@@ -47,7 +60,17 @@ impl IsolateFactory for RuntimeIsolateFactory {
             ExecutionKind::WasmModule { .. } => Box::new(WasmIsolate::new(
                 WasiConfig::from_worker_config(&worker_ref.config),
             )),
-            _ if self.js_uses_process => Box::new(DenoProcessIsolate::new()),
+            _ if self.js_uses_process => match self.console_sender.as_ref() {
+                Some(sender) => Box::new(DenoProcessIsolate::with_console(
+                    sender.clone(),
+                    ConsoleLogContext {
+                        namespace: worker_ref.namespace.clone(),
+                        worker: worker_ref.name.clone(),
+                        version: worker_ref.version.clone(),
+                    },
+                )),
+                None => Box::new(DenoProcessIsolate::new()),
+            },
             _ => Box::new(DenoIsolate::new(DenoFacade::new())),
         }
     }
@@ -56,22 +79,25 @@ impl IsolateFactory for RuntimeIsolateFactory {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _tracing = init_tracing_from_env()?;
+    let auth = ControlAuth::from_env()?;
 
     let port = port_from_env();
     let config = ServerConfig::from_port(port);
     let server = ServerState::new_unready();
-    let pool = WorkerPool::with_factory(
+    let console_sender = start_console_capture(&server);
+    let lifecycle_sender = start_lifecycle_capture(&server);
+    let pool = WorkerPool::with_factory_and_lifecycle(
         PoolConfig::default(),
-        Arc::new(RuntimeIsolateFactory::from_env()),
+        Arc::new(RuntimeIsolateFactory::from_env(console_sender)),
+        Some(lifecycle_sender),
     );
     server.mark_ready(pool.clone());
     let worker_dirs = worker_dirs_from_env();
     let index = load_manifests_from_dirs(&worker_dirs)?;
     // Run each worker's release command (migrations) once per version before serving.
-    run_pending_releases(&index).await?;
+    run_pending_releases_with_events(&index, &server.operational_events()).await?;
     prewarm_min_process_workers(&index, &pool).await?;
 
-    let auth = ControlAuth::from_env();
     if auth.is_open() {
         tracing::warn!(
             "control-plane auth is open because neither ROOT_API_KEY nor EDGER_ROOT_KEY_FILE is configured"
@@ -106,6 +132,100 @@ async fn main() -> anyhow::Result<()> {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(15), drain).await;
     }
     serve_result
+}
+
+fn start_console_capture(server: &ServerState) -> Option<ConsoleLogSender> {
+    if !env_flag_default_true("EDGER_CONSOLE_LOGS_ENABLED") {
+        return None;
+    }
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(1_024);
+    let events = server.operational_events();
+    tokio::spawn(async move {
+        while let Some(record) = receiver.recv().await {
+            record_console_event(&events, record);
+        }
+    });
+    Some(sender)
+}
+
+fn start_lifecycle_capture(server: &ServerState) -> LifecycleEventSender {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(256);
+    let events = server.operational_events();
+    tokio::spawn(async move {
+        while let Some(record) = receiver.recv().await {
+            record_lifecycle_event(&events, record);
+        }
+    });
+    sender
+}
+
+fn record_lifecycle_event(events: &OperationalStore, record: WorkerLifecycleEvent) {
+    let (kind, level, outcome) = match record.kind {
+        WorkerLifecycleEventKind::DrainStarted => (
+            "process.drain.started",
+            OperationalEventLevel::Info,
+            "started",
+        ),
+        WorkerLifecycleEventKind::DrainCompleted => (
+            "process.drain.completed",
+            OperationalEventLevel::Info,
+            "completed",
+        ),
+        WorkerLifecycleEventKind::DrainTimedOut => (
+            "process.drain.timed_out",
+            OperationalEventLevel::Warn,
+            "timed_out",
+        ),
+        WorkerLifecycleEventKind::Terminated => (
+            "process.terminated",
+            OperationalEventLevel::Info,
+            record.reason,
+        ),
+    };
+    events.record(OperationalEventInput {
+        source: OperationalEventSource::Drain,
+        kind: kind.into(),
+        level,
+        namespace: record.worker_ref.namespace,
+        worker: Some(record.worker_ref.name),
+        version: Some(record.worker_ref.version),
+        process_id: record.process_id,
+        request_id: None,
+        trace_id: None,
+        outcome: Some(outcome.into()),
+        status: None,
+        duration_ms: record.duration_ms,
+        code: None,
+        message: record
+            .drained_count
+            .map(|count| format!("drained waitUntil promises: {count}")),
+        truncated: None,
+        dropped_count: None,
+    });
+}
+
+fn record_console_event(events: &OperationalStore, record: edger_isolation::ConsoleLogRecord) {
+    events.record(OperationalEventInput {
+        source: OperationalEventSource::Console,
+        kind: "console".into(),
+        level: match record.stream {
+            ConsoleStream::Stdout => OperationalEventLevel::Info,
+            ConsoleStream::Stderr => OperationalEventLevel::Error,
+        },
+        namespace: record.context.namespace,
+        worker: Some(record.context.worker),
+        version: Some(record.context.version),
+        process_id: Some(record.process_id),
+        request_id: None,
+        trace_id: None,
+        outcome: None,
+        status: None,
+        duration_ms: None,
+        code: None,
+        message: Some(record.message),
+        truncated: record.truncated.then_some(true),
+        dropped_count: (record.dropped_before > 0).then_some(record.dropped_before),
+    });
 }
 
 #[cfg(unix)]

@@ -1,7 +1,7 @@
 //! Normalized worker configuration and parsers.
 
 use crate::execution::{normalize_fullstack_adapter, ExecutionKind};
-use crate::manifest::{DenoCacheMode, WorkerIsolation, WorkerManifest};
+use crate::manifest::{DenoCacheMode, WorkerHealthCheckMode, WorkerIsolation, WorkerManifest};
 
 /// Runtime-normalized worker configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,6 +12,7 @@ pub struct WorkerConfig {
     pub entrypoint: Option<String>,
     /// Release command (migrations etc.) run once per version before serving.
     pub release_command: Option<String>,
+    pub health_check: Option<WorkerHealthCheckConfig>,
     pub env: std::collections::HashMap<String, String>,
     pub env_prefix: Vec<String>,
     pub public_env: Vec<String>,
@@ -52,6 +53,14 @@ pub struct WorkerConfig {
     pub cron: Vec<crate::manifest::CronJob>,
     pub kind: Option<ExecutionKind>,
     pub fullstack: Option<FullstackConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerHealthCheckConfig {
+    pub path: String,
+    pub method: String,
+    pub mode: WorkerHealthCheckMode,
+    pub timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -374,6 +383,23 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         worker_dir: None,
         entrypoint,
         release_command: manifest.release.clone(),
+        health_check: manifest
+            .health_check
+            .as_ref()
+            .map(|check| WorkerHealthCheckConfig {
+                path: check.path.clone(),
+                method: check
+                    .method
+                    .clone()
+                    .unwrap_or_else(|| "GET".into())
+                    .to_ascii_uppercase(),
+                mode: check.mode,
+                timeout_ms: check
+                    .timeout
+                    .as_deref()
+                    .and_then(parse_duration_string_to_ms)
+                    .unwrap_or(2_000),
+            }),
         env: manifest.env.clone().unwrap_or_default(),
         env_prefix: manifest.env_prefix.clone(),
         public_env: manifest.public_env.clone(),

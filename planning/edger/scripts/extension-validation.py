@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Run the local extension/module validation contract.
+"""Validate the current minimal-runtime extension boundary.
 
-This gate is intentionally local-only: it validates extension inventory,
-manifest, status, diagnostics and redaction through a targeted Rust integration
-test without external network, deploy or marketplace access.
+Epic 17 removed the in-process extension registry and gateway module from the
+supported runtime. This local-only gate prevents those obsolete control-plane
+surfaces from returning and verifies that the published compatibility matrix
+keeps the removals explicit.
 """
 
 from __future__ import annotations
@@ -14,26 +15,28 @@ import subprocess
 import sys
 
 
-TEST_NAME = (
-    "local_extension_validation_contract_reports_manifest_status_diagnostics_and_redaction"
-)
+TEST_NAME = "known_removed_rows_remain_explicit"
 TEST_COMMAND = [
     "cargo",
     "test",
     "-p",
     "edger-orchestrator",
     "--test",
-    "admin_workers_plugins",
+    "compat_matrix",
     TEST_NAME,
     "--",
     "--exact",
 ]
 REQUIRED_CONTRACT_FILES = [
-    "edger-core/src/admin.rs",
+    "edger-orchestrator/tests/compat_matrix.rs",
+    "planning/edger/epics/17-edger-minimalista/00-overview.md",
+    "planning/edger/docs/compat-matrix.md",
+    "planning/edger/docs/value-parity-matrix.md",
+]
+
+REMOVED_RUNTIME_FILES = [
     "edger-orchestrator/src/registry.rs",
     "edger-orchestrator/tests/admin_workers_plugins.rs",
-    "docs/developers/06-operacao-e-testes.adoc",
-    "planning/edger/docs/value-parity-matrix.md",
 ]
 
 
@@ -43,7 +46,7 @@ def main() -> int:
     parser.add_argument(
         "--module",
         default="gateway",
-        help="extension module to validate; v1 supports gateway",
+        help="legacy module name retained for CLI compatibility",
     )
     args = parser.parse_args()
 
@@ -61,7 +64,14 @@ def main() -> int:
             print(f"FAIL missing contract file: {path}")
         return 1
 
-    print("extension-validation required contract files: ok")
+    returned = [path for path in REMOVED_RUNTIME_FILES if (repo / path).exists()]
+    if returned:
+        for path in returned:
+            print(f"FAIL removed runtime surface returned: {path}")
+        return 1
+
+    print("extension-validation current boundary files: ok")
+    print("extension-validation removed runtime surfaces: absent")
     print("extension-validation command: " + " ".join(TEST_COMMAND))
     result = subprocess.run(
         TEST_COMMAND,
@@ -77,7 +87,7 @@ def main() -> int:
         return result.returncode
 
     print(
-        "PASS extension validation: manifest/status/diagnostics/redaction are locally validated"
+        "PASS extension validation: minimal-runtime removals remain explicit and tested"
     )
     return 0
 

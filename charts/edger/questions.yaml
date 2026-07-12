@@ -48,6 +48,77 @@ questions:
     default: true
     group: Runtime
 
+  - variable: otel.enabled
+    label: Enable OpenTelemetry Export
+    description: Export traces and operational events to an external OTLP Collector. Local cPanel observability remains available when disabled.
+    type: boolean
+    default: false
+    group: Observability
+
+  - variable: otel.endpoint
+    label: OTLP Endpoint
+    description: Collector endpoint, for example http://otel-collector.observability:4317. Required only when export is enabled.
+    type: string
+    default: ""
+    show_if: "otel.enabled=true"
+    group: Observability
+
+  - variable: otel.protocol
+    label: OTLP Protocol
+    description: Transport used to export telemetry.
+    type: enum
+    default: grpc
+    options:
+      - grpc
+      - http/protobuf
+    show_if: "otel.enabled=true"
+    group: Observability
+
+  - variable: otel.tracesSampler
+    label: Trace Sampler
+    description: W3C parent-aware sampling policy used by the tracer.
+    type: enum
+    default: parentbased_traceidratio
+    options:
+      - parentbased_traceidratio
+      - parentbased_always_on
+      - always_on
+      - always_off
+    show_if: "otel.enabled=true"
+    group: Observability
+
+  - variable: otel.tracesSamplerArg
+    label: Trace Sampling Ratio
+    description: Ratio from 0.0 to 1.0 used by parentbased_traceidratio.
+    type: string
+    default: "0.1"
+    show_if: "otel.enabled=true&&otel.tracesSampler=parentbased_traceidratio"
+    group: Observability
+
+  - variable: otel.required
+    label: Require OTEL Initialization
+    description: Fail startup when the configured exporter cannot be initialized. Keep disabled for non-critical telemetry.
+    type: boolean
+    default: false
+    show_if: "otel.enabled=true"
+    group: Observability
+
+  - variable: otel.headersSecret.name
+    label: OTLP Headers Secret
+    description: Optional existing Kubernetes Secret containing OTLP authorization headers. Values are never stored in the chart ConfigMap.
+    type: string
+    default: ""
+    show_if: "otel.enabled=true"
+    group: Observability
+
+  - variable: otel.headersSecret.key
+    label: OTLP Headers Secret Field
+    description: Secret data key containing the OTEL_EXPORTER_OTLP_HEADERS value.
+    type: string
+    default: headers
+    show_if: "otel.enabled=true"
+    group: Observability
+
   - variable: replicaCount
     label: Replica Count
     description: Number of EdgeR pod replicas when HPA is disabled.

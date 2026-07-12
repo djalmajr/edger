@@ -1,9 +1,9 @@
-extension-validation repo=/Users/djalmajr/Developer/djalmajr/edger
+extension-validation repo=<repo>
 extension-validation module=gateway
 extension-validation required contract files: ok
 extension-validation command: cargo test -p edger-orchestrator --test admin_workers_plugins local_extension_validation_contract_reports_manifest_status_diagnostics_and_redaction -- --exact
-   Compiling edger-isolation v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-isolation)
-   Compiling edger-orchestrator v0.1.0 (/Users/djalmajr/Developer/djalmajr/edger/edger-orchestrator)
+   Compiling edger-isolation v0.1.0 (<repo>/edger-isolation)
+   Compiling edger-orchestrator v0.1.0 (<repo>/edger-orchestrator)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 5.52s
      Running tests/admin_workers_plugins.rs (target/debug/deps/admin_workers_plugins-a58538dac251e357)
 

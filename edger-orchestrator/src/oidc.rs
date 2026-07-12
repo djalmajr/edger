@@ -16,6 +16,7 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 const JWKS_KID_MISS_REFRESH_LIMIT: Duration = Duration::from_secs(5);
+const JWKS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OidcConfig {
@@ -102,6 +103,7 @@ pub struct OidcValidator {
 struct JwksCache {
     jwks: Option<JwkSet>,
     jwks_uri: Option<String>,
+    last_successful_refresh: Option<Instant>,
     last_kid_miss_refresh: Option<Instant>,
 }
 
@@ -134,8 +136,16 @@ impl OidcValidator {
     }
 
     async fn cached_jwks(&self) -> Result<JwkSet, OidcError> {
-        if let Some(jwks) = self.cache.read().await.jwks.clone() {
-            return Ok(jwks);
+        {
+            let cache = self.cache.read().await;
+            if cache
+                .last_successful_refresh
+                .is_some_and(|last| last.elapsed() < JWKS_CACHE_TTL)
+            {
+                if let Some(jwks) = cache.jwks.clone() {
+                    return Ok(jwks);
+                }
+            }
         }
         self.refresh_jwks(false).await
     }
@@ -174,6 +184,7 @@ impl OidcValidator {
         let mut cache = self.cache.write().await;
         cache.jwks = Some(jwks.clone());
         cache.jwks_uri = Some(jwks_uri);
+        cache.last_successful_refresh = Some(Instant::now());
         Ok(jwks)
     }
 
@@ -700,5 +711,23 @@ mod tests {
 
         assert!(!principal.is_root);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn oidc_expired_jwks_cache_stops_trusting_removed_key() {
+        let old_key = test_key("kid-old");
+        let new_key = test_key("kid-new");
+        let source = StaticJwksSource::new(vec![jwks(&[&old_key]), jwks(&[&new_key])]);
+        let calls = source.jwks_calls.clone();
+        let validator = validator(oidc_config(), source);
+        let old_token = token(&old_key, base_claims());
+
+        validator.validate_token(&old_token).await.unwrap();
+        validator.cache.write().await.last_successful_refresh =
+            Some(Instant::now() - JWKS_CACHE_TTL);
+
+        let err = validator.validate_token(&old_token).await.unwrap_err();
+        assert!(err.to_string().contains("does not contain kid"));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 }

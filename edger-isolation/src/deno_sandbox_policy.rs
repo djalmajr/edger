@@ -73,6 +73,7 @@ pub(crate) fn select_deno_dir(
     }
 }
 
+#[cfg(feature = "multiproc")]
 pub(crate) fn read_allowlist(
     worker_dir: &Path,
     workdir: &Path,

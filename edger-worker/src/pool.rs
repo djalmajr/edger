@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use edger_core::{
     create_worker_ref, BodyStream, ExecutionKind, Isolate, SerializedRequest, SerializedResponse,
-    StreamedResponse, WorkerConfig, WorkerManifest, WorkerRef, WorkerResponse,
+    StreamedResponse, TerminationOutcome, WorkerConfig, WorkerManifest, WorkerRef, WorkerResponse,
 };
 use edger_isolation::{
     dispatch_fullstack_stream, execute_with_limits, try_serve_fullstack_asset, validate_request,
@@ -25,7 +25,7 @@ use crate::instance::WorkerInstance;
 use crate::lru::{QueueEnterResult, ReservedSlot, WorkerGroup, WorkerLru};
 use crate::metrics::{
     MetricsCollector, PoolMetrics, WorkerGroupIdentity, WorkerGroupMetrics, WorkerProcessMetrics,
-    WorkerRecycleCause, WorkerStats,
+    WorkerRecycleCause, WorkerRequestOutcome, WorkerStats,
 };
 use crate::state::WorkerState;
 use crate::supervisor::Supervisor;
@@ -41,7 +41,28 @@ struct WorkerPoolInner {
     evicted: Mutex<HashSet<WorkerCacheKey>>,
     circuit_breakers: Mutex<HashMap<WorkerCacheKey, CircuitBreakerState>>,
     shutdown: AtomicBool,
+    lifecycle_events: Option<LifecycleEventSender>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerLifecycleEventKind {
+    DrainStarted,
+    DrainCompleted,
+    DrainTimedOut,
+    Terminated,
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkerLifecycleEvent {
+    pub kind: WorkerLifecycleEventKind,
+    pub worker_ref: WorkerRef,
+    pub process_id: Option<String>,
+    pub drained_count: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub reason: &'static str,
+}
+
+pub type LifecycleEventSender = tokio::sync::mpsc::Sender<WorkerLifecycleEvent>;
 
 #[derive(Default)]
 struct CircuitBreakerState {
@@ -74,6 +95,14 @@ impl WorkerPool {
     }
 
     pub fn with_factory(config: PoolConfig, factory: Arc<dyn IsolateFactory>) -> Self {
+        Self::with_factory_and_lifecycle(config, factory, None)
+    }
+
+    pub fn with_factory_and_lifecycle(
+        config: PoolConfig,
+        factory: Arc<dyn IsolateFactory>,
+        lifecycle_events: Option<LifecycleEventSender>,
+    ) -> Self {
         let metrics = Arc::new(MetricsCollector::default());
         let ephemeral = EphemeralGate::new(
             config.ephemeral_concurrency,
@@ -90,6 +119,7 @@ impl WorkerPool {
                 evicted: Mutex::new(HashSet::new()),
                 circuit_breakers: Mutex::new(HashMap::new()),
                 shutdown: AtomicBool::new(false),
+                lifecycle_events,
             }),
         }
     }
@@ -410,6 +440,7 @@ impl WorkerPool {
         let _waiter = match group.try_enter_queue(
             worker_ref.config.queue_limit,
             Arc::clone(&self.inner.metrics),
+            WorkerGroupIdentity::from_worker_ref(worker_ref),
         ) {
             QueueEnterResult::Accepted(waiter) => {
                 self.inner
@@ -423,6 +454,9 @@ impl WorkerPool {
                 self.inner
                     .metrics
                     .record_worker_group_queue_rejected(worker_ref, group.queued_waiters() as u64);
+                self.inner
+                    .metrics
+                    .record_worker_group_outcome(worker_ref, WorkerRequestOutcome::Rejected);
                 return Err(WorkerError::WorkerQueueFull);
             }
         };
@@ -489,6 +523,9 @@ impl WorkerPool {
                     group.queued_waiters().saturating_sub(1) as u64,
                     queued_start.elapsed().as_millis() as u64,
                 );
+                self.inner
+                    .metrics
+                    .record_worker_group_outcome(worker_ref, WorkerRequestOutcome::Timeout);
                 return Err(WorkerError::WorkerQueueTimeout);
             }
 
@@ -502,6 +539,9 @@ impl WorkerPool {
                     group.queued_waiters().saturating_sub(1) as u64,
                     queued_start.elapsed().as_millis() as u64,
                 );
+                self.inner
+                    .metrics
+                    .record_worker_group_outcome(worker_ref, WorkerRequestOutcome::Timeout);
                 return Err(WorkerError::WorkerQueueTimeout);
             }
         }
@@ -611,6 +651,8 @@ impl WorkerPool {
             if let Some(asset) =
                 try_serve_fullstack_asset(&req, &config).map_err(WorkerError::Isolation)?
             {
+                let duration_ms = started.elapsed().as_millis().max(1) as u64;
+                self.record_worker_result(&worker_ref, duration_ms, asset.status);
                 return Ok(WorkerResponse::Buffered(asset));
             }
         }
@@ -669,9 +711,15 @@ impl WorkerPool {
                 drop(isolate_guard);
                 Supervisor::on_request_complete(instance, &config, self).await?;
                 cancel_guard.armed = false;
+                let duration_ms = started.elapsed().as_millis().max(1) as u64;
+                self.inner.metrics.record_request_duration(duration_ms);
                 self.inner
                     .metrics
-                    .record_request_duration(started.elapsed().as_millis() as u64);
+                    .record_worker_group_request(&worker_ref, duration_ms);
+                self.inner.metrics.record_worker_group_outcome(
+                    &worker_ref,
+                    request_outcome_for_status(res.status),
+                );
                 self.sync_worker_counts();
                 Ok(WorkerResponse::Buffered(res))
             }
@@ -683,6 +731,7 @@ impl WorkerPool {
                     pool: self.clone(),
                     instance,
                     config,
+                    outcome: request_outcome_for_status(streamed.status),
                     started,
                     _dispatch_slot: dispatch_slot,
                     isolate_guard: Some(isolate_guard),
@@ -699,8 +748,16 @@ impl WorkerPool {
             Err(err) => {
                 drop(isolate_guard);
                 cancel_guard.armed = false;
-                let _ = Supervisor::on_critical_error(&instance).await;
+                let _ = Supervisor::on_critical_error(&instance, self).await;
                 self.remove_instance(&instance);
+                let duration_ms = started.elapsed().as_millis().max(1) as u64;
+                self.inner.metrics.record_request_duration(duration_ms);
+                self.inner
+                    .metrics
+                    .record_worker_group_request(&worker_ref, duration_ms);
+                self.inner
+                    .metrics
+                    .record_worker_group_outcome(&worker_ref, WorkerRequestOutcome::IsolationError);
                 self.sync_worker_counts();
                 Err(WorkerError::Isolation(err))
             }
@@ -715,6 +772,7 @@ impl WorkerPool {
     ) -> Result<SerializedResponse, WorkerError> {
         self.ensure_active()?;
         let started = Instant::now();
+        let record_observation = !is_health_check_request(&req);
 
         let mut worker_ref = worker_ref.clone();
         let mut config = worker_ref.config.clone();
@@ -729,15 +787,20 @@ impl WorkerPool {
             .unwrap_or(ExecutionKind::FetchHandler);
         if let ExecutionKind::StaticSpa { inject_base } = &kind {
             let response = serve_static_spa_request(&req, &config, *inject_base)?;
-            self.inner
-                .metrics
-                .record_request_duration(started.elapsed().as_millis() as u64);
+            let duration_ms = started.elapsed().as_millis().max(1) as u64;
+            if record_observation {
+                self.record_worker_result(&worker_ref, duration_ms, response.status);
+            }
             return Ok(response);
         }
         if matches!(kind, ExecutionKind::Fullstack { .. }) {
             if let Some(asset) =
                 try_serve_fullstack_asset(&req, &config).map_err(WorkerError::Isolation)?
             {
+                let duration_ms = started.elapsed().as_millis().max(1) as u64;
+                if record_observation {
+                    self.record_worker_result(&worker_ref, duration_ms, asset.status);
+                }
                 return Ok(asset);
             }
         }
@@ -814,8 +877,19 @@ impl WorkerPool {
                 cancel_guard.armed = false;
                 // An isolate failure must not leave the instance stuck in
                 // `Active`: recycle it so the next dispatch gets a fresh worker.
-                let _ = Supervisor::on_critical_error(&instance).await;
+                let _ = Supervisor::on_critical_error(&instance, self).await;
                 self.remove_instance(&instance);
+                if record_observation {
+                    let duration_ms = started.elapsed().as_millis().max(1) as u64;
+                    self.inner.metrics.record_request_duration(duration_ms);
+                    self.inner
+                        .metrics
+                        .record_worker_group_request(&worker_ref, duration_ms);
+                    self.inner.metrics.record_worker_group_outcome(
+                        &worker_ref,
+                        WorkerRequestOutcome::IsolationError,
+                    );
+                }
                 self.sync_worker_counts();
                 return Err(WorkerError::Isolation(err));
             }
@@ -824,11 +898,28 @@ impl WorkerPool {
         Supervisor::on_request_complete(instance, &config, self).await?;
         cancel_guard.armed = false;
 
-        self.inner
-            .metrics
-            .record_request_duration(started.elapsed().as_millis() as u64);
+        if record_observation {
+            let duration_ms = started.elapsed().as_millis().max(1) as u64;
+            self.inner.metrics.record_request_duration(duration_ms);
+            self.inner
+                .metrics
+                .record_worker_group_request(&worker_ref, duration_ms);
+            self.inner
+                .metrics
+                .record_worker_group_outcome(&worker_ref, request_outcome_for_status(res.status));
+        }
         self.sync_worker_counts();
         Ok(res)
+    }
+
+    fn record_worker_result(&self, worker_ref: &WorkerRef, duration_ms: u64, status: u16) {
+        self.inner.metrics.record_request_duration(duration_ms);
+        self.inner
+            .metrics
+            .record_worker_group_request(worker_ref, duration_ms);
+        self.inner
+            .metrics
+            .record_worker_group_outcome(worker_ref, request_outcome_for_status(status));
     }
 
     /// Force-recycle a worker whose dispatch was cancelled mid-flight: mark it
@@ -853,6 +944,61 @@ impl WorkerPool {
             .record_worker_group_recycle(&instance.worker_ref, cause);
         self.inner.metrics.record_terminated();
         self.sync_worker_counts();
+    }
+
+    pub(crate) async fn terminate_isolate_with_lifecycle(
+        &self,
+        instance: &WorkerInstance,
+        reason: &'static str,
+    ) {
+        emit_lifecycle(
+            self.inner.lifecycle_events.as_ref(),
+            WorkerLifecycleEvent {
+                kind: WorkerLifecycleEventKind::DrainStarted,
+                worker_ref: instance.worker_ref.clone(),
+                process_id: None,
+                drained_count: None,
+                duration_ms: None,
+                reason,
+            },
+        );
+        let started = Instant::now();
+        let isolate = instance.isolate();
+        let report = match tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, isolate.lock()).await {
+            Ok(mut guard) => guard.terminate_with_report().await.ok(),
+            Err(_) => None,
+        };
+        let timed_out = report.is_none()
+            || report
+                .as_ref()
+                .is_some_and(|report| report.outcome == TerminationOutcome::TimedOut);
+        let duration_ms = started.elapsed().as_millis() as u64;
+        emit_lifecycle(
+            self.inner.lifecycle_events.as_ref(),
+            WorkerLifecycleEvent {
+                kind: if timed_out {
+                    WorkerLifecycleEventKind::DrainTimedOut
+                } else {
+                    WorkerLifecycleEventKind::DrainCompleted
+                },
+                worker_ref: instance.worker_ref.clone(),
+                process_id: report.as_ref().and_then(|report| report.process_id.clone()),
+                drained_count: report.as_ref().and_then(|report| report.drained_count),
+                duration_ms: Some(duration_ms),
+                reason,
+            },
+        );
+        emit_lifecycle(
+            self.inner.lifecycle_events.as_ref(),
+            WorkerLifecycleEvent {
+                kind: WorkerLifecycleEventKind::Terminated,
+                worker_ref: instance.worker_ref.clone(),
+                process_id: report.and_then(|report| report.process_id),
+                drained_count: None,
+                duration_ms: Some(duration_ms),
+                reason: if timed_out { "drain_timeout" } else { reason },
+            },
+        );
     }
 
     /// Begins graceful shutdown and returns the drain task handle (when a Tokio
@@ -887,7 +1033,10 @@ impl WorkerPool {
         self.sync_worker_counts();
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            Some(handle.spawn(shutdown_instances_after_drain(instances)))
+            Some(handle.spawn(shutdown_instances_after_drain(
+                instances,
+                self.inner.lifecycle_events.clone(),
+            )))
         } else {
             for instance in instances {
                 instance.cancel_ttl_timer();
@@ -935,6 +1084,13 @@ impl WorkerPool {
     }
 }
 
+fn is_health_check_request(request: &SerializedRequest) -> bool {
+    request
+        .headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("x-edger-health-check"))
+}
+
 fn infer_recycle_cause(instance: &WorkerInstance) -> WorkerRecycleCause {
     if instance.is_unhealthy() {
         return WorkerRecycleCause::Error;
@@ -961,12 +1117,16 @@ fn merge_worker_group_metrics(
                 ..Default::default()
             });
         group.enqueued_total = counters.enqueued_total;
+        group.health = counters.health_at(crate::metrics::unix_time_ms());
         group.queued = counters.queued;
         group.recycle_error_total = counters.recycle_error_total;
         group.recycle_max_requests_total = counters.recycle_max_requests_total;
         group.recycle_oom_shutdown_total = counters.recycle_oom_shutdown_total;
         group.recycle_ttl_total = counters.recycle_ttl_total;
         group.rejected_total = counters.rejected_total;
+        group.request_duration_ms_last = counters.request_duration_ms_last;
+        group.request_duration_ms_p95 = counters.request_duration_ms_p95;
+        group.request_total = counters.request_total;
         group.timeout_total = counters.timeout_total;
         group.wait_ms_last = counters.wait_ms_last;
         group.wait_ms_p50 = counters.wait_ms_p50;
@@ -1094,6 +1254,7 @@ struct StreamDispatchState {
     pool: WorkerPool,
     instance: Arc<WorkerInstance>,
     config: WorkerConfig,
+    outcome: WorkerRequestOutcome,
     started: Instant,
     _dispatch_slot: DispatchSlot,
     isolate_guard: Option<tokio::sync::OwnedMutexGuard<Box<dyn Isolate>>>,
@@ -1175,15 +1336,22 @@ async fn complete_stream_state(state: StreamDispatchState) {
         pool,
         instance,
         config,
+        outcome,
         started,
         _dispatch_slot,
         isolate_guard,
     } = state;
     drop(isolate_guard);
+    let worker_ref = instance.worker_ref.clone();
     let _ = Supervisor::on_request_complete(instance, &config, &pool).await;
+    let duration_ms = started.elapsed().as_millis().max(1) as u64;
+    pool.inner.metrics.record_request_duration(duration_ms);
     pool.inner
         .metrics
-        .record_request_duration(started.elapsed().as_millis() as u64);
+        .record_worker_group_request(&worker_ref, duration_ms);
+    pool.inner
+        .metrics
+        .record_worker_group_outcome(&worker_ref, outcome);
     pool.sync_worker_counts();
 }
 
@@ -1191,39 +1359,131 @@ async fn complete_stream_state(state: StreamDispatchState) {
 /// desynced — terminate the isolate and evict the instance so the next request
 /// gets a fresh process.
 async fn recycle_stream_state(mut state: StreamDispatchState) {
-    if let Some(mut guard) = state.isolate_guard.take() {
-        let _ = guard.terminate().await;
-    }
+    let worker_ref = state.instance.worker_ref.clone();
+    let duration_ms = state.started.elapsed().as_millis().max(1) as u64;
+    drop(state.isolate_guard.take());
+    state
+        .pool
+        .terminate_isolate_with_lifecycle(&state.instance, "stream_recycle")
+        .await;
     state.pool.recycle_cancelled(&state.instance);
+    state
+        .pool
+        .inner
+        .metrics
+        .record_worker_group_request(&worker_ref, duration_ms);
+    state
+        .pool
+        .inner
+        .metrics
+        .record_worker_group_outcome(&worker_ref, WorkerRequestOutcome::IsolationError);
     state.pool.sync_worker_counts();
+}
+
+fn request_outcome_for_status(status: u16) -> WorkerRequestOutcome {
+    if status >= 500 {
+        WorkerRequestOutcome::Http5xx
+    } else {
+        WorkerRequestOutcome::Success
+    }
 }
 
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
-async fn shutdown_instances_after_drain(instances: Vec<Arc<WorkerInstance>>) {
+async fn shutdown_instances_after_drain(
+    instances: Vec<Arc<WorkerInstance>>,
+    lifecycle_events: Option<LifecycleEventSender>,
+) {
     for instance in instances {
         instance.cancel_ttl_timer();
+        emit_lifecycle(
+            lifecycle_events.as_ref(),
+            WorkerLifecycleEvent {
+                kind: WorkerLifecycleEventKind::DrainStarted,
+                worker_ref: instance.worker_ref.clone(),
+                process_id: None,
+                drained_count: None,
+                duration_ms: None,
+                reason: "shutdown",
+            },
+        );
+        let started = Instant::now();
         let dispatch_lock = instance.dispatch_lock();
         let dispatch_drained =
             tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, dispatch_lock.lock_owned())
                 .await
                 .ok();
+        let dispatch_timed_out = dispatch_drained.is_none();
         drop(dispatch_drained);
-        terminate_shutdown_instance(instance).await;
+        terminate_shutdown_instance(
+            instance,
+            lifecycle_events.as_ref(),
+            started,
+            dispatch_timed_out,
+        )
+        .await;
     }
 }
 
-async fn terminate_shutdown_instance(instance: Arc<WorkerInstance>) {
+async fn terminate_shutdown_instance(
+    instance: Arc<WorkerInstance>,
+    lifecycle_events: Option<&LifecycleEventSender>,
+    started: Instant,
+    dispatch_timed_out: bool,
+) {
     if instance.state() == WorkerState::Terminated {
         return;
     }
 
     instance.set_state(WorkerState::Terminating);
     let isolate = instance.isolate();
-    if let Ok(mut guard) = tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, isolate.lock()).await {
-        let _ = guard.terminate().await;
-    }
+    let report = match tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, isolate.lock()).await {
+        Ok(mut guard) => guard.terminate_with_report().await.ok(),
+        Err(_) => None,
+    };
     instance.set_state(WorkerState::Terminated);
+    let timed_out = dispatch_timed_out
+        || report.is_none()
+        || report
+            .as_ref()
+            .is_some_and(|report| report.outcome == TerminationOutcome::TimedOut);
+    let duration_ms = started.elapsed().as_millis() as u64;
+    emit_lifecycle(
+        lifecycle_events,
+        WorkerLifecycleEvent {
+            kind: if timed_out {
+                WorkerLifecycleEventKind::DrainTimedOut
+            } else {
+                WorkerLifecycleEventKind::DrainCompleted
+            },
+            worker_ref: instance.worker_ref.clone(),
+            process_id: report.as_ref().and_then(|report| report.process_id.clone()),
+            drained_count: report.as_ref().and_then(|report| report.drained_count),
+            duration_ms: Some(duration_ms),
+            reason: "shutdown",
+        },
+    );
+    emit_lifecycle(
+        lifecycle_events,
+        WorkerLifecycleEvent {
+            kind: WorkerLifecycleEventKind::Terminated,
+            worker_ref: instance.worker_ref.clone(),
+            process_id: report.and_then(|report| report.process_id),
+            drained_count: None,
+            duration_ms: Some(duration_ms),
+            reason: if timed_out {
+                "drain_timeout"
+            } else {
+                "shutdown"
+            },
+        },
+    );
+}
+
+fn emit_lifecycle(sender: Option<&LifecycleEventSender>, event: WorkerLifecycleEvent) {
+    if let Some(sender) = sender {
+        let _ = sender.try_send(event);
+    }
 }
 
 /// RAII guard that recycles an `Active` instance if the dispatch future is

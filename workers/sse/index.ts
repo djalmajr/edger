@@ -1,16 +1,17 @@
 const msg = new TextEncoder().encode("data: hella\r\n\r\n");
 
 Deno.serve(async () => {
-  let timerId: number | undefined;
+  let timerId: ReturnType<typeof setInterval> | undefined;
 
   const body = new ReadableStream({
     start(controller) {
+      controller.enqueue(msg);
       timerId = setInterval(() => {
         controller.enqueue(msg);
       }, 1000);
     },
     cancel() {
-      if (typeof timerId === "number") {
+      if (timerId !== undefined) {
         clearInterval(timerId);
       }
     },
@@ -19,6 +20,7 @@ Deno.serve(async () => {
   return new Response(body, {
     headers: {
       "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
     },
   });
 });

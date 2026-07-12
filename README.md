@@ -1,58 +1,144 @@
-# edger
+# EdgeR
 
-Edge runtime in Rust with Buntime-compatible contracts.
+EdgeR is a source-available, self-hosted runtime for JavaScript, TypeScript and
+WebAssembly workers. A Rust control plane manages versioned workers, process
+pools, routing, limits, deploys and local-first observability.
 
-## Objetivo
+> **Project status:** active development. The first release under the current
+> license is planned as `v0.2.0`; the `main` branch is not yet a stability
+> guarantee.
 
-- Orquestrador em Rust (sem main-service TS separado).
-- Extensibilidade via crates (edger-{core,worker,isolation,orchestrator,ext-*}).
-- Suporte JS/TS (Deno.serve / default fetch compat), serverless, backend, SPA, fullstack/SSR, Wasm.
-- Open/Closed: core fechado, extensões abertas.
-- Contratos Buntime: workers, manifests, namespaces, TTL, shell.
+## What EdgeR provides
 
-## Current
+- Versioned workers, with one default version and addressable version paths.
+- Persistent Deno processes over Unix sockets for warm JS/TS execution.
+- `Deno.serve`, default `fetch`, routes tables, CommonJS compatibility,
+  static SPAs, full-stack SSR adapters and Wasm.
+- Bounded process pools, queues, request limits, lifecycle hooks and graceful
+  drain.
+- Root-key or optional OIDC protection for the control plane. Worker data-plane
+  authentication remains the responsibility of each worker or an external API
+  gateway.
+- A built-in cPanel for worker inventory, files, routing, health, logs and
+  observability.
+- Local in-memory operational events without requiring an external collector.
+- Optional OTLP export and Prometheus-compatible metrics.
+- Helm/Rancher deployment assets, including `questions.yaml`.
 
-- Rust orchestrator loads worker roots from `RUNTIME_WORKER_DIRS` (default `workers`) and serves the pipeline.
-- `workers/wasm-hello` executes through the Rust/wasmtime path.
-- JS/TS workers execute through the Rust pipeline using the Deno CLI bridge in `edger-isolation`.
-- The Deno bridge runs from the worker directory and loads local `deno.json` / `deno.jsonc` when present.
-- The historical Bun adapter was removed; the Rust binary is the only runtime entrypoint.
-- Planning: intake/roadmap/design/analysis + **9 epics / 57 numbered stories + 1 spike artifact** (`planning/edger/epics/`) + status/ + AGENTS.md.
-- Fases 1-6 delivered as foundation; Fase 7 remains the advanced-runtime track, Fase 8 now has value-parity proof plus follow-up slices for must-have operational gaps, and Fase 9 has started durable external provider planning.
+## Quick start
 
-## Como rodar
+Requirements:
+
+- Rust toolchain compatible with the workspace `rust-version`.
+- Deno on `PATH`, or `EDGER_DENO_BIN` pointing to the binary.
+
+Start the runtime with a development-only control-plane key:
 
 ```bash
-ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers cargo run -p edger-orchestrator --bin edger
+ROOT_API_KEY=dev-only-change-me \
+PORT=19080 \
+RUNTIME_WORKER_DIRS=workers \
+cargo run -p edger-orchestrator --bin edger
 ```
 
-Em outro terminal:
+Then verify the runtime and open the cPanel:
 
 ```bash
-curl -H 'authorization: Bearer test-root' http://127.0.0.1:19080/wasm-hello
-curl -H 'authorization: Bearer test-root' -H 'content-type: application/json' \
-  -d '{"name":"Alice"}' http://127.0.0.1:19080/hello-world
+curl http://127.0.0.1:19080/health
+curl http://127.0.0.1:19080/ready
+open http://127.0.0.1:19080/cpanel/
 ```
 
-The JS/TS backend requires `deno` on `PATH` or `EDGER_DENO_BIN=/path/to/deno`. Embedded `deno_core` remains the planned production optimization.
+Worker routes are not protected by the root key. For example:
 
-## Status
+```bash
+curl http://127.0.0.1:19080/wasm-hello
+curl -H 'content-type: application/json' \
+  -d '{"name":"Alice"}' \
+  http://127.0.0.1:19080/hello-world
+```
 
-Foundation complete through Fase 6. Fase 7 is in progress: manifest loading, Wasm v1, Deno/fetch JS/TS examples, static SPAs, shell routing, state bindings, operation probes and value-parity checks now execute through the Rust server. `stream`/`sse` use a bounded first-chunk fallback until true streaming passthrough lands; CommonJS server-listen has a minimal Node adapter and mounted workers follow Buntime path semantics: relative path plus `x-base`.
+Never reuse the development key in a shared or production environment. See the
+[security policy](SECURITY.md) and the
+[Kubernetes deployment guide](planning/edger/docs/deployment-k8s.md).
 
-Fase 8 has executable value evidence for SPA `/todos`, manifest-less `index.html` autodiscovery, protected workers, state bindings, shell/gateway routing, gateway CORS/auth behavior, gateway redirect rules with query preservation, gateway local rate limiting, gateway operational diagnostics, gateway read-only Admin API for stats/config/logs/log-stats with duration and rate-limit metrics, pool metrics, worker stats, API key create/revoke, Deno manifest env filtering, runtime worker enable/disable, runtime extension enable/disable, and the Buntime-derived `base: ""` route-hijack guard. Remaining explicit gaps are embedded `deno_core`, native cron execution, proxy/cache/rate-limit persistence and distribution, gateway SSE/history/mutations, retry/DLQ depth, persistent extension reload and marketplace. Turso remote/sync is now tracked as a durable external provider in Fase 9, not as an internal edger implementation requirement.
+## Architecture
 
-Ver `planning/edger/roadmap.md`, `planning/edger/runtime-functional-plan.md`, `planning/edger/docs/pendencies-epic-07.md`, `planning/edger/docs/value-parity-matrix.md`.
+The workspace is intentionally split into explicit boundaries:
 
-Next: continue Epic 07 hardening where gaps depend on runtime foundation, and use Epic 09 for durable external provider work such as Turso remote/sync. Keep `planning/edger/docs/value-parity-matrix.md` as the source of truth for remaining Buntime-value gaps.
+- `edger-core`: pure runtime vocabulary and contracts, without I/O.
+- `edger-isolation`: Deno process and Wasm execution backends.
+- `edger-worker`: process pools, lifecycle and worker metrics.
+- `edger-orchestrator`: HTTP server, routing, control plane, deploy and
+  observability.
+- `edger-mcp`: local authoring and discovery surface for MCP clients.
 
-## Gates
+The runtime stays minimal: API-gateway policy, fleet management, durable
+cross-replica retention and commercial governance live outside the worker hot
+path and integrate through stable APIs or telemetry protocols.
+
+Start with:
+
+- [Architecture and product design](planning/edger/design.md)
+- [Compatibility matrix](planning/edger/docs/compat-matrix.md)
+- [Observability](planning/edger/docs/observability.md)
+- [Roadmap](planning/edger/roadmap.md)
+
+Planning documents include historical delivery records. The compatibility
+matrix and the current epic statuses are authoritative when an older story or
+evidence file describes a superseded architecture.
+
+## Deployment
+
+The Helm chart lives at [`charts/edger`](charts/edger). Validate it locally:
+
+```bash
+helm lint charts/edger
+helm template edger charts/edger
+```
+
+OTLP is optional. EdgeR remains operable with its bounded local event store
+when no collector is configured or when export is unavailable.
+
+## Development gates
+
+Before opening a pull request, run:
 
 ```bash
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
-SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+cargo test -p edger-orchestrator --features otel
+helm lint charts/edger
+planning/edger/scripts/cpanel-ui-gate.sh
 ```
 
-See planning/edger/* and AGENTS.md .
+Planning changes additionally use:
+
+```bash
+SCRATCH=/tmp/edger-planning-gates
+mkdir -p "$SCRATCH"
+python3 planning/edger/scripts/refinement-lint.py \
+  --scope planning/edger \
+  --round public-readiness >"$SCRATCH/refinement-report.txt"
+SCRATCH="$SCRATCH" planning/edger/scripts/run-gates.sh
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution expectations and
+[RELEASING.md](RELEASING.md) for the release checklist.
+
+## License
+
+EdgeR is distributed under the [O'Saasy License](LICENSE). You may study, use,
+modify and redistribute the software, but you may not offer it as a competing
+hosted, managed, SaaS or cloud service whose primary value is the functionality
+of EdgeR itself.
+
+Because of that use restriction, EdgeR is **source-available**, not open source
+under the Open Source Initiative definition. Copies previously received under
+MIT retain the rights granted by that earlier distribution.
+
+Core security, worker operation, local logs, local observability and cPanel
+functionality remain part of the Community runtime. Future commercial services
+may provide external fleet management, multi-cluster operation, long-term
+retention, governance, compliance, automation and support.

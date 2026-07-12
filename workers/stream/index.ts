@@ -1,7 +1,8 @@
-Deno.serve((req) => {
-  let timer: number;
+Deno.serve(() => {
+  let timer: ReturnType<typeof setInterval> | undefined;
   const body = new ReadableStream({
-    async start(controller) {
+    start(controller) {
+      controller.enqueue("Hello, World!\n");
       timer = setInterval(() => {
         controller.enqueue("Hello, World!\n");
         console.log("sent");
@@ -9,12 +10,15 @@ Deno.serve((req) => {
     },
     cancel() {
       console.log("request canceled");
-      clearInterval(timer);
+      if (timer !== undefined) {
+        clearInterval(timer);
+      }
     },
   });
   return new Response(body.pipeThrough(new TextEncoderStream()), {
     headers: {
       "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-cache",
     },
   });
 });

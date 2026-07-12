@@ -63,6 +63,41 @@ pub fn create_worker_ref(
 }
 
 pub fn validate_worker_manifest(manifest: &WorkerManifest) -> Result<(), crate::error::CoreError> {
+    if let Some(check) = manifest.health_check.as_ref() {
+        if !check.path.starts_with('/') || check.path.starts_with("//") || check.path.contains("..")
+        {
+            return Err(crate::error::CoreError::validation(
+                "manifest.healthCheck.path",
+                "healthCheck.path must be an absolute worker pathname without traversal",
+            ));
+        }
+        let method = check
+            .method
+            .as_deref()
+            .unwrap_or("GET")
+            .to_ascii_uppercase();
+        if !matches!(method.as_str(), "GET" | "HEAD") {
+            return Err(crate::error::CoreError::validation(
+                "manifest.healthCheck.method",
+                "healthCheck.method must be GET or HEAD",
+            ));
+        }
+        if let Some(timeout) = check.timeout.as_deref() {
+            let Some(timeout_ms) = crate::config::parse_duration_string_to_ms(timeout) else {
+                return Err(crate::error::CoreError::validation(
+                    "manifest.healthCheck.timeout",
+                    "healthCheck.timeout must be a duration such as 500ms or 2s",
+                ));
+            };
+            if !(100..=10_000).contains(&timeout_ms) {
+                return Err(crate::error::CoreError::validation(
+                    "manifest.healthCheck.timeout",
+                    "healthCheck.timeout must be between 100ms and 10s",
+                ));
+            }
+        }
+    }
+
     let Some(kind) = manifest.kind.as_deref() else {
         return Ok(());
     };

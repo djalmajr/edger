@@ -42,6 +42,7 @@ struct ServerStateInner {
     pool: std::sync::RwLock<Option<WorkerPool>>,
     cron_metrics: CronMetrics,
     http_metrics: HttpMetrics,
+    operational_events: crate::observability::OperationalStore,
     worker_errors: crate::worker_errors::WorkerErrorLog,
 }
 
@@ -59,6 +60,7 @@ impl ServerState {
                 pool: std::sync::RwLock::new(None),
                 cron_metrics: CronMetrics::default(),
                 http_metrics: HttpMetrics::default(),
+                operational_events: crate::observability::OperationalStore::default(),
                 worker_errors: crate::worker_errors::WorkerErrorLog::default(),
             }),
         }
@@ -102,6 +104,10 @@ impl ServerState {
 
     pub fn worker_errors(&self) -> crate::worker_errors::WorkerErrorLog {
         self.inner.worker_errors.clone()
+    }
+
+    pub fn operational_events(&self) -> crate::observability::OperationalStore {
+        self.inner.operational_events.clone()
     }
 }
 

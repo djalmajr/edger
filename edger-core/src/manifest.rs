@@ -35,6 +35,26 @@ pub struct CronJob {
     pub method: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkerHealthCheckMode {
+    #[default]
+    Manual,
+    OnDeploy,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerHealthCheck {
+    pub path: String,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub mode: WorkerHealthCheckMode,
+    #[serde(default)]
+    pub timeout: Option<String>,
+}
+
 /// Human-editable worker manifest (from manifest.yaml / package.json fallback).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +66,7 @@ pub struct WorkerManifest {
     pub entrypoint: Option<String>,
     /// Command run once per deployed version before the worker serves (migrations, etc.).
     pub release: Option<String>,
+    pub health_check: Option<WorkerHealthCheck>,
     pub env: Option<std::collections::HashMap<String, String>>,
     #[serde(default)]
     pub env_prefix: Vec<String>,

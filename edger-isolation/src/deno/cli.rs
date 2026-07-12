@@ -6,7 +6,10 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use edger_core::{IsolationError, SerializedRequest, SerializedResponse, WorkerConfig};
+use edger_core::{
+    effective_max_body_size_bytes, IsolationError, SerializedRequest, SerializedResponse,
+    WorkerConfig,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::deno_bundle::{
@@ -33,6 +36,16 @@ struct BridgeResponse {
     body: Option<Vec<u8>>,
     headers: Vec<(String, String)>,
     status: u16,
+}
+
+struct BridgeRun<'a> {
+    worker_dir: &'a Path,
+    bundle_dir: Option<&'a Path>,
+    entry_url: &'a str,
+    input_json: &'a [u8],
+    timeout: Duration,
+    max_response_body_bytes: u64,
+    manifest_env: &'a std::collections::HashMap<String, String>,
 }
 
 impl Default for DenoCliRunner {
@@ -85,14 +98,15 @@ impl DenoCliRunner {
                 format!("request serialize failed: {err}"),
             )
         })?;
-        let output = self.run_bridge(
-            &worker_dir,
-            bundle_dir.as_ref().map(|dir| dir.path()),
-            &entry_url,
-            &input_json,
-            Duration::from_millis(config.timeout_ms),
-            &config.env,
-        )?;
+        let output = self.run_bridge(BridgeRun {
+            worker_dir: &worker_dir,
+            bundle_dir: bundle_dir.as_ref().map(|dir| dir.path()),
+            entry_url: &entry_url,
+            input_json: &input_json,
+            timeout: Duration::from_millis(config.timeout_ms),
+            max_response_body_bytes: effective_max_body_size_bytes(config),
+            manifest_env: &config.env,
+        })?;
         let bridge = parse_bridge_response(&output)?;
         Ok(SerializedResponse {
             status: bridge.status,
@@ -101,31 +115,24 @@ impl DenoCliRunner {
         })
     }
 
-    fn run_bridge(
-        &self,
-        worker_dir: &Path,
-        bundle_dir: Option<&Path>,
-        entry_url: &str,
-        input_json: &[u8],
-        timeout: Duration,
-        manifest_env: &std::collections::HashMap<String, String>,
-    ) -> Result<String, IsolationError> {
-        let script_file = write_bridge_script(worker_dir, entry_url)?;
+    fn run_bridge(&self, run: BridgeRun<'_>) -> Result<String, IsolationError> {
+        let script_file =
+            write_bridge_script(run.worker_dir, run.entry_url, run.max_response_body_bytes)?;
         let mut command = Command::new(&self.executable);
         command
             .arg("run")
             .arg("--no-check")
             .arg("--no-prompt")
             .env_clear();
-        apply_permission_flags(&mut command, worker_dir, bundle_dir);
+        apply_permission_flags(&mut command, run.worker_dir, run.bundle_dir);
         inject_runtime_env(&mut command);
-        inject_manifest_env(&mut command, manifest_env);
-        if let Some(config_path) = deno_config_path(worker_dir) {
+        inject_manifest_env(&mut command, run.manifest_env);
+        if let Some(config_path) = deno_config_path(run.worker_dir) {
             command.arg("--config").arg(config_path);
         }
         let mut child = command
             .arg(script_file.path())
-            .current_dir(worker_dir)
+            .current_dir(run.worker_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -138,7 +145,7 @@ impl DenoCliRunner {
             })?;
 
         if let Some(stdin) = child.stdin.as_mut() {
-            stdin.write_all(input_json).map_err(|err| {
+            stdin.write_all(run.input_json).map_err(|err| {
                 IsolationError::new("DENO_STDIN_FAILED", format!("stdin write failed: {err}"))
             })?;
         }
@@ -155,12 +162,12 @@ impl DenoCliRunner {
             {
                 break;
             }
-            if started.elapsed() > timeout {
+            if started.elapsed() > run.timeout {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(IsolationError::new(
                     "DENO_TIMEOUT",
-                    format!("deno execution exceeded {}ms", timeout.as_millis()),
+                    format!("deno execution exceeded {}ms", run.timeout.as_millis()),
                 ));
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -201,8 +208,9 @@ impl DenoCliRunner {
 fn write_bridge_script(
     worker_dir: &Path,
     entry_url: &str,
+    max_response_body_bytes: u64,
 ) -> Result<tempfile::NamedTempFile, IsolationError> {
-    let script = bridge_script(entry_url);
+    let script = bridge_script(entry_url, max_response_body_bytes);
     let mut builder = tempfile::Builder::new();
     builder.prefix(".edger-bridge-").suffix(".mjs");
     let mut file = builder
@@ -370,12 +378,13 @@ fn path_to_file_url(path: &Path) -> Result<String, IsolationError> {
     Ok(format!("file://{}", path.to_string_lossy()))
 }
 
-fn bridge_script(entry_url: &str) -> String {
+fn bridge_script(entry_url: &str, max_response_body_bytes: u64) -> String {
     let entry_json = serde_json::to_string(entry_url).expect("entry URL serializes");
     format!(
         r#"
 const RESPONSE_PREFIX = {response_prefix:?};
 const entryUrl = {entry_json};
+const MAX_RESPONSE_BODY_BYTES = {max_response_body_bytes};
 
 async function readStdin() {{
   const chunks = [];
@@ -744,6 +753,10 @@ async function collectBody(response) {{
       break;
     }}
     const chunk = asUint8Array(result.value.value);
+    if (total + chunk.length > MAX_RESPONSE_BODY_BYTES) {{
+      await reader.cancel("edger response body limit exceeded");
+      throw new Error("worker response body exceeds configured limit");
+    }}
     chunks.push(chunk);
     total += chunk.length;
     seenChunk = true;
@@ -768,6 +781,7 @@ console.log(RESPONSE_PREFIX + JSON.stringify(out));
 "#,
         response_prefix = RESPONSE_PREFIX,
         entry_json = entry_json,
+        max_response_body_bytes = max_response_body_bytes,
     )
 }
 
@@ -783,5 +797,12 @@ mod tests {
         .unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.body, Some(b"ok".to_vec()));
+    }
+
+    #[test]
+    fn bridge_script_enforces_response_body_limit() {
+        let script = bridge_script("file:///worker/index.ts", 4096);
+        assert!(script.contains("const MAX_RESPONSE_BODY_BYTES = 4096;"));
+        assert!(script.contains("total + chunk.length > MAX_RESPONSE_BODY_BYTES"));
     }
 }

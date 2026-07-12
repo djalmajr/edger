@@ -13,7 +13,7 @@ completed (2026-06-29) — shell routing Rust-native por worker com `base: "/"`,
 
 ## Traceability
 - **Source docs:** `planning/edger/docs/shell-protocol.md`, `planning/edger/epics/07-avancado/02-shell-routing.md`, `planning/edger/docs/value-parity-matrix.md`
-- **Buntime refs:** runtime docs, manifests de apps `shell`, `todos`, `platform` e plugin gateway em `/Users/djalmajr/Developer/djalmajr/buntime/`
+- **Buntime refs:** runtime docs, manifests de apps `shell`, `todos`, `platform` e plugin gateway em `<buntime-repo>/`
 - **Prototype refs:** browser validation pode usar `http://127.0.0.1:<port>/todos` e shell local quando disponível.
 - **Business rules:** gateway não pode bypassar auth/namespace.
 

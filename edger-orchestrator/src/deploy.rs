@@ -5,17 +5,20 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use edger_core::{
     create_worker_ref, principal_can_access_optional_namespace, ApiKeyPrincipal, CoreError,
-    WorkerConfig, WorkerManifest,
+    WorkerConfig, WorkerHealthCheckMode, WorkerManifest, WorkerRef,
 };
 use edger_worker::{WorkerError, WorkerPool};
 use serde::Serialize;
 
 use crate::manifest_index_stub::ManifestIndex;
 use crate::manifest_loader::{load_worker_manifest, scan_worker_manifests};
+use crate::observability::{
+    OperationalEventInput, OperationalEventLevel, OperationalEventSource, OperationalStore,
+};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,7 +55,7 @@ pub fn install_worker_from_zip(
     extract_zip(bytes, staging.path())?;
     let package_dir = package_root(staging.path())?;
 
-    let manifest = load_worker_manifest(&package_dir)?;
+    let mut manifest = load_worker_manifest(&package_dir)?;
     validate_package_manifest(&package_dir, &manifest)?;
     if manifest.enabled == Some(false) {
         return Err(CoreError::new(
@@ -77,6 +80,16 @@ pub fn install_worker_from_zip(
     fs::rename(&package_dir, &target)
         .map_err(|err| deploy_io(format!("failed to move package into place: {err}")))?;
 
+    if manifest
+        .health_check
+        .as_ref()
+        .is_some_and(|check| check.mode == WorkerHealthCheckMode::OnDeploy)
+    {
+        // Keep the candidate unroutable until the explicit on-deploy check
+        // succeeds. The manifest on disk is unchanged; this is a runtime
+        // promotion gate, not a mutation of the uploaded package.
+        manifest.enabled = Some(false);
+    }
     let mut index = index.clone();
     if let Err(err) = index.insert(target.clone(), manifest) {
         let _ = fs::remove_dir_all(&target);
@@ -159,6 +172,20 @@ pub async fn rescan_workers_and_prewarm(
     Ok(report)
 }
 
+pub async fn rescan_workers_and_prewarm_with_events(
+    index: &ManifestIndex,
+    pool: &WorkerPool,
+    events: &OperationalStore,
+    dry_run: bool,
+) -> Result<RescanReport, CoreError> {
+    let report = rescan_workers(index, dry_run)?;
+    if !dry_run {
+        run_pending_releases_with_events(index, events).await?;
+        prewarm_min_process_workers(index, pool).await?;
+    }
+    Ok(report)
+}
+
 pub async fn prewarm_min_process_workers(
     index: &ManifestIndex,
     pool: &WorkerPool,
@@ -202,6 +229,109 @@ pub async fn run_pending_releases(index: &ManifestIndex) -> Result<usize, CoreEr
         }
     }
     Ok(ran)
+}
+
+pub async fn run_pending_releases_with_events(
+    index: &ManifestIndex,
+    events: &OperationalStore,
+) -> Result<usize, CoreError> {
+    let mut ran = 0;
+    for worker in index.worker_refs() {
+        if worker.config.enabled && run_release_for_worker(&worker, events).await? {
+            ran += 1;
+        }
+    }
+    Ok(ran)
+}
+
+async fn run_release_for_worker(
+    worker: &WorkerRef,
+    events: &OperationalStore,
+) -> Result<bool, CoreError> {
+    let Some(command) = worker.config.release_command.as_deref() else {
+        return Ok(false);
+    };
+    if command.trim().is_empty() {
+        return Ok(false);
+    }
+
+    record_release_event(
+        events,
+        worker,
+        "release.started",
+        OperationalEventLevel::Info,
+        Some("started"),
+        None,
+        None,
+    );
+    let started = Instant::now();
+    match run_release(&worker.dir, &worker.config).await {
+        Ok(true) => {
+            record_release_event(
+                events,
+                worker,
+                "release.succeeded",
+                OperationalEventLevel::Info,
+                Some("succeeded"),
+                Some(started.elapsed().as_millis() as u64),
+                None,
+            );
+            Ok(true)
+        }
+        Ok(false) => {
+            record_release_event(
+                events,
+                worker,
+                "release.skipped",
+                OperationalEventLevel::Info,
+                Some("already_released"),
+                Some(started.elapsed().as_millis() as u64),
+                None,
+            );
+            Ok(false)
+        }
+        Err(error) => {
+            record_release_event(
+                events,
+                worker,
+                "release.failed",
+                OperationalEventLevel::Error,
+                Some("failed"),
+                Some(started.elapsed().as_millis() as u64),
+                Some(error.code.clone()),
+            );
+            Err(error)
+        }
+    }
+}
+
+fn record_release_event(
+    events: &OperationalStore,
+    worker: &WorkerRef,
+    kind: &str,
+    level: OperationalEventLevel,
+    outcome: Option<&str>,
+    duration_ms: Option<u64>,
+    code: Option<String>,
+) {
+    events.record(OperationalEventInput {
+        source: OperationalEventSource::Release,
+        kind: kind.into(),
+        level,
+        namespace: worker.namespace.clone(),
+        worker: Some(worker.name.clone()),
+        version: Some(worker.version.clone()),
+        process_id: None,
+        request_id: None,
+        trace_id: None,
+        outcome: outcome.map(str::to_string),
+        status: None,
+        duration_ms,
+        code,
+        message: None,
+        truncated: None,
+        dropped_count: None,
+    });
 }
 
 /// Runs `config.release_command` once (guarded by a `.edger-release` marker in
@@ -405,6 +535,86 @@ fn deploy_io(message: String) -> CoreError {
 mod release_tests {
     use super::*;
     use edger_core::parse_worker_config;
+
+    #[tokio::test]
+    async fn failed_release_emits_sanitized_lifecycle_without_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let worker = create_worker_ref(
+            dir.path().to_path_buf(),
+            WorkerManifest {
+                name: "bad-observed".into(),
+                version: Some("2.0.0".into()),
+                release: Some("echo secret-value-and-path-$PWD >&2; exit 3".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let events = crate::observability::OperationalStore::default();
+
+        let error = run_release_for_worker(&worker, &events).await.unwrap_err();
+        assert_eq!(error.code, "RELEASE_FAILED");
+        assert!(!dir.path().join(".edger-release").exists());
+
+        let page = events.query(crate::observability::OperationalEventQuery {
+            worker: Some("bad-observed".into()),
+            version: Some("2.0.0".into()),
+            source: Some("release".into()),
+            ..Default::default()
+        });
+        assert_eq!(page.events.len(), 2);
+        assert_eq!(page.events[0].kind, "release.failed");
+        assert_eq!(page.events[0].code.as_deref(), Some("RELEASE_FAILED"));
+        assert_eq!(page.events[1].kind, "release.started");
+        let serialized = serde_json::to_string(&page).unwrap();
+        assert!(!serialized.contains("secret-value"));
+        assert!(!serialized.contains(dir.path().to_string_lossy().as_ref()));
+        assert!(!serialized.contains("echo "));
+    }
+
+    #[tokio::test]
+    async fn successful_release_then_skip_are_observable_and_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let worker = create_worker_ref(
+            dir.path().to_path_buf(),
+            WorkerManifest {
+                name: "observed".into(),
+                version: Some("1.0.0".into()),
+                release: Some("true".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let events = crate::observability::OperationalStore::default();
+
+        assert!(run_release_for_worker(&worker, &events).await.unwrap());
+        assert!(!run_release_for_worker(&worker, &events).await.unwrap());
+        assert!(dir.path().join(".edger-release").exists());
+
+        let page = events.query(crate::observability::OperationalEventQuery {
+            worker: Some("observed".into()),
+            source: Some("release".into()),
+            ..Default::default()
+        });
+        let kinds = page
+            .events
+            .iter()
+            .map(|event| event.kind.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec![
+                "release.skipped",
+                "release.started",
+                "release.succeeded",
+                "release.started"
+            ]
+        );
+        assert!(page
+            .events
+            .iter()
+            .filter(|event| event.kind != "release.started")
+            .all(|event| event.duration_ms.is_some()));
+    }
 
     #[tokio::test]
     async fn run_release_runs_once_and_marks_done() {

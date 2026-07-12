@@ -9,11 +9,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-license = "MIT"
+license-file = "LICENSE"
 repository = "https://github.com/djalmajr/edger"
-rust-version = "1.80"
+rust-version = "1.88"
+homepage = "https://github.com/djalmajr/edger"
+documentation = "https://github.com/djalmajr/edger/tree/main/docs"
 
 [workspace.dependencies]
 # dependências comuns (ex: hyper, tokio, etc. serão adicionadas conforme necessário)
@@ -29,7 +31,7 @@ async-trait = "0.1"
 futures-core = "0.3"
 thiserror = "2"
 postcard = "1"
-lru = "0.12"
+lru = "0.16.3"
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
@@ -39,6 +41,6 @@ semver = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 libsql = { version = "0.10.0-pre.4", default-features = false, features = ["core", "remote", "sync", "tls"] }
 sha2 = "0.10"
-wasmtime = "29"
-wasmtime-wasi = "29"
+wasmtime = { version = "36.0.12", default-features = false, features = ["cranelift", "runtime", "std", "wat"] }
+wasmtime-wasi = "36.0.12"
 wat = "1.252"

@@ -1,11 +1,11 @@
-# Story 20.09: Observabilidade OTLP e evento por execução
+# Story 20.09: Evento por execução e follow-up OTLP
 
 **Origin:** planning/edger/epics/20-endurecimento-runtime/00-overview.md
 
 ## Context
 
 - **Problema:** traces e eventos de execução precisam ser exportáveis sem forçar OTLP no caminho padrão.
-- **Objetivo:** adicionar OTLP real atrás de feature/config e emitir evento por execução com causa e custo.
+- **Objetivo:** registrar a entrega do evento por execução e manter a rastreabilidade da cauda OTLP transferida ao Epic 21.
 - **Valor:** melhora diagnóstico de produção sem tornar observabilidade uma dependência obrigatória.
 
 ## Files
@@ -21,17 +21,17 @@
 ## Detail
 
 ### Critérios de aceite
-- [ ] OTLP exporta traces quando a feature/configuração estiver habilitada.
-- [ ] Com OTLP desligado, o runtime preserva o comportamento atual.
-- [ ] Cada execução emite evento com causa e custo verificáveis.
-- [ ] Erros de configuração de OTLP são reportados de forma clara.
+- [x] OTLP exporta traces quando a feature/configuração estiver habilitada. Ownership: `planning/edger/epics/21-observabilidade-workers-cpanel/08-otel-exporter-contexto.md`.
+- [x] Com OTLP desligado, o runtime preserva o comportamento atual.
+- [x] Cada execução emite evento com causa e custo verificáveis.
+- [x] Erros de configuração de OTLP são reportados de forma clara.
 
 ## Tasks
 
-- [ ] Mapear inicialização atual de tracing.
-- [ ] Adicionar caminho OTLP opt-in.
-- [ ] Definir evento mínimo por execução.
-- [ ] Cobrir modo habilitado, desligado e configuração inválida.
+- [x] Mapear inicialização atual de tracing.
+- [x] Adicionar caminho OTLP opt-in na Story 21.08.
+- [x] Definir evento mínimo por execução.
+- [x] Cobrir modo habilitado, desligado e configuração inválida.
 
 ## Verification
 
@@ -44,4 +44,4 @@ cargo fmt -- --check
 
 ## Status
 
-**pending**
+**completed / superseded for ownership** — evento por execução entregue no PR #28; exporter, propagação de contexto e cobertura on/off/inválida concluídos na Story 21.08 para manter um único owner.

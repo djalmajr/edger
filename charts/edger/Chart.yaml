@@ -2,9 +2,8 @@ apiVersion: v2
 name: edger
 description: Helm chart for EdgeR, a stateless Rust runtime for JS and WASM workers
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
-icon: https://deno.com/logo.svg
+version: 0.2.0
+appVersion: "0.2.0"
 keywords:
   - edger
   - edge-runtime

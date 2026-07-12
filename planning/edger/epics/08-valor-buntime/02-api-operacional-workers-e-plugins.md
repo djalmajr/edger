@@ -13,7 +13,7 @@ completed (2026-06-29) — API operacional v1 entregue com inventário root-only
 
 ## Traceability
 - **Source docs:** `planning/edger/epics/07-avancado/01-full-manifests-kinds.md`, `planning/edger/docs/value-parity-matrix.md`
-- **Buntime refs:** runtime API, worker routes, plugin routes e key routes em `/Users/djalmajr/Developer/djalmajr/buntime/apps/runtime/src/`
+- **Buntime refs:** runtime API, worker routes, plugin routes e key routes em `<buntime-repo>/apps/runtime/src/`
 - **Prototype refs:** none.
 - **Business rules:** API primeiro; UI administrativa é entrega posterior.
 

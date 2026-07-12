@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use edger_core::{
-    create_worker_ref, principal_can_access_optional_namespace, AdminWorkerInfo, ApiKeyPrincipal,
-    CoreError, CronJob, WorkerManifest, WorkerRef,
+    create_worker_ref, principal_can_access_optional_namespace, AdminWorkerHealthCheckInfo,
+    AdminWorkerInfo, ApiKeyPrincipal, CoreError, CronJob, WorkerHealthCheckMode, WorkerManifest,
+    WorkerRef,
 };
 
 use crate::router::PluginRef;
@@ -339,6 +340,19 @@ impl ManifestIndex {
                 None,
             )?,
         };
+        let target_is_enabled = bucket
+            .iter()
+            .any(|entry| entry.worker.version == target_version && entry.worker.config.enabled);
+        let enabled_count = bucket
+            .iter()
+            .filter(|entry| entry.worker.config.enabled)
+            .count();
+        if name == "cpanel" && !enabled && target_is_enabled && enabled_count <= 1 {
+            return Err(CoreError::new(
+                "CPANEL_DEFAULT_REQUIRED",
+                "cpanel must keep at least one enabled default version",
+            ));
+        }
         let entry = bucket
             .iter_mut()
             .find(|entry| entry.worker.version == target_version)
@@ -389,6 +403,18 @@ fn admin_worker_info(entry: &ManifestEntry) -> AdminWorkerInfo {
         }
         .into(),
         version: entry.worker.version.clone(),
+        health_check: entry.worker.config.health_check.as_ref().map(|check| {
+            AdminWorkerHealthCheckInfo {
+                path: check.path.clone(),
+                method: check.method.clone(),
+                mode: match check.mode {
+                    WorkerHealthCheckMode::Manual => "manual",
+                    WorkerHealthCheckMode::OnDeploy => "on-deploy",
+                }
+                .into(),
+                timeout_ms: check.timeout_ms,
+            }
+        }),
     }
 }
 
@@ -615,6 +641,44 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.code, "NOT_FOUND");
+    }
+
+    #[test]
+    fn cpanel_rejects_disabling_its_last_enabled_version() {
+        let mut index = ManifestIndex::new();
+        index
+            .insert(PathBuf::from("/w/cpanel"), manifest("cpanel", "1.0.0"))
+            .unwrap();
+
+        let err = index
+            .set_worker_enabled("cpanel", Some("1.0.0"), false)
+            .unwrap_err();
+
+        assert_eq!(err.code, "CPANEL_DEFAULT_REQUIRED");
+        assert_eq!(
+            index.resolve_worker("cpanel", None).unwrap().version,
+            "1.0.0"
+        );
+    }
+
+    #[test]
+    fn cpanel_can_disable_one_version_when_another_default_remains() {
+        let mut index = ManifestIndex::new();
+        index
+            .insert(PathBuf::from("/w/cpanel-v1"), manifest("cpanel", "1.0.0"))
+            .unwrap();
+        index
+            .insert(PathBuf::from("/w/cpanel-v2"), manifest("cpanel", "2.0.0"))
+            .unwrap();
+
+        index
+            .set_worker_enabled("cpanel", Some("2.0.0"), false)
+            .unwrap();
+
+        assert_eq!(
+            index.resolve_worker("cpanel", None).unwrap().version,
+            "1.0.0"
+        );
     }
 
     #[test]

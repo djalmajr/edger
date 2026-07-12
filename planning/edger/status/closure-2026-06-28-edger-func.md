@@ -20,7 +20,7 @@ Fase 1 foundation + loader for examples.
 ## Verification results
 - bun test: 6 pass (after targeted changes + new coverage for chunked/serve-html)
 - Launches: STATUS 200 with exact bodies e.g. {"message":"Hello ... from foo!"}, "Hello, world", 204, "meow", html from serve-html
-- Evidence captured to plan SCRATCH /var/folders/f2/r857c16x45z6p82wsq_0d_v00000gp/T/grok-goal-1ab4221315e9/implementer/ (edger-*.log + .resp)
+- Evidence captured to plan SCRATCH [temporary-directory]/grok-goal-1ab4221315e9/implementer/ (edger-*.log + .resp)
 - memory_lint (zommehq/buntime + periodic): findings non-blocking for edger (buntime rules suggestions + session dups); edger planning/edger/ clean after refinement fixes
 - No stale docs or outdated cross-refs in planning/edger/ (verified per plan step 1)
 

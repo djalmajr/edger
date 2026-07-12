@@ -43,13 +43,15 @@ async function handleShutdown(reason, graceMs) {
     // no listeners / dispatch unsupported — nothing to drain.
   }
   const pending = pendingWaitUntil.splice(0);
+  let timedOut = false;
   if (pending.length > 0 && graceMs > 0) {
-    await Promise.race([
-      Promise.allSettled(pending),
-      new Promise((resolve) => setTimeout(resolve, graceMs)),
+    const result = await Promise.race([
+      Promise.allSettled(pending).then(() => "completed"),
+      new Promise((resolve) => setTimeout(() => resolve("timed_out"), graceMs)),
     ]);
+    timedOut = result === "timed_out";
   }
-  return pending.length;
+  return { drained: pending.length, timedOut };
 }
 
 let conn;
@@ -422,7 +424,8 @@ async function respond(handler, raw) {
   try {
     response = await handler(buildRequest(raw));
   } catch (err) {
-    const message = new TextEncoder().encode(String(err?.stack ?? err));
+    console.error("worker handler failed", err);
+    const message = new TextEncoder().encode("Internal worker error");
     await writeTagged(
       FRAME_HEADER,
       new TextEncoder().encode(
@@ -494,9 +497,9 @@ async function main() {
     const raw = JSON.parse(new TextDecoder().decode(frame));
     // A shutdown control frame is not a request: drain and exit cleanly.
     if (raw && raw.__control === "shutdown") {
-      const drained = await handleShutdown(raw.reason ?? "shutdown", raw.graceMs ?? 0);
+      const report = await handleShutdown(raw.reason ?? "shutdown", raw.graceMs ?? 0);
       try {
-        await sendJson({ shutdown: "done", drained });
+        await sendJson({ shutdown: "done", ...report });
       } catch (_) {
         // socket already closed — nothing to ack.
       }

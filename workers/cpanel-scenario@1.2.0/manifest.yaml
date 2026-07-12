@@ -1,0 +1,8 @@
+name: cpanel-scenario
+version: "1.2.0"
+entrypoint: index.ts
+kind: fetch
+ttl: 60s
+maxProcesses: 2
+queueLimit: 1
+queueTimeout: 120ms

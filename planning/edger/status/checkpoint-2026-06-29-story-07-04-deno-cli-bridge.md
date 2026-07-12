@@ -65,7 +65,7 @@ Responses observadas:
 Validação real de SPA:
 
 ```bash
-ROOT_API_KEY=test-root PORT=19084 RUNTIME_WORKER_DIRS=/Users/djalmajr/Developer/djalmajr/buntime/apps/todos cargo run -p edger-orchestrator --bin edger
+ROOT_API_KEY=test-root PORT=19084 RUNTIME_WORKER_DIRS=<buntime-repo>/apps/todos cargo run -p edger-orchestrator --bin edger
 ```
 
 Sem `Authorization`:

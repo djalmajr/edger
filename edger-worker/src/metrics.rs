@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use edger_core::WorkerRef;
 use uuid::Uuid;
@@ -11,6 +12,9 @@ use crate::state::WorkerState;
 
 const SPAWN_LATENCY_SAMPLES: usize = 16;
 const WORKER_WAIT_SAMPLES: usize = 16;
+const WORKER_DURATION_SAMPLES: usize = 64;
+pub const PASSIVE_HEALTH_WINDOW_MS: u64 = 5 * 60 * 1_000;
+const PASSIVE_HEALTH_SAMPLES: usize = 64;
 
 /// Snapshot of pool-level metrics (cloneable, orchestrator-facing).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -53,6 +57,7 @@ pub struct PoolMetrics {
 pub struct WorkerGroupMetrics {
     pub active_processes: usize,
     pub enqueued_total: u64,
+    pub health: WorkerHealthMetrics,
     pub idle_processes: usize,
     pub max_processes: usize,
     pub name: String,
@@ -64,6 +69,9 @@ pub struct WorkerGroupMetrics {
     pub recycle_oom_shutdown_total: u64,
     pub recycle_ttl_total: u64,
     pub rejected_total: u64,
+    pub request_duration_ms_last: u64,
+    pub request_duration_ms_p95: u64,
+    pub request_total: u64,
     pub terminating_processes: usize,
     pub timeout_total: u64,
     pub total_processes: usize,
@@ -71,6 +79,88 @@ pub struct WorkerGroupMetrics {
     pub wait_ms_last: u64,
     pub wait_ms_p50: u64,
     pub wait_ms_p95: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WorkerHealthStatus {
+    #[default]
+    Unobserved,
+    Healthy,
+    Degraded,
+    Failing,
+}
+
+impl WorkerHealthStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unobserved => "unobserved",
+            Self::Healthy => "healthy",
+            Self::Degraded => "degraded",
+            Self::Failing => "failing",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerHealthMetrics {
+    pub consecutive_failures: u64,
+    pub failure_count: u64,
+    pub last_failure_at_ms: Option<u64>,
+    pub last_failure_code: Option<String>,
+    pub last_success_at_ms: Option<u64>,
+    pub observed_at_ms: Option<u64>,
+    pub sample_count: u64,
+    pub status: WorkerHealthStatus,
+    pub success_count: u64,
+    pub window_ms: u64,
+}
+
+impl Default for WorkerHealthMetrics {
+    fn default() -> Self {
+        Self {
+            consecutive_failures: 0,
+            failure_count: 0,
+            last_failure_at_ms: None,
+            last_failure_code: None,
+            last_success_at_ms: None,
+            observed_at_ms: None,
+            sample_count: 0,
+            status: WorkerHealthStatus::Unobserved,
+            success_count: 0,
+            window_ms: PASSIVE_HEALTH_WINDOW_MS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerRequestOutcome {
+    Success,
+    Http5xx,
+    IsolationError,
+    Rejected,
+    Timeout,
+}
+
+impl WorkerRequestOutcome {
+    fn is_failure(self) -> bool {
+        !matches!(self, Self::Success)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Http5xx => "http_5xx",
+            Self::IsolationError => "isolation_error",
+            Self::Rejected => "rejected",
+            Self::Timeout => "timeout",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HealthObservation {
+    at_ms: u64,
+    outcome: WorkerRequestOutcome,
 }
 
 impl WorkerGroupMetrics {
@@ -172,14 +262,107 @@ pub struct WorkerGroupRuntimeMetrics {
     pub recycle_oom_shutdown_total: u64,
     pub recycle_ttl_total: u64,
     pub rejected_total: u64,
+    pub request_duration_ms_last: u64,
+    pub request_duration_ms_p95: u64,
+    pub request_total: u64,
     pub timeout_total: u64,
     pub wait_ms_last: u64,
     pub wait_ms_p50: u64,
     pub wait_ms_p95: u64,
     wait_samples: VecDeque<u64>,
+    duration_samples: VecDeque<u64>,
+    health_observations: VecDeque<HealthObservation>,
 }
 
 impl WorkerGroupRuntimeMetrics {
+    fn record_outcome(&mut self, outcome: WorkerRequestOutcome, at_ms: u64) {
+        while self.health_observations.len() >= PASSIVE_HEALTH_SAMPLES {
+            self.health_observations.pop_front();
+        }
+        self.health_observations
+            .push_back(HealthObservation { at_ms, outcome });
+        self.prune_health(at_ms);
+    }
+
+    pub(crate) fn health_at(&self, now_ms: u64) -> WorkerHealthMetrics {
+        let window_start = now_ms.saturating_sub(PASSIVE_HEALTH_WINDOW_MS);
+        let observations = self
+            .health_observations
+            .iter()
+            .filter(|observation| observation.at_ms >= window_start && observation.at_ms <= now_ms)
+            .collect::<Vec<_>>();
+        if observations.is_empty() {
+            return WorkerHealthMetrics {
+                status: WorkerHealthStatus::Unobserved,
+                window_ms: PASSIVE_HEALTH_WINDOW_MS,
+                ..Default::default()
+            };
+        }
+
+        let success_count = observations
+            .iter()
+            .filter(|observation| !observation.outcome.is_failure())
+            .count() as u64;
+        let failure_count = observations.len() as u64 - success_count;
+        let consecutive_failures = observations
+            .iter()
+            .rev()
+            .take_while(|observation| observation.outcome.is_failure())
+            .count() as u64;
+        let last_success_at_ms = observations
+            .iter()
+            .rev()
+            .find(|observation| !observation.outcome.is_failure())
+            .map(|observation| observation.at_ms);
+        let last_failure = observations
+            .iter()
+            .rev()
+            .find(|observation| observation.outcome.is_failure());
+        let status = if consecutive_failures >= 3 || (success_count == 0 && failure_count >= 3) {
+            WorkerHealthStatus::Failing
+        } else if failure_count > 0 {
+            WorkerHealthStatus::Degraded
+        } else {
+            WorkerHealthStatus::Healthy
+        };
+
+        WorkerHealthMetrics {
+            consecutive_failures,
+            failure_count,
+            last_failure_at_ms: last_failure.map(|observation| observation.at_ms),
+            last_failure_code: last_failure
+                .map(|observation| observation.outcome.label().to_string()),
+            last_success_at_ms,
+            observed_at_ms: observations.last().map(|observation| observation.at_ms),
+            sample_count: observations.len() as u64,
+            status,
+            success_count,
+            window_ms: PASSIVE_HEALTH_WINDOW_MS,
+        }
+    }
+
+    fn prune_health(&mut self, now_ms: u64) {
+        let window_start = now_ms.saturating_sub(PASSIVE_HEALTH_WINDOW_MS);
+        while self
+            .health_observations
+            .front()
+            .is_some_and(|observation| observation.at_ms < window_start)
+        {
+            self.health_observations.pop_front();
+        }
+    }
+
+    fn record_request(&mut self, ms: u64) {
+        self.request_total += 1;
+        self.request_duration_ms_last = ms;
+        if self.duration_samples.len() >= WORKER_DURATION_SAMPLES {
+            self.duration_samples.pop_front();
+        }
+        self.duration_samples.push_back(ms);
+        let samples = self.duration_samples.iter().copied().collect::<Vec<_>>();
+        self.request_duration_ms_p95 = percentile(&samples, 95);
+    }
+
     fn record_wait(&mut self, ms: u64) {
         self.wait_ms_last = ms;
         if self.wait_samples.len() >= WORKER_WAIT_SAMPLES {
@@ -298,6 +481,10 @@ impl MetricsCollector {
         });
     }
 
+    pub fn set_worker_group_queued(&self, identity: &WorkerGroupIdentity, queued: u64) {
+        self.update_worker_group_identity(identity, |metrics| metrics.queued = queued);
+    }
+
     pub fn record_worker_group_queue_rejected(&self, worker_ref: &WorkerRef, queued: u64) {
         self.update_worker_group(worker_ref, |metrics| {
             metrics.rejected_total += 1;
@@ -332,6 +519,47 @@ impl MetricsCollector {
 
     pub fn record_worker_group_recycle(&self, worker_ref: &WorkerRef, cause: WorkerRecycleCause) {
         self.update_worker_group(worker_ref, |metrics| metrics.record_recycle(cause));
+    }
+
+    pub fn record_worker_group_request(&self, worker_ref: &WorkerRef, duration_ms: u64) {
+        self.update_worker_group(worker_ref, |metrics| {
+            metrics.record_request(duration_ms.max(1))
+        });
+    }
+
+    pub fn record_worker_group_outcome(
+        &self,
+        worker_ref: &WorkerRef,
+        outcome: WorkerRequestOutcome,
+    ) {
+        self.record_worker_group_outcome_at(worker_ref, outcome, unix_time_ms());
+    }
+
+    fn record_worker_group_outcome_at(
+        &self,
+        worker_ref: &WorkerRef,
+        outcome: WorkerRequestOutcome,
+        at_ms: u64,
+    ) {
+        self.update_worker_group(worker_ref, |metrics| metrics.record_outcome(outcome, at_ms));
+    }
+
+    #[cfg(test)]
+    fn worker_group_health_at(
+        &self,
+        identity: &WorkerGroupIdentity,
+        now_ms: u64,
+    ) -> WorkerHealthMetrics {
+        self.worker_groups
+            .lock()
+            .expect("worker_groups lock")
+            .get(identity)
+            .map(|metrics| metrics.health_at(now_ms))
+            .unwrap_or_else(|| WorkerHealthMetrics {
+                status: WorkerHealthStatus::Unobserved,
+                window_ms: PASSIVE_HEALTH_WINDOW_MS,
+                ..Default::default()
+            })
     }
 
     pub fn worker_group_runtime_snapshots(
@@ -379,9 +607,23 @@ impl MetricsCollector {
         F: FnOnce(&mut WorkerGroupRuntimeMetrics),
     {
         let key = WorkerGroupIdentity::from_worker_ref(worker_ref);
-        let mut groups = self.worker_groups.lock().expect("worker_groups lock");
-        update(groups.entry(key).or_default());
+        self.update_worker_group_identity(&key, update);
     }
+
+    fn update_worker_group_identity<F>(&self, identity: &WorkerGroupIdentity, update: F)
+    where
+        F: FnOnce(&mut WorkerGroupRuntimeMetrics),
+    {
+        let mut groups = self.worker_groups.lock().expect("worker_groups lock");
+        update(groups.entry(identity.clone()).or_default());
+    }
+}
+
+pub(crate) fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn percentile_p50(samples: &[u64]) -> u64 {
@@ -422,6 +664,8 @@ mod tests {
         collector.record_worker_group_queue_rejected(&worker_ref, 0);
         collector.record_worker_group_queue_timeout(&worker_ref, 0, 11);
         collector.record_worker_group_recycle(&worker_ref, WorkerRecycleCause::MaxRequests);
+        collector.record_worker_group_request(&worker_ref, 7);
+        collector.record_worker_group_request(&worker_ref, 13);
 
         let groups = collector.worker_group_runtime_snapshots();
         let (identity, metrics) = groups.iter().next().expect("worker group metrics");
@@ -434,6 +678,56 @@ mod tests {
         assert_eq!(metrics.timeout_total, 1);
         assert_eq!(metrics.wait_ms_last, 11);
         assert_eq!(metrics.recycle_max_requests_total, 1);
+        assert_eq!(metrics.request_total, 2);
+        assert_eq!(metrics.request_duration_ms_last, 13);
+        assert_eq!(metrics.request_duration_ms_p95, 7);
         assert!(!format!("{identity:?}").contains("/tmp/secret-absolute-worker-path"));
+    }
+
+    #[test]
+    fn passive_health_uses_a_bounded_window_and_real_outcomes() {
+        let collector = MetricsCollector::default();
+        let worker_ref = create_worker_ref(
+            PathBuf::from("/tmp/health-worker"),
+            WorkerManifest {
+                name: "health-worker".into(),
+                version: Some("1.0.0".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let identity = WorkerGroupIdentity::from_worker_ref(&worker_ref);
+
+        assert_eq!(
+            collector.worker_group_health_at(&identity, 1_000).status,
+            WorkerHealthStatus::Unobserved
+        );
+
+        collector.record_worker_group_outcome_at(&worker_ref, WorkerRequestOutcome::Success, 1_000);
+        let healthy = collector.worker_group_health_at(&identity, 1_000);
+        assert_eq!(healthy.status, WorkerHealthStatus::Healthy);
+        assert_eq!(healthy.sample_count, 1);
+        assert_eq!(healthy.success_count, 1);
+
+        collector.record_worker_group_outcome_at(&worker_ref, WorkerRequestOutcome::Http5xx, 2_000);
+        let degraded = collector.worker_group_health_at(&identity, 2_000);
+        assert_eq!(degraded.status, WorkerHealthStatus::Degraded);
+        assert_eq!(degraded.failure_count, 1);
+        assert_eq!(degraded.last_failure_code.as_deref(), Some("http_5xx"));
+
+        collector.record_worker_group_outcome_at(&worker_ref, WorkerRequestOutcome::Timeout, 3_000);
+        collector.record_worker_group_outcome_at(
+            &worker_ref,
+            WorkerRequestOutcome::IsolationError,
+            4_000,
+        );
+        let failing = collector.worker_group_health_at(&identity, 4_000);
+        assert_eq!(failing.status, WorkerHealthStatus::Failing);
+        assert_eq!(failing.consecutive_failures, 3);
+
+        let expired =
+            collector.worker_group_health_at(&identity, 4_000 + PASSIVE_HEALTH_WINDOW_MS + 1);
+        assert_eq!(expired.status, WorkerHealthStatus::Unobserved);
+        assert_eq!(expired.sample_count, 0);
     }
 }

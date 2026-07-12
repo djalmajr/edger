@@ -159,6 +159,35 @@ Deno.serve(async (req: Request) => {
     assert_eq!(body2["method"], "GET");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handler_error_returns_opaque_public_body() {
+    let dir = tempfile::tempdir().unwrap();
+    write_worker(
+        dir.path(),
+        r#"Deno.serve(() => { throw new Error("secret internal detail"); });"#,
+    );
+    let mut worker = DenoWorkerProcess::spawn(
+        dir.path(),
+        Some("index.ts"),
+        Duration::from_secs(20),
+        &HashMap::new(),
+        None,
+    )
+    .await
+    .expect("worker should spawn");
+
+    let response = worker
+        .request(request("GET", "/", None))
+        .await
+        .expect("handler error should become a response");
+    assert_eq!(response.status, 500);
+    assert_eq!(
+        response.body.as_deref(),
+        Some(b"Internal worker error".as_slice())
+    );
+    assert!(!String::from_utf8_lossy(response.body.as_deref().unwrap()).contains("secret"));
+}
+
 // Mutation captured: restoring unconditional `deno bundle` in spawn would hit
 // the wrapper's blocked bundle command and the worker would fail before ready.
 #[cfg(unix)]
@@ -307,6 +336,49 @@ Deno.serve(() => new Response("ok"));
         Some(1),
         "beforeunload fired and one waitUntil promise was drained"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn graceful_shutdown_remains_bounded_when_wait_until_never_resolves() {
+    if find_deno_executable().is_none() {
+        eprintln!("skipping graceful shutdown timeout test: deno not found");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    write_worker(
+        dir.path(),
+        r#"addEventListener("beforeunload", () => {
+  EdgeRuntime.waitUntil(new Promise(() => {}));
+});
+Deno.serve(() => new Response("ok"));
+"#,
+    );
+    let mut worker = DenoWorkerProcess::spawn(
+        dir.path(),
+        Some("index.ts"),
+        Duration::from_secs(20),
+        &HashMap::new(),
+        None,
+    )
+    .await
+    .expect("worker spawns and becomes ready");
+    assert_eq!(
+        worker
+            .request(request("GET", "/", None))
+            .await
+            .unwrap()
+            .status,
+        200
+    );
+
+    let started = std::time::Instant::now();
+    let report = worker
+        .shutdown_report("terminate", Duration::from_millis(50))
+        .await;
+    assert_eq!(report.map(|report| report.drained), Some(1));
+    assert_eq!(report.map(|report| report.timed_out), Some(true));
+    assert!(started.elapsed() < Duration::from_secs(2));
 }
 
 // Deno KV: --unstable-kv is enabled, so Deno.openKv() works. An in-memory KV

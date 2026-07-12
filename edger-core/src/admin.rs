@@ -53,6 +53,16 @@ pub struct AdminWorkerInfo {
     pub source: String,
     pub status: String,
     pub version: String,
+    pub health_check: Option<AdminWorkerHealthCheckInfo>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminWorkerHealthCheckInfo {
+    pub path: String,
+    pub method: String,
+    pub mode: String,
+    pub timeout_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

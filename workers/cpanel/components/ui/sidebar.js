@@ -7,7 +7,7 @@ import { html } from "htm/preact";
 import { cn } from "./utils.js";
 
 export function Sidebar({ collapsed = false, className = "", style = {}, children, ...props }) {
-  const sidebarWidth = collapsed ? "4rem" : "14rem";
+  const sidebarWidth = collapsed ? "4rem" : "12rem";
 
   return html`
     <div

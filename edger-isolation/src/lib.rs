@@ -45,7 +45,10 @@ pub use wire::{decode_frame, encode_frame, validate_request};
 pub use deno::{DenoFacade, DenoIsolate};
 
 #[cfg(feature = "multiproc")]
-pub use multiproc::{DenoProcessIsolate, DenoWorkerProcess};
+pub use multiproc::{
+    ConsoleLogContext, ConsoleLogRecord, ConsoleLogSender, ConsoleStream, DenoProcessIsolate,
+    DenoWorkerProcess,
+};
 
 #[cfg(feature = "wasm")]
 pub use wasm::{WasiConfig, WasmHttpHandler, WasmIsolate};

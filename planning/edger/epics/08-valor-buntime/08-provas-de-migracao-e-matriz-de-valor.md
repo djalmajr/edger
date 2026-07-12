@@ -12,7 +12,7 @@
 
 ## Traceability
 - **Source docs:** `planning/edger/docs/value-parity-matrix.md`, `planning/edger/docs/compat-matrix.md`, `planning/edger/runtime-functional-plan.md`
-- **Buntime refs:** apps `todos`, `shell`, `platform`, plugins gateway/keyval/turso/cron em `/Users/djalmajr/Developer/djalmajr/buntime/`
+- **Buntime refs:** apps `todos`, `shell`, `platform`, plugins gateway/keyval/turso/cron em `<buntime-repo>/`
 - **Prototype refs:** Browser local para TodoMVC/shell quando visual.
 - **Business rules:** prova deve refletir fluxo de usuário/operador, não apenas unidade técnica.
 

@@ -1,0 +1,49 @@
+name: Bug report
+description: Report reproducible incorrect behavior in EdgeR
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not report unpatched vulnerabilities here. Follow SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: EdgeR version or commit
+      placeholder: v0.2.0 or commit SHA
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, Rust and Deno versions, and deployment mode.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Minimal steps, worker manifest and request needed to reproduce.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include sanitized logs and request IDs when available.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, personal data and production secrets.
+          required: true

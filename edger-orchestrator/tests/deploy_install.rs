@@ -96,6 +96,78 @@ fn app_zip(version: &str, body_marker: &str) -> Vec<u8> {
     ])
 }
 
+fn health_app_zip(version: &str, health_status: u16) -> Vec<u8> {
+    zip_package(&[
+        (
+            "manifest.yaml",
+            &format!(
+                "name: health-app\nversion: \"{version}\"\nentrypoint: index.ts\nkind: fetch\nhealthCheck:\n  path: /health\n  mode: on-deploy\n  timeout: 2s\n"
+            ),
+        ),
+        (
+            "index.ts",
+            &format!(
+                "Deno.serve((req) => new Response(new URL(req.url).pathname === '/health' ? 'health' : 'app', {{ status: new URL(req.url).pathname === '/health' ? {health_status} : 200 }}));"
+            ),
+        ),
+    ])
+}
+
+#[tokio::test]
+async fn on_deploy_health_check_gates_promotion_without_periodic_polling() {
+    let root = tempfile::tempdir().unwrap();
+    let app = build_pipeline(state_with_root(root.path().to_path_buf()));
+
+    let (status, json, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        health_app_zip("1.0.0", 200),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    assert_eq!(json["name"], "health-app");
+
+    let (status, _, text) = send(app, "GET", "/health-app", None, "text/plain", Vec::new()).await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(text, "app");
+}
+
+#[tokio::test]
+async fn failed_on_deploy_health_check_keeps_candidate_unroutable() {
+    let root = tempfile::tempdir().unwrap();
+    let app = build_pipeline(state_with_root(root.path().to_path_buf()));
+
+    let (status, json, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        health_app_zip("2.0.0", 503),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "unexpected body: {text}");
+    assert_eq!(json["code"], "DEPLOY_HEALTH_CHECK_FAILED");
+
+    let (status, _, _) = send(
+        app,
+        "GET",
+        "/health-app@2.0.0",
+        None,
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        !root.path().join("health-app@2.0.0").exists(),
+        "a candidate rejected by the on-deploy health gate must be removed from disk"
+    );
+}
+
 // Mutation captured: dropping the `ManifestIndex::insert` call after the
 // atomic rename (install writes to disk but never indexes) leaves the GET
 // below at 404 and this test goes red.

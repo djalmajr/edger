@@ -138,6 +138,32 @@ input[data-slot="checkbox"]:checked {
   display: none;
 }
 
+/* Keep the application shell usable on narrow viewports without handing the
+   entire screen over to a fixed-width sidebar. The icon rail preserves every
+   navigation action while the content receives the available width. */
+@media (max-width: 1199px) {
+  .responsive-sidebar {
+    width: 4rem !important;
+    min-width: 4rem !important;
+    max-width: 4rem !important;
+  }
+
+  .responsive-sidebar [data-sidebar="header"] span,
+  .responsive-sidebar [data-sidebar="menu-button"] > span,
+  .responsive-sidebar [data-sidebar="footer"] > div > span:nth-of-type(2) {
+    display: none !important;
+  }
+
+  .responsive-sidebar [data-sidebar="menu-button"] {
+    justify-content: center;
+  }
+
+  .responsive-sidebar [data-sidebar="footer"] > div {
+    flex-direction: column;
+    padding-inline: 0;
+  }
+}
+
 /* shadcn tokens — light mode (neutral / violet palette).                      */
 /* To rebrand, adjust only --primary and --ring.                               */
 :root {
