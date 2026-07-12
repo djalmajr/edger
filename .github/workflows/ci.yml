@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -54,9 +55,14 @@ jobs:
         run: |
           scratch="${RUNNER_TEMP}/edger-planning-gates"
           mkdir -p "$scratch"
+          set +e
           python3 planning/edger/scripts/refinement-lint.py \
             --scope planning/edger \
             --round github-ci >"$scratch/refinement-report.txt"
+          refinement_status=$?
+          set -e
+          cat "$scratch/refinement-report.txt"
+          test "$refinement_status" -eq 0
           SCRATCH="$scratch" planning/edger/scripts/run-gates.sh
 
   helm:
@@ -98,8 +104,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: taiki-e/install-action@gitleaks
-      - run: gitleaks git . --no-banner --redact
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
 
   dependencies:
     name: Dependency advisories
