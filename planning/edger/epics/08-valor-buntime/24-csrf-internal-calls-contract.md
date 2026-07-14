@@ -20,7 +20,7 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/tests/security_operational.rs` | edit | Add HTTP-level regression proving internal header does not elevate a non-root key |
+| `crates/edger-orchestrator/tests/security_operational.rs` | edit | Add HTTP-level regression proving internal header does not elevate a non-root key |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Move `CSRF e internal calls` to tested for existing admin mutation surfaces |
 | `planning/edger/docs/compat-matrix.md` | edit | Add technical compatibility line for CSRF/internal admin mutation contract |
 | `planning/edger/epics/08-valor-buntime/00-overview.md` | edit | Register Story 08.24 and update status |
@@ -62,7 +62,7 @@
 - [x] Rust and planning gates are green.
 
 ## Test-first plan
-- First failing test: `internal_header_does_not_elevate_non_root_keys` in `edger-orchestrator/tests/security_operational.rs`.
+- First failing test: `internal_header_does_not_elevate_non_root_keys` in `crates/edger-orchestrator/tests/security_operational.rs`.
 - Preferred level: integration test through the real axum pipeline.
 - Observable behavior: `POST /api/admin/workers/todos/disable` with `Bearer acme-read-token` and `x-edger-internal: true` returns `403` and does not mutate state.
 - Low-value tests avoided: testing `header_is_true` directly, duplicating every admin endpoint, or adding a fake upload route just to make the matrix look complete.

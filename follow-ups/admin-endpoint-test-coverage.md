@@ -7,12 +7,12 @@
 Ao remover o `edger-ext-gateway` e o `shell_gateway`, deletei testes que estavam
 entrelaçados com features removidas:
 
-- `edger-orchestrator/tests/gateway_integration.rs` — só gateway (ok deletar).
-- `edger-orchestrator/tests/registry_providers.rs` — providers de estado (serão removidos no epic).
-- `edger-orchestrator/tests/value_parity.rs` — paridade Buntime sobre features removidas.
-- `edger-orchestrator/tests/state_services.rs` — providers de estado.
-- `edger-orchestrator/tests/shell_gateway.rs`, `shell_routing_test.rs` — shell routing (removido).
-- `edger-orchestrator/tests/admin_workers_plugins.rs` — **entrelaçado demais** (114 refs de gateway); deletado inteiro.
+- `crates/edger-orchestrator/tests/gateway_integration.rs` — só gateway (ok deletar).
+- `crates/edger-orchestrator/tests/registry_providers.rs` — providers de estado (serão removidos no epic).
+- `crates/edger-orchestrator/tests/value_parity.rs` — paridade Buntime sobre features removidas.
+- `crates/edger-orchestrator/tests/state_services.rs` — providers de estado.
+- `crates/edger-orchestrator/tests/shell_gateway.rs`, `shell_routing_test.rs` — shell routing (removido).
+- `crates/edger-orchestrator/tests/admin_workers_plugins.rs` — **entrelaçado demais** (114 refs de gateway); deletado inteiro.
 
 ## Lacuna a recobrir
 
@@ -33,7 +33,7 @@ Não recriar cobertura de features deletadas.
 
 ## Entrega 2026-07-03
 
-Coberto em `edger-orchestrator/tests/admin_endpoints.rs`:
+Coberto em `crates/edger-orchestrator/tests/admin_endpoints.rs`:
 
 - Matriz de auth para leitura (`GET /api/admin/workers`) e mutação (`POST /api/admin/workers/{name}/disable`): sem key, key errada, root key e modo aberto.
 - Rotas removidas de keys (`GET/POST /api/admin/keys`) permanecem fora com 404.
@@ -43,4 +43,4 @@ Coberto em `edger-orchestrator/tests/admin_endpoints.rs`:
 - Shape básico de `GET /api/admin/workers/error-summary` e `GET /api/admin/workers/{name}/errors`.
 - Segurança CSRF para mutação admin com `Origin` cross-site retorna 403.
 
-Não ficou débito de cobertura para os endpoints admin sobreviventes citados aqui. `install`/`rescan` continuam cobertos em `edger-orchestrator/tests/deploy_install.rs`; esta entrega não recria teste profundo desses fluxos.
+Não ficou débito de cobertura para os endpoints admin sobreviventes citados aqui. `install`/`rescan` continuam cobertos em `crates/edger-orchestrator/tests/deploy_install.rs`; esta entrega não recria teste profundo desses fluxos.

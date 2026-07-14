@@ -17,11 +17,11 @@
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `edger-orchestrator/Cargo.toml` | alterar | axum/hyper, tower, http |
-| `edger-orchestrator/src/lib.rs` | alterar | exportar módulo server |
-| `edger-orchestrator/src/server.rs` | criar | bind, router mínimo, health/ready |
-| `edger-orchestrator/src/bin/edger.rs` | criar | composição inicial + `PORT` |
-| `edger-orchestrator/tests/health_integration.rs` | criar | test client contra servidor |
+| `crates/edger-orchestrator/Cargo.toml` | alterar | axum/hyper, tower, http |
+| `crates/edger-orchestrator/src/lib.rs` | alterar | exportar módulo server |
+| `crates/edger-orchestrator/src/server.rs` | criar | bind, router mínimo, health/ready |
+| `crates/edger-orchestrator/src/bin/edger.rs` | criar | composição inicial + `PORT` |
+| `crates/edger-orchestrator/tests/health_integration.rs` | criar | test client contra servidor |
 | `planning/edger/epics/05-orquestrador/00-overview.md` | alterar | status story |
 
 ## Detail

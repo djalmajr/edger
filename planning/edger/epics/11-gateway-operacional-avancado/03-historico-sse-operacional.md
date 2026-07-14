@@ -15,8 +15,8 @@ O gateway tem ring buffer local e endpoints read-only, mas operacao real precisa
 | Path | Action | Reason |
 |---|---|---|
 | `edger-ext-gateway/src/lib.rs` | edit | Consolidar historico e evento operacional seguro |
-| `edger-orchestrator/src/admin.rs` | edit | Expor endpoint SSE root-only se necessario |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar auth, filtro e evento |
+| `crates/edger-orchestrator/src/admin.rs` | edit | Expor endpoint SSE root-only se necessario |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar auth, filtro e evento |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar consumo local |
 
 ## Detail

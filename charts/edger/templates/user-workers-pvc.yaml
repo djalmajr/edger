@@ -1,0 +1,17 @@
+{{- if and .Values.userWorkers.persistence.enabled (not .Values.userWorkers.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "edger.fullname" . }}-user-workers
+  labels:
+    {{- include "edger.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.userWorkers.persistence.accessModes | nindent 4 }}
+  {{- with .Values.userWorkers.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.userWorkers.persistence.size | quote }}
+{{- end }}

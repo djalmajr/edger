@@ -13,8 +13,8 @@ Para manter o projeto modular, frontends devem ser apps/workers versionados e is
 | Path | Action | Reason |
 |---|---|---|
 | `workers/` | edit | Definir layout de frontends modulares |
-| `edger-orchestrator/tests/manifest_loader.rs` | edit | Provar manifest/autodiscovery para frontend modular |
-| `edger-orchestrator/tests/value_parity.rs` | edit | Provar app frontend servido localmente |
+| `crates/edger-orchestrator/tests/manifest_loader.rs` | edit | Provar manifest/autodiscovery para frontend modular |
+| `crates/edger-orchestrator/tests/value_parity.rs` | edit | Provar app frontend servido localmente |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar build/serve local |
 
 ## Detail
@@ -63,4 +63,4 @@ SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
 
 ## Status
 
-completed (2026-06-30) - `workers/cpanel/manifest.yaml` define `name`, `version`, `entrypoint`, `injectBase` e `visibility`, e o worker e servido como Static SPA sob `/cpanel`. `workers/shell-demo/manifest.yaml` exclui `cpanel`, e `edger-orchestrator/tests/shell_gateway.rs` prova que a rota do cPanel bypassa o shell e recebe `<base href="/cpanel/" />`. Shell/catalogo completo continua na Story 12.02.
+completed (2026-06-30) - `workers/core/cpanel/manifest.yaml` define `name`, `version`, `entrypoint`, `injectBase` e `visibility`, e o worker e servido como Static SPA sob `/cpanel`. `workers/shell-demo/manifest.yaml` exclui `cpanel`, e `crates/edger-orchestrator/tests/shell_gateway.rs` prova que a rota do cPanel bypassa o shell e recebe `<base href="/cpanel/" />`. Shell/catalogo completo continua na Story 12.02.

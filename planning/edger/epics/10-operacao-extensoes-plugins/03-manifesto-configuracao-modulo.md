@@ -12,9 +12,9 @@ Buntime usa manifests para apps e plugins. O edger ja tem manifests de workers e
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/extensions.rs` | edit | Ajustar tipos puros se for necessario representar manifesto sem I/O |
-| `edger-orchestrator/src/extensions.rs` | edit | Persistir e carregar manifesto operacional no composition boundary |
-| `edger-orchestrator/tests/registry_providers.rs` | edit | Provar compatibilidade com providers existentes |
+| `crates/edger-core/src/extensions.rs` | edit | Ajustar tipos puros se for necessario representar manifesto sem I/O |
+| `crates/edger-orchestrator/src/extensions.rs` | edit | Persistir e carregar manifesto operacional no composition boundary |
+| `crates/edger-orchestrator/tests/registry_providers.rs` | edit | Provar compatibilidade com providers existentes |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar formato e limites de configuracao |
 
 ## Detail

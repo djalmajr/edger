@@ -12,10 +12,10 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-worker/src/pool.rs` | edit | Coordenar lifecycle, estado do pool e decisões de reciclagem |
-| `edger-isolation/src/multiproc.rs` | inspect/edit | Suportar execução persistente e oneshot sem duplicar runtime |
-| `edger-isolation/src/limits.rs` | inspect | Reusar limites e causas de encerramento quando aplicável |
-| `edger-worker/tests/` | inspect/edit | Cobrir crash-loop, oneshot e pre-warm |
+| `crates/edger-worker/src/pool.rs` | edit | Coordenar lifecycle, estado do pool e decisões de reciclagem |
+| `crates/edger-isolation/src/multiproc.rs` | inspect/edit | Suportar execução persistente e oneshot sem duplicar runtime |
+| `crates/edger-isolation/src/limits.rs` | inspect | Reusar limites e causas de encerramento quando aplicável |
+| `crates/edger-worker/tests/` | inspect/edit | Cobrir crash-loop, oneshot e pre-warm |
 
 ## Detail
 

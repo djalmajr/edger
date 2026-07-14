@@ -6,7 +6,7 @@
 - Problema atual: a matriz ainda marca `Logging e warnings acionáveis` como `must partial`; request IDs, diagnósticos de gateway e logs recentes existem, mas falta uma prova global de que erros operacionais emitem logs estruturados sem segredos.
 - Objetivo de entrega: emitir log operacional estruturado para falhas do Admin API, com `surface`, `request_id`, `status` e `code`, sem serializar headers, corpo ou mensagem potencialmente sensível.
 - Restrições: não criar stack de observabilidade externa, não depender de SaaS/OTel, não vazar `Authorization`, API keys, body ou mensagens com valores de usuário no log.
-- Referências: `edger-orchestrator/src/admin_api.rs`, `edger-orchestrator/src/server.rs`, `edger-orchestrator/tests/security_operational.rs`, `planning/edger/docs/value-parity-matrix.md`.
+- Referências: `crates/edger-orchestrator/src/admin_api.rs`, `crates/edger-orchestrator/src/server.rs`, `crates/edger-orchestrator/tests/security_operational.rs`, `planning/edger/docs/value-parity-matrix.md`.
 
 ## Traceability
 - Protótipos/telas: não aplicável.
@@ -17,10 +17,10 @@
 
 | Arquivo | Ação | Motivo | Confiança |
 |---|---|---|---|
-| `edger-orchestrator/src/operational_log.rs` | Criar | Centralizar log estruturado e redaction por omissão | core |
-| `edger-orchestrator/src/lib.rs` | Alterar | Expor módulo interno do orchestrator | core |
-| `edger-orchestrator/src/admin_api.rs` | Alterar | Emitir log em respostas de erro admin | core |
-| `edger-orchestrator/tests/security_operational.rs` | Alterar | Capturar log real de request admin e provar campos/redaction | core |
+| `crates/edger-orchestrator/src/operational_log.rs` | Criar | Centralizar log estruturado e redaction por omissão | core |
+| `crates/edger-orchestrator/src/lib.rs` | Alterar | Expor módulo interno do orchestrator | core |
+| `crates/edger-orchestrator/src/admin_api.rs` | Alterar | Emitir log em respostas de erro admin | core |
+| `crates/edger-orchestrator/tests/security_operational.rs` | Alterar | Capturar log real de request admin e provar campos/redaction | core |
 | `planning/edger/docs/value-parity-matrix.md` | Alterar | Marcar logging como testado quando houver evidência | core |
 | `planning/edger/epics/08-valor-buntime/00-overview.md` | Alterar | Registrar Story 08.29 no backlog/status | core |
 | `planning/edger/roadmap.md` | Alterar | Atualizar contagem da Fase 8 | core |

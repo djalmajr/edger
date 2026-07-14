@@ -14,8 +14,8 @@
 - **Depende de:** Story 03.02; Epic 02.03; Epic 02.02
 
 ## Files
-- `edger-isolation/src/wire.rs`, `limits.rs`, `transport.rs`
-- `edger-isolation/tests/wire_limits.rs`, `limits_timeout.rs`
+- `crates/edger-isolation/src/wire.rs`, `limits.rs`, `transport.rs`
+- `crates/edger-isolation/tests/wire_limits.rs`, `limits_timeout.rs`
 
 ## Detail
 

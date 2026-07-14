@@ -16,13 +16,13 @@
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `edger-worker/Cargo.toml` | alterar | deps: `edger-core`, `tokio`, `lru`, `uuid`, `tracing` |
-| `edger-worker/src/lib.rs` | criar/alterar | exports |
-| `edger-worker/src/pool.rs` | criar | `WorkerPool`, `fetch`, `get_or_create` |
-| `edger-worker/src/lru.rs` | criar | wrapper LRU + key `WorkerCacheKey` |
-| `edger-worker/src/types.rs` | criar | `WorkerCacheKey`, `PoolConfig` |
-| `edger-worker/src/instance.rs` | criar | `WorkerInstance` skeleton (sem supervisor completo) |
-| `edger-worker/tests/pool_lru.rs` | criar | LRU hit/miss/eviction |
+| `crates/edger-worker/Cargo.toml` | alterar | deps: `edger-core`, `tokio`, `lru`, `uuid`, `tracing` |
+| `crates/edger-worker/src/lib.rs` | criar/alterar | exports |
+| `crates/edger-worker/src/pool.rs` | criar | `WorkerPool`, `fetch`, `get_or_create` |
+| `crates/edger-worker/src/lru.rs` | criar | wrapper LRU + key `WorkerCacheKey` |
+| `crates/edger-worker/src/types.rs` | criar | `WorkerCacheKey`, `PoolConfig` |
+| `crates/edger-worker/src/instance.rs` | criar | `WorkerInstance` skeleton (sem supervisor completo) |
+| `crates/edger-worker/tests/pool_lru.rs` | criar | LRU hit/miss/eviction |
 
 ## Detail
 
@@ -53,7 +53,7 @@
 
 ### Dependências
 - Epic 02.02, 02.03
-- Factory trait para isolate (definir em `edger-worker/src/factory.rs` ou usar callback)
+- Factory trait para isolate (definir em `crates/edger-worker/src/factory.rs` ou usar callback)
 
 ## Test-first plan
 - **Primeiro teste falhando:** `lru_evicts_oldest_when_full` — pool max_size=2, três workers, primeiro evictado
@@ -70,7 +70,7 @@
 - [x] Documentar injeção de isolate factory
 
 ## Pendências (documentadas)
-- `dispatch_to_isolate` duplicado de `edger-isolation/kinds.rs` — candidato a mover para `edger-core` (evitar drift)
+- `dispatch_to_isolate` duplicado de `crates/edger-isolation/kinds.rs` — candidato a mover para `edger-core` (evitar drift)
 - Supervisor lifecycle (04.02) ainda não integrado em `WorkerInstance`
 - `fetch` deriva nome do worker de `dir.file_name()` — orquestrador passará `WorkerRef` explícito na 04.04
 

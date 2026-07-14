@@ -12,8 +12,8 @@ Para entregar valor AI-native real, um agente precisa criar ou modificar worker 
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-mcp/src/discovery.rs` | create | Implementar escrita controlada dentro de `workers/` |
-| `edger-mcp/tests/protocol.rs` | create | Provar dry-run, path guard e worker criado descoberto |
+| `crates/edger-mcp/src/discovery.rs` | create | Implementar escrita controlada dentro de `workers/` |
+| `crates/edger-mcp/tests/protocol.rs` | create | Provar dry-run, path guard e worker criado descoberto |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar limites de authoring |
 
 ## Detail

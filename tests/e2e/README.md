@@ -19,7 +19,7 @@ tests/e2e/run.sh
 ```
 
 It builds `./target/debug/edger`, brings up Postgres + PgBouncer on a fresh
-volume (`docker-compose.yml`), boots edger against `workers/param-e2e`, and
+volume (`docker-compose.yml`), boots edger against `tests/fixtures/param-e2e`, and
 asserts each capability, then tears everything down. Exits non-zero on failure,
 `SKIP` (0) if docker/deno are unavailable.
 
@@ -39,9 +39,9 @@ Requires: `docker`, `deno`, `cargo`.
 These run under plain `cargo test` (the ones needing a Deno process are gated by
 `--features multiproc`):
 
-- B1 — `edger-orchestrator/tests/kind_dispatch_integration.rs::deno_backend_injects_all_manifest_env`
-- B2 — `edger-isolation/tests/uds_roundtrip.rs::graceful_shutdown_dispatches_beforeunload_and_drains_wait_until`
-- B3 — `edger-orchestrator/src/deploy.rs::release_tests`
+- B1 — `crates/edger-orchestrator/tests/kind_dispatch_integration.rs::deno_backend_injects_all_manifest_env`
+- B2 — `crates/edger-isolation/tests/uds_roundtrip.rs::graceful_shutdown_dispatches_beforeunload_and_drains_wait_until`
+- B3 — `crates/edger-orchestrator/src/deploy.rs::release_tests`
 
 ## Known follow-ups (surfaced by this e2e)
 

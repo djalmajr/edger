@@ -16,14 +16,14 @@
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `edger-isolation/Cargo.toml` | alterar | features: `deno`, `wasm`, `default = []` |
-| `edger-isolation/src/deno/mod.rs` | criar | `DenoIsolate` skeleton, `DenoFacade` config |
-| `edger-isolation/src/deno/facade.rs` | criar | registro ops stub, module loader trait |
-| `edger-isolation/src/deno/bundle.rs` | criar | traits `ModuleBundler`, stub eszip/precomp hooks |
-| `edger-isolation/src/wasm/mod.rs` | criar | `WasmIsolate` skeleton |
-| `edger-isolation/src/wasm/wasi.rs` | criar | config WASI capabilities stub |
-| `edger-isolation/src/backend.rs` | criar | enum `IsolationBackend { Mock, Deno, Wasm }` factory |
-| `edger-isolation/tests/backend_factory.rs` | criar | factory retorna Mock por default |
+| `crates/edger-isolation/Cargo.toml` | alterar | features: `deno`, `wasm`, `default = []` |
+| `crates/edger-isolation/src/deno/mod.rs` | criar | `DenoIsolate` skeleton, `DenoFacade` config |
+| `crates/edger-isolation/src/deno/facade.rs` | criar | registro ops stub, module loader trait |
+| `crates/edger-isolation/src/deno/bundle.rs` | criar | traits `ModuleBundler`, stub eszip/precomp hooks |
+| `crates/edger-isolation/src/wasm/mod.rs` | criar | `WasmIsolate` skeleton |
+| `crates/edger-isolation/src/wasm/wasi.rs` | criar | config WASI capabilities stub |
+| `crates/edger-isolation/src/backend.rs` | criar | enum `IsolationBackend { Mock, Deno, Wasm }` factory |
+| `crates/edger-isolation/tests/backend_factory.rs` | criar | factory retorna Mock por default |
 | `planning/edger/epics/03-isolacao-execucao/spike.md` | referenciar | layout deve espelhar recomendação do spike |
 
 ## Detail
@@ -77,7 +77,7 @@
 ## Pendências (documentadas)
 - `deno_core` pin + V8 platform singleton boot — PR 10 / story futura
 - `StubBundler` eszip/precomp parser real — PR 10
-- `postcard` feature `alloc` exigida em `edger-isolation/Cargo.toml` (fix gate `cargo check`)
+- `postcard` feature `alloc` exigida em `crates/edger-isolation/Cargo.toml` (fix gate `cargo check`)
 
 ## Verification
 ```bash

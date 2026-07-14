@@ -18,17 +18,17 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/manifest_loader.rs` | create | `load_manifests_from_dirs`, index por nome/namespace/semver |
-| `edger-orchestrator/src/resolver.rs` | create/edit | Resolução de `WorkerRef` + `ExecutionKind` hint para pool |
-| `edger-orchestrator/src/pipeline.rs` | edit | Passar `kind_hint` e `WorkerConfig` normalizado ao `WorkerPool::fetch` |
-| `edger-orchestrator/src/router.rs` | edit | Integrar lookup de manifest após path resolution |
-| `edger-core/src/manifest.rs` | edit | Garantir campos `kind`, `cron`, `inject_base`, `public_routes` completos |
-| `edger-core/src/config.rs` | edit | `parse_worker_config` + normalização para `ExecutionKind` |
-| `edger-core/src/execution.rs` ou `lib.rs` | edit | Enum `ExecutionKind` completo (`FetchHandler`, `RoutesTable`, `StaticSpa`, `WasmModule`, `Fullstack`) |
-| `edger-worker/src/pool.rs` | edit | Aceitar e repassar `ExecutionKind` ao isolate |
-| `edger-isolation/src/kinds.rs` | edit | Match exhaustivo em todos os kinds (delegar para backends) |
-| `edger-orchestrator/tests/manifest_loader_test.rs` | create | Testes de multi-dir, colisão, inferência |
-| `edger-orchestrator/tests/kind_dispatch_integration.rs` | create | E2E por kind com fixtures em `workers/` |
+| `crates/edger-orchestrator/src/manifest_loader.rs` | create | `load_manifests_from_dirs`, index por nome/namespace/semver |
+| `crates/edger-orchestrator/src/resolver.rs` | create/edit | Resolução de `WorkerRef` + `ExecutionKind` hint para pool |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Passar `kind_hint` e `WorkerConfig` normalizado ao `WorkerPool::fetch` |
+| `crates/edger-orchestrator/src/router.rs` | edit | Integrar lookup de manifest após path resolution |
+| `crates/edger-core/src/manifest.rs` | edit | Garantir campos `kind`, `cron`, `inject_base`, `public_routes` completos |
+| `crates/edger-core/src/config.rs` | edit | `parse_worker_config` + normalização para `ExecutionKind` |
+| `crates/edger-core/src/execution.rs` ou `lib.rs` | edit | Enum `ExecutionKind` completo (`FetchHandler`, `RoutesTable`, `StaticSpa`, `WasmModule`, `Fullstack`) |
+| `crates/edger-worker/src/pool.rs` | edit | Aceitar e repassar `ExecutionKind` ao isolate |
+| `crates/edger-isolation/src/kinds.rs` | edit | Match exhaustivo em todos os kinds (delegar para backends) |
+| `crates/edger-orchestrator/tests/manifest_loader_test.rs` | create | Testes de multi-dir, colisão, inferência |
+| `crates/edger-orchestrator/tests/kind_dispatch_integration.rs` | create | E2E por kind com fixtures em `workers/` |
 | `workers/manifest-kinds/` (fixtures) | create | Exemplos por kind para testes |
 
 ## Detail
@@ -64,7 +64,7 @@
 
 ## Test-first plan
 - **Behavior:** Acceptance criteria above fail before implementation; first test targets smallest vertical slice of the story.
-- **Level:** crate integration tests (`edger-orchestrator/tests/`, `edger-isolation/tests/`) + workspace gate.
+- **Level:** crate integration tests (`crates/edger-orchestrator/tests/`, `crates/edger-isolation/tests/`) + workspace gate.
 - **Avoid:** Re-implementing production logic inside tests; hard-coded expected values without driving real entry points.
 
 ## Tasks
@@ -80,8 +80,8 @@
 - [x] Pipeline: após auth/hooks, resolver worker → `pool.fetch_worker(..., kind_hint)`. (`pipeline.rs::dispatch_worker`)
 
 ### Fase 3 — Dispatch exhaustivo
-- [x] `edger-isolation/kinds.rs`: branch por `ExecutionKind` chamando trait methods corretas.
-- [x] Fixtures por kind. (repo: `workers/hello-world` fetch, `workers/routes-demo` routes, `workers/wasm-hello` wasm, `workers/cpanel` SPA; fullstack coberto por fixture temp-dir no teste 501)
+- [x] `crates/edger-isolation/kinds.rs`: branch por `ExecutionKind` chamando trait methods corretas.
+- [x] Fixtures por kind. (repo: `workers/examples/hello-world` fetch, `workers/examples/routes-demo` routes, `workers/examples/wasm-hello` wasm, `workers/core/cpanel` SPA; fullstack coberto por fixture temp-dir no teste 501)
 - [x] Integration tests E2E via tower/hyper test client. (`kind_dispatch_integration.rs`, `shell_routing_test.rs`)
 
 ### Fase 4 — Documentação e gate

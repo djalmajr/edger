@@ -12,10 +12,10 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/config.rs` | inspect/edit | Confirmar normalização e default de `max_body_bytes` |
-| `edger-orchestrator/src/wire.rs` | edit | Propagar o limite efetivo até a camada de execução |
-| `edger-worker/src/pool.rs` | edit | Aplicar o limite por worker ao ler o body |
-| `edger-worker/tests/` | edit | Cobrir aceite/rejeição com limite customizado |
+| `crates/edger-core/src/config.rs` | inspect/edit | Confirmar normalização e default de `max_body_bytes` |
+| `crates/edger-orchestrator/src/wire.rs` | edit | Propagar o limite efetivo até a camada de execução |
+| `crates/edger-worker/src/pool.rs` | edit | Aplicar o limite por worker ao ler o body |
+| `crates/edger-worker/tests/` | edit | Cobrir aceite/rejeição com limite customizado |
 
 ## Detail
 

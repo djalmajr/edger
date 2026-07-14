@@ -10,13 +10,13 @@
 - **Restrições:** control plane (`/api/admin/*`) continua protegido (17.A). Egress e injeção de env/secrets continuam (worker precisa das credenciais dele).
 
 ## Traceability
-- `edger-orchestrator/src/pipeline.rs` (`authorize`, `is_public_worker`, `skip_hooks`)
+- `crates/edger-orchestrator/src/pipeline.rs` (`authorize`, `is_public_worker`, `skip_hooks`)
 
 ## Files
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/pipeline.rs` | edit | Remover `authorize()`/principal do dispatch de worker; passar request cru |
-| `edger-orchestrator/src/auth.rs` | edit | `AuthGate` deixa de gatear data plane (só control plane, via 17.A) |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Remover `authorize()`/principal do dispatch de worker; passar request cru |
+| `crates/edger-orchestrator/src/auth.rs` | edit | `AuthGate` deixa de gatear data plane (só control plane, via 17.A) |
 
 ## Detail
 ### Scope

@@ -14,7 +14,7 @@ harness fatal: NotCapable: Requires net access to "unix:/…/w.sock", run again 
 ```
 
 Unset `allowNet` (full `--allow-net`) works. So today, DB/network workers on the
-multiproc backend must use **full net** (as `tests/e2e/workers/param-e2e` does).
+multiproc backend must use **full net** (as `tests/fixtures/param-e2e` does).
 
 ## Root cause (verified on Deno 2.9.1)
 

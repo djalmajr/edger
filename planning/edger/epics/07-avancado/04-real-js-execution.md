@@ -19,20 +19,20 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/deno/cli.rs` | create | Bridge funcional via Deno CLI para Deno.serve/default fetch |
-| `edger-isolation/src/deno.rs` | create | Facade deno_core: boot isolate, ops, module load |
-| `edger-isolation/src/deno/fetch.rs` | create | `execute_fetch` — export `fetch(req) -> Response` |
-| `edger-isolation/src/deno/routes.rs` | create | `execute_routes` — tabela de rotas serializada |
-| `edger-isolation/src/deno/static_spa.rs` | create | `serve_static_spa` — arquivos estáticos + base injection |
-| `edger-isolation/src/bundle.rs` | create | Hooks eszip/precomp (carregar bundle ou arquivos) |
-| `edger-isolation/src/limits.rs` | edit | Timeout, memory cap stubs → enforcement real |
-| `edger-isolation/src/lib.rs` | edit | `DenoIsolate` impl `Isolate` trait; feature flag |
-| `edger-isolation/Cargo.toml` | edit | deps `deno_core`, `deno_runtime` subset, optional features |
-| `edger-worker/src/instance.rs` | edit | Spawn `DenoIsolate` no supervisor |
-| `edger-worker/src/supervisor.rs` | edit | Resource limits na criação/destruição |
-| `edger-isolation/tests/js_fetch_integration.rs` | create | Roundtrip request/response real |
-| `edger-isolation/tests/js_routes_integration.rs` | create | Routes table handler |
-| `edger-isolation/tests/js_spa_integration.rs` | create | HTML estático servido |
+| `crates/edger-isolation/src/deno/cli.rs` | create | Bridge funcional via Deno CLI para Deno.serve/default fetch |
+| `crates/edger-isolation/src/deno.rs` | create | Facade deno_core: boot isolate, ops, module load |
+| `crates/edger-isolation/src/deno/fetch.rs` | create | `execute_fetch` — export `fetch(req) -> Response` |
+| `crates/edger-isolation/src/deno/routes.rs` | create | `execute_routes` — tabela de rotas serializada |
+| `crates/edger-isolation/src/deno/static_spa.rs` | create | `serve_static_spa` — arquivos estáticos + base injection |
+| `crates/edger-isolation/src/bundle.rs` | create | Hooks eszip/precomp (carregar bundle ou arquivos) |
+| `crates/edger-isolation/src/limits.rs` | edit | Timeout, memory cap stubs → enforcement real |
+| `crates/edger-isolation/src/lib.rs` | edit | `DenoIsolate` impl `Isolate` trait; feature flag |
+| `crates/edger-isolation/Cargo.toml` | edit | deps `deno_core`, `deno_runtime` subset, optional features |
+| `crates/edger-worker/src/instance.rs` | edit | Spawn `DenoIsolate` no supervisor |
+| `crates/edger-worker/src/supervisor.rs` | edit | Resource limits na criação/destruição |
+| `crates/edger-isolation/tests/js_fetch_integration.rs` | create | Roundtrip request/response real |
+| `crates/edger-isolation/tests/js_routes_integration.rs` | create | Routes table handler |
+| `crates/edger-isolation/tests/js_spa_integration.rs` | create | HTML estático servido |
 | `workers/js-fetch/`, `workers/js-routes/`, `workers/js-spa/` | create | Fixtures mínimas |
 | `planning/edger/epics/03-isolacao-execucao/spike.md` | read | Go/no-go e sharp edges do spike |
 
@@ -84,7 +84,7 @@
 
 ## Test-first plan
 - **Behavior:** Acceptance criteria above fail before implementation; first test targets smallest vertical slice of the story.
-- **Level:** crate integration tests (`edger-orchestrator/tests/`, `edger-isolation/tests/`) + workspace gate.
+- **Level:** crate integration tests (`crates/edger-orchestrator/tests/`, `crates/edger-isolation/tests/`) + workspace gate.
 - **Avoid:** Re-implementing production logic inside tests; hard-coded expected values without driving real entry points.
 
 ## Tasks

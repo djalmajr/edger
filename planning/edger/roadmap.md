@@ -29,6 +29,10 @@
 - Objetivo 7: Providers duráveis externos substituíveis, mantendo Turso remoto/sync fora do core/orchestrator e atrás de contratos estáveis.
 - Objetivo 8: Modularizar capacidades de produto aprendidas no Buntime em epics próprios, sem acumular tudo no Epic 8 nem no core.
 - Objetivo 9: Entregar uma primeira versão funcional, testada localmente, de control plane MCP/AI-native para agentes descobrirem, criarem ou modificarem workers, validarem e prepararem commits/PRs sem deploy remoto.
+- Objetivo 10: Distribuir apps core atualizáveis com fallback bundled e oferecer
+  autoria/deploy EdgeR-native pela WebIDE, sem acoplar autosave ao runtime.
+- Objetivo 11: Injetar secrets versionados por referências provider-agnostic,
+  sem materializar valores no manifesto, ZIP, logs ou respostas administrativas.
 
 ## Initiatives / Epics
 | Initiative | Epic | Stories | Status | Dependency |
@@ -49,6 +53,8 @@
 | Fase 14: Deploy de Apps (mini Vercel local) | [`epics/14-deploy-apps/`](epics/14-deploy-apps/00-overview.md) | 5 | **completed** (install + rescan + DnD + versões/rollback + transparência; validado no preview 2026-07-02) | Fase 8.02, Fase 10.02, Fase 12 |
 | Fase 15: Runtime JS Durável (multi-processo) | [`epics/15-runtime-js-duravel/`](epics/15-runtime-js-duravel/00-overview.md) | 5 | in-progress (design aprovado após medição de perf; reorienta 07.04 para UDS multi-processo; Fase A autorizada) | Fase 7.04, Fase 4, Fase 14 |
 | Fase 21: Observabilidade de Workers e OTEL | [`epics/21-observabilidade-workers-cpanel/`](epics/21-observabilidade-workers-cpanel/00-overview.md) | 12 | **completed** (observabilidade local-first, logs/live tail, health passivo, release/drain, probe opt-in e OTLP opt-in) | Fase 12, Fase 15, Epic 18, Story 20.09 |
+| Fase 22: Workers Core e WebIDE | [`epics/22-core-workers-webide/`](epics/22-core-workers-webide/00-overview.md) | 8 | **completed** (estrutura, overlay, imagem mínima e workbench WebIDE validados) | Fase 14, Fase 21 |
+| Fase 23: Secrets versionados | [`epics/23-secrets-versionados/`](epics/23-secrets-versionados/00-overview.md) | 1 | planned (contrato, threat model e provider E2E) | Fase 15, Fase 22 |
 
 ## Suggested sequence
 1. Fase 1 (Fundação) -- Alinha o skeleton real e estabelece cultura (AGENTS, testes, gate). Alta prioridade porque desbloqueia tudo e evita dívida técnica.
@@ -66,6 +72,10 @@
 13. Fase 13 (MCP e Authoring AI-native Local) -- Assume MCP/tools, contratos machine-readable e fluxo funcional local para agentes criarem/modificarem workers e prepararem commits/PRs.
 14. Fase 14 (Deploy de Apps) -- Materializa a promessa de produto "mini Vercel/Cloudflare local": install API (upload zip), rescan de workers em runtime, deploy drag-and-drop no cPanel, versões/rollback e transparência pós-deploy.
 15. Fase 21 (Observabilidade) -- Converte sinais atuais em diagnóstico local navegável, captura console com limites e adiciona exportação OTLP opt-in sem tornar Collector uma dependência do runtime.
+16. Fase 22 (Workers Core e WebIDE) -- Organiza distribuição, protege apps core
+    com overlays e incorpora autoria/deploy explícito ao próprio EdgeR.
+17. Fase 23 (Secrets versionados) -- Define referências, provider substituível,
+    rotação, auditoria e injeção segura antes de expor UX global/local na WebIDE.
 
 Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador podem avançar com mocks. Extensões podem começar protótipos cedo.
 
@@ -77,6 +87,12 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 - **Epic gigante / core inchado**: Risco de repetir o Epic 8 e empacotar produto, frontend, provider, gateway e MCP no core. Mitigação: novas capacidades com fronteira técnica/ciclo de vida próprio viram epics e módulos dedicados; `edger-core` permanece vocabulário/contratos essenciais.
 - **AI-native só no papel**: Risco de MCP ficar apenas planejado. Mitigação: Epic 13 exige uma primeira versão funcional testada localmente, sem deploy remoto, com tools para descoberta, authoring, validação e preparação de commit/PR.
 - **Escopo creep**: Querer tudo (full SSR Next.js nativo) cedo. Mitigação: non-goals claros no intake/design; foco em foundation + adapters.
+- **WebIDE virar segundo runtime**: compiladores em browser, Nodepod ou deploy
+  implícito criariam um plano de execução paralelo. Mitigação: templates EdgeR,
+  snapshot ZIP e install pipeline existente; autosave permanece local.
+- **Secrets vazarem pelo artefato ou observabilidade**: colocar valores em
+  manifesto/ZIP, logs ou eventos quebra isolamento e rotação. Mitigação: Fase 23
+  usa referências versionadas, resolução confiável e redaction testada.
 - **Testes e disciplina**: Sem gate forte desde início, qualidade cai. Mitigação: Fase 1 entrega o gate obrigatório.
 - **Migração**: Usuários Buntime existentes. Mitigação: preservar contracts (fetch/routes, manifests, namespaces, TTL, shell) + docs de mapping.
 - Dependências chave: Fase 3 depende de decisões do spike; Fase 5 depende de worker+isolation; extensões dependem de registry no orquestrador.

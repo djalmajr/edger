@@ -13,7 +13,7 @@ O usuario ja usa o Browser integrado para validar fluxos locais. Para frontends 
 | Path | Action | Reason |
 |---|---|---|
 | `planning/edger/status/evidence/` | edit | Registrar evidencia de Browser local |
-| `edger-orchestrator/tests/value_parity.rs` | edit | Manter prova automatizada complementar |
+| `crates/edger-orchestrator/tests/value_parity.rs` | edit | Manter prova automatizada complementar |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar URL local e checks visuais |
 | `workers/` | edit | Ajustar fixtures/apps de frontend quando necessario |
 

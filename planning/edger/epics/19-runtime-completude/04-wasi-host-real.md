@@ -4,7 +4,7 @@
 
 ## Context
 
-- **Problema:** o host WASI em `edger-isolation/src/wasm/` tem ABI estática e não entrega a request real ao módulo wasm.
+- **Problema:** o host WASI em `crates/edger-isolation/src/wasm/` tem ABI estática e não entrega a request real ao módulo wasm.
 - **Objetivo:** definir e ligar uma ABI mínima para request/response wasm.
 - **Valor:** transforma o modo wasm em execução funcional, não apenas stub de integração.
 
@@ -12,8 +12,8 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/wasm/` | edit | Passar request ao módulo wasm e ler response |
-| `edger-isolation/tests/` | edit | Cobrir execução ponta-a-ponta de módulo wasm |
+| `crates/edger-isolation/src/wasm/` | edit | Passar request ao módulo wasm e ler response |
+| `crates/edger-isolation/tests/` | edit | Cobrir execução ponta-a-ponta de módulo wasm |
 | `planning/edger/docs/` | inspect/edit | Documentar ABI se já houver página de runtime wasm |
 
 ## Detail

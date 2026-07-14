@@ -11,26 +11,26 @@
 
 ## Traceability
 
-- `edger-worker/src/supervisor.rs` (`on_request_complete`, `retire_for_max_requests`, `on_ttl_expired`, `on_critical_error`)
-- `edger-worker/src/pool.rs` (`GuardedBody`, `complete_stream_state`, `recycle_stream_state`, `shutdown`)
-- `edger-worker/src/instance.rs` (`request_count`, `ttl_handle`, `unhealthy`)
-- `edger-isolation/src/limits.rs` (`ResourceLimits::from_config`)
-- `edger-isolation/src/multiproc.rs` (`DenoWorkerProcess::spawn`, `DenoProcessIsolate::terminate`, V8 heap cap)
-- `edger-isolation/tests/resource_limits.rs` (cap de heap mata só o worker que excede)
-- `edger-worker/tests/supervisor_lifecycle.rs`, `edger-worker/tests/pool_error_recovery.rs`, `edger-worker/tests/cancel_safety.rs`
+- `crates/edger-worker/src/supervisor.rs` (`on_request_complete`, `retire_for_max_requests`, `on_ttl_expired`, `on_critical_error`)
+- `crates/edger-worker/src/pool.rs` (`GuardedBody`, `complete_stream_state`, `recycle_stream_state`, `shutdown`)
+- `crates/edger-worker/src/instance.rs` (`request_count`, `ttl_handle`, `unhealthy`)
+- `crates/edger-isolation/src/limits.rs` (`ResourceLimits::from_config`)
+- `crates/edger-isolation/src/multiproc.rs` (`DenoWorkerProcess::spawn`, `DenoProcessIsolate::terminate`, V8 heap cap)
+- `crates/edger-isolation/tests/resource_limits.rs` (cap de heap mata só o worker que excede)
+- `crates/edger-worker/tests/supervisor_lifecycle.rs`, `crates/edger-worker/tests/pool_error_recovery.rs`, `crates/edger-worker/tests/cancel_safety.rs`
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-worker/src/supervisor.rs` | edit | Tornar lifecycle por instância compatível com grupo e drain |
-| `edger-worker/src/pool.rs` | edit | Recycle/drain por processo; shutdown fecha fila e drena instâncias ativas |
-| `edger-worker/src/instance.rs` | edit | Expor metadados de processo e estado de drain sem quebrar locks |
-| `edger-isolation/src/multiproc.rs` | edit | Confirmar que cada processo criado pelo grupo recebe timeout/env/heap cap próprios |
-| `edger-isolation/src/limits.rs` | edit | Manter `ResourceLimits::from_config` como fonte de limits por processo |
-| `edger-worker/tests/supervisor_lifecycle.rs` | edit | Cobrir TTL/maxRequests por processo dentro de grupo |
-| `edger-worker/tests/pool_error_recovery.rs` | edit | Provar que erro/OOM recicla só a instância afetada |
-| `edger-isolation/tests/resource_limits.rs` | edit | Reusar cobertura de heap cap com múltiplos processos |
+| `crates/edger-worker/src/supervisor.rs` | edit | Tornar lifecycle por instância compatível com grupo e drain |
+| `crates/edger-worker/src/pool.rs` | edit | Recycle/drain por processo; shutdown fecha fila e drena instâncias ativas |
+| `crates/edger-worker/src/instance.rs` | edit | Expor metadados de processo e estado de drain sem quebrar locks |
+| `crates/edger-isolation/src/multiproc.rs` | edit | Confirmar que cada processo criado pelo grupo recebe timeout/env/heap cap próprios |
+| `crates/edger-isolation/src/limits.rs` | edit | Manter `ResourceLimits::from_config` como fonte de limits por processo |
+| `crates/edger-worker/tests/supervisor_lifecycle.rs` | edit | Cobrir TTL/maxRequests por processo dentro de grupo |
+| `crates/edger-worker/tests/pool_error_recovery.rs` | edit | Provar que erro/OOM recicla só a instância afetada |
+| `crates/edger-isolation/tests/resource_limits.rs` | edit | Reusar cobertura de heap cap com múltiplos processos |
 
 ## Detail
 

@@ -1,0 +1,17 @@
+{{- if and .Values.coreWorkerOverlay.persistence.enabled (not .Values.coreWorkerOverlay.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "edger.fullname" . }}-core-worker-overlay
+  labels:
+    {{- include "edger.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.coreWorkerOverlay.persistence.accessModes | nindent 4 }}
+  {{- if .Values.coreWorkerOverlay.persistence.storageClass }}
+  storageClassName: {{ .Values.coreWorkerOverlay.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.coreWorkerOverlay.persistence.size | quote }}
+{{- end }}

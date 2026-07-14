@@ -11,20 +11,20 @@
 
 ## Traceability
 
-- `edger-worker/src/pool.rs` (factory/dispatch → transporte persistente)
-- `edger-isolation/src/deno/` (backend UDS da 15.A)
-- `planning/edger/docs/compat-matrix.md`, `edger-orchestrator/tests/kind_dispatch_integration.rs`
-- `edger-orchestrator/tests/perf_harness.rs` (re-medição)
+- `crates/edger-worker/src/pool.rs` (factory/dispatch → transporte persistente)
+- `crates/edger-isolation/src/deno/` (backend UDS da 15.A)
+- `planning/edger/docs/compat-matrix.md`, `crates/edger-orchestrator/tests/kind_dispatch_integration.rs`
+- `crates/edger-orchestrator/tests/perf_harness.rs` (re-medição)
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/deno/mod.rs` | edit | `DenoIsolate` usa processo persistente + `UdsTransport` para fetch/routes/SPA |
-| `edger-worker/src/pool.rs` | edit | Ciclo de vida do processo por worker (reuso entre requests; reciclar no crash) |
-| `edger-isolation/src/deno/worker_host.rs` | edit | Harness cobre routes/SPA além de fetch; base_href/x-base preservados |
-| `edger-orchestrator/tests/kind_dispatch_integration.rs` | edit | Rodar a matriz por UDS (feature multiproc) |
-| `edger-orchestrator/tests/perf_harness.rs` | edit | Cenário com backend UDS real (não mock) |
+| `crates/edger-isolation/src/deno/mod.rs` | edit | `DenoIsolate` usa processo persistente + `UdsTransport` para fetch/routes/SPA |
+| `crates/edger-worker/src/pool.rs` | edit | Ciclo de vida do processo por worker (reuso entre requests; reciclar no crash) |
+| `crates/edger-isolation/src/deno/worker_host.rs` | edit | Harness cobre routes/SPA além de fetch; base_href/x-base preservados |
+| `crates/edger-orchestrator/tests/kind_dispatch_integration.rs` | edit | Rodar a matriz por UDS (feature multiproc) |
+| `crates/edger-orchestrator/tests/perf_harness.rs` | edit | Cenário com backend UDS real (não mock) |
 
 ## Detail
 

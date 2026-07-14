@@ -20,13 +20,13 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/admin.rs` | edit | Adicionar `status` ao inventario puro de extensoes |
-| `edger-orchestrator/src/registry.rs` | edit | Adicionar overlay compartilhado de status e providers/hooks ativos |
-| `edger-orchestrator/src/hooks.rs` | edit | Executar somente middlewares ativos |
-| `edger-orchestrator/src/admin_api.rs` | edit | Expor `POST /api/admin/extensions/{name}/enable|disable` |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Cobrir API protegida e inventario atualizado |
-| `edger-orchestrator/tests/registry_hooks.rs` | edit | Provar que middleware desabilitado deixa de interceptar sem rebuild |
-| `edger-orchestrator/tests/registry_providers.rs` | edit | Provar que provider desabilitada sai do lookup de bindings |
+| `crates/edger-core/src/admin.rs` | edit | Adicionar `status` ao inventario puro de extensoes |
+| `crates/edger-orchestrator/src/registry.rs` | edit | Adicionar overlay compartilhado de status e providers/hooks ativos |
+| `crates/edger-orchestrator/src/hooks.rs` | edit | Executar somente middlewares ativos |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Expor `POST /api/admin/extensions/{name}/enable|disable` |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Cobrir API protegida e inventario atualizado |
+| `crates/edger-orchestrator/tests/registry_hooks.rs` | edit | Provar que middleware desabilitado deixa de interceptar sem rebuild |
+| `crates/edger-orchestrator/tests/registry_providers.rs` | edit | Provar que provider desabilitada sai do lookup de bindings |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Atualizar evidencia e lacuna restante de reload/persistencia |
 | `planning/edger/docs/compat-matrix.md` | edit | Registrar compatibilidade tecnica de extension runtime toggle |
 | `planning/edger/docs/extensions.md` | edit | Documentar controle runtime e limites |
@@ -75,9 +75,9 @@
   - Hooks: middleware `teapot` short-circuita antes do toggle e deixa o pool responder depois do toggle, sem rebuild do router.
   - Providers: desabilitar `keyval` remove `provider:keyValue` e `provider:queue` do lookup.
 - Preferred levels:
-  - `edger-orchestrator/tests/admin_workers_plugins.rs`
-  - `edger-orchestrator/tests/registry_hooks.rs`
-  - `edger-orchestrator/tests/registry_providers.rs`
+  - `crates/edger-orchestrator/tests/admin_workers_plugins.rs`
+  - `crates/edger-orchestrator/tests/registry_hooks.rs`
+  - `crates/edger-orchestrator/tests/registry_providers.rs`
 - Low-value tests avoided: serializacao isolada de structs ou teste que apenas chama setter sem observar pipeline.
 
 ## Tasks

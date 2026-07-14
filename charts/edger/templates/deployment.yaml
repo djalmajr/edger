@@ -64,6 +64,10 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: user-workers
+              mountPath: {{ .Values.runtime.workerDirs | quote }}
+            - name: core-worker-overlay
+              mountPath: {{ .Values.runtime.coreWorkerOverlayDir | quote }}
             {{- if $hasRootKey }}
             - name: root-key
               mountPath: {{ .Values.rootKey.mountPath }}
@@ -84,6 +88,20 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: user-workers
+          {{- if .Values.userWorkers.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-user-workers" (include "edger.fullname" .)) .Values.userWorkers.persistence.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: core-worker-overlay
+          {{- if .Values.coreWorkerOverlay.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-core-worker-overlay" (include "edger.fullname" .)) .Values.coreWorkerOverlay.persistence.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
         {{- if $hasRootKey }}
         - name: root-key
           secret:

@@ -17,11 +17,11 @@
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `edger-orchestrator/src/router.rs` | criar | parse path, semver, reserved |
-| `edger-orchestrator/src/manifest_index_stub.rs` | criar | índice mínimo em memória para testes de routing (sem multi-dir) |
-| `edger-orchestrator/src/lib.rs` | alterar | re-exports |
-| `edger-orchestrator/tests/routing_resolution.rs` | criar | casos Buntime |
-| `edger-core/src/manifest.rs` | alterar (se necessário) | helpers namespace/semver |
+| `crates/edger-orchestrator/src/router.rs` | criar | parse path, semver, reserved |
+| `crates/edger-orchestrator/src/manifest_index_stub.rs` | criar | índice mínimo em memória para testes de routing (sem multi-dir) |
+| `crates/edger-orchestrator/src/lib.rs` | alterar | re-exports |
+| `crates/edger-orchestrator/tests/routing_resolution.rs` | criar | casos Buntime |
+| `crates/edger-core/src/manifest.rs` | alterar (se necessário) | helpers namespace/semver |
 
 ## Detail
 

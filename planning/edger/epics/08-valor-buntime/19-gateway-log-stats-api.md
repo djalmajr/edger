@@ -20,8 +20,8 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/admin_api.rs` | edit | Adicionar endpoint `/api/admin/gateway/logs/stats` e agregador |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar auth root-only, agregados e higiene de segredos |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Adicionar endpoint `/api/admin/gateway/logs/stats` e agregador |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar auth root-only, agregados e higiene de segredos |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Atualizar evidência de logging/gateway |
 | `planning/edger/docs/compat-matrix.md` | edit | Registrar endpoint de stats de logs |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar endpoint e limites |

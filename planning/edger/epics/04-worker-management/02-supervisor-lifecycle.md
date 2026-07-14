@@ -16,12 +16,12 @@
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `edger-worker/src/supervisor.rs` | criar | `Supervisor`, transições, timers TTL |
-| `edger-worker/src/instance.rs` | alterar | estado + dispatch + request count |
-| `edger-worker/src/state.rs` | criar | `WorkerState` enum + `transition()` |
-| `edger-worker/src/pool.rs` | alterar | integrar supervisor no get_or_create |
-| `edger-worker/tests/supervisor_lifecycle.rs` | criar | transições válidas/inválidas |
-| `edger-worker/Cargo.toml` | alterar | `tokio::time` para TTL timers |
+| `crates/edger-worker/src/supervisor.rs` | criar | `Supervisor`, transições, timers TTL |
+| `crates/edger-worker/src/instance.rs` | alterar | estado + dispatch + request count |
+| `crates/edger-worker/src/state.rs` | criar | `WorkerState` enum + `transition()` |
+| `crates/edger-worker/src/pool.rs` | alterar | integrar supervisor no get_or_create |
+| `crates/edger-worker/tests/supervisor_lifecycle.rs` | criar | transições válidas/inválidas |
+| `crates/edger-worker/Cargo.toml` | alterar | `tokio::time` para TTL timers |
 
 ## Detail
 

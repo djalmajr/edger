@@ -14,7 +14,7 @@ O projeto precisa ser modular e amigavel a agentes. Para extensoes, isso signifi
 |---|---|---|
 | `planning/edger/scripts/run-gates.sh` | edit | Incluir checks locais de extensao quando houver contrato pronto |
 | `planning/edger/scripts/refinement-lint.py` | edit | Validar referencias de modulos se necessario |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar evidencia operacional de modulo |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar evidencia operacional de modulo |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar checklist local |
 
 ## Detail

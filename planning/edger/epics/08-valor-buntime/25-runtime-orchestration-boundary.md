@@ -20,7 +20,7 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-worker/tests/integration_pool.rs` | edit | Add contract test proving factory receives resolved `WorkerRef` and dispatches by `ExecutionKind` |
+| `crates/edger-worker/tests/integration_pool.rs` | edit | Add contract test proving factory receives resolved `WorkerRef` and dispatches by `ExecutionKind` |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Move runtime orchestration boundary to tested |
 | `planning/edger/docs/compat-matrix.md` | edit | Add technical compatibility row for orchestration boundary |
 | `planning/edger/epics/08-valor-buntime/00-overview.md` | edit | Register Story 08.25 and update status |
@@ -61,7 +61,7 @@
 - [x] Rust and planning gates are green.
 
 ## Test-first plan
-- First failing test: `integration_factory_receives_resolved_worker_ref_before_dispatch` in `edger-worker/tests/integration_pool.rs`.
+- First failing test: `integration_factory_receives_resolved_worker_ref_before_dispatch` in `crates/edger-worker/tests/integration_pool.rs`.
 - Preferred level: WorkerPool integration test with injected factory.
 - Observable behavior: response body comes from isolate dispatch and recorded factory input preserves resolved worker metadata.
 - Low-value tests avoided: type-name assertions for production isolates, direct private helper tests, or duplicating full JS/Wasm integration setup.

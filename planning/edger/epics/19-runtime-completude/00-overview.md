@@ -13,14 +13,14 @@ workers e mantenedores.
 - `kind: fullstack` agora possui adapters declarativos `hono`, `sveltekit` e
   `tanstack`; o stub `501` foi removido na Story 19.05. TanStack Start usa
   `ssrEntrypoint` + `clientDir` no manifest, sem wrapper manual.
-- `UdsTransport` (`edger-isolation/src/transport.rs`) é código morto — o UDS real é
+- `UdsTransport` (`crates/edger-isolation/src/transport.rs`) é código morto — o UDS real é
   `multiproc.rs`.
-- `StubBundler` (`edger-isolation/src/deno/bundle.rs`) não empacotava dependências;
+- `StubBundler` (`crates/edger-isolation/src/deno/bundle.rs`) não empacotava dependências;
   multi-file workers pagavam cold-start desnecessário.
-- WASI host (`edger-isolation/src/wasm/`) tem ABI estática e nunca passa o request ao
+- WASI host (`crates/edger-isolation/src/wasm/`) tem ABI estática e nunca passa o request ao
   módulo wasm.
 - Limite de body é global fixo (`MAX_BODY_BYTES` 4 MiB); override por-worker existe na
-  config mas não é ligado ao caminho de execução (`edger-worker/src/pool.rs`).
+  config mas não é ligado ao caminho de execução (`crates/edger-worker/src/pool.rs`).
 
 **Estado concluído:** as cinco features foram entregues de forma real e validada,
 sem stubs `501` remanescentes e sem código vestigial.
@@ -42,7 +42,7 @@ OTLP export; Cloudflare Tunnel/CD.
 
 - **Fase 1 (paralela):** 01, 02, 03, 04 — arquivos disjuntos (isolation/transport,
   worker+core, isolation/deno, isolation/wasm). Worktrees isoladas.
-- **Fase 2:** 05 (fullstack) após 02 fazer merge — ambos tocam `edger-worker/src/pool.rs`.
+- **Fase 2:** 05 (fullstack) após 02 fazer merge — ambos tocam `crates/edger-worker/src/pool.rs`.
   Design read-only roda em paralelo à Fase 1.
 
 Caminho crítico: 02 → 05.

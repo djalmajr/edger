@@ -10,14 +10,14 @@
 - **Restrições:** manter o roteamento **core** de worker (nome/versão → worker) — isso é do edger, não é "gateway". Endpoints admin de diagnóstico do gateway (`/api/admin/gateway/*`) somem junto.
 
 ## Traceability
-- `edger-ext-gateway` (deletar); `edger-orchestrator/src/admin_api.rs` (`/api/admin/gateway/*`); `bin/edger.rs` (wiring)
+- `edger-ext-gateway` (deletar); `crates/edger-orchestrator/src/admin_api.rs` (`/api/admin/gateway/*`); `bin/edger.rs` (wiring)
 
 ## Files
 | Path | Action | Reason |
 |---|---|---|
 | `edger-ext-gateway/` | delete | Borda vira externa |
-| `edger-orchestrator/src/admin_api.rs` | edit | Remover rotas `/api/admin/gateway/*` |
-| `edger-orchestrator/src/bin/edger.rs` | edit | Remover `gateway_extension_from_env` e envs `EDGER_GATEWAY_*` |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Remover rotas `/api/admin/gateway/*` |
+| `crates/edger-orchestrator/src/bin/edger.rs` | edit | Remover `gateway_extension_from_env` e envs `EDGER_GATEWAY_*` |
 | `planning/edger/docs/deployment-api-gateway.md` | create | Receita: API GW externo (auth OIDC, rate limit, cache) na frente do edger |
 
 ## Detail

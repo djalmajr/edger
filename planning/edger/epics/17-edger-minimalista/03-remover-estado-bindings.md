@@ -10,16 +10,16 @@
 - **Restrições:** manter injeção de env/secrets (filtrada) e `--allow-net` (egress) — é assim que o worker recebe credencial e alcança o backend.
 
 ## Traceability
-- `edger-ext-keyval`, `edger-ext-turso`, `edger-ext-turso-remote` (deletar); `edger-core/src/bindings.rs`; `edger-orchestrator/src/service_bindings.rs`, `registry.rs` (registro de providers)
+- `edger-ext-keyval`, `edger-ext-turso`, `edger-ext-turso-remote` (deletar); `crates/edger-core/src/bindings.rs`; `crates/edger-orchestrator/src/service_bindings.rs`, `registry.rs` (registro de providers)
 
 ## Files
 | Path | Action | Reason |
 |---|---|---|
 | `edger-ext-keyval/`, `edger-ext-turso/`, `edger-ext-turso-remote/` | delete | Estado sai do edger |
-| `edger-orchestrator/src/service_bindings.rs` | delete | Sem bindings |
-| `edger-core/src/bindings.rs` | delete | Vocabulário de bindings some |
-| `edger-orchestrator/src/bin/edger.rs` | edit | Remover wiring de sql/kv/queue provider; manter env/secrets + egress |
-| `edger-core/src/config.rs` | edit | Remover `bindings` do `WorkerConfig` |
+| `crates/edger-orchestrator/src/service_bindings.rs` | delete | Sem bindings |
+| `crates/edger-core/src/bindings.rs` | delete | Vocabulário de bindings some |
+| `crates/edger-orchestrator/src/bin/edger.rs` | edit | Remover wiring de sql/kv/queue provider; manter env/secrets + egress |
+| `crates/edger-core/src/config.rs` | edit | Remover `bindings` do `WorkerConfig` |
 
 ## Detail
 ### Scope
@@ -47,7 +47,7 @@ cargo build --workspace
 ## Status
 
 **completed** (2026-07-02) — Deletados os crates `edger-ext-keyval`, `edger-ext-turso`,
-`edger-ext-turso-remote` (+ membership + deps), `service_bindings.rs`, `edger-core/src/bindings.rs`
+`edger-ext-turso-remote` (+ membership + deps), `service_bindings.rs`, `crates/edger-core/src/bindings.rs`
 (traits `DurableSqlProvider`/`KeyValueProvider`/`QueueProvider`, `BindingSet`, `BindingKind`),
 o campo `bindings` de `WorkerConfig`/`WorkerManifest`, a capability `ServiceProvider` e toda a
 maquinaria de provider do registry (register/getters/has_service_provider). Boot sem

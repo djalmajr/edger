@@ -12,11 +12,11 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/wasm/load.rs` | edit | Cachear módulos compilados quando aplicável |
-| `edger-isolation/src/wasm/handler.rs` | edit | Aplicar limites no caminho de execução |
-| `edger-isolation/src/wasm/wasi.rs` | inspect/edit | Garantir passagem correta de request/body |
-| `edger-isolation/src/wasm/mod.rs` | inspect/edit | Ajustar exports internos se necessário |
-| `edger-isolation/tests/wasm_integration.rs` | edit | Cobrir cache, limites e body maior |
+| `crates/edger-isolation/src/wasm/load.rs` | edit | Cachear módulos compilados quando aplicável |
+| `crates/edger-isolation/src/wasm/handler.rs` | edit | Aplicar limites no caminho de execução |
+| `crates/edger-isolation/src/wasm/wasi.rs` | inspect/edit | Garantir passagem correta de request/body |
+| `crates/edger-isolation/src/wasm/mod.rs` | inspect/edit | Ajustar exports internos se necessário |
+| `crates/edger-isolation/tests/wasm_integration.rs` | edit | Cobrir cache, limites e body maior |
 
 ## Detail
 
@@ -36,7 +36,7 @@
 ## Verification
 
 ```bash
-rg "Module|StoreLimits|fuel|epoch|wasm" edger-isolation/src/wasm edger-isolation/tests
+rg "Module|StoreLimits|fuel|epoch|wasm" crates/edger-isolation/src/wasm crates/edger-isolation/tests
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check

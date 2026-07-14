@@ -21,17 +21,17 @@ completed (2026-06-29) — segurança operacional v1 entregue: listagem de worke
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/security.rs` | create | Tipos puros para escopo, request id e decisões de auth |
-| `edger-core/src/errors.rs` | edit | Erros públicos de segurança e limites |
-| `edger-orchestrator/src/auth.rs` | edit | Root, namespace e internal-call guard |
-| `edger-orchestrator/src/security.rs` | create | Guard HTTP de CSRF/internal-call para rotas admin |
-| `edger-orchestrator/src/wire.rs` | edit | Body/header limits no ingress com erros HTTP corretos |
-| `edger-orchestrator/src/pipeline.rs` | edit | Aplicar request id, limits e deny de paths reservados |
-| `edger-orchestrator/src/admin_api.rs` | edit | Aplicar listagem namespace-aware e CSRF em mutações |
-| `edger-orchestrator/src/manifest_index_stub.rs` | edit | Filtrar inventário admin por namespace do principal |
-| `edger-orchestrator/tests/security_operational.rs` | create | Cobertura de CSRF, namespace, internal header e limits |
-| `edger-worker/src/factory.rs` | edit | Filtrar env sensível antes de criar isolate |
-| `edger-isolation/src/wasm/wasi.rs` | edit | Reusar detector puro de env sensível |
+| `crates/edger-core/src/security.rs` | create | Tipos puros para escopo, request id e decisões de auth |
+| `crates/edger-core/src/errors.rs` | edit | Erros públicos de segurança e limites |
+| `crates/edger-orchestrator/src/auth.rs` | edit | Root, namespace e internal-call guard |
+| `crates/edger-orchestrator/src/security.rs` | create | Guard HTTP de CSRF/internal-call para rotas admin |
+| `crates/edger-orchestrator/src/wire.rs` | edit | Body/header limits no ingress com erros HTTP corretos |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Aplicar request id, limits e deny de paths reservados |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Aplicar listagem namespace-aware e CSRF em mutações |
+| `crates/edger-orchestrator/src/manifest_index_stub.rs` | edit | Filtrar inventário admin por namespace do principal |
+| `crates/edger-orchestrator/tests/security_operational.rs` | create | Cobertura de CSRF, namespace, internal header e limits |
+| `crates/edger-worker/src/factory.rs` | edit | Filtrar env sensível antes de criar isolate |
+| `crates/edger-isolation/src/wasm/wasi.rs` | edit | Reusar detector puro de env sensível |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar CSRF, namespace e limites operacionais |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Evidência para segurança operacional |
 
@@ -83,7 +83,7 @@ completed (2026-06-29) — segurança operacional v1 entregue: listagem de worke
 
 ## Tasks
 - [x] Fase 1 — Contratos puros de segurança.
-  - Done when: `edger-core/src/security.rs` definir header interno, mutating methods, validação same-origin, permissões, namespace opcional e detector de env sensível; `lib.rs` reexportar sem I/O.
+  - Done when: `crates/edger-core/src/security.rs` definir header interno, mutating methods, validação same-origin, permissões, namespace opcional e detector de env sensível; `lib.rs` reexportar sem I/O.
 - [x] Fase 2 — Admin security guard.
   - Done when: `admin_api.rs` aplicar CSRF/internal guard nas mutações e `GET /api/admin/workers` filtrar por principal com `workers:read`.
 - [x] Fase 3 — Limits HTTP de ingresso.

@@ -2,7 +2,7 @@
 
 **Descoberto:** durante validação viva do Epic 20.01 (sandbox rede/cache).
 
-**Sintoma:** `workers/commonjs-hono` (`index.js` com `require("@hono/node-server")`,
+**Sintoma:** `workers/examples/commonjs-hono` (`index.js` com `require("@hono/node-server")`,
 `package.json` com `"type":"commonjs"`, sem `node_modules` local) retorna HTTP 500:
 `ReferenceError: require is not defined at .../index.js:1:11`.
 
@@ -15,7 +15,7 @@ CommonJS — não detecta o `"type":"commonjs"` do package.json sibling e/ou nã
 materializa `node_modules` para resolver `require(npm)`. `express-demo` (ESM
 `import`) funciona; só o caminho `require` (CJS) quebra.
 
-**Onde investigar:** `edger-isolation/src/multiproc.rs` (flags do spawn deno — falta
+**Onde investigar:** `crates/edger-isolation/src/multiproc.rs` (flags do spawn deno — falta
 `--node-modules-dir=auto`? detecção de CJS?) e `multiproc_harness.mjs` (como o
 módulo é importado). Deno 2.9 detecta CJS via package.json type, mas `require(npm)`
 precisa de node_modules materializado.

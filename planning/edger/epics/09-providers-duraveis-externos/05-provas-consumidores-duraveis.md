@@ -10,7 +10,7 @@ Provider remoto/sync só entrega valor se consumidores reais do edger usarem o m
 
 ## Traceability
 
-- `edger-orchestrator/tests/state_services.rs`
+- `crates/edger-orchestrator/tests/state_services.rs`
 - `edger-ext-keyval/tests/keyval_queue.rs`
 - `edger-ext-gateway/src/lib.rs`
 - `planning/edger/docs/value-parity-matrix.md`
@@ -58,7 +58,7 @@ Provider remoto/sync só entrega valor se consumidores reais do edger usarem o m
 ## Tasks
 
 - [x] Escolher fluxo mínimo de worker.
-  - Done when: `edger-orchestrator/tests/state_services.rs` prova binding descriptors com registry usando `RemoteTursoProvider`.
+  - Done when: `crates/edger-orchestrator/tests/state_services.rs` prova binding descriptors com registry usando `RemoteTursoProvider`.
 - [x] Escolher fluxo mínimo de KV/queue.
   - Done when: `edger-ext-keyval/tests/external_provider_contract.rs` cobre `set/get/delete` e `enqueue/dequeue/ack` sobre provider externo.
 - [x] Escolher uma capacidade persistente do gateway.

@@ -12,7 +12,7 @@ completed (2026-06-29) - contrato operacional inicial documentado em `planning/e
 
 ## Traceability
 
-- `edger-core/src/bindings.rs`
+- `crates/edger-core/src/bindings.rs`
 - `edger-ext-turso/src/lib.rs`
 - `planning/edger/epics/08-valor-buntime/04-servicos-de-estado-turso-kv-queue.md`
 - `planning/edger/docs/value-parity-matrix.md`

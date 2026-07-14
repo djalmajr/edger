@@ -4,7 +4,7 @@
 
 ## Context
 
-- **Problema:** `UdsTransport` permanece em `edger-isolation/src/transport.rs`, mas o transporte UDS real usado pelo runtime está em `multiproc.rs`.
+- **Problema:** `UdsTransport` permanece em `crates/edger-isolation/src/transport.rs`, mas o transporte UDS real usado pelo runtime está em `multiproc.rs`.
 - **Objetivo:** remover o código morto e qualquer re-export órfão, sem alterar o transporte multiprocesso real.
 - **Valor:** reduz ambiguidade para mantenedores e evita que uma API vestigial pareça suportada.
 
@@ -12,9 +12,9 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/transport.rs` | edit | Remover `UdsTransport` e código associado que não é usado |
-| `edger-isolation/src/lib.rs` | inspect/edit | Remover re-exports órfãos se existirem |
-| `edger-isolation/tests/` | inspect/edit | Ajustar apenas testes que referenciem o transporte removido |
+| `crates/edger-isolation/src/transport.rs` | edit | Remover `UdsTransport` e código associado que não é usado |
+| `crates/edger-isolation/src/lib.rs` | inspect/edit | Remover re-exports órfãos se existirem |
+| `crates/edger-isolation/tests/` | inspect/edit | Ajustar apenas testes que referenciem o transporte removido |
 
 ## Detail
 

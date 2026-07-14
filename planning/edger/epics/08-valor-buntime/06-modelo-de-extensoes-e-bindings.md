@@ -22,16 +22,16 @@
 |---|---|---|
 | `planning/edger/docs/extensions.md` | edit | Registrar contrato provider/binding v1 |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar providers registrados e `EDGER_STATE_DIR` |
-| `edger-core/src/extension.rs` | edit | Tipos puros para providers, hooks e capabilities |
-| `edger-core/src/bindings.rs` | edit | Alinhar bindings com providers |
-| `edger-core/src/lib.rs` | edit | Reexportar vocabulário de extensões |
-| `edger-orchestrator/Cargo.toml` | edit | Permitir wiring real de providers no bin |
-| `edger-orchestrator/src/bin/edger.rs` | edit | Registrar providers SQL/KV/queue no composition root |
-| `edger-orchestrator/src/registry.rs` | edit | Resolver providers registrados |
-| `edger-orchestrator/src/service_bindings.rs` | edit | Validar provider antes de injetar binding |
-| `edger-orchestrator/src/pipeline.rs` | edit | Passar registry para binding lookup |
-| `edger-orchestrator/tests/registry_providers.rs` | create | Testes de provider lookup, conflito e dependência |
-| `edger-orchestrator/tests/state_services.rs` | edit | Registrar providers no estado de teste |
+| `crates/edger-core/src/extension.rs` | edit | Tipos puros para providers, hooks e capabilities |
+| `crates/edger-core/src/bindings.rs` | edit | Alinhar bindings com providers |
+| `crates/edger-core/src/lib.rs` | edit | Reexportar vocabulário de extensões |
+| `crates/edger-orchestrator/Cargo.toml` | edit | Permitir wiring real de providers no bin |
+| `crates/edger-orchestrator/src/bin/edger.rs` | edit | Registrar providers SQL/KV/queue no composition root |
+| `crates/edger-orchestrator/src/registry.rs` | edit | Resolver providers registrados |
+| `crates/edger-orchestrator/src/service_bindings.rs` | edit | Validar provider antes de injetar binding |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Passar registry para binding lookup |
+| `crates/edger-orchestrator/tests/registry_providers.rs` | create | Testes de provider lookup, conflito e dependência |
+| `crates/edger-orchestrator/tests/state_services.rs` | edit | Registrar providers no estado de teste |
 | `edger-ext-gateway/src/lib.rs` | edit | Declarar capabilities gateway |
 | `edger-ext-auth/src/lib.rs` | edit | Declarar capabilities auth |
 | `edger-ext-turso/src/lib.rs` | edit | Declarar capability SQL provider |
@@ -63,7 +63,7 @@
 
 | Decisão | Escolha | Motivo |
 |---|---|---|
-| Fonte de verdade de capabilities | `edger-core/src/extension.rs` | Mantém contratos puros e compartilháveis por `edger-ext-*` sem depender do orchestrator |
+| Fonte de verdade de capabilities | `crates/edger-core/src/extension.rs` | Mantém contratos puros e compartilháveis por `edger-ext-*` sem depender do orchestrator |
 | Registro de providers | slots explícitos em `ExtensionRegistry` | Segue o padrão v1 de registro estático e detecta conflito cedo |
 | Dependências | `ExtensionDependency` por capability requerida | Evita copiar topological loader do Buntime, mas preserva o valor de falhar antes do runtime aceitar configuração inválida |
 | Binding lookup | `resolve_service_bindings` consulta registry | Worker só recebe binding se existe provider declarado para o `BindingKind` |
@@ -71,7 +71,7 @@
 
 **Test-first plan:**
 
-- Primeiro teste novo: `edger-orchestrator/tests/registry_providers.rs` deve falhar porque o registry ainda não registra provider nem valida dependência.
+- Primeiro teste novo: `crates/edger-orchestrator/tests/registry_providers.rs` deve falhar porque o registry ainda não registra provider nem valida dependência.
 - Comportamentos a provar:
   - registrar provider SQL expõe lookup por `BindingKind::DurableSql`;
   - registrar provider dependente sem SQL falha com erro tipado;
@@ -93,9 +93,9 @@
 - Story 08.04 para bindings de serviço quando incluídos.
 
 ## Tasks
-- [x] Atualizar contrato em `edger-core/src/extension.rs`.
+- [x] Atualizar contrato em `crates/edger-core/src/extension.rs`.
   - Done when: `ExtensionCapability`, `ExtensionDependency` e hooks/capabilities tipados compilam em `edger-core` sem I/O.
-- [x] Alinhar traits de provider em `edger-core/src/bindings.rs`.
+- [x] Alinhar traits de provider em `crates/edger-core/src/bindings.rs`.
   - Done when: `DurableSqlProvider`, `KeyValueProvider` e `QueueProvider` também carregam metadata de `Extension`.
 - [x] Ajustar registry no orchestrator.
   - Done when: registry registra providers SQL/KV/queue, resolve provider por `BindingKind`, detecta dependência ausente e conflito de provider duplicado.

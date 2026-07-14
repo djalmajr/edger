@@ -8,7 +8,9 @@
 +
 [source,bash]
 ----
-ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers \
+ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers/examples \
+  EDGER_CORE_WORKER_DIR=workers/core \
+  EDGER_CORE_WORKER_OVERLAY_DIR=.edger/core-worker-overlays \
   cargo run -p edger-orchestrator --bin edger
 ----
 3. Valide readiness:
@@ -20,7 +22,9 @@ curl http://127.0.0.1:19080/ready
 
 ==== Adicionar um worker JS/TS
 
-1. Crie um diretório em `workers/<name>/`.
+1. Para exemplos versionados no repositório, crie um diretório em
+   `workers/examples/<name>/`. Em produção, use um diretório de usuário
+   configurado em `RUNTIME_WORKER_DIRS`.
 2. Adicione `index.ts`, `index.js` ou `index.mjs`.
 3. Use uma forma suportada:
 +
@@ -45,7 +49,8 @@ export default {
 
 ==== Adicionar um worker Wasm
 
-1. Crie `workers/<name>/manifest.yaml` com `kind: wasm` e `entrypoint`.
+1. Crie `workers/examples/<name>/manifest.yaml` com `kind: wasm` e `entrypoint`
+   para uma fixture local, ou use um root de usuário configurado em produção.
 2. Adicione `index.wasm` ou `index.wat`.
 3. Exporte `memory`, `edger_alloc(len)` e `edger_handle(ptr, len)` conforme
    `planning/edger/docs/wasm-abi.md`.
@@ -53,7 +58,7 @@ export default {
 
 ==== Criar uma nova extensão
 
-1. Crie um crate `edger-ext-<nome>`.
+1. Crie um crate `crates/edger-ext-<nome>`.
 2. Dependa apenas de `edger-core`.
 3. Escolha um modo: `Middleware`, `AuthProvider` ou `WorkerHandler`.
 4. Exporte uma factory clara, como `middleware()`.

@@ -20,12 +20,12 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/extension.rs` | edit | Adicionar contrato puro de diagnóstico opcional por extensão |
-| `edger-core/src/admin.rs` | edit | Permitir `diagnostics` opcional no inventário de extensões |
-| `edger-orchestrator/src/registry.rs` | edit | Agregar diagnóstico opcional no `AdminExtensionInfo` |
+| `crates/edger-core/src/extension.rs` | edit | Adicionar contrato puro de diagnóstico opcional por extensão |
+| `crates/edger-core/src/admin.rs` | edit | Permitir `diagnostics` opcional no inventário de extensões |
+| `crates/edger-orchestrator/src/registry.rs` | edit | Agregar diagnóstico opcional no `AdminExtensionInfo` |
 | `edger-ext-gateway/src/lib.rs` | edit | Manter contadores e ring buffer local das decisões do gateway |
 | `edger-ext-gateway/tests/gateway_middleware.rs` | edit | Provar snapshot, contadores, ring buffer e higiene de dados |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar que `/api/admin/extensions` expõe diagnóstico do gateway sem quebrar auth |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar que `/api/admin/extensions` expõe diagnóstico do gateway sem quebrar auth |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Atualizar evidência de gateway/logging |
 | `planning/edger/docs/compat-matrix.md` | edit | Registrar diagnóstico técnico do gateway |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar snapshot operacional e limites |

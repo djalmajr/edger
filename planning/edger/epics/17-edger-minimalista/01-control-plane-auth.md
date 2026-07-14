@@ -11,7 +11,7 @@
 
 ## Traceability
 
-- `edger-ext-auth` (deletar), `edger-core/src/auth.rs` (`AuthProvider` trait — sai do registry), `edger-orchestrator/src/auth.rs` (`AuthGate`), `admin_api.rs` (`/api/admin/keys*` saem)
+- `edger-ext-auth` (deletar), `crates/edger-core/src/auth.rs` (`AuthProvider` trait — sai do registry), `crates/edger-orchestrator/src/auth.rs` (`AuthGate`), `admin_api.rs` (`/api/admin/keys*` saem)
 
 Decisão (2026-07-03): quando `EDGER_ROOT_KEY_FILE` e `ROOT_API_KEY` estiverem configurados, o arquivo (`EDGER_ROOT_KEY_FILE`) tem precedência sobre a env (`ROOT_API_KEY`).
 
@@ -19,12 +19,12 @@ Decisão (2026-07-03): quando `EDGER_ROOT_KEY_FILE` e `ROOT_API_KEY` estiverem c
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/control_auth.rs` | create | Middleware built-in: valida OIDC JWT (discovery/JWKS/claims) OU root-key (Secret-arquivo) OU aberto; só em `/api/admin/*` |
-| `edger-orchestrator/src/admin_api.rs` | edit | Gatear com o novo middleware; remover `/api/admin/keys` e `/keys/{id}/revoke` |
-| `edger-orchestrator/src/pipeline.rs` | edit | Trocar `AuthGate` do control plane pelo middleware novo |
+| `crates/edger-orchestrator/src/control_auth.rs` | create | Middleware built-in: valida OIDC JWT (discovery/JWKS/claims) OU root-key (Secret-arquivo) OU aberto; só em `/api/admin/*` |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Gatear com o novo middleware; remover `/api/admin/keys` e `/keys/{id}/revoke` |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Trocar `AuthGate` do control plane pelo middleware novo |
 | `edger-ext-auth/` | delete | Store SQLite de API keys deixa de existir |
-| `edger-core/src/auth.rs` | edit | Remover `AuthProvider` trait (deixa de ser capability plugável) |
-| `workers/cpanel/` | edit | Login simplifica para root-key; sem UI de gestão de chaves |
+| `crates/edger-core/src/auth.rs` | edit | Remover `AuthProvider` trait (deixa de ser capability plugável) |
+| `workers/core/cpanel/` | edit | Login simplifica para root-key; sem UI de gestão de chaves |
 | `AGENTS.md`, `edger.rs` doc header | edit | Documentar `EDGER_OIDC_*` + `EDGER_ROOT_KEY_FILE` |
 
 ## Detail
@@ -42,7 +42,7 @@ Decisão (2026-07-03): quando `EDGER_ROOT_KEY_FILE` e `ROOT_API_KEY` estiverem c
 - **Out:** introspection de token opaco (escape hatch documentado); auth no data plane (removida em 17.B, não substituída).
 
 ### Acceptance criteria
-- [x] `EDGER_OIDC_ISSUER`+`AUDIENCE` setados → JWT válido de qualquer provider OIDC autentica `/api/admin/*`; JWT inválido/expirado/assinatura errada → 401. Coberto em 2026-07-03 por `edger-orchestrator/src/oidc.rs` e validação live contra Keycloak real.
+- [x] `EDGER_OIDC_ISSUER`+`AUDIENCE` setados → JWT válido de qualquer provider OIDC autentica `/api/admin/*`; JWT inválido/expirado/assinatura errada → 401. Coberto em 2026-07-03 por `crates/edger-orchestrator/src/oidc.rs` e validação live contra Keycloak real.
 - [x] Claim de role configurável autoriza (Keycloak `realm_access.roles` e um genérico `groups` cobertos por teste). Coberto em 2026-07-03 por testes sem rede com JWKS estático.
 - [x] `EDGER_ROOT_KEY_FILE` → bearer do arquivo autentica; **alterar o arquivo passa a valer sem restart** (hot-reload).
 - [x] Nenhum configurado → `/api/admin/*` aberto (log de aviso).

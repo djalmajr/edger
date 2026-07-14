@@ -22,7 +22,7 @@
 | `charts/edger/questions.yaml` | edit | Perguntas Rancher e validação |
 | `charts/edger/templates/` | edit | Env e secret refs |
 | `planning/edger/docs/observability.md` | edit | Configuração e troubleshooting |
-| `edger-orchestrator/src/tracing_init.rs` | edit | Receiver local e falha de Collector |
+| `crates/edger-orchestrator/src/tracing_init.rs` | edit | Receiver local e falha de Collector |
 | `planning/edger/status/evidence/` | create | Payloads, health, Browser e charts renderizados |
 
 ## Detail

@@ -14,13 +14,13 @@
 - **Depende de:** Story 02.01
 
 ## Files
-- edger-core/src/manifest.rs
-- edger-core/src/config.rs
-- edger-core/src/principal.rs
-- edger-core/src/execution.rs (ExecutionKind)
-- edger-core/src/worker_ref.rs
-- edger-core/tests/models_mapping.rs
-- edger-core/tests/fixtures/sample_manifest.yaml
+- crates/edger-core/src/manifest.rs
+- crates/edger-core/src/config.rs
+- crates/edger-core/src/principal.rs
+- crates/edger-core/src/execution.rs (ExecutionKind)
+- crates/edger-core/src/worker_ref.rs
+- crates/edger-core/tests/models_mapping.rs
+- crates/edger-core/tests/fixtures/sample_manifest.yaml
 
 ## Detail
 
@@ -58,5 +58,5 @@ Models based on design + Buntime contracts with table-driven tests.
 ```bash
 cargo test -p edger-core models
 cargo clippy -p edger-core -- -D warnings
-! rg -l 'std::fs|tokio::fs|reqwest' edger-core/src/ 2>/dev/null || true
+! rg -l 'std::fs|tokio::fs|reqwest' crates/edger-core/src/ 2>/dev/null || true
 ```

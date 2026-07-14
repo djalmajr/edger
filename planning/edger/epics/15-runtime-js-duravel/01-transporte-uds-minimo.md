@@ -11,22 +11,22 @@
 
 ## Traceability
 
-- `edger-isolation/src/transport.rs` (`IsolateTransport`, `UdsTransport` stub → real)
-- `edger-isolation/src/wire.rs` (`encode_frame`/`decode_frame` postcard)
-- `edger-core/src/wire.rs` (`SerializedRequest`/`SerializedResponse`)
-- `edger-isolation/src/deno/` (harness JS reaproveitando a captura de handler da ponte v1)
-- `edger-worker/src/supervisor.rs` (spawn/lifecycle)
+- `crates/edger-isolation/src/transport.rs` (`IsolateTransport`, `UdsTransport` stub → real)
+- `crates/edger-isolation/src/wire.rs` (`encode_frame`/`decode_frame` postcard)
+- `crates/edger-core/src/wire.rs` (`SerializedRequest`/`SerializedResponse`)
+- `crates/edger-isolation/src/deno/` (harness JS reaproveitando a captura de handler da ponte v1)
+- `crates/edger-worker/src/supervisor.rs` (spawn/lifecycle)
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/transport.rs` | edit | `UdsTransport` real: connect, envia frame req, lê frame resp (length-prefixed) |
-| `edger-isolation/src/deno/worker_host.rs` | create | Geração do harness Deno persistente: conecta ao UDS, loop leia-request→dispatch→responda |
-| `edger-isolation/src/deno/process.rs` | create | Spawn do processo `deno` persistente (socket path, env, sandbox flags v1) + handshake ready |
-| `edger-isolation/src/deno/mod.rs` | edit | Backend que usa o processo persistente + `UdsTransport` sob `multiproc` |
-| `edger-isolation/Cargo.toml` | edit | deps para UDS async (tokio net `UnixListener/UnixStream`) na feature `multiproc` |
-| `edger-isolation/tests/uds_roundtrip.rs` | create | E2E: spawn worker Deno persistente, 1 request round-trip por UDS retorna resposta real |
+| `crates/edger-isolation/src/transport.rs` | edit | `UdsTransport` real: connect, envia frame req, lê frame resp (length-prefixed) |
+| `crates/edger-isolation/src/deno/worker_host.rs` | create | Geração do harness Deno persistente: conecta ao UDS, loop leia-request→dispatch→responda |
+| `crates/edger-isolation/src/deno/process.rs` | create | Spawn do processo `deno` persistente (socket path, env, sandbox flags v1) + handshake ready |
+| `crates/edger-isolation/src/deno/mod.rs` | edit | Backend que usa o processo persistente + `UdsTransport` sob `multiproc` |
+| `crates/edger-isolation/Cargo.toml` | edit | deps para UDS async (tokio net `UnixListener/UnixStream`) na feature `multiproc` |
+| `crates/edger-isolation/tests/uds_roundtrip.rs` | create | E2E: spawn worker Deno persistente, 1 request round-trip por UDS retorna resposta real |
 
 ## Detail
 
@@ -62,7 +62,7 @@
 ## Test-first plan
 
 - **Behavior:** E2E de crate exercendo o processo real (`deno` no PATH / `EDGER_DENO_BIN`) e o socket real; asserção sobre a resposta observável.
-- **Level:** `edger-isolation/tests/uds_roundtrip.rs` (feature `multiproc`) + workspace gate.
+- **Level:** `crates/edger-isolation/tests/uds_roundtrip.rs` (feature `multiproc`) + workspace gate.
 - **Avoid:** mockar o transporte; o teste deve trafegar frames reais por UDS.
 
 ## Tasks

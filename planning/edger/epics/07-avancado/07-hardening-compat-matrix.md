@@ -18,11 +18,11 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/wire.rs` | existing | HeaderLimits Buntime port (`100`, `64KiB`, `8KiB/value`) |
-| `edger-orchestrator/src/wire.rs` | existing | Body cap + header validation before worker serialization |
-| `edger-orchestrator/tests/limits_test.rs` | create | Rejeita body/header acima do cap |
-| `edger-orchestrator/tests/compat_matrix.rs` | create | Smoke suite para manter a matriz publicada rastreável |
-| `edger-orchestrator/tests/perf_harness.rs` | create | Harness opt-in para warm-hit p50/p95 + hit rate |
+| `crates/edger-core/src/wire.rs` | existing | HeaderLimits Buntime port (`100`, `64KiB`, `8KiB/value`) |
+| `crates/edger-orchestrator/src/wire.rs` | existing | Body cap + header validation before worker serialization |
+| `crates/edger-orchestrator/tests/limits_test.rs` | create | Rejeita body/header acima do cap |
+| `crates/edger-orchestrator/tests/compat_matrix.rs` | create | Smoke suite para manter a matriz publicada rastreável |
+| `crates/edger-orchestrator/tests/perf_harness.rs` | create | Harness opt-in para warm-hit p50/p95 + hit rate |
 | `planning/edger/docs/compat-matrix.md` | edit | Tabela comportamento Buntime <-> edger + tiers |
 | `planning/edger/docs/performance-baselines.md` | edit | Targets e resultado inicial PR 12 |
 | `.github/workflows/ci.yml` | create | Rust gate obrigatório + perf harness manual |
@@ -72,7 +72,7 @@
 
 ## Test-first plan
 - **Behavior:** Acceptance criteria above fail before implementation; first test targets smallest vertical slice of the story.
-- **Level:** crate integration tests (`edger-orchestrator/tests/`, `edger-isolation/tests/`) + workspace gate.
+- **Level:** crate integration tests (`crates/edger-orchestrator/tests/`, `crates/edger-isolation/tests/`) + workspace gate.
 - **Avoid:** Re-implementing production logic inside tests; hard-coded expected values without driving real entry points.
 
 ## Tasks

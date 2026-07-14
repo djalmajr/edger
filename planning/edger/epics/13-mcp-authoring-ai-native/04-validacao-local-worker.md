@@ -13,8 +13,8 @@ Authoring sem validacao gera risco. O MCP deve conseguir rodar validacao local d
 | Path | Action | Reason |
 |---|---|---|
 | `planning/edger/status/evidence/` | edit | Registrar evidencia local de validacao |
-| `edger-mcp/src/discovery.rs` | create | Implementar validacao local in-process |
-| `edger-mcp/tests/protocol.rs` | create | Provar sucesso e falha de validacao |
+| `crates/edger-mcp/src/discovery.rs` | create | Implementar validacao local in-process |
+| `crates/edger-mcp/tests/protocol.rs` | create | Provar sucesso e falha de validacao |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar comando local e limites |
 
 ## Detail

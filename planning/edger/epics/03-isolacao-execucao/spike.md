@@ -13,7 +13,7 @@
 
 - Ambiente: macOS aarch64, Rust stable, debug profile
 - Time-box: story 03.01
-- Exemplos: `edger-isolation/examples/embedding-spike-deno.rs`, `embedding-spike-wasm.rs`
+- Exemplos: `crates/edger-isolation/examples/embedding-spike-deno.rs`, `embedding-spike-wasm.rs`
 - Evidência: `status/evidence/spike-wasm-run.txt` (SCRATCH captura)
 
 ## Resultados deno_core
@@ -54,7 +54,7 @@ Output: `spike_wasm compile_ms=10 invoke_ms=0 result=42`
 ## Recomendação de layout de módulos
 
 ```
-edger-isolation/src/
+crates/edger-isolation/src/
   deno/     # facade (feature deno) — story 03.04
   wasm/     # wasmtime (feature wasm) — story 03.04
   mock.rs   # story 03.02

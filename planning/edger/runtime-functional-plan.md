@@ -1,15 +1,19 @@
 # Plano: edger funcional sem adapter Bun
 
-**Data:** 2026-06-29 (atualizado 2026-07-02)  
+**Data:** 2026-06-29 (atualizado 2026-07-13)
 **Status:** **MVP funcional entregue e validado ao vivo** (boot + curls, evidência em `status/evidence/`). Runtime JS default: **processo Deno persistente por worker** (Epic 15, UDS + módulo quente, ~25x vs v1, cap de heap por worker, streaming bounded). A Deno CLI bridge v1 (`deno run` por request) fica como **fallback legado** via `EDGER_JS_RUNTIME=bridge`.  
 **Escopo:** transformar o edger em um runtime funcional pelo caminho Rust, sem fallback para adapter Bun.
 
 ## Objetivo
 
-Ter uma versão funcional do edger em que um operador consiga iniciar o runtime Rust, apontar `RUNTIME_WORKER_DIRS` para `workers/`, e obter respostas reais de workers JS/TS e Wasm através do mesmo pipeline de produção:
+Ter uma versão funcional do edger em que um operador consiga iniciar o runtime Rust, apontar `RUNTIME_WORKER_DIRS` para `workers/examples`, carregar os apps internos por `EDGER_CORE_WORKER_DIR` e obter respostas reais de workers JS/TS e Wasm através do mesmo pipeline de produção:
 
 ```bash
-ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers cargo run -p edger-orchestrator --bin edger
+ROOT_API_KEY=test-root PORT=19080 \
+  RUNTIME_WORKER_DIRS=workers/examples \
+  EDGER_CORE_WORKER_DIR=workers/core \
+  EDGER_CORE_WORKER_OVERLAY_DIR=.edger/core-worker-overlays \
+  cargo run -p edger-orchestrator --bin edger
 ```
 
 Essa versão não precisa ser "produção completa", mas precisa provar o contrato central:
@@ -54,7 +58,9 @@ O MVP funcional está pronto quando todos estes itens forem verdadeiros:
 - `POST /read-body` entrega o body ao worker JS/TS e retorna o tamanho correto.
 - `GET /empty-response` preserva status `204`.
 - `GET /serve-html/foo` ou rota equivalente serve HTML por JS/TS real ou StaticSpa real, sem shim Bun.
-- Todos os itens acima passam por manifest discovery em `RUNTIME_WORKER_DIRS=workers`.
+- Os exemplos acima passam por manifest discovery em
+  `RUNTIME_WORKER_DIRS=workers/examples`; cPanel e WebIDE são descobertos pela
+  raiz interna confiável `EDGER_CORE_WORKER_DIR=workers/core`.
 - Gate Rust passa: `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt -- --check`.
 - Gate de planejamento passa com JS root tests ausentes ou explícitos: `planning/edger/scripts/run-gates.sh`.
 
@@ -81,7 +87,7 @@ Depois do MVP, a foundation funcional exige:
 - `edger-orchestrator`: servidor, health/readiness, routing, auth root, registry de extensões e pipeline.
 - `edger-ext-auth` e `edger-ext-gateway`: primeiras extensões estáticas.
 - `RUNTIME_WORKER_DIRS`: loader de roots/dirs diretos com `manifest.yaml`, `package.json` e `index.*`.
-- Wasm v1: `workers/wasm-hello/index.wat` executa via wasmtime pelo pipeline Rust.
+- Wasm v1: `workers/examples/wasm-hello/index.wat` executa via wasmtime pelo pipeline Rust.
 - JS/TS v1: `DenoIsolate` executa `Deno.serve` e default fetch via Deno CLI bridge pelo pipeline Rust.
 - Sandbox Deno (2026-07-03): o processo persistente usa `allowNet` do manifest
   antes de `EDGER_DENO_ALLOW_NET` e preserva rede aberta quando nada é
@@ -90,7 +96,7 @@ Depois do MVP, a foundation funcional exige:
   `EDGER_DENO_CACHE_ROOT` ou temp), com `denoCacheMode: shared` como opção
   explícita de cold-start menor/cache compartilhado. A bridge v1 continua
   sandboxed via `deno run --no-prompt` e `EDGER_DENO_ALLOW_NET`.
-- `routes` export v1 (2026-07-02): dispatch por path/método com `:param`, `*` wildcard, method map (405), fallback `fetch` e 404 sem fallback (`workers/routes-demo` + E2E).
+- `routes` export v1 (2026-07-02): dispatch por path/método com `:param`, `*` wildcard, method map (405), fallback `fetch` e 404 sem fallback (`workers/examples/routes-demo` + E2E).
 - Resiliência de pool (2026-07-02): erro de isolate recicla o worker em vez de deixá-lo preso em `Active` (`pool_error_recovery.rs`).
 - `injectBase: false` respeitado com `kind: spa` explícito (fix `infer_execution_kind`).
 
@@ -141,7 +147,7 @@ flowchart TD
 
 **Entregas técnicas:**
 
-- `edger-isolation/src/deno/cli.rs`.
+- `crates/edger-isolation/src/deno/cli.rs`.
 - JSON bridge `SerializedRequest`/`SerializedResponse`.
 - Captura de `Deno.serve` e default export.
 - E2E no orquestrador para exemplos reais em `workers/`.
@@ -154,9 +160,9 @@ flowchart TD
 
 **Entregas técnicas:**
 
-- Fixar versões de `deno_core` e dependências em `edger-isolation/Cargo.toml`.
-- Criar `edger-isolation/src/deno/runtime.rs` com inicialização singleton da plataforma V8.
-- Criar `edger-isolation/src/deno/module_loader.rs` restrito ao worker root.
+- Fixar versões de `deno_core` e dependências em `crates/edger-isolation/Cargo.toml`.
+- Criar `crates/edger-isolation/src/deno/runtime.rs` com inicialização singleton da plataforma V8.
+- Criar `crates/edger-isolation/src/deno/module_loader.rs` restrito ao worker root.
 - Criar teste de integração que carrega módulo inline ou temp file e retorna string simples.
 - Documentar versão pinada e sharp edges em `planning/edger/epics/03-isolacao-execucao/spike.md`.
 
@@ -177,9 +183,9 @@ flowchart TD
 
 **Fixtures mínimas:**
 
-- `workers/hello-world`
-- `workers/read-body`
-- `workers/empty-response`
+- `workers/examples/hello-world`
+- `workers/examples/read-body`
+- `workers/examples/empty-response`
 
 **Critério de aceite:** testes de integração exercem `DenoIsolate.execute_fetch` e validam status, headers e body observáveis.
 
@@ -191,7 +197,7 @@ flowchart TD
 
 - `RuntimeIsolateFactory` escolhe `DenoIsolate` para `FetchHandler`, `RoutesTable` e `StaticSpa`.
 - `WorkerPool::fetch` preserva `WorkerConfig.kind` e `worker_dir`.
-- `edger-orchestrator/tests/js_dispatch_integration.rs` sobe pipeline e chama workers por rota.
+- `crates/edger-orchestrator/tests/js_dispatch_integration.rs` sobe pipeline e chama workers por rota.
 - Validação manual com `cargo run` + `curl`.
 
 **Critério de aceite:** `GET /hello-world` retorna o body real do worker JS, não `fetch:GET /`.
@@ -298,7 +304,7 @@ git diff --check
 | Risco | Severidade | Mitigação |
 |---|---|---|
 | `deno_core` aumenta muito o tempo de build | Alta | Feature flag `deno`, testes focados e documentação de toolchain |
-| API de `deno_core` muda rápido | Alta | Pin explícito, wrapper fino em `edger-isolation/src/deno`, sem espalhar APIs |
+| API de `deno_core` muda rápido | Alta | Pin explícito, wrapper fino em `crates/edger-isolation/src/deno`, sem espalhar APIs |
 | Recriar Web APIs demais manualmente | Alta | Começar por `Request`/`Response` mínimo e evoluir por exemplos reais |
 | Streaming JS complica a primeira fatia | Média | MVP pode bufferizar body; streaming vira critério da Fase 4/foundation |
 | Compat Node vira escopo infinito | Alta | `commonjs*` e Node subset ficam pós-MVP, com matriz de compat |

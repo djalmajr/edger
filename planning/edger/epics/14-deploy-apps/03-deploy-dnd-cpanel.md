@@ -12,7 +12,7 @@
 
 ## Traceability
 
-- `workers/cpanel/` (Epic 12 + redesign 2026-07-02; catálogo shadcn em `components/ui/`)
+- `workers/core/cpanel/` (Epic 12 + redesign 2026-07-02; catálogo shadcn em `components/ui/`)
 - Buntime: file manager DnD do cPanel
 - Stories 14.01/14.02 (APIs consumidas)
 
@@ -20,8 +20,8 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `workers/cpanel/index.js` | edit | View Deploy: dropzone, preview, chamada install, resultado com URL |
-| `workers/cpanel/index.html` | edit | Import CDN de zip client-side (fflate) no importmap se necessário |
+| `workers/core/cpanel/index.js` | edit | View Deploy: dropzone, preview, chamada install, resultado com URL |
+| `workers/core/cpanel/index.html` | edit | Import CDN de zip client-side (fflate) no importmap se necessário |
 | `planning/edger/status/evidence/` | edit | Evidência Browser do fluxo DnD |
 
 ## Detail

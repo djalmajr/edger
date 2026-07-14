@@ -18,11 +18,11 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/observability.rs` | create | Store bounded e filtros |
-| `edger-orchestrator/src/server.rs` | edit | Ownership do store |
-| `edger-orchestrator/src/pipeline.rs` | edit | Registrar dispatch/error allowlisted |
-| `edger-orchestrator/src/admin_api.rs` | edit | API cursor/filtros root-only |
-| `edger-orchestrator/tests/observability_api.rs` | create | Contrato, limites e redaction |
+| `crates/edger-orchestrator/src/observability.rs` | create | Store bounded e filtros |
+| `crates/edger-orchestrator/src/server.rs` | edit | Ownership do store |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Registrar dispatch/error allowlisted |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | API cursor/filtros root-only |
+| `crates/edger-orchestrator/tests/observability_api.rs` | create | Contrato, limites e redaction |
 | `planning/edger/docs/compat-matrix.md` | edit | Registrar superfície consultável |
 
 ## Detail

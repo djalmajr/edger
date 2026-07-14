@@ -16,7 +16,7 @@ Rate limit local em memoria ja existe, mas Buntime entrega valor operacional qua
 |---|---|---|
 | `edger-ext-gateway/src/lib.rs` | edit | Adicionar armazenamento opcional de cache e counters |
 | `edger-ext-gateway/tests/gateway_middleware.rs` | edit | Provar persistencia e isolamento |
-| `edger-orchestrator/tests/state_services.rs` | edit | Provar uso via provider duravel configuravel |
+| `crates/edger-orchestrator/tests/state_services.rs` | edit | Provar uso via provider duravel configuravel |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar modo local e limites |
 
 ## Detail

@@ -57,6 +57,6 @@ Custos:
 
 ## Status
 
-Aceito em 2026-06-29. Fonte de verdade: `edger-isolation/src/deno/cli.rs`,
-`edger-orchestrator/tests/kind_dispatch_integration.rs` e
+Aceito em 2026-06-29. Fonte de verdade: `crates/edger-isolation/src/deno/cli.rs`,
+`crates/edger-orchestrator/tests/kind_dispatch_integration.rs` e
 `planning/edger/status/checkpoint-2026-06-29-story-07-04-deno-cli-bridge.md`.

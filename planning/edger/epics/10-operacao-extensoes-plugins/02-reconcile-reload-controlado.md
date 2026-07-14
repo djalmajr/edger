@@ -12,9 +12,9 @@ Enable/disable runtime ja existe, mas reload/rescan ainda e lacuna. O edger prec
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/admin.rs` | edit | Adicionar comando protegido de dry-run/reconcile quando cabivel |
-| `edger-orchestrator/src/extensions.rs` | edit | Calcular diferencas entre estado desejado e efetivo |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar dry-run, aplicacao segura e casos que exigem restart |
+| `crates/edger-orchestrator/src/admin.rs` | edit | Adicionar comando protegido de dry-run/reconcile quando cabivel |
+| `crates/edger-orchestrator/src/extensions.rs` | edit | Calcular diferencas entre estado desejado e efetivo |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar dry-run, aplicacao segura e casos que exigem restart |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar operacao local e limites |
 
 ## Detail

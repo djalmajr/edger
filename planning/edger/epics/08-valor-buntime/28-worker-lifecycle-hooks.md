@@ -6,7 +6,7 @@
 - Problema atual: a matriz ainda marca `Hooks request/response/lifecycle` como `must partial`; request/response, init e shutdown já existem, mas o lifecycle de worker ainda não tem contrato executável.
 - Objetivo de entrega: expor hooks de lifecycle de worker no contrato de extensão e provar que eles envolvem o dispatch real pelo `WorkerPool`.
 - Restrições: não acoplar `edger-worker` a extensões, não criar loader dinâmico, não reabrir o modelo de registro explícito v1 e não transformar lifecycle em mutação de resposta duplicada de `on_response`.
-- Referências: `edger-core/src/extension.rs`, `edger-orchestrator/src/hooks.rs`, `edger-orchestrator/src/pipeline.rs`, `edger-orchestrator/tests/registry_hooks.rs`, `planning/edger/docs/value-parity-matrix.md`.
+- Referências: `crates/edger-core/src/extension.rs`, `crates/edger-orchestrator/src/hooks.rs`, `crates/edger-orchestrator/src/pipeline.rs`, `crates/edger-orchestrator/tests/registry_hooks.rs`, `planning/edger/docs/value-parity-matrix.md`.
 
 ## Traceability
 - Protótipos/telas: não aplicável.
@@ -17,10 +17,10 @@
 
 | Arquivo | Ação | Motivo | Confiança |
 |---|---|---|---|
-| `edger-core/src/extension.rs` | Alterar | Adicionar capacidades e métodos default para lifecycle de worker | core |
-| `edger-orchestrator/src/hooks.rs` | Alterar | Executar hooks de lifecycle em ordem controlada | core |
-| `edger-orchestrator/src/pipeline.rs` | Alterar | Disparar hooks ao redor do dispatch real pelo `WorkerPool` | core |
-| `edger-orchestrator/tests/registry_hooks.rs` | Alterar | Provar lifecycle em request real e skip em short-circuit | core |
+| `crates/edger-core/src/extension.rs` | Alterar | Adicionar capacidades e métodos default para lifecycle de worker | core |
+| `crates/edger-orchestrator/src/hooks.rs` | Alterar | Executar hooks de lifecycle em ordem controlada | core |
+| `crates/edger-orchestrator/src/pipeline.rs` | Alterar | Disparar hooks ao redor do dispatch real pelo `WorkerPool` | core |
+| `crates/edger-orchestrator/tests/registry_hooks.rs` | Alterar | Provar lifecycle em request real e skip em short-circuit | core |
 | `planning/edger/docs/value-parity-matrix.md` | Alterar | Marcar a linha de hooks como testada quando houver evidência | core |
 | `planning/edger/epics/08-valor-buntime/00-overview.md` | Alterar | Registrar Story 08.28 no backlog/status | core |
 | `planning/edger/roadmap.md` | Alterar | Atualizar contagem da Fase 8 | core |

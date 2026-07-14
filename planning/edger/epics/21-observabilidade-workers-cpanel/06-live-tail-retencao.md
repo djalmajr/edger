@@ -18,10 +18,10 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/admin_api.rs` | edit | Endpoint SSE root-only |
-| `edger-orchestrator/src/observability.rs` | edit | Subscription/cursor/backpressure |
-| `workers/cpanel/index.js` | edit | Live/pause/resume e dropped state |
-| `edger-orchestrator/tests/observability_sse.rs` | create | Disconnect, cursor e slow client |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Endpoint SSE root-only |
+| `crates/edger-orchestrator/src/observability.rs` | edit | Subscription/cursor/backpressure |
+| `workers/core/cpanel/index.js` | edit | Live/pause/resume e dropped state |
+| `crates/edger-orchestrator/tests/observability_sse.rs` | create | Disconnect, cursor e slow client |
 | `planning/edger/docs/compat-matrix.md` | edit | Limites e retenção |
 
 ## Detail

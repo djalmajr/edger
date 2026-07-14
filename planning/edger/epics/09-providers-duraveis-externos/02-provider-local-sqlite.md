@@ -14,10 +14,10 @@ completed (2026-06-29) - `LocalSqliteProvider` é o nome canônico no código; `
 
 - `edger-ext-turso/src/lib.rs`
 - `edger-ext-turso/tests/local_provider.rs`
-- `edger-orchestrator/src/bin/edger.rs`
-- `edger-orchestrator/tests/registry_providers.rs`
-- `edger-orchestrator/tests/state_services.rs`
-- `edger-orchestrator/tests/value_parity.rs`
+- `crates/edger-orchestrator/src/bin/edger.rs`
+- `crates/edger-orchestrator/tests/registry_providers.rs`
+- `crates/edger-orchestrator/tests/state_services.rs`
+- `crates/edger-orchestrator/tests/value_parity.rs`
 - `edger-ext-keyval/tests/keyval_queue.rs`
 - `docs/developers/06-operacao-e-testes.adoc`
 - `planning/edger/docs/extensions.md`
@@ -30,10 +30,10 @@ completed (2026-06-29) - `LocalSqliteProvider` é o nome canônico no código; `
 |---|---|---|
 | `edger-ext-turso/src/lib.rs` | alter | Criar `LocalSqliteProvider` canônico e manter `LocalTursoProvider` como alias |
 | `edger-ext-turso/tests/local_provider.rs` | alter | Usar o nome canônico e provar compatibilidade do alias |
-| `edger-orchestrator/src/bin/edger.rs` | alter | Usar `LocalSqliteProvider` no composition root |
-| `edger-orchestrator/tests/registry_providers.rs` | alter | Usar `LocalSqliteProvider` nos testes de registry |
-| `edger-orchestrator/tests/state_services.rs` | alter | Usar `LocalSqliteProvider` nos testes de state services |
-| `edger-orchestrator/tests/value_parity.rs` | alter | Usar `LocalSqliteProvider` nas provas de paridade |
+| `crates/edger-orchestrator/src/bin/edger.rs` | alter | Usar `LocalSqliteProvider` no composition root |
+| `crates/edger-orchestrator/tests/registry_providers.rs` | alter | Usar `LocalSqliteProvider` nos testes de registry |
+| `crates/edger-orchestrator/tests/state_services.rs` | alter | Usar `LocalSqliteProvider` nos testes de state services |
+| `crates/edger-orchestrator/tests/value_parity.rs` | alter | Usar `LocalSqliteProvider` nas provas de paridade |
 | `edger-ext-keyval/tests/keyval_queue.rs` | alter | Usar `LocalSqliteProvider` como backend de teste |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Clarificar provider local SQLite |
 | `planning/edger/docs/extensions.md` | edit | Clarificar naming e modo de provider |

@@ -10,16 +10,16 @@
 - **Restrições:** preservar a observabilidade built-in intacta; se algum dia precisar de hook, redesenha para o caso real (git history preserva o atual).
 
 ## Traceability
-- `edger-core/src/extension.rs`, `edger-orchestrator/src/registry.rs`, `pipeline.rs` (`run_on_request`/`run_on_response`/`run_on_worker_*`); `config.rs`/`manifest.rs` (`visibility`, `namespaces`, `publicRoutes`)
+- `crates/edger-core/src/extension.rs`, `crates/edger-orchestrator/src/registry.rs`, `pipeline.rs` (`run_on_request`/`run_on_response`/`run_on_worker_*`); `config.rs`/`manifest.rs` (`visibility`, `namespaces`, `publicRoutes`)
 
 ## Files
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/extension.rs` | delete | Trait `Extension`/`Middleware`/capabilities sem consumidor |
-| `edger-orchestrator/src/registry.rs` | delete | Registry sem nada a registrar |
-| `edger-orchestrator/src/pipeline.rs` | edit | Remover chamadas de hook (`run_on_*`) do dispatch |
-| `edger-core/src/config.rs`, `manifest.rs` | edit | Remover `visibility`, `namespaces`, `publicRoutes` |
-| `edger-orchestrator/src/admin_api.rs` | edit | Remover `/api/admin/extensions*` |
+| `crates/edger-core/src/extension.rs` | delete | Trait `Extension`/`Middleware`/capabilities sem consumidor |
+| `crates/edger-orchestrator/src/registry.rs` | delete | Registry sem nada a registrar |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Remover chamadas de hook (`run_on_*`) do dispatch |
+| `crates/edger-core/src/config.rs`, `manifest.rs` | edit | Remover `visibility`, `namespaces`, `publicRoutes` |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Remover `/api/admin/extensions*` |
 
 ## Detail
 ### Scope

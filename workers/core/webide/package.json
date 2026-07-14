@@ -1,0 +1,16 @@
+{
+  "name": "@edger/webide",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "bun@1.3.14",
+  "scripts": {
+    "build": "vite build && cp src/vendor/material-file-icons.LICENSE dist/material-file-icons.LICENSE",
+    "test:flows": "bash e2e/validate-flows.sh"
+  },
+  "devDependencies": {
+    "@iconify-json/lucide": "1.2.117",
+    "unplugin-icons": "23.0.1",
+    "vite": "8.1.4"
+  }
+}

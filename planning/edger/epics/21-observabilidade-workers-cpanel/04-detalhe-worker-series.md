@@ -18,12 +18,12 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-worker/src/metrics.rs` | edit | Amostras/agregados estritamente necessários |
-| `edger-orchestrator/src/observability.rs` | edit | Série bounded por identidade |
-| `edger-orchestrator/src/admin_api.rs` | edit | Endpoint de detalhe/série |
-| `workers/cpanel/index.js` | edit | View detalhe e drill-down |
-| `workers/cpanel/components/ui/tabs.js` | reuse | Navegação segmentada acessível |
-| `edger-orchestrator/tests/observability_api.rs` | edit | Janela/reset/identidade |
+| `crates/edger-worker/src/metrics.rs` | edit | Amostras/agregados estritamente necessários |
+| `crates/edger-orchestrator/src/observability.rs` | edit | Série bounded por identidade |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Endpoint de detalhe/série |
+| `workers/core/cpanel/index.js` | edit | View detalhe e drill-down |
+| `workers/core/cpanel/components/ui/tabs.js` | reuse | Navegação segmentada acessível |
+| `crates/edger-orchestrator/tests/observability_api.rs` | edit | Janela/reset/identidade |
 
 ## Detail
 

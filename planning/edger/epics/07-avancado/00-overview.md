@@ -37,7 +37,7 @@ Consolidar o runtime para uso real e migração Buntime: execução production-p
 ### AS-IS
 - Orquestrador básico (épico 05) resolve paths e despacha para pool com mock ou execução parcial.
 - Isolamento (Fase 3) tem spike e trait `Isolate` com mock cobrindo `ExecutionKind`.
-- Manifest loader multi-dir e inferência de kind estão em progresso; Wasm já executa via pipeline Rust para `workers/wasm-hello`.
+- Manifest loader multi-dir e inferência de kind estão em progresso; Wasm já executa via pipeline Rust para `workers/examples/wasm-hello`.
 - Cron nativo e `/metrics` existem em v1; observabilidade ainda precisava
   fechar correlação gerada, contadores HTTP e startup `OTEL_*` não fatal.
 - PR 10–12 do design ainda não implementados.
@@ -45,7 +45,7 @@ Consolidar o runtime para uso real e migração Buntime: execução production-p
 ### TO-BE
 - `load_manifests_from_dirs` indexa workers por nome/namespace/semver com detecção de colisão.
 - Pipeline despacha `FetchHandler` JS/TS e `WasmModule` para backends reais; variants restantes ainda dependem das stories específicas.
-- `edger-isolation/src/deno.rs` (facade) cobre fetch/routes/SPA; `wasmtime` cobre `WasmModule`.
+- `crates/edger-isolation/src/deno.rs` (facade) cobre fetch/routes/SPA; `wasmtime` cobre `WasmModule`.
 - Shell routing com `inject_base` e documentação de evolução de protocolo (WebTransport etc.).
 - `CronScheduler` em orchestrator com tokio-cron disparando HTTP interno autenticado.
 - Tracing estruturado, env OTEL não fatal e endpoint Prometheus; limites

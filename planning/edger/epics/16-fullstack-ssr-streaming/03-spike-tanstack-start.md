@@ -11,7 +11,7 @@
 
 ## Traceability
 
-- `edger-isolation/src/multiproc_harness.mjs` (capturas)
+- `crates/edger-isolation/src/multiproc_harness.mjs` (capturas)
 - `planning/edger/docs/compat-matrix.md`
 
 ## Files
@@ -19,7 +19,7 @@
 | Path | Action | Reason |
 |---|---|---|
 | scratchpad (fora do repo) | create | Projeto TanStack Start + build |
-| `workers/tanstack-demo/` | create (condicional) | Fixture, apenas se passar e for enxuto |
+| `workers/examples/tanstack-demo/` | create (condicional) | Fixture, apenas se passar e for enxuto |
 | `planning/edger/docs/compat-matrix.md` | edit | Linha TanStack Start com finding |
 | `planning/edger/epics/16-fullstack-ssr-streaming/03-spike-tanstack-start.md` | edit | Findings no Status |
 
@@ -39,7 +39,7 @@
 ## Tasks
 - [x] App via `@tanstack/cli create` (react, non-interactive) + rota server `/api/info`; build Vite.
 - [x] Iterações da receita: `ssr.noExternal` (deps transitivas), `base`/`basepath` (mount), wrapper de estáticos + restauração de base.
-- [x] Findings no Status + compat-matrix; fixture `workers/tanstack-demo`.
+- [x] Findings no Status + compat-matrix; fixture `workers/examples/tanstack-demo`.
 
 ## Verification
 
@@ -49,7 +49,7 @@ curl -H "Authorization: Bearer $KEY" http://127.0.0.1:3000/tanstack-demo
 
 ## Revalidação 2026-07-03
 
-O wrapper `workers/tanstack-demo/index.mjs` foi endurecido para servir estáticos
+O wrapper `workers/examples/tanstack-demo/index.mjs` foi endurecido para servir estáticos
 apenas de `/assets/*` e dos arquivos públicos presentes no build
 (`favicon.ico`, `logo192.png`, `logo512.png`, `manifest.json`, `robots.txt`).
 Paths malformados retornam 400; traversal/absolutos fora do contrato retornam
@@ -58,7 +58,7 @@ sandbox e anexada pelo coordenador.
 
 ## Status
 
-**completed** (2026-07-02) — TanStack Start roda no EdgeR: fixture `workers/tanstack-demo`
+**completed** (2026-07-02) — TanStack Start roda no EdgeR: fixture `workers/examples/tanstack-demo`
 (build Vite real via `@tanstack/cli create`) serve SSR (`/`, `/about`), server route
 `/api/info`, assets estáticos, hidratação React e navegação client-side — validado ao
 vivo no preview (screenshot + snapshot; zero erros de console; warm ~5ms). O contrato do

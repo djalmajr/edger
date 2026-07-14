@@ -48,5 +48,5 @@ Custos:
 
 ## Status
 
-Aceito em 2026-06-29. Fonte de verdade de implementação: `edger-orchestrator/`,
-`edger-worker/`, `edger-isolation/`, `edger-core/` e `README.md`.
+Aceito em 2026-06-29. Fonte de verdade de implementação: `crates/edger-orchestrator/`,
+`crates/edger-worker/`, `crates/edger-isolation/`, `crates/edger-core/` e `README.md`.

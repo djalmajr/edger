@@ -18,14 +18,14 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/cron.rs` | create | `CronScheduler`, registro de jobs, tick → internal HTTP |
-| `edger-orchestrator/src/pipeline.rs` | edit | Métrica Prometheus inclui contador do scheduler |
-| `edger-orchestrator/src/manifest_index_stub.rs` | edit | Extrair `cron[]` de cada `WorkerRef` habilitado |
-| `edger-core/src/manifest.rs` | no-op | Tipo `CronJob` já existia com `schedule`, `method`, `path` |
-| `edger-orchestrator/src/bin/edger.rs` ou `main.rs` | edit | Start/stop scheduler no lifecycle do servidor |
-| `edger-orchestrator/Cargo.toml` | no-op | Scheduler usa `tokio::time` já disponível |
-| `edger-orchestrator/tests/cron_scheduler_test.rs` | create | Job dispara request; disabled worker skip |
-| `workers/cron-worker/` | create | Manifest com cron + handler que incrementa contador |
+| `crates/edger-orchestrator/src/cron.rs` | create | `CronScheduler`, registro de jobs, tick → internal HTTP |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Métrica Prometheus inclui contador do scheduler |
+| `crates/edger-orchestrator/src/manifest_index_stub.rs` | edit | Extrair `cron[]` de cada `WorkerRef` habilitado |
+| `crates/edger-core/src/manifest.rs` | no-op | Tipo `CronJob` já existia com `schedule`, `method`, `path` |
+| `crates/edger-orchestrator/src/bin/edger.rs` ou `main.rs` | edit | Start/stop scheduler no lifecycle do servidor |
+| `crates/edger-orchestrator/Cargo.toml` | no-op | Scheduler usa `tokio::time` já disponível |
+| `crates/edger-orchestrator/tests/cron_scheduler_test.rs` | create | Job dispara request; disabled worker skip |
+| `workers/examples/cron-worker/` | create | Manifest com cron + handler que incrementa contador |
 
 ## Detail
 
@@ -76,7 +76,7 @@
 
 ## Test-first plan
 - **Behavior:** Acceptance criteria above fail before implementation; first test targets smallest vertical slice of the story.
-- **Level:** crate integration tests (`edger-orchestrator/tests/`, `edger-isolation/tests/`) + workspace gate.
+- **Level:** crate integration tests (`crates/edger-orchestrator/tests/`, `crates/edger-isolation/tests/`) + workspace gate.
 - **Avoid:** Re-implementing production logic inside tests; hard-coded expected values without driving real entry points.
 
 ## Tasks
@@ -95,7 +95,7 @@
 - [x] Shutdown roda scheduler antes de `run_on_shutdown` e pool shutdown.
 
 ### Fase 4 — Testes
-- [x] Fixture `workers/cron-worker/` + teste com intervalo curto.
+- [x] Fixture `workers/examples/cron-worker/` + teste com intervalo curto.
 - [x] Teste: job não roda quando worker disabled.
 
 ## Verification

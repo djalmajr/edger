@@ -29,7 +29,7 @@ Servidor escuta em `PORT`, responde `/health` e `/ready`, resolve workers namesp
 - Execução real JS/Wasm fica fora deste epic (Fase 3/7); usar mocks do pool
 
 ### AS-IS
-- `edger-orchestrator/src/lib.rs` é stub (`orchestrator_stub()`)
+- `crates/edger-orchestrator/src/lib.rs` é stub (`orchestrator_stub()`)
 - `Cargo.toml` declara deps em core/worker/isolation mas sem módulos
 - Sem servidor, router, pipeline, auth nem registry
 

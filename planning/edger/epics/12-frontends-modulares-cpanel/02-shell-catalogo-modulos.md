@@ -13,8 +13,8 @@ O shell atual prova roteamento e app composition, mas o valor Buntime inclui cat
 | Path | Action | Reason |
 |---|---|---|
 | `workers/shell-demo/` | edit | Evoluir shell demo para catalogo real se for o caminho escolhido |
-| `edger-orchestrator/tests/shell_gateway.rs` | edit | Provar shell/catalogo sem quebrar bypass de iframe/app |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar contributions usadas pelo catalogo |
+| `crates/edger-orchestrator/tests/shell_gateway.rs` | edit | Provar shell/catalogo sem quebrar bypass de iframe/app |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar contributions usadas pelo catalogo |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar fluxo local |
 
 ## Detail

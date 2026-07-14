@@ -11,7 +11,7 @@
 
 ## Traceability
 
-- `edger-orchestrator/src/operational_log.rs` (08.29)
+- `crates/edger-orchestrator/src/operational_log.rs` (08.29)
 - Stories 14.01/14.03 (resposta de install e UI)
 - `/metrics` + gateway log stats (08.19/08.20)
 
@@ -19,10 +19,10 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/deploy.rs` | edit | Enriquecer resposta de install (URL, kind, visibility, dicas de auth) |
-| `edger-orchestrator/src/admin_api.rs` | edit | Endpoint de logs operacionais filtrado por worker, se ainda não existir |
-| `workers/cpanel/index.js` | edit | Tela pós-deploy: URL, kind, últimos erros do worker |
-| `edger-orchestrator/tests/deploy_install.rs` | edit | Asserções sobre payload de resposta e logs após primeiro erro |
+| `crates/edger-orchestrator/src/deploy.rs` | edit | Enriquecer resposta de install (URL, kind, visibility, dicas de auth) |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Endpoint de logs operacionais filtrado por worker, se ainda não existir |
+| `workers/core/cpanel/index.js` | edit | Tela pós-deploy: URL, kind, últimos erros do worker |
+| `crates/edger-orchestrator/tests/deploy_install.rs` | edit | Asserções sobre payload de resposta e logs após primeiro erro |
 
 ## Detail
 
@@ -55,7 +55,7 @@
 ## Test-first plan
 
 - **Behavior:** E2E install → request com erro → admin API mostra o erro do worker.
-- **Level:** `edger-orchestrator/tests/deploy_install.rs`.
+- **Level:** `crates/edger-orchestrator/tests/deploy_install.rs`.
 - **Avoid:** parsear logs de stdout; usar o contrato da API.
 
 ## Tasks

@@ -1,0 +1,3 @@
+name: imported-webide-flow
+version: "1.0.0"
+entrypoint: index.html

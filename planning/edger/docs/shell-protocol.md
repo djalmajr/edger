@@ -111,8 +111,8 @@ continua fora do v1 e exigirá allowlist explícita para não introduzir SSRF.
 
 ## Evidência
 
-- `edger-orchestrator/tests/shell_gateway.rs`
-- `edger-orchestrator/tests/shell_routing_test.rs` (SPA namespaced com
+- `crates/edger-orchestrator/tests/shell_gateway.rs`
+- `crates/edger-orchestrator/tests/shell_routing_test.rs` (SPA namespaced com
   `<base href="/@team/panel/">`, asset relativo pela mesma rota e
   `injectBase: false` servindo HTML intocado)
 - `edger-ext-gateway/tests/gateway_middleware.rs`

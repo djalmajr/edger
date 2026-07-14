@@ -20,15 +20,15 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/admin.rs` | edit | Add request/response vocabulary for key create/revoke |
-| `edger-core/src/api_key_store.rs` | edit | Add revoke contract to the pure store trait |
-| `edger-core/src/auth.rs` | edit | Expose create/revoke through the AuthProvider contract |
+| `crates/edger-core/src/admin.rs` | edit | Add request/response vocabulary for key create/revoke |
+| `crates/edger-core/src/api_key_store.rs` | edit | Add revoke contract to the pure store trait |
+| `crates/edger-core/src/auth.rs` | edit | Expose create/revoke through the AuthProvider contract |
 | `edger-ext-auth/src/lib.rs` | edit | Delegate create/revoke to the backing store |
 | `edger-ext-auth/src/store.rs` | edit | Implement SQLite revoke and keep raw secret out of persisted metadata |
 | `edger-ext-auth/tests/auth_provider.rs` | edit | Cover store/auth behavior after revoke |
-| `edger-orchestrator/src/auth.rs` | edit | Expose create/revoke through AuthGate |
-| `edger-orchestrator/src/admin_api.rs` | edit | Add protected admin key mutation endpoints |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Add API-level create/revoke tests and leak checks |
+| `crates/edger-orchestrator/src/auth.rs` | edit | Expose create/revoke through AuthGate |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Add protected admin key mutation endpoints |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Add API-level create/revoke tests and leak checks |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Move API key operational status according to evidence |
 | `planning/edger/status/evidence/story-08-09-runtime.txt` | create | Capture commands and results |
 

@@ -13,20 +13,20 @@
 
 - **Prototype:** `OBS-03 Logs explorer`, `OBS-04 Request trace` e `OBS-06 Worker workspace · Logs`.
 - **Business rules:** `release` continua uma fase de deploy, não evento JS; cleanup garantido usa `beforeunload` + `EdgeRuntime.waitUntil`; `onIdle` permanece fora até existir caso de uso aprovado.
-- **Source:** `edger-orchestrator/src/deploy.rs`, `edger-isolation/src/multiproc_harness.mjs`, `edger-worker/src/pool.rs`.
+- **Source:** `crates/edger-orchestrator/src/deploy.rs`, `crates/edger-isolation/src/multiproc_harness.mjs`, `crates/edger-worker/src/pool.rs`.
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/deploy.rs` | edit | Emitir release started/succeeded/failed/skipped com duração |
-| `edger-orchestrator/src/observability.rs` | edit | Armazenar eventos tipados bounded |
-| `edger-isolation/src/multiproc.rs` | edit | Retornar resultado estruturado do drain |
-| `edger-worker/src/pool.rs` | edit | Emitir drain/termination com identidade e causa |
-| `edger-orchestrator/src/admin_api.rs` | edit | Consultar eventos por worker/versão/source/kind |
-| `workers/cpanel/index.js` | edit | Exibir release/drain na aba `Logs` e detalhe sanitizado |
-| `edger-orchestrator/tests/observability_api.rs` | edit | Provar consulta, sanitização e retenção |
-| `edger-isolation/tests/uds_roundtrip.rs` | edit | Provar drained count, timeout e motivo |
+| `crates/edger-orchestrator/src/deploy.rs` | edit | Emitir release started/succeeded/failed/skipped com duração |
+| `crates/edger-orchestrator/src/observability.rs` | edit | Armazenar eventos tipados bounded |
+| `crates/edger-isolation/src/multiproc.rs` | edit | Retornar resultado estruturado do drain |
+| `crates/edger-worker/src/pool.rs` | edit | Emitir drain/termination com identidade e causa |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Consultar eventos por worker/versão/source/kind |
+| `workers/core/cpanel/index.js` | edit | Exibir release/drain na aba `Logs` e detalhe sanitizado |
+| `crates/edger-orchestrator/tests/observability_api.rs` | edit | Provar consulta, sanitização e retenção |
+| `crates/edger-isolation/tests/uds_roundtrip.rs` | edit | Provar drained count, timeout e motivo |
 
 ## Detail
 

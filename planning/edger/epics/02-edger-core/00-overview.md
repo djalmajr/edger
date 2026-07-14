@@ -24,7 +24,7 @@ Establish `edger-core` as pure leaf crate: manifests, configs, wire formats, tra
 - Preserve Bun `bun test` pass throughout
 
 ### AS-IS
-- `edger-core/src/lib.rs` has minimal `ExecutionKind`, `CoreError`, subset `WorkerManifest`
+- `crates/edger-core/src/lib.rs` has minimal `ExecutionKind`, `CoreError`, subset `WorkerManifest`
 - Other crates are empty stubs
 - No module split, no full traits
 
@@ -58,7 +58,7 @@ flowchart LR
 ```
 
 ## Epic acceptance criteria
-- [x] `edger-core/Cargo.toml` has no sibling crate deps; only serde/bytes/etc.
+- [x] `crates/edger-core/Cargo.toml` has no sibling crate deps; only serde/bytes/etc.
 - [x] `src/` modules: manifest, config, wire, error, extension, auth, execution, isolate, context, worker_ref, principal
 - [x] `cargo test -p edger-core` passes with mapping + roundtrip tests (17 tests)
 - [x] `cargo clippy -p edger-core -- -D warnings` clean

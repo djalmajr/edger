@@ -13,8 +13,8 @@
 ## Traceability
 
 - `edger-ext-auth`, `edger-ext-gateway`, `edger-ext-keyval`, `edger-ext-turso`, `edger-ext-turso-remote` (crates a deletar)
-- `edger-core/src/extension.rs`, `edger-core/src/bindings.rs`, `edger-core/src/auth.rs`
-- `edger-orchestrator/src/registry.rs`, `service_bindings.rs`, `auth.rs`, `admin_api.rs`, `pipeline.rs`
+- `crates/edger-core/src/extension.rs`, `crates/edger-core/src/bindings.rs`, `crates/edger-core/src/auth.rs`
+- `crates/edger-orchestrator/src/registry.rs`, `service_bindings.rs`, `auth.rs`, `admin_api.rs`, `pipeline.rs`
 - `planning/edger/docs/compat-matrix.md` (linhas que deixam de valer)
 
 ## Story backlog

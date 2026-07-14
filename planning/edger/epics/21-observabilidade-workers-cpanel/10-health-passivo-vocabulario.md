@@ -19,12 +19,12 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-worker/src/metrics.rs` | edit | Janela bounded, outcomes e falhas consecutivas por identidade |
-| `edger-worker/src/pool.rs` | edit | Registrar sucesso, HTTP 5xx, erro de isolate, timeout e rejeição |
-| `edger-orchestrator/src/metrics.rs` | edit | Serializar health, janela, last success/failure e freshness |
-| `workers/cpanel/index.js` | edit | Trocar `Serving`, mostrar as três dimensões e filtros corretos |
-| `edger-worker/tests/integration_pool.rs` | edit | Provar transições de health com tráfego real |
-| `edger-orchestrator/tests/metrics_endpoint.rs` | edit | Provar contrato JSON e reset/freshness |
+| `crates/edger-worker/src/metrics.rs` | edit | Janela bounded, outcomes e falhas consecutivas por identidade |
+| `crates/edger-worker/src/pool.rs` | edit | Registrar sucesso, HTTP 5xx, erro de isolate, timeout e rejeição |
+| `crates/edger-orchestrator/src/metrics.rs` | edit | Serializar health, janela, last success/failure e freshness |
+| `workers/core/cpanel/index.js` | edit | Trocar `Serving`, mostrar as três dimensões e filtros corretos |
+| `crates/edger-worker/tests/integration_pool.rs` | edit | Provar transições de health com tráfego real |
+| `crates/edger-orchestrator/tests/metrics_endpoint.rs` | edit | Provar contrato JSON e reset/freshness |
 | `planning/edger/scripts/cpanel-ui-gate.sh` | edit | Provar estados desktop/mobile e worker que falha propositalmente |
 
 ## Detail

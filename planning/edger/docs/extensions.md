@@ -54,7 +54,7 @@ Migrar para `inventory`/`linkme` quando houver 3+ extensões estáveis (story fu
 
 ## Capabilities, dependencies e providers (Story 08.06)
 
-`edger-core/src/extension.rs` define o vocabulário puro:
+`crates/edger-core/src/extension.rs` define o vocabulário puro:
 
 - `ExtensionCapability`: middleware, request/response hook, auth provider, worker handler, service provider, menu contribution e lifecycle hook.
 - `ExtensionDependency`: capability requerida antes do registro.
@@ -164,7 +164,7 @@ let auth = AuthGate::new(AuthGateConfig::default(), auth_ext);
 
 **Orchestrator:** `AuthGate` delega `authenticate` ao `Arc<dyn AuthProvider>` — sem lógica duplicada.
 
-**Testes:** `edger-ext-auth/tests/auth_provider.rs` (unit) + `edger-orchestrator/tests/auth_gate.rs` (integração, paridade 05.04).
+**Testes:** `edger-ext-auth/tests/auth_provider.rs` (unit) + `crates/edger-orchestrator/tests/auth_gate.rs` (integração, paridade 05.04).
 
 ### Pendências (06.02)
 

@@ -12,9 +12,9 @@ O Buntime mostra plugins como entidades operaveis. No edger, o registry ja tem c
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/admin.rs` | edit | Expor inventario de modulos sem misturar com logica de core |
-| `edger-orchestrator/src/extensions.rs` | edit | Consolidar shape operacional de modulo se necessario |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar resposta protegida e redaction de inventario |
+| `crates/edger-orchestrator/src/admin.rs` | edit | Expor inventario de modulos sem misturar com logica de core |
+| `crates/edger-orchestrator/src/extensions.rs` | edit | Consolidar shape operacional de modulo se necessario |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar resposta protegida e redaction de inventario |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Marcar evidencias novas da linha de extensoes/plugins |
 
 ## Detail

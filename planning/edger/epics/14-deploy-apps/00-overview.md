@@ -37,12 +37,12 @@ Hoje o deploy de um worker no EdgeR é filesystem puro: copiar um diretório par
 
 ## Traceability
 
-- `edger-orchestrator/src/admin_api.rs` (rotas admin, permissões)
-- `edger-orchestrator/src/manifest_index_stub.rs` (`ManifestIndex` — `Arc<RwLock>`, insert em runtime)
-- `edger-orchestrator/src/manifest_loader.rs` (`load_manifests_from_dirs`, validação de manifest)
-- `edger-orchestrator/src/registry.rs` (padrão reconcile de extensões, Epic 10.02)
-- `workers/cpanel/` (cPanel shadcn, Epic 12 + redesign 2026-07-02)
-- `edger-mcp/` (authoring local, Epic 13)
+- `crates/edger-orchestrator/src/admin_api.rs` (rotas admin, permissões)
+- `crates/edger-orchestrator/src/manifest_index_stub.rs` (`ManifestIndex` — `Arc<RwLock>`, insert em runtime)
+- `crates/edger-orchestrator/src/manifest_loader.rs` (`load_manifests_from_dirs`, validação de manifest)
+- `crates/edger-orchestrator/src/registry.rs` (padrão reconcile de extensões, Epic 10.02)
+- `workers/core/cpanel/` (cPanel shadcn, Epic 12 + redesign 2026-07-02)
+- `crates/edger-mcp/` (authoring local, Epic 13)
 - Buntime refs: file manager DnD do cPanel, permissão `workers:install` (ai-memory zommehq/buntime)
 
 ## Story backlog

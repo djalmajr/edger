@@ -11,8 +11,8 @@
 
 ## Traceability
 
-- `edger-isolation/src/deno/{worker_host,process}.rs`
-- `edger-isolation/src/transport.rs` (frames de chunk)
+- `crates/edger-isolation/src/deno/{worker_host,process}.rs`
+- `crates/edger-isolation/src/transport.rs` (frames de chunk)
 - `planning/edger/docs/compat-matrix.md` (sse/stream → tested)
 - `planning/edger/runtime-functional-plan.md` (v1 → legado)
 
@@ -20,10 +20,10 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/transport.rs` | edit | Frames de streaming (chunk/end) length-prefixed |
-| `edger-isolation/src/deno/worker_host.rs` | edit | Harness faz stream do body por chunks |
-| `edger-isolation/src/deno/process.rs` | edit | Sandbox SO (seccomp/landlock onde disponível) + permissões Deno mínimas |
-| `edger-worker/src/pool.rs` | edit | Pré-warm/pool sizing configurável |
+| `crates/edger-isolation/src/transport.rs` | edit | Frames de streaming (chunk/end) length-prefixed |
+| `crates/edger-isolation/src/deno/worker_host.rs` | edit | Harness faz stream do body por chunks |
+| `crates/edger-isolation/src/deno/process.rs` | edit | Sandbox SO (seccomp/landlock onde disponível) + permissões Deno mínimas |
+| `crates/edger-worker/src/pool.rs` | edit | Pré-warm/pool sizing configurável |
 | `planning/edger/docs/compat-matrix.md` | edit | sse/stream → tested (passthrough) |
 | `AGENTS.md`, `planning/edger/runtime-functional-plan.md` | edit | Ponte CLI v1 marcada legado |
 
@@ -53,7 +53,7 @@
 ### Fase 1 — Streaming
 - [x] `drainBounded` no harness (byte cap + idle + **teto de tempo total** `EDGER_STREAM_MAX_MS`) substitui `arrayBuffer()`; finito inteiro, infinito bounded sem hang.
 - [x] Handlers globais `unhandledrejection`/`error` no harness: erro de background do worker pós-resposta não derruba o processo persistente.
-- [x] Cancellation-safety no pool (`DispatchCancelGuard`): request cancelado mid-dispatch (client disconnect durante resposta longa/streaming) recicla o instance em vez de deixá-lo preso em `Active` (que wedgeava o worker → `NotReady` em todos os requests seguintes). Revelado pelo preview; teste `edger-worker/tests/cancel_safety.rs`.
+- [x] Cancellation-safety no pool (`DispatchCancelGuard`): request cancelado mid-dispatch (client disconnect durante resposta longa/streaming) recicla o instance em vez de deixá-lo preso em `Active` (que wedgeava o worker → `NotReady` em todos os requests seguintes). Revelado pelo preview; teste `crates/edger-worker/tests/cancel_safety.rs`.
 - [x] Testes `streaming.rs` (4): finito inteiro; infinito por byte cap; SSE de cadência estável por tempo total; sobrevivência a erro de background. Mutações capturadas (voltar a `arrayBuffer()` → infinito trava; remover teto de tempo → SSE estável trava; remover handlers → `[UDS_IO] Broken pipe`).
 - [x] Validado ao vivo no preview builtin: `/sse` e `/stream` retornam bounded repetidamente (antes travavam/matavam o processo).
 ### Fase 2 — Aposentar v1
@@ -84,7 +84,7 @@ o `enqueue()` num controller fechado lançava um erro **de background não captu
 matava o processo Deno (`[UDS_IO] Broken pipe` no request seguinte) — resolvido com
 handlers globais `unhandledrejection`/`error` no harness, tornando o processo resiliente a
 erros de background do código do usuário (timer solto, promise flutuante). Provado por
-`edger-isolation/tests/streaming.rs` (4 testes: finito inteiro, infinito por byte cap, SSE
+`crates/edger-isolation/tests/streaming.rs` (4 testes: finito inteiro, infinito por byte cap, SSE
 estável por tempo total, sobrevivência a erro de background) e revalidado ao vivo (`/sse` e
 `/stream` respondem bounded repetidamente). Mutações capturadas: voltar a `arrayBuffer()`
 (infinito trava), remover o teto de tempo (SSE estável trava), remover os handlers

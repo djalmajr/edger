@@ -18,9 +18,9 @@
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `edger-isolation/Cargo.toml` | alterar | `[dev-dependencies]` ou features opcionais: `deno_core`, `deno_runtime` (mínimo), `wasmtime`, `wasmtime-wasi` |
-| `edger-isolation/examples/embedding-spike-deno.rs` | criar | Boot V8, módulo fetch trivial, roundtrip request |
-| `edger-isolation/examples/embedding-spike-wasm.rs` | criar | Load Wasm mínimo + WASI smoke |
+| `crates/edger-isolation/Cargo.toml` | alterar | `[dev-dependencies]` ou features opcionais: `deno_core`, `deno_runtime` (mínimo), `wasmtime`, `wasmtime-wasi` |
+| `crates/edger-isolation/examples/embedding-spike-deno.rs` | criar | Boot V8, módulo fetch trivial, roundtrip request |
+| `crates/edger-isolation/examples/embedding-spike-wasm.rs` | criar | Load Wasm mínimo + WASI smoke |
 | `planning/edger/epics/03-isolacao-execucao/spike.md` | preencher | Skeleton existe; story preenche métricas, sharp edges, Go/no-go |
 | `planning/edger/design.md` | alterar (se necessário) | Atualizar riscos/rollout se spike mudar direção |
 | `planning/edger/epics/03-isolacao-execucao/00-overview.md` | alterar | Status story 03.01 |
@@ -61,7 +61,7 @@
 - **Verificação documental:** reviewer confere `spike.md` contra critérios de aceite antes de fechar story
 
 ## Tasks
-- [x] Adicionar dev-deps/features opcionais em `edger-isolation/Cargo.toml` com versões pinadas
+- [x] Adicionar dev-deps/features opcionais em `crates/edger-isolation/Cargo.toml` com versões pinadas
 - [x] Implementar `embedding-spike-deno.rs` (wire sim; V8 boot pendente 03.04)
 - [x] Implementar `embedding-spike-wasm.rs` (compile, invoke, timing)
 - [x] Medir e registrar baseline em `spike.md`

@@ -11,21 +11,21 @@
 
 ## Traceability
 
-- `edger-orchestrator/src/admin_api.rs` (padrão de rotas/permissões)
-- `edger-orchestrator/src/manifest_loader.rs` (`load_worker_manifest` como validação canônica)
-- `edger-orchestrator/src/manifest_index_stub.rs` (`ManifestIndex::insert` em runtime via `Arc<RwLock>`)
+- `crates/edger-orchestrator/src/admin_api.rs` (padrão de rotas/permissões)
+- `crates/edger-orchestrator/src/manifest_loader.rs` (`load_worker_manifest` como validação canônica)
+- `crates/edger-orchestrator/src/manifest_index_stub.rs` (`ManifestIndex::insert` em runtime via `Arc<RwLock>`)
 - Buntime: `workers:install` + upload de pacote no cPanel
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/deploy.rs` | create | Extração segura de zip, validação, escrita atômica, indexação |
-| `edger-orchestrator/src/admin_api.rs` | edit | Rota `POST /api/admin/workers/install` + permissão `workers:install` |
-| `edger-orchestrator/src/lib.rs` | edit | `OrchestratorState.worker_roots` (destino de install) + export do módulo |
-| `edger-orchestrator/src/bin/edger.rs` | edit | Propagar `RUNTIME_WORKER_DIRS` parseado para o state |
-| `edger-orchestrator/Cargo.toml` | edit | Dependência `zip` (extração) |
-| `edger-orchestrator/tests/deploy_install.rs` | create | E2E: install → worker responde sem restart; negativos de segurança |
+| `crates/edger-orchestrator/src/deploy.rs` | create | Extração segura de zip, validação, escrita atômica, indexação |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Rota `POST /api/admin/workers/install` + permissão `workers:install` |
+| `crates/edger-orchestrator/src/lib.rs` | edit | `OrchestratorState.worker_roots` (destino de install) + export do módulo |
+| `crates/edger-orchestrator/src/bin/edger.rs` | edit | Propagar `RUNTIME_WORKER_DIRS` parseado para o state |
+| `crates/edger-orchestrator/Cargo.toml` | edit | Dependência `zip` (extração) |
+| `crates/edger-orchestrator/tests/deploy_install.rs` | create | E2E: install → worker responde sem restart; negativos de segurança |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar o fluxo de install local |
 
 ## Detail
@@ -65,7 +65,7 @@
 ## Test-first plan
 
 - **Behavior:** E2E pela pipeline HTTP real (`build_pipeline`), zip construído em memória no teste; primeiro teste é o caminho feliz install→fetch.
-- **Level:** `edger-orchestrator/tests/deploy_install.rs` + workspace gate.
+- **Level:** `crates/edger-orchestrator/tests/deploy_install.rs` + workspace gate.
 - **Avoid:** testar helpers de zip isolados sem passar pela rota; mocks do índice.
 
 ## Tasks
@@ -97,7 +97,7 @@ cargo fmt -- --check
 ## Status
 
 **completed** (2026-07-02) — `POST /api/admin/workers/install` entregue em
-`edger-orchestrator/src/deploy.rs`: extração zip com defesa zip-slip
+`crates/edger-orchestrator/src/deploy.rs`: extração zip com defesa zip-slip
 (`enclosed_name`), unwrap de pasta top-level, validação canônica via
 `load_worker_manifest`, check de namespace do principal, escrita atômica
 (staging + rename) com rollback em colisão, indexação em runtime e resposta

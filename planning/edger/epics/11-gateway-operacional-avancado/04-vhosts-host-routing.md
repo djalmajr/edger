@@ -13,9 +13,9 @@ Buntime tem `plugin-vhosts` para roteamento por host. No edger, esse valor deve 
 | Path | Action | Reason |
 |---|---|---|
 | `edger-ext-gateway/src/lib.rs` | edit | Adicionar regras de host routing |
-| `edger-orchestrator/src/router.rs` | edit | Integrar resolucao por host sem quebrar path routing |
-| `edger-orchestrator/tests/routing_resolution.rs` | edit | Provar hosts, reserved paths e namespace |
-| `edger-orchestrator/tests/value_parity.rs` | edit | Registrar fluxo representativo de vhost |
+| `crates/edger-orchestrator/src/router.rs` | edit | Integrar resolucao por host sem quebrar path routing |
+| `crates/edger-orchestrator/tests/routing_resolution.rs` | edit | Provar hosts, reserved paths e namespace |
+| `crates/edger-orchestrator/tests/value_parity.rs` | edit | Registrar fluxo representativo de vhost |
 
 ## Detail
 

@@ -12,8 +12,8 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/cron.rs` | edit | Trocar parsing artesanal por parser validado |
-| `edger-orchestrator/tests/cron_scheduler_test.rs` | edit | Cobrir expressões válidas e inválidas |
+| `crates/edger-orchestrator/src/cron.rs` | edit | Trocar parsing artesanal por parser validado |
+| `crates/edger-orchestrator/tests/cron_scheduler_test.rs` | edit | Cobrir expressões válidas e inválidas |
 | `Cargo.toml` | inspect/edit | Declarar dependência se necessário |
 
 ## Detail
@@ -34,7 +34,7 @@
 ## Verification
 
 ```bash
-rg "cron|schedule" edger-orchestrator/src/cron.rs edger-orchestrator/tests/cron_scheduler_test.rs Cargo.toml
+rg "cron|schedule" crates/edger-orchestrator/src/cron.rs crates/edger-orchestrator/tests/cron_scheduler_test.rs Cargo.toml
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check
