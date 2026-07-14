@@ -12,11 +12,11 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/limits.rs` | edit | Centralizar limites e causas de encerramento |
-| `edger-isolation/src/multiproc.rs` | edit | Aplicar limites ao processo worker |
-| `edger-isolation/src/multiproc_harness.mjs` | inspect/edit | Garantir que o harness não mascare estouros |
-| `edger-worker/src/pool.rs` | inspect/edit | Reciclar ou matar workers conforme a causa |
-| `edger-isolation/tests/` | inspect/edit | Cobrir CPU, RSS e reciclagem |
+| `crates/edger-isolation/src/limits.rs` | edit | Centralizar limites e causas de encerramento |
+| `crates/edger-isolation/src/multiproc.rs` | edit | Aplicar limites ao processo worker |
+| `crates/edger-isolation/src/multiproc_harness.mjs` | inspect/edit | Garantir que o harness não mascare estouros |
+| `crates/edger-worker/src/pool.rs` | inspect/edit | Reciclar ou matar workers conforme a causa |
+| `crates/edger-isolation/tests/` | inspect/edit | Cobrir CPU, RSS e reciclagem |
 
 ## Detail
 

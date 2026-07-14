@@ -26,8 +26,8 @@ Constraints:
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/admin_api.rs` | alter | Adicionar rota e handler root-only para métricas agregadas de rate limit. |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | alter | Cobrir contrato HTTP, auth root e ausência de vazamento de segredo. |
+| `crates/edger-orchestrator/src/admin_api.rs` | alter | Adicionar rota e handler root-only para métricas agregadas de rate limit. |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | alter | Cobrir contrato HTTP, auth root e ausência de vazamento de segredo. |
 | `docs/developers/06-operacao-e-testes.adoc` | alter | Documentar curl e escopo local/single-node do endpoint. |
 | `planning/edger/docs/value-parity-matrix.md` | alter | Atualizar evidência e lacunas restantes da linha gateway. |
 | `planning/edger/docs/compat-matrix.md` | alter | Registrar contrato de compatibilidade operacional. |
@@ -83,7 +83,7 @@ Behavior:
 
 First failing test:
 
-- `gateway_admin_rate_limit_metrics_api_exposes_local_bucket_summary` em `edger-orchestrator/tests/admin_workers_plugins.rs`.
+- `gateway_admin_rate_limit_metrics_api_exposes_local_bucket_summary` em `crates/edger-orchestrator/tests/admin_workers_plugins.rs`.
 
 Preferred level:
 

@@ -12,9 +12,9 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/oidc.rs` | edit | Ajustar validação de claims, namespaces e root |
-| `edger-orchestrator/tests/` | inspect/edit | Cobrir tokens válidos sem admin, com admin e com claims inválidas |
-| `edger-core/src/manifest.rs` | inspect | Confirmar se há contrato de namespace relevante no manifest |
+| `crates/edger-orchestrator/src/oidc.rs` | edit | Ajustar validação de claims, namespaces e root |
+| `crates/edger-orchestrator/tests/` | inspect/edit | Cobrir tokens válidos sem admin, com admin e com claims inválidas |
+| `crates/edger-core/src/manifest.rs` | inspect | Confirmar se há contrato de namespace relevante no manifest |
 
 ## Detail
 
@@ -34,7 +34,7 @@
 ## Verification
 
 ```bash
-rg "is_root|namespace|oidc|claims" edger-orchestrator/src edger-orchestrator/tests
+rg "is_root|namespace|oidc|claims" crates/edger-orchestrator/src crates/edger-orchestrator/tests
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt -- --check

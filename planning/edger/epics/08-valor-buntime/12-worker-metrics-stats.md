@@ -20,14 +20,14 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-worker/src/metrics.rs` | edit | Expand worker stats shape for JSON snapshot |
-| `edger-worker/src/instance.rs` | edit | Track worker uptime for stats |
-| `edger-worker/src/lru.rs` | edit | Add safe snapshot iteration over cached workers |
-| `edger-worker/src/pool.rs` | edit | Expose all worker stats, not only lookup by ID |
-| `edger-orchestrator/src/metrics.rs` | edit | Add JSON stats response builder |
-| `edger-orchestrator/src/pipeline.rs` | edit | Route `/metrics/stats` to read-only JSON handler |
-| `edger-orchestrator/tests/metrics_endpoint.rs` | edit | Cover stats endpoint after dispatch and secret hygiene |
-| `edger-worker/tests/metrics_ephemeral.rs` | edit | Cover pool-level worker stats snapshot |
+| `crates/edger-worker/src/metrics.rs` | edit | Expand worker stats shape for JSON snapshot |
+| `crates/edger-worker/src/instance.rs` | edit | Track worker uptime for stats |
+| `crates/edger-worker/src/lru.rs` | edit | Add safe snapshot iteration over cached workers |
+| `crates/edger-worker/src/pool.rs` | edit | Expose all worker stats, not only lookup by ID |
+| `crates/edger-orchestrator/src/metrics.rs` | edit | Add JSON stats response builder |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Route `/metrics/stats` to read-only JSON handler |
+| `crates/edger-orchestrator/tests/metrics_endpoint.rs` | edit | Cover stats endpoint after dispatch and secret hygiene |
+| `crates/edger-worker/tests/metrics_ephemeral.rs` | edit | Cover pool-level worker stats snapshot |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Update metrics row evidence |
 | `planning/edger/docs/compat-matrix.md` | edit | Add technical compatibility row |
 | `planning/edger/status/evidence/story-08-12-runtime.txt` | create | Capture commands and results |
@@ -70,8 +70,8 @@
 ## Test-first plan
 - First failing test: dispatch `/echo` twice, then `GET /metrics/stats` returns one worker row with `app: "echo@1.0.0"`, state `idle`, requests `2`, and no secrets.
 - Preferred levels:
-  - `edger-orchestrator/tests/metrics_endpoint.rs` for API contract and secret hygiene.
-  - `edger-worker/tests/metrics_ephemeral.rs` for pool snapshot behavior without HTTP.
+  - `crates/edger-orchestrator/tests/metrics_endpoint.rs` for API contract and secret hygiene.
+  - `crates/edger-worker/tests/metrics_ephemeral.rs` for pool snapshot behavior without HTTP.
 - Low-value tests avoided: asserting internal lock behavior or exact uptime value beyond non-negative numeric shape.
 
 ## Tasks

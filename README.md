@@ -21,6 +21,8 @@ pools, routing, limits, deploys and local-first observability.
   gateway.
 - A built-in cPanel for worker inventory, files, routing, health, logs and
   observability.
+- A bundled WebIDE with local drafts, explicit deploy, sandboxed preview and
+  direct access to deployments, logs and observability.
 - Local in-memory operational events without requiring an external collector.
 - Optional OTLP export and Prometheus-compatible metrics.
 - Helm/Rancher deployment assets, including `questions.yaml`.
@@ -37,7 +39,9 @@ Start the runtime with a development-only control-plane key:
 ```bash
 ROOT_API_KEY=dev-only-change-me \
 PORT=19080 \
-RUNTIME_WORKER_DIRS=workers \
+RUNTIME_WORKER_DIRS=workers/examples \
+EDGER_CORE_WORKER_DIR=workers/core \
+EDGER_CORE_WORKER_OVERLAY_DIR=.edger/core-worker-overlays \
 cargo run -p edger-orchestrator --bin edger
 ```
 
@@ -47,6 +51,7 @@ Then verify the runtime and open the cPanel:
 curl http://127.0.0.1:19080/health
 curl http://127.0.0.1:19080/ready
 open http://127.0.0.1:19080/cpanel/
+open http://127.0.0.1:19080/webide/
 ```
 
 Worker routes are not protected by the root key. For example:
@@ -66,12 +71,18 @@ Never reuse the development key in a shared or production environment. See the
 
 The workspace is intentionally split into explicit boundaries:
 
-- `edger-core`: pure runtime vocabulary and contracts, without I/O.
-- `edger-isolation`: Deno process and Wasm execution backends.
-- `edger-worker`: process pools, lifecycle and worker metrics.
-- `edger-orchestrator`: HTTP server, routing, control plane, deploy and
+- `crates/edger-core`: pure runtime vocabulary and contracts, without I/O.
+- `crates/edger-isolation`: Deno process and Wasm execution backends.
+- `crates/edger-worker`: process pools, lifecycle and worker metrics.
+- `crates/edger-orchestrator`: HTTP server, routing, control plane, deploy and
   observability.
-- `edger-mcp`: local authoring and discovery surface for MCP clients.
+- `crates/edger-mcp`: local authoring and discovery surface for MCP clients.
+
+Workers are separated by trust boundary. `workers/core` contains the cPanel and
+WebIDE distributed by EdgeR; `workers/examples` contains development examples.
+At runtime, bundled core workers are immutable. Administrative updates for
+reserved core names are written to the overlay directory, while ordinary
+workers remain under `RUNTIME_WORKER_DIRS`.
 
 The runtime stays minimal: API-gateway policy, fleet management, durable
 cross-replica retention and commercial governance live outside the worker hot
@@ -96,6 +107,12 @@ The Helm chart lives at [`charts/edger`](charts/edger). Validate it locally:
 helm lint charts/edger
 helm template edger charts/edger
 ```
+
+The container image contains only the release binary, the Deno base runtime,
+the runtime-ready cPanel and the compiled WebIDE. It runs as uid `10001` and
+declares separate volumes for user workers and core overlays. Persist
+`/app/core-worker-overlays` to keep cPanel/WebIDE updates across pod recreation;
+without that volume the bundled versions are restored naturally.
 
 OTLP is optional. EdgeR remains operable with its bounded local event store
 when no collector is configured or when export is unavailable.

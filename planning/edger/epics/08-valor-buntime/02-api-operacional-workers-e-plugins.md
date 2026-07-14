@@ -21,19 +21,19 @@ completed (2026-06-29) — API operacional v1 entregue com inventário root-only
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/admin.rs` | create | Tipos puros para requests/responses administrativos |
-| `edger-core/src/lib.rs` | edit | Exportar vocabulário admin sem I/O |
-| `edger-core/src/api_key_store.rs` | edit | Adicionar inventário seguro de metadata de keys |
-| `edger-orchestrator/src/admin_api.rs` | create | Rotas HTTP administrativas |
-| `edger-orchestrator/src/lib.rs` | edit | Exportar módulo admin API |
-| `edger-orchestrator/src/bin/edger.rs` | no change | O binário já usa `build_pipeline`; a montagem ficou no pipeline |
-| `edger-orchestrator/src/pipeline.rs` | edit | Montar rotas `/api/admin/*` antes do fallback de workers |
-| `edger-orchestrator/src/manifest_loader.rs` | no change | O índice atual já carrega a fonte usada pela API operacional |
-| `edger-orchestrator/src/manifest_index_stub.rs` | edit | Expor listagem ordenada de workers/plugins sem vazar storage interno |
-| `edger-orchestrator/src/registry.rs` | edit | Expor inventário estável de extensões registradas |
+| `crates/edger-core/src/admin.rs` | create | Tipos puros para requests/responses administrativos |
+| `crates/edger-core/src/lib.rs` | edit | Exportar vocabulário admin sem I/O |
+| `crates/edger-core/src/api_key_store.rs` | edit | Adicionar inventário seguro de metadata de keys |
+| `crates/edger-orchestrator/src/admin_api.rs` | create | Rotas HTTP administrativas |
+| `crates/edger-orchestrator/src/lib.rs` | edit | Exportar módulo admin API |
+| `crates/edger-orchestrator/src/bin/edger.rs` | no change | O binário já usa `build_pipeline`; a montagem ficou no pipeline |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Montar rotas `/api/admin/*` antes do fallback de workers |
+| `crates/edger-orchestrator/src/manifest_loader.rs` | no change | O índice atual já carrega a fonte usada pela API operacional |
+| `crates/edger-orchestrator/src/manifest_index_stub.rs` | edit | Expor listagem ordenada de workers/plugins sem vazar storage interno |
+| `crates/edger-orchestrator/src/registry.rs` | edit | Expor inventário estável de extensões registradas |
 | `edger-ext-auth/src/lib.rs` | edit | Expor inventário seguro de keys via contrato administrativo |
 | `edger-ext-auth/src/store.rs` | edit | Implementar listagem de metadata sem hash/key raw |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | create | Testes de listagem, inspeção e mutação protegida |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | create | Testes de listagem, inspeção e mutação protegida |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar comandos e contratos administrativos |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Marcar linhas de gestão operacional com evidência |
 
@@ -86,17 +86,17 @@ completed (2026-06-29) — API operacional v1 entregue com inventário root-only
 ## Test-first plan
 - **Behavior:** `/api/admin/*` deve ser servido pelo admin router, exigir root auth e nunca cair no worker dispatch ou `API_STUB`.
 - **First failing test:** `GET /api/admin/workers` sem auth retorna 401; com root retorna JSON com worker `name`, `namespace`, `version`, `kind`, `source`, `status`.
-- **Preferred level:** integração em `edger-orchestrator/tests/admin_workers_plugins.rs` usando `build_pipeline` e estado real com `ManifestIndex`, `ExtensionRegistry` e `SqliteApiKeyStore`.
+- **Preferred level:** integração em `crates/edger-orchestrator/tests/admin_workers_plugins.rs` usando `build_pipeline` e estado real com `ManifestIndex`, `ExtensionRegistry` e `SqliteApiKeyStore`.
 - **Mutation captured:** mover admin routes para depois do fallback, remover root check ou retornar raw key deve quebrar testes.
 - **Avoid:** testes que apenas confirmam structs serializam; a prova precisa ser resposta HTTP observável e ausência de segredo.
 
 ## Tasks
 - [x] Fase 1 — Contratos puros.
-  - Done when: `edger-core/src/admin.rs` definir `AdminWorkerInfo`, `AdminExtensionInfo`, `AdminApiKeyInfo`, envelope de erro/health e reexport em `lib.rs`.
+  - Done when: `crates/edger-core/src/admin.rs` definir `AdminWorkerInfo`, `AdminExtensionInfo`, `AdminApiKeyInfo`, envelope de erro/health e reexport em `lib.rs`.
 - [x] Fase 2 — Inventário de fontes atuais.
   - Done when: `ManifestIndex` listar workers/plugins de forma ordenada; `ExtensionRegistry` listar extensões; `SqliteApiKeyStore` listar key metadata sem key/hash.
 - [x] Fase 3 — Admin router root-only.
-  - Done when: `edger-orchestrator/src/admin_api.rs` servir `/api/admin/workers`, `/api/admin/extensions`, `/api/admin/keys`, `/api/admin/session` e mutações protegidas mínimas.
+  - Done when: `crates/edger-orchestrator/src/admin_api.rs` servir `/api/admin/workers`, `/api/admin/extensions`, `/api/admin/keys`, `/api/admin/session` e mutações protegidas mínimas.
 - [x] Fase 4 — Integração no pipeline.
   - Done when: `build_pipeline` montar admin routes antes do fallback e `/api/admin/*` não retornar `API_STUB`.
 - [x] Fase 5 — Testes E2E de API operacional.

@@ -12,7 +12,7 @@
 - Use explicit memory scopes (workspace:"djalmajr", project:"edger") ; use zommehq/buntime when referencing buntime knowledge.
 
 ## Launch
-- edger entry: `ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers cargo run -p edger-orchestrator --bin edger`
+- edger entry: `ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers/examples EDGER_CORE_WORKER_DIR=workers/core EDGER_CORE_WORKER_OVERLAY_DIR=.edger/core-worker-overlays cargo run -p edger-orchestrator --bin edger`
 - Worker dir must have index.{ts,js,mjs} compatible with Deno.serve or export default { fetch }
 - JS/TS workers currently execute via the Deno CLI bridge (`deno` on PATH or `EDGER_DENO_BIN`). Embedded `deno_core` remains the production target; do not reintroduce a Bun adapter.
 

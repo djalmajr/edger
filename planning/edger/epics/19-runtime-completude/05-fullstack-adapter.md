@@ -7,16 +7,16 @@
 - **Problema:** antes desta story, `kind: fullstack` existia no contrato, mas retornava stub `501`; apps rodavam apenas via `kind: fetch` com wrapper manual.
 - **Objetivo:** tornar `kind: fullstack` declarativo com `adapter: hono|sveltekit|tanstack`.
 - **Valor:** remove o stub e entrega um caminho oficial para apps fullstack suportados.
-- **Dependência:** Story 19.B, porque esta story também toca o caminho de execução em `edger-worker/src/pool.rs`.
+- **Dependência:** Story 19.B, porque esta story também toca o caminho de execução em `crates/edger-worker/src/pool.rs`.
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/execution.rs` | edit | Representar `kind: fullstack` e adapters suportados sem stub enganoso |
-| `edger-worker/src/pool.rs` | edit | Remover resposta 501 e despachar para o adapter declarado |
+| `crates/edger-core/src/execution.rs` | edit | Representar `kind: fullstack` e adapters suportados sem stub enganoso |
+| `crates/edger-worker/src/pool.rs` | edit | Remover resposta 501 e despachar para o adapter declarado |
 | `workers/` | inspect/edit | Usar exemplos existentes como prova, sem criar wrapper manual obrigatório |
-| `edger-worker/tests/` | edit | Cobrir dispatch por adapter suportado |
+| `crates/edger-worker/tests/` | edit | Cobrir dispatch por adapter suportado |
 
 ## Detail
 
@@ -51,4 +51,4 @@ cargo fmt -- --check
 `adapter: hono|sveltekit|tanstack` e usa `ssrEntrypoint` (com `entrypoint`
 como alias) para delegar ao backend fetch existente. TanStack Start serve
 `clientDir` estaticamente via Rust, restaura `x-base` antes do SSR e o fixture
-`workers/tanstack-demo` não depende mais de wrapper manual.
+`workers/examples/tanstack-demo` não depende mais de wrapper manual.

@@ -21,13 +21,13 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/tracing_init.rs` | create | Subscriber fmt, env filter and non-fatal OTEL env parsing |
-| `edger-orchestrator/src/metrics.rs` | edit | HTTP counters/duration plus existing pool/cron exposition |
-| `edger-orchestrator/src/pipeline.rs` | edit | Dispatch logs and request pipeline correlation |
-| `edger-orchestrator/src/server.rs` | edit | Request-id propagation and HTTP metrics middleware for base router |
-| `edger-worker/src/pool.rs` | edit | Instrument `pool.fetch` and isolate execution dispatch spans |
-| `edger-orchestrator/src/bin/edger.rs` | edit | Use tracing init from env at startup |
-| `edger-orchestrator/tests/metrics_endpoint.rs` | edit | Scrape `/metrics`, generated request-id propagation and log redaction tests |
+| `crates/edger-orchestrator/src/tracing_init.rs` | create | Subscriber fmt, env filter and non-fatal OTEL env parsing |
+| `crates/edger-orchestrator/src/metrics.rs` | edit | HTTP counters/duration plus existing pool/cron exposition |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Dispatch logs and request pipeline correlation |
+| `crates/edger-orchestrator/src/server.rs` | edit | Request-id propagation and HTTP metrics middleware for base router |
+| `crates/edger-worker/src/pool.rs` | edit | Instrument `pool.fetch` and isolate execution dispatch spans |
+| `crates/edger-orchestrator/src/bin/edger.rs` | edit | Use tracing init from env at startup |
+| `crates/edger-orchestrator/tests/metrics_endpoint.rs` | edit | Scrape `/metrics`, generated request-id propagation and log redaction tests |
 
 ## Detail
 
@@ -81,7 +81,7 @@
 
 ## Test-first plan
 - **Behavior:** Acceptance criteria above fail before implementation; first test targets smallest vertical slice of the story.
-- **Level:** crate integration tests (`edger-orchestrator/tests/`, `edger-isolation/tests/`) + workspace gate.
+- **Level:** crate integration tests (`crates/edger-orchestrator/tests/`, `crates/edger-isolation/tests/`) + workspace gate.
 - **Avoid:** Re-implementing production logic inside tests; hard-coded expected values without driving real entry points.
 
 ## Tasks

@@ -19,7 +19,7 @@ Implementar `edger-worker` com `WorkerPool` skeleton, LRU `get_or_create`, super
 - API pública `WorkerPool::fetch` compatível com assinatura do design
 - Supervisor gerencia transições de estado e cleanup
 - Métricas expostas via `get_metrics()`
-- Testes de integração em `edger-worker/tests/` verdes
+- Testes de integração em `crates/edger-worker/tests/` verdes
 - `edger-worker` depende apenas de `edger-core` (+ trait isolate via injeção/mock, não dep direta em `edger-isolation` crate se evitar ciclo — usar trait object de core ou dev-dep)
 
 ### Restrições
@@ -31,7 +31,7 @@ Implementar `edger-worker` com `WorkerPool` skeleton, LRU `get_or_create`, super
 - Disciplina cargo gate completa
 
 ### AS-IS
-- `edger-worker/` stub sem pool/supervisor
+- `crates/edger-worker/` stub sem pool/supervisor
 - Sem LRU, sem lifecycle states, sem métricas
 
 ### TO-BE
@@ -72,7 +72,7 @@ flowchart LR
 - [x] Supervisor implementa diagrama de estados do design
 - [x] ttl=0 ephemeral: terminate após response; concurrency limit + queue
 - [x] maxRequests força Terminating após N dispatches
-- [x] `edger-worker/tests/` com mock isolate + tempfile worker dirs (24 worker tests)
+- [x] `crates/edger-worker/tests/` com mock isolate + tempfile worker dirs (24 worker tests)
 - [x] `cargo test -p edger-worker` verde; gate workspace verde (55 Rust); `bun test` passa
 
 ## Risks

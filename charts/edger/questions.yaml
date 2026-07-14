@@ -41,6 +41,68 @@ questions:
       - bridge
     group: Runtime
 
+  - variable: coreWorkerOverlay.persistence.enabled
+    label: Persist Core Worker Overlays
+    description: Mount a persistent volume for administrator-installed cPanel and WebIDE overlays. Disable to restore bundled versions whenever the pod is recreated.
+    type: boolean
+    default: true
+    group: Runtime
+
+  - variable: userWorkers.persistence.enabled
+    label: Persist User Workers
+    description: Mount persistent storage for user workers installed through the cPanel or WebIDE. Disable only for intentionally ephemeral runtimes.
+    type: boolean
+    default: true
+    group: Runtime
+
+  - variable: userWorkers.persistence.existingClaim
+    label: Existing User Workers PVC
+    description: Optional existing PersistentVolumeClaim for user worker packages. Leave empty to create one.
+    type: string
+    default: ""
+    show_if: "userWorkers.persistence.enabled=true"
+    group: Runtime
+
+  - variable: userWorkers.persistence.storageClass
+    label: User Workers Storage Class
+    description: Optional storageClassName used when creating the user worker PersistentVolumeClaim.
+    type: string
+    default: ""
+    show_if: "userWorkers.persistence.enabled=true&&userWorkers.persistence.existingClaim="
+    group: Runtime
+
+  - variable: userWorkers.persistence.size
+    label: User Workers Volume Size
+    description: Requested storage for installed user worker packages and versions.
+    type: string
+    default: 5Gi
+    show_if: "userWorkers.persistence.enabled=true&&userWorkers.persistence.existingClaim="
+    group: Runtime
+
+  - variable: coreWorkerOverlay.persistence.existingClaim
+    label: Existing Overlay PVC
+    description: Optional existing PersistentVolumeClaim for core worker overlays. Leave empty to create one.
+    type: string
+    default: ""
+    show_if: "coreWorkerOverlay.persistence.enabled=true"
+    group: Runtime
+
+  - variable: coreWorkerOverlay.persistence.storageClass
+    label: Overlay Storage Class
+    description: Optional storageClassName used when creating the overlay PersistentVolumeClaim.
+    type: string
+    default: ""
+    show_if: "coreWorkerOverlay.persistence.enabled=true&&coreWorkerOverlay.persistence.existingClaim="
+    group: Runtime
+
+  - variable: coreWorkerOverlay.persistence.size
+    label: Overlay Volume Size
+    description: Requested storage for core worker overlay packages and versions.
+    type: string
+    default: 1Gi
+    show_if: "coreWorkerOverlay.persistence.enabled=true&&coreWorkerOverlay.persistence.existingClaim="
+    group: Runtime
+
   - variable: cron.enabled
     label: Enable Cron Jobs
     description: Enables manifest cron[] jobs through EDGER_CRON_ENABLED.

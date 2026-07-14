@@ -18,10 +18,10 @@
 | Path | Ação | Motivo |
 |---|---|---|
 | `planning/edger/docs/extensions.md` | criar | padrão escolhido + choose ONE |
-| `edger-orchestrator/src/registry.rs` | alterar | hook para auto-collect ou macro |
-| `edger-orchestrator/src/bin/edger.rs` | alterar | wiring final |
+| `crates/edger-orchestrator/src/registry.rs` | alterar | hook para auto-collect ou macro |
+| `crates/edger-orchestrator/src/bin/edger.rs` | alterar | wiring final |
 | `Cargo.toml` (workspace) | alterar | dep inventory ou linkme |
-| `edger-orchestrator/tests/static_registration.rs` | criar | prova collect |
+| `crates/edger-orchestrator/tests/static_registration.rs` | criar | prova collect |
 | `AGENTS.md` | alterar | regra extensões |
 
 ## Detail

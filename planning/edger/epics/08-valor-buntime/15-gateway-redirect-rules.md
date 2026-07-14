@@ -22,8 +22,8 @@
 |---|---|---|
 | `edger-ext-gateway/src/lib.rs` | edit | Adicionar `GatewayRedirectRule` e short-circuit de redirect no middleware |
 | `edger-ext-gateway/tests/gateway_middleware.rs` | edit | Provar redirect, preservação de suffix/query e precedência de CORS preflight |
-| `edger-orchestrator/src/wire.rs` | edit | Preservar query string em `SerializedRequest.uri`, requisito para redirect/proxy correto |
-| `edger-orchestrator/src/pipeline.rs` | edit | Preservar query string depois do rewrite de path para o worker |
+| `crates/edger-orchestrator/src/wire.rs` | edit | Preservar query string em `SerializedRequest.uri`, requisito para redirect/proxy correto |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Preservar query string depois do rewrite de path para o worker |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Atualizar evidência da linha `Gateway/proxy rules` |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar gateway v1.1 com redirects e limites ainda fora de escopo |
 | `planning/edger/status/evidence/story-08-15-runtime.txt` | create | Capturar comandos e resultados |

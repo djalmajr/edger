@@ -42,4 +42,4 @@ Custos:
 ## Status
 
 Aceito em 2026-06-29. Fonte de verdade: `planning/edger/docs/extensions.md`,
-`edger-ext-auth/`, `edger-ext-gateway/` e `edger-orchestrator/src/bin/edger.rs`.
+`edger-ext-auth/`, `edger-ext-gateway/` e `crates/edger-orchestrator/src/bin/edger.rs`.

@@ -11,7 +11,7 @@
 
 ## Traceability
 
-- `edger-isolation/src/multiproc_harness.mjs` (capturas `Deno.serve` e `node:http`)
+- `crates/edger-isolation/src/multiproc_harness.mjs` (capturas `Deno.serve` e `node:http`)
 - `planning/edger/docs/compat-matrix.md`
 
 ## Files
@@ -19,7 +19,7 @@
 | Path | Action | Reason |
 |---|---|---|
 | scratchpad (fora do repo) | create | Projeto SvelteKit + builds (adapter-deno/adapter-node) |
-| `workers/sveltekit-demo/` | create (condicional) | Build output como fixture, se passar e for enxuto |
+| `workers/examples/sveltekit-demo/` | create (condicional) | Build output como fixture, se passar e for enxuto |
 | `planning/edger/docs/compat-matrix.md` | edit | Linha SvelteKit com finding |
 | `planning/edger/epics/16-fullstack-ssr-streaming/02-spike-sveltekit.md` | edit | Registrar findings no Status |
 
@@ -39,7 +39,7 @@
 
 ## Tasks
 - [x] App mínimo (`sv create` minimal/ts) + build `@sveltejs/adapter-node` (config no `vite.config.ts` nas versões novas); sanity sob Deno puro (SSR+API+assets OK); rodar no EdgeR.
-- [x] Findings no Status + compat-matrix; fixture `workers/sveltekit-demo` (build self-contained, sem node_modules).
+- [x] Findings no Status + compat-matrix; fixture `workers/examples/sveltekit-demo` (build self-contained, sem node_modules).
 
 ## Verification
 
@@ -49,7 +49,7 @@ curl -H "Authorization: Bearer $KEY" http://127.0.0.1:3000/sveltekit-demo
 
 ## Status
 
-**completed** (2026-07-02) — SvelteKit roda no EdgeR: fixture `workers/sveltekit-demo`
+**completed** (2026-07-02) — SvelteKit roda no EdgeR: fixture `workers/examples/sveltekit-demo`
 (build real `@sveltejs/adapter-node`, self-contained, 1.6M) serve página SSR (`load`
 executado no servidor), rota de API `+server.ts` e assets `_app/immutable/*` — tudo 200
 ao vivo no preview, warm ~2.7ms, hidratação sem erros de console. O spike encontrou e

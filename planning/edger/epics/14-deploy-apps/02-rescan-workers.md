@@ -11,18 +11,18 @@
 
 ## Traceability
 
-- `edger-orchestrator/src/registry.rs` (reconcile de extensões — contrato dry-run/apply)
-- `edger-orchestrator/src/manifest_loader.rs` (`load_manifests_from_dirs` — re-scan)
-- `edger-mcp/` (Epic 13 escreve workers no disco; rescan fecha o ciclo authoring→online)
+- `crates/edger-orchestrator/src/registry.rs` (reconcile de extensões — contrato dry-run/apply)
+- `crates/edger-orchestrator/src/manifest_loader.rs` (`load_manifests_from_dirs` — re-scan)
+- `crates/edger-mcp/` (Epic 13 escreve workers no disco; rescan fecha o ciclo authoring→online)
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/deploy.rs` | edit | Diff disco↔índice + apply reaproveitando validação da 14.01 |
-| `edger-orchestrator/src/admin_api.rs` | edit | Rota `POST /api/admin/workers/rescan` (`workers:install`) |
-| `edger-orchestrator/src/manifest_index_stub.rs` | edit | Suporte a remoção/substituição de entrada por `name@version` se necessário |
-| `edger-orchestrator/tests/deploy_install.rs` | edit | Casos de rescan (added/removed/changed; dry-run vs apply) |
+| `crates/edger-orchestrator/src/deploy.rs` | edit | Diff disco↔índice + apply reaproveitando validação da 14.01 |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Rota `POST /api/admin/workers/rescan` (`workers:install`) |
+| `crates/edger-orchestrator/src/manifest_index_stub.rs` | edit | Suporte a remoção/substituição de entrada por `name@version` se necessário |
+| `crates/edger-orchestrator/tests/deploy_install.rs` | edit | Casos de rescan (added/removed/changed; dry-run vs apply) |
 
 ## Detail
 
@@ -58,7 +58,7 @@
 ## Test-first plan
 
 - **Behavior:** E2E na pipeline HTTP com root em tempdir: copiar worker → dry-run → apply → fetch.
-- **Level:** `edger-orchestrator/tests/deploy_install.rs` + workspace gate.
+- **Level:** `crates/edger-orchestrator/tests/deploy_install.rs` + workspace gate.
 - **Avoid:** inspecionar structs internas do índice; asserções devem ser observáveis via API/fetch.
 
 ## Tasks

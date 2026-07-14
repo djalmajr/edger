@@ -17,16 +17,16 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/wasm/mod.rs` | edit | `WasmIsolate` impl `Isolate::execute_wasm` |
-| `edger-isolation/src/wasm/wasi.rs` | edit | Config WASI deny-by-default + env filter |
-| `edger-isolation/src/wasm/handler.rs` | edit | ABI request/response em linear memory |
-| `edger-isolation/src/wasm/load.rs` | edit | Load seguro `.wasm`/`.wat` dentro do worker dir |
-| `edger-isolation/src/lib.rs` | edit | Registrar backend Wasm; feature `wasm` |
-| `edger-isolation/Cargo.toml` | edit | deps `wasmtime`, `wasmtime-wasi`, `wat` |
-| `edger-orchestrator/src/bin/edger.rs` | edit | Factory runtime seleciona `WasmIsolate` para `WasmModule` |
-| `edger-worker/tests/wasm_pool_integration.rs` | edit | Pool dispatch real para Wasm |
-| `edger-orchestrator/tests/kind_dispatch_integration.rs` | edit | Pipeline real e coexistência JS/Wasm |
-| `workers/wasm-hello/` | edit | `manifest.yaml`, `index.wat` e README de fixture |
+| `crates/edger-isolation/src/wasm/mod.rs` | edit | `WasmIsolate` impl `Isolate::execute_wasm` |
+| `crates/edger-isolation/src/wasm/wasi.rs` | edit | Config WASI deny-by-default + env filter |
+| `crates/edger-isolation/src/wasm/handler.rs` | edit | ABI request/response em linear memory |
+| `crates/edger-isolation/src/wasm/load.rs` | edit | Load seguro `.wasm`/`.wat` dentro do worker dir |
+| `crates/edger-isolation/src/lib.rs` | edit | Registrar backend Wasm; feature `wasm` |
+| `crates/edger-isolation/Cargo.toml` | edit | deps `wasmtime`, `wasmtime-wasi`, `wat` |
+| `crates/edger-orchestrator/src/bin/edger.rs` | edit | Factory runtime seleciona `WasmIsolate` para `WasmModule` |
+| `crates/edger-worker/tests/wasm_pool_integration.rs` | edit | Pool dispatch real para Wasm |
+| `crates/edger-orchestrator/tests/kind_dispatch_integration.rs` | edit | Pipeline real e coexistência JS/Wasm |
+| `workers/examples/wasm-hello/` | edit | `manifest.yaml`, `index.wat` e README de fixture |
 
 ## Detail
 
@@ -48,7 +48,7 @@
   e pela factory dinâmica do binário.
 - Processo/pool consegue servir workers JS/TS e Wasm no mesmo runtime sem estado
   mutável compartilhado entre backends.
-- Fixture `workers/wasm-hello` usa `index.wat` versionado e documenta como
+- Fixture `workers/examples/wasm-hello` usa `index.wat` versionado e documenta como
   materializar `index.wasm`.
 
 ### Scope
@@ -59,7 +59,7 @@
 
 ### Acceptance criteria
 - [x] Módulo WAT responde via `WasmIsolate::execute_wasm` usando request/response em linear memory.
-- [x] Worker `workers/wasm-hello/` ecoa a URI recebida pelo guest em teste in-process de `edger-isolation`.
+- [x] Worker `workers/examples/wasm-hello/` ecoa a URI recebida pelo guest em teste in-process de `edger-isolation`.
 - [x] Módulo malformado ou path fora do dir falha com `IsolationError` claro.
 - [x] WASI não concede acesso a filesystem/rede por default; imports WASIp1 são linkados por host real sem preopens.
 - [x] Env vars `*_SECRET` não passam para Wasm (`WasiConfig` filtra env antes de futura injeção).
@@ -73,7 +73,7 @@
 
 ## Test-first plan
 - **Behavior:** Acceptance criteria above fail before implementation; first test targets smallest vertical slice of the story.
-- **Level:** crate integration tests (`edger-orchestrator/tests/`, `edger-isolation/tests/`) + workspace gate.
+- **Level:** crate integration tests (`crates/edger-orchestrator/tests/`, `crates/edger-isolation/tests/`) + workspace gate.
 - **Avoid:** Re-implementing production logic inside tests; hard-coded expected values without driving real entry points.
 
 ## Tasks
@@ -98,7 +98,7 @@
 ### Fase 4 — Integração
 - [x] `WorkerPool::fetch` respeita `WorkerConfig.kind` quando `kind_hint` não é informado.
 - [x] Factory dinâmica do orquestrador Rust seleciona `WasmIsolate` para `WasmModule`.
-- [x] Build fixture wasm em `workers/wasm-hello/` documentado.
+- [x] Build fixture wasm em `workers/examples/wasm-hello/` documentado.
 - [x] Integration test `wasm_pool_integration.rs` verde.
 
 ## Verification

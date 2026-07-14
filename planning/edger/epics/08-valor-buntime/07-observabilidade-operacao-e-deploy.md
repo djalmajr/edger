@@ -20,13 +20,13 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/metrics.rs` | create | Expor snapshot do pool em Prometheus text format |
-| `edger-worker/src/metrics.rs` | edit | Métricas de lifecycle, dispatch e evictions |
-| `edger-orchestrator/src/bin/edger.rs` | edit | Health, readiness e metrics endpoint |
-| `edger-orchestrator/src/pipeline.rs` | edit | Rotas `/healthz`, `/readyz`, `/livez` e `/metrics` no app real |
-| `edger-orchestrator/src/server.rs` | edit | Manter router de probes compatível nos testes de servidor |
-| `edger-orchestrator/src/lib.rs` | edit | Exportar módulo de metrics |
-| `edger-orchestrator/tests/metrics_endpoint.rs` | create | Provar endpoint scrapeável e sem secrets |
+| `crates/edger-orchestrator/src/metrics.rs` | create | Expor snapshot do pool em Prometheus text format |
+| `crates/edger-worker/src/metrics.rs` | edit | Métricas de lifecycle, dispatch e evictions |
+| `crates/edger-orchestrator/src/bin/edger.rs` | edit | Health, readiness e metrics endpoint |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Rotas `/healthz`, `/readyz`, `/livez` e `/metrics` no app real |
+| `crates/edger-orchestrator/src/server.rs` | edit | Manter router de probes compatível nos testes de servidor |
+| `crates/edger-orchestrator/src/lib.rs` | edit | Exportar módulo de metrics |
+| `crates/edger-orchestrator/tests/metrics_endpoint.rs` | create | Provar endpoint scrapeável e sem secrets |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Runbook local, health, backup e troubleshooting |
 | `planning/edger/docs/performance-baselines.md` | edit | Registrar baseline e comandos |
 | `planning/edger/status/evidence/story-08-07-runtime.txt` | create | Registrar evidência runtime manual |
@@ -66,7 +66,7 @@
 
 **Test-first plan:**
 
-- Primeiro teste novo: `edger-orchestrator/tests/metrics_endpoint.rs` deve provar que `/metrics` retorna `text/plain`, contém counters/gauges do pool e não contém `ROOT_API_KEY`/`authorization`.
+- Primeiro teste novo: `crates/edger-orchestrator/tests/metrics_endpoint.rs` deve provar que `/metrics` retorna `text/plain`, contém counters/gauges do pool e não contém `ROOT_API_KEY`/`authorization`.
 - Testes complementares:
   - `/healthz`, `/readyz` e `/livez` respondem com a semântica esperada no pipeline real;
   - request id continua presente em resposta de probe;

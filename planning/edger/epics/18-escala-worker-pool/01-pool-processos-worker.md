@@ -11,26 +11,26 @@
 
 ## Traceability
 
-- `edger-worker/src/pool.rs` (`WorkerPool::get_or_create`, `fetch_worker_inner`, `fetch_worker_stream_inner`)
-- `edger-worker/src/instance.rs` (`WorkerInstance`, `dispatch_lock`, `isolate`)
-- `edger-worker/src/lru.rs` (`WorkerLru`, cache atual de uma instância por chave)
-- `edger-worker/src/types.rs` (`PoolConfig`, `WorkerCacheKey`)
-- `edger-core/src/manifest.rs` (`WorkerManifest` sem campos de pool)
-- `edger-core/src/config.rs` (`WorkerConfig`, `parse_worker_config`)
-- `edger-isolation/src/multiproc.rs` (`DenoProcessIsolate`, `DenoWorkerProcess`)
+- `crates/edger-worker/src/pool.rs` (`WorkerPool::get_or_create`, `fetch_worker_inner`, `fetch_worker_stream_inner`)
+- `crates/edger-worker/src/instance.rs` (`WorkerInstance`, `dispatch_lock`, `isolate`)
+- `crates/edger-worker/src/lru.rs` (`WorkerLru`, cache atual de uma instância por chave)
+- `crates/edger-worker/src/types.rs` (`PoolConfig`, `WorkerCacheKey`)
+- `crates/edger-core/src/manifest.rs` (`WorkerManifest` sem campos de pool)
+- `crates/edger-core/src/config.rs` (`WorkerConfig`, `parse_worker_config`)
+- `crates/edger-isolation/src/multiproc.rs` (`DenoProcessIsolate`, `DenoWorkerProcess`)
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/manifest.rs` | edit | Adicionar campos camelCase do manifesto: `concurrency`, `minProcesses`, `maxProcesses` |
-| `edger-core/src/config.rs` | edit | Normalizar defaults e invariantes em `WorkerConfig` sem I/O |
-| `edger-worker/src/types.rs` | edit | Estender `PoolConfig`/tipos de chave para suportar grupo de processos por worker |
-| `edger-worker/src/instance.rs` | edit | Identificar instância/processo dentro do worker e expor estado suficiente para roteamento |
-| `edger-worker/src/pool.rs` | edit | Trocar cache 1:1 por grupo por worker; spawn lazy; escolher instância least-busy/round-robin |
-| `edger-worker/src/lru.rs` | edit | Preservar eviction por worker/processo com limites previsíveis |
-| `edger-worker/tests/integration_pool.rs` | edit | Cobrir concorrência em worker persistente com N processos reais/fake isolates |
-| `edger-worker/tests/pool_lru.rs` | edit | Garantir que eviction não remove grupo errado nem viola namespace/version |
+| `crates/edger-core/src/manifest.rs` | edit | Adicionar campos camelCase do manifesto: `concurrency`, `minProcesses`, `maxProcesses` |
+| `crates/edger-core/src/config.rs` | edit | Normalizar defaults e invariantes em `WorkerConfig` sem I/O |
+| `crates/edger-worker/src/types.rs` | edit | Estender `PoolConfig`/tipos de chave para suportar grupo de processos por worker |
+| `crates/edger-worker/src/instance.rs` | edit | Identificar instância/processo dentro do worker e expor estado suficiente para roteamento |
+| `crates/edger-worker/src/pool.rs` | edit | Trocar cache 1:1 por grupo por worker; spawn lazy; escolher instância least-busy/round-robin |
+| `crates/edger-worker/src/lru.rs` | edit | Preservar eviction por worker/processo com limites previsíveis |
+| `crates/edger-worker/tests/integration_pool.rs` | edit | Cobrir concorrência em worker persistente com N processos reais/fake isolates |
+| `crates/edger-worker/tests/pool_lru.rs` | edit | Garantir que eviction não remove grupo errado nem viola namespace/version |
 
 ## Detail
 

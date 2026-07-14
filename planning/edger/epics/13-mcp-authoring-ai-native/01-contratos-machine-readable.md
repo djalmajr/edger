@@ -12,9 +12,9 @@ Agentes nao devem depender de leitura livre de docs para saber o que podem fazer
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-mcp/src/contracts.rs` | create | Declarar contratos versionados consumidos pelas tools MCP |
-| `edger-mcp/src/discovery.rs` | create | Transformar inventario real em payloads seguros para agente |
-| `edger-mcp/tests/protocol.rs` | create | Provar shape, versionamento e redaction em contrato MCP |
+| `crates/edger-mcp/src/contracts.rs` | create | Declarar contratos versionados consumidos pelas tools MCP |
+| `crates/edger-mcp/src/discovery.rs` | create | Transformar inventario real em payloads seguros para agente |
+| `crates/edger-mcp/tests/protocol.rs` | create | Provar shape, versionamento e redaction em contrato MCP |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar consumo dos contratos |
 
 ## Detail
@@ -60,7 +60,7 @@ Agentes nao devem depender de leitura livre de docs para saber o que podem fazer
 ## Tasks
 
 - [x] Levantar contratos minimos para discovery e authoring.
-  - Done when: `edger-mcp/src/contracts.rs` lista tools iniciais, resource types e versionamento.
+  - Done when: `crates/edger-mcp/src/contracts.rs` lista tools iniciais, resource types e versionamento.
 - [x] Definir formato versionado dos schemas.
   - Done when: cada resposta MCP inclui `schemaVersion` e schemas de input das tools.
 - [x] Expor ou gerar contratos no boundary adequado.
@@ -80,4 +80,4 @@ SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
 
 ## Status
 
-completed (2026-06-29) - contratos machine-readable v1 vivem em `edger-mcp/src/contracts.rs` com `schemaVersion`, tools MCP iniciais e limites de seguranca; `edger-mcp/tests/protocol.rs` cobre shape e redaction.
+completed (2026-06-29) - contratos machine-readable v1 vivem em `crates/edger-mcp/src/contracts.rs` com `schemaVersion`, tools MCP iniciais e limites de seguranca; `crates/edger-mcp/tests/protocol.rs` cobre shape e redaction.

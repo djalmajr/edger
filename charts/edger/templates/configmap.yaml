@@ -7,6 +7,8 @@ metadata:
 data:
   PORT: {{ .Values.service.port | quote }}
   RUNTIME_WORKER_DIRS: {{ .Values.runtime.workerDirs | quote }}
+  EDGER_CORE_WORKER_DIR: {{ .Values.runtime.coreWorkerDir | quote }}
+  EDGER_CORE_WORKER_OVERLAY_DIR: {{ .Values.runtime.coreWorkerOverlayDir | quote }}
   EDGER_CRON_ENABLED: {{ .Values.cron.enabled | quote }}
   EDGER_JS_RUNTIME: {{ .Values.runtime.jsRuntime | quote }}
   {{- if .Values.otel.enabled }}

@@ -16,11 +16,11 @@
 ## Files
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/Cargo.toml` | alterar | pureza + workspace inherit |
-| `edger-core/src/lib.rs` | alterar | módulos + re-exports |
-| `edger-core/src/manifest.rs` | criar | stub |
-| `edger-core/src/error.rs` | criar | stub |
-| `edger-core/src/extension.rs` | criar | stub traits |
+| `crates/edger-core/Cargo.toml` | alterar | pureza + workspace inherit |
+| `crates/edger-core/src/lib.rs` | alterar | módulos + re-exports |
+| `crates/edger-core/src/manifest.rs` | criar | stub |
+| `crates/edger-core/src/error.rs` | criar | stub |
+| `crates/edger-core/src/extension.rs` | criar | stub traits |
 | `planning/edger/epics/02-edger-core/00-overview.md` | alterar | status |
 
 ## Detail
@@ -57,7 +57,7 @@
 - **Refactor:** separar stubs em arquivos dedicados
 
 ## Tasks
-- [x] Editar `edger-core/Cargo.toml` (pureza + inherit)
+- [x] Editar `crates/edger-core/Cargo.toml` (pureza + inherit)
 - [x] Criar stubs `manifest.rs`, `error.rs`, `extension.rs` e declarar em `lib.rs`
 - [x] Adicionar teste unitário mínimo
 - [x] `cargo test -p edger-core` verde

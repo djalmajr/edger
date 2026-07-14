@@ -20,12 +20,12 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/admin.rs` | inspect | Reuse existing Admin mutation response vocabulary |
-| `edger-orchestrator/src/manifest_index_stub.rs` | edit | Add in-memory enabled overlay and route filtering |
-| `edger-orchestrator/src/admin_api.rs` | edit | Replace 501 worker mutation handlers with real enable/disable |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Cover admin mutation response and inventory status |
-| `edger-orchestrator/tests/security_operational.rs` | edit | Update security tests from 501 to successful guarded mutation |
-| `edger-orchestrator/tests/routing_resolution.rs` | edit | Cover disabled workers returning `NOT_FOUND` |
+| `crates/edger-core/src/admin.rs` | inspect | Reuse existing Admin mutation response vocabulary |
+| `crates/edger-orchestrator/src/manifest_index_stub.rs` | edit | Add in-memory enabled overlay and route filtering |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Replace 501 worker mutation handlers with real enable/disable |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Cover admin mutation response and inventory status |
+| `crates/edger-orchestrator/tests/security_operational.rs` | edit | Update security tests from 501 to successful guarded mutation |
+| `crates/edger-orchestrator/tests/routing_resolution.rs` | edit | Cover disabled workers returning `NOT_FOUND` |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Update `APIs de workers` evidence |
 | `planning/edger/docs/compat-matrix.md` | edit | Sync technical compatibility status |
 | `planning/edger/status/evidence/story-08-11-runtime.txt` | create | Capture commands and results |

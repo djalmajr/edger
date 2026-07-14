@@ -4,14 +4,14 @@
 
 ## Context
 
-- **Problema:** a melhoria de escala precisa ser comprovada contra o baseline real. O repo já tem `edger-orchestrator/tests/perf_harness.rs`, mas ele mede warm-hit sequencial e espera `active_workers = 1`; não compara 1 vs N processos sob concorrência nem orienta o operador sobre quando usar pool interno versus HPA.
+- **Problema:** a melhoria de escala precisa ser comprovada contra o baseline real. O repo já tem `crates/edger-orchestrator/tests/perf_harness.rs`, mas ele mede warm-hit sequencial e espera `active_workers = 1`; não compara 1 vs N processos sob concorrência nem orienta o operador sobre quando usar pool interno versus HPA.
 - **Objetivo:** estender o harness para comparar `maxProcesses: 1` vs `N` sob concorrência; documentar Level 1 (pool interno) e Level 2 (HPA do chart existente); declarar Level 3 (Knative/FaaS) fora de escopo.
 - **Valor:** evita "escala por fé": o operador terá números, comandos e docs que separam concorrência intra-réplica de capacidade por réplicas.
 - **Restrições:** perf harness segue ignorado por padrão e executado explicitamente; docs não prometem autoscaling que o chart não implementa.
 
 ## Traceability
 
-- `edger-orchestrator/tests/perf_harness.rs` (`persistent_worker_warm_hit_baseline`)
+- `crates/edger-orchestrator/tests/perf_harness.rs` (`persistent_worker_warm_hit_baseline`)
 - `planning/edger/docs/performance-baselines.md`
 - `planning/edger/docs/deployment-k8s.md`
 - `charts/edger/values.yaml` (`hpa.enabled`, `minReplicas`, `maxReplicas`, target CPU)
@@ -23,7 +23,7 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/tests/perf_harness.rs` | edit | Adicionar cenários concorrentes 1 vs N processos e imprimir p50/p95/throughput/wait |
+| `crates/edger-orchestrator/tests/perf_harness.rs` | edit | Adicionar cenários concorrentes 1 vs N processos e imprimir p50/p95/throughput/wait |
 | `planning/edger/docs/performance-baselines.md` | edit | Registrar baseline Level 1 antes/depois com comando reprodutível |
 | `planning/edger/docs/deployment-k8s.md` | edit | Documentar Level 2 HPA e como ele se combina com `maxProcesses` |
 | `planning/edger/docs/scaling.md` | create | Doc operacional de escala L1/L2/L3 fora de escopo |

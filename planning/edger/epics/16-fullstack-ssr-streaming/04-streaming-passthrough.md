@@ -12,22 +12,22 @@
 ## Traceability
 
 - `planning/edger/epics/15-runtime-js-duravel/05-streaming-hardening.md` (adiados)
-- `edger-isolation/src/multiproc.rs` (frames), `edger-isolation/src/multiproc_harness.mjs` (writer)
-- `edger-worker/src/pool.rs` (`DispatchCancelGuard` — precisa acompanhar o stream)
-- `edger-orchestrator/src/pipeline.rs` (conversão para axum Body)
+- `crates/edger-isolation/src/multiproc.rs` (frames), `crates/edger-isolation/src/multiproc_harness.mjs` (writer)
+- `crates/edger-worker/src/pool.rs` (`DispatchCancelGuard` — precisa acompanhar o stream)
+- `crates/edger-orchestrator/src/pipeline.rs` (conversão para axum Body)
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/multiproc_harness.mjs` | edit | Header frame (status/headers) + chunk frames + end frame |
-| `edger-isolation/src/multiproc.rs` | edit | `request_stream()`: lê header, expõe canal de chunks; frames tagueados |
-| `edger-core/src/isolate.rs` | edit | Método streaming no trait com default buffered |
-| `edger-core/src/wire.rs` | edit | Tipo de resposta streaming (status/headers + receiver de chunks) |
-| `edger-worker/src/pool.rs` | edit | `fetch_stream`; guard/estado Active até end-frame ou drop do body |
-| `edger-orchestrator/src/pipeline.rs` | edit | `Body::from_stream` quando o worker streama |
-| `edger-isolation/tests/streaming.rs` | edit | Chunks chegam incrementais (timing); cancel mid-stream |
-| `edger-orchestrator/tests/` | edit | E2E: SSE incremental de ponta a ponta |
+| `crates/edger-isolation/src/multiproc_harness.mjs` | edit | Header frame (status/headers) + chunk frames + end frame |
+| `crates/edger-isolation/src/multiproc.rs` | edit | `request_stream()`: lê header, expõe canal de chunks; frames tagueados |
+| `crates/edger-core/src/isolate.rs` | edit | Método streaming no trait com default buffered |
+| `crates/edger-core/src/wire.rs` | edit | Tipo de resposta streaming (status/headers + receiver de chunks) |
+| `crates/edger-worker/src/pool.rs` | edit | `fetch_stream`; guard/estado Active até end-frame ou drop do body |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | `Body::from_stream` quando o worker streama |
+| `crates/edger-isolation/tests/streaming.rs` | edit | Chunks chegam incrementais (timing); cancel mid-stream |
+| `crates/edger-orchestrator/tests/` | edit | E2E: SSE incremental de ponta a ponta |
 
 ## Detail
 

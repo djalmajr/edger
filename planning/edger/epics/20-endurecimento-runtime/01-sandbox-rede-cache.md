@@ -12,11 +12,11 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/config.rs` | inspect/edit | Expor configuração de rede/cache por worker sem quebrar defaults |
-| `edger-core/src/manifest.rs` | inspect/edit | Carregar os campos declarativos necessários do manifest |
-| `edger-isolation/src/multiproc.rs` | edit | Aplicar flags e diretórios efetivos ao processo Deno |
-| `edger-isolation/src/multiproc_harness.mjs` | inspect/edit | Validar impacto do sandbox no harness persistente |
-| `edger-isolation/tests/` | inspect/edit | Cobrir allowlist e isolamento do cache |
+| `crates/edger-core/src/config.rs` | inspect/edit | Expor configuração de rede/cache por worker sem quebrar defaults |
+| `crates/edger-core/src/manifest.rs` | inspect/edit | Carregar os campos declarativos necessários do manifest |
+| `crates/edger-isolation/src/multiproc.rs` | edit | Aplicar flags e diretórios efetivos ao processo Deno |
+| `crates/edger-isolation/src/multiproc_harness.mjs` | inspect/edit | Validar impacto do sandbox no harness persistente |
+| `crates/edger-isolation/tests/` | inspect/edit | Cobrir allowlist e isolamento do cache |
 
 ## Detail
 

@@ -1,7 +1,7 @@
 # Edger: Modern Edge Runtime Design Document
 
-**Author:** edger team  
-**Date:** 2026-06-28  
+**Author:** edger team
+**Date:** 2026-06-28
 **Status:** Foundation-locked (planning complete)
 **Project Location:** `<repo>`
 **Version:** 0.1 (Foundation Architecture)
@@ -10,9 +10,9 @@
 
 ## Overview
 
-Edger is a Rust-native edge runtime designed to serve as a reliable, customizable platform for deploying and executing JavaScript, TypeScript, Node.js-compatible, serverless, backend, frontend (SPA), full-stack, SSR, and WebAssembly applications. 
+Edger is a Rust-native edge runtime designed to serve as a reliable, customizable platform for deploying and executing JavaScript, TypeScript, Node.js-compatible, serverless, backend, frontend (SPA), full-stack, SSR, and WebAssembly applications.
 
-The core innovation is a deeply integrated Rust orchestrator that eliminates the separate "main-service" Deno/TypeScript layer found in current Supabase Edge Runtime deployments. Drawing structural inspiration from the supabase/edge-runtime crate layout (edger-core, edger-worker, edger-isolation, edger-orchestrator, edger-ext-*) and extensibility patterns (ext_* crates), edger reimplements high-level orchestration primitives directly in Rust while leveraging isolate/supervisor/resource-management strengths. 
+The core innovation is a deeply integrated Rust orchestrator that eliminates the separate "main-service" Deno/TypeScript layer found in current Supabase Edge Runtime deployments. Drawing structural inspiration from the supabase/edge-runtime crate layout (edger-core, edger-worker, edger-isolation, edger-orchestrator, edger-ext-*) and extensibility patterns (ext_* crates), edger reimplements high-level orchestration primitives directly in Rust while leveraging isolate/supervisor/resource-management strengths.
 
 It fully incorporates the product vision from the Buntime project (the Bun/TS runtime being evolved or migrated from): workers as first-class deployable units, rich multi-tenant orchestration (routing, Buntime-style namespace/role/permission auth with API keys, manifests, onRequest-style hooks, shell/micro-frontend support), and true Open/Closed Principle extensibility via Rust crates rather than dynamic TS plugins. The result is superior control over memory, CPU, isolation, policies, and cold-start characteristics without the limitations of Bun Web Workers for heavy frameworks/SSR workloads.
 
@@ -283,12 +283,12 @@ See "Embedding spike recommendation" and the new Risks section.
 Supervisor (in `edger-worker`) owns isolate instances, applies resource limits (memory, cpu via port of cpu_timer patterns), and retires them. Per user decision, multi-process support from early PRs (PR 4/5); use the same `Serialized*` wire types + transport (e.g. tokio::io or uds) for clustering. In-process remains supported for dev.
 
 ### Embedding Spike Recommendation
-The recommended first implementation activity (PR 2 below) is a **time-boxed spike** inside `edger-isolation` (or a temporary `edger-isolation/examples/`) that:
+The recommended first implementation activity (PR 2 below) is a **time-boxed spike** inside `edger-isolation` (or a temporary `crates/edger-isolation/examples/`) that:
 1. Adds `deno_core` + minimal supporting crates as optional dependency.
 2. Boots a V8 isolate, loads a trivial `fetch` JS module (string or file), runs a request roundtrip, measures baseline spawn + exec time.
 3. Instruments basic memory accounting and a timeout guard.
 4. Compares briefly against a pure `rusty_v8` + `wasmtime` path for pure Wasm.
-5. Documents sharp edges (V8 platform singleton, op registration, snapshotting, permissions model, async op dispatch) and produces a go/no-go + recommended crate split (e.g. `edger-isolation/deno` facade module modeled on Edge Runtime's `deno_facade`).
+5. Documents sharp edges (V8 platform singleton, op registration, snapshotting, permissions model, async op dispatch) and produces a go/no-go + recommended crate split (e.g. `crates/edger-isolation/deno` facade module modeled on Edge Runtime's `deno_facade`).
 
 Do **not** commit to a full production embedding in PR 10 without the spike results. This prevents under-estimation of glue and maintenance cost.
 
@@ -458,7 +458,7 @@ async fn main() -> Result<()> {
 - on_response hooks.
 - Special paths (health, reserved, shell decision for micro-frontends).
 
-This makes the Rust orchestrator the single source of truth, with no separate main-service JS layer. 
+This makes the Rust orchestrator the single source of truth, with no separate main-service JS layer.
 
 The composition will also honor Buntime env vars for compatibility during migration (RUNTIME_WORKER_DIRS using `:`, RUNTIME_API_PREFIX, etc.).
 
@@ -732,9 +732,9 @@ All events include `request_id` and `worker_id` for correlation. Add concrete sp
 2. **Manifest + Worker Model (core)**: Serde parsing for WorkerManifest + WorkerConfig (full fields + parse functions + tests), WorkerRef, ExecutionKind, Buntime mapping validation. Collision + namespace helpers in core. Unit tests.
 3. **WorkerPool + Supervisor (edger-worker)**: LRU + states + health + ephemeral controls (using types from core). Mock isolate. Comprehensive unit + property tests.
 4. **Isolation trait + wire formats (edger-isolation)**: Complete Isolate trait + Serialized* types + basic in-process mock impl. Tests exercising all ExecutionKind variants (using the mock).
-5. **Orchestrator basic pipeline + server wiring**: Hyper/axum server, routing (namespaced + semver + reserved paths + plugin base precedence), main composition sketch implemented, health endpoints, simple end-to-end using mocks. Integration tests (tower test client). 
+5. **Orchestrator basic pipeline + server wiring**: Hyper/axum server, routing (namespaced + semver + reserved paths + plugin base precedence), main composition sketch implemented, health endpoints, simple end-to-end using mocks. Integration tests (tower test client).
 6. **Auth principal + namespace gating**: Full ApiKeyPrincipal, AuthProvider trait, early gate, root synthetic principal, public route bypass. In-memory store. Tests covering all Buntime auth scenarios.
-7. **Extension traits + registry + static registration**: Full traits in core, ExtensionRegistry + hook execution order in orchestrator. Compile-time registration example. on_request short-circuit behavior. 
+7. **Extension traits + registry + static registration**: Full traits in core, ExtensionRegistry + hook execution order in orchestrator. Compile-time registration example. on_request short-circuit behavior.
 8. **First real extension crate (edger-ext-auth)**: Concrete AuthProvider impl + wiring. Demonstrates the "one mode per crate" rule for Rust extensions. Tests.
 9. **Initial JS execution (post-spike)**: Real (but minimal) isolate backend in isolation using results of spike (likely deno_core path). Support fetch + routes + simple static SPA. Worker pool integration. Temp-dir worker fixtures + tests. **Depends on successful spike**.
 10. **Full manifests, worker kinds, shell, end-to-end + cron stub**: Orchestrator resolution + dispatch for all kinds, base href injection, shell routing decision, cron scheduler stub (internal request firing), complete Buntime contract tests.
@@ -754,7 +754,7 @@ All events include `request_id` and `worker_id` for correlation. Add concrete sp
 - Env filtering and auto-install flags.
 - Collision detection, enabled toggles (no restart), semver resolution.
 
-All PRs must keep the tree green with the exact cargo test + clippy command. 
+All PRs must keep the tree green with the exact cargo test + clippy command.
 
 (Updated rollout reflects skeleton reality and spike requirement.)
 
@@ -837,64 +837,64 @@ These decisions prioritize control, modularity, vision fidelity, and migration e
 
 No release/publish commands. Total 12 PRs for foundation (extra early PRs for skeleton reality + embedding spike).
 
-1. **PR Title**: `chore: align existing skeleton, correct inter-crate deps, and sync README`  
-   **Files/components affected**: Root `Cargo.toml` (minor), all 4 `edger-*/Cargo.toml` (remove bad `edger-core -> edger-worker` dep; ensure core has no sibling deps, worker/isolation depend only on core, orchestrator on the three), add `edger-*/src/lib.rs` + `mod.rs` skeletons with ownership comments, root `README.md` (English + accurate crate roles per ownership table), `.gitignore`, basic `rustfmt.toml` / `clippy.toml` if needed.  
-   **Dependencies on other PRs**: None (this is the new starting PR).  
+1. **PR Title**: `chore: align existing skeleton, correct inter-crate deps, and sync README`
+   **Files/components affected**: Root `Cargo.toml` (minor), all 4 `edger-*/Cargo.toml` (remove bad `edger-core -> edger-worker` dep; ensure core has no sibling deps, worker/isolation depend only on core, orchestrator on the three), add `edger-*/src/lib.rs` + `mod.rs` skeletons with ownership comments, root `README.md` (English + accurate crate roles per ownership table), `.gitignore`, basic `rustfmt.toml` / `clippy.toml` if needed.
+   **Dependencies on other PRs**: None (this is the new starting PR).
    **Description**: Reconcile the design with the checked-out skeleton. Enforce "core is leaf" dep graph. Add stub source layout. Make README match proposed responsibilities. `cargo build` + full lint suite passes cleanly. All later PRs assume this state. Explicitly references current edger checkout state.
 
-2. **PR Title**: `spike(isolation): evaluate JS/TS/Wasm embedding options (deno_core + facade primary; wasmtime for Wasm)`  
-   **Files/components affected**: `edger-isolation/` (new `examples/embedding-spike.rs` or temp module, `Cargo.toml` additions under [dev-dependencies] or optional), spike results document (in planning/ or spike.md).  
-   **Dependencies on other PRs**: PR 1.  
+2. **PR Title**: `spike(isolation): evaluate JS/TS/Wasm embedding options (deno_core + facade primary; wasmtime for Wasm)`
+   **Files/components affected**: `crates/edger-isolation/` (new `examples/embedding-spike.rs` or temp module, `Cargo.toml` additions under [dev-dependencies] or optional), spike results document (in planning/ or spike.md).
+   **Dependencies on other PRs**: PR 1.
    **Description**: Time-boxed spike per user decision: focus on `deno_core` + facade (Edge Runtime precedent) for JS/TS hello-world + basic limits; brief comparison or prep for standalone wasmtime + WASI for Wasm path only. Produces go/no-go + facade module recommendation for PR 9/10. No production embedding code yet. Critical risk mitigation (see Risks section). Wasm execution will use standalone wasmtime (not co-located).
 
-3. **PR Title**: `feat(core): define core types, errors, manifests, wire formats, and traits`  
-   **Files/components affected**: `edger-core/src/{lib.rs, types.rs, error.rs, manifest.rs, config.rs, wire.rs, extension.rs, auth.rs}` — full `WorkerManifest`, `WorkerConfig` + parser, `WorkerRef`, `SerializedRequest`/`SerializedResponse`, `ExecutionKind`, `ApiKeyPrincipal`, all traits (Extension/Middleware/WorkerHandler/AuthProvider/Isolate signatures + docs), Buntime mapping table tests.  
-   **Dependencies on other PRs**: PR 1.  
+3. **PR Title**: `feat(core): define core types, errors, manifests, wire formats, and traits`
+   **Files/components affected**: `crates/edger-core/src/{lib.rs, types.rs, error.rs, manifest.rs, config.rs, wire.rs, extension.rs, auth.rs}` — full `WorkerManifest`, `WorkerConfig` + parser, `WorkerRef`, `SerializedRequest`/`SerializedResponse`, `ExecutionKind`, `ApiKeyPrincipal`, all traits (Extension/Middleware/WorkerHandler/AuthProvider/Isolate signatures + docs), Buntime mapping table tests.
+   **Dependencies on other PRs**: PR 1.
    **Description**: Implementation-ready data models and interfaces (see "Data Model & Wire Formats" section). Ports all required Buntime fields. Unit tests for parsing, validation, serialization roundtrips, namespace helpers.
 
-4. **PR Title**: `feat(worker): implement WorkerPool skeleton, lifecycle, supervisor, and metrics`  
-   **Files/components affected**: `edger-worker/src/{lib.rs, pool.rs, instance.rs, supervisor.rs, metrics.rs, types.rs}` (LRU, states, health timers, get_or_create, collision, ephemeral controls, PoolMetrics). Uses core types. Mocks isolation.  
-   **Dependencies on other PRs**: PR 1, PR 3.  
+4. **PR Title**: `feat(worker): implement WorkerPool skeleton, lifecycle, supervisor, and metrics`
+   **Files/components affected**: `crates/edger-worker/src/{lib.rs, pool.rs, instance.rs, supervisor.rs, metrics.rs, types.rs}` (LRU, states, health timers, get_or_create, collision, ephemeral controls, PoolMetrics). Uses core types. Mocks isolation.
+   **Dependencies on other PRs**: PR 1, PR 3.
    **Description**: Core pool logic (no real exec yet). Sliding TTL, retirement, metrics. Comprehensive unit + state tests. Public `fetch` signature matches final.
 
-5. **PR Title**: `feat(isolation): complete Isolate trait + in-process mock + wire handling (prep for deno_core facade + standalone wasmtime)`  
-   **Files/components affected**: `edger-isolation/src/{lib.rs, isolate.rs, kinds.rs, mock.rs, limits.rs, error.rs, wire.rs}`. Full trait impls for all ExecutionKind (mock). Resource limit stubs. Prep dual-backend (JS via deno_core facade; Wasm via standalone wasmtime + WASI). Tests using Serialized* types.  
-   **Dependencies on other PRs**: PR 1, PR 3.  
+5. **PR Title**: `feat(isolation): complete Isolate trait + in-process mock + wire handling (prep for deno_core facade + standalone wasmtime)`
+   **Files/components affected**: `crates/edger-isolation/src/{lib.rs, isolate.rs, kinds.rs, mock.rs, limits.rs, error.rs, wire.rs}`. Full trait impls for all ExecutionKind (mock). Resource limit stubs. Prep dual-backend (JS via deno_core facade; Wasm via standalone wasmtime + WASI). Tests using Serialized* types.
+   **Dependencies on other PRs**: PR 1, PR 3.
    **Description**: Defines and mocks the execution contract (multi-process support early per user decision). Foundation for supervisor + pool. Prepares for real backend (depends on spike results from PR 2). Bundling/eszip precomp hooks added here.
 
-6. **PR Title**: `feat(orchestrator): basic HTTP server, routing, request pipeline + main composition**`  
-   **Files/components affected**: `edger-orchestrator/src/{lib.rs, server.rs, router.rs, pipeline.rs, main.rs or bin/}` (hyper/axum or tower service, full path resolution logic, build_pipeline wiring sketch, health, simple end-to-end using mocks + core types).  
-   **Dependencies on other PRs**: PR 1, PR 3, PR 4.  
+6. **PR Title**: `feat(orchestrator): basic HTTP server, routing, request pipeline + main composition**`
+   **Files/components affected**: `crates/edger-orchestrator/src/{lib.rs, server.rs, router.rs, pipeline.rs, main.rs or bin/}` (hyper/axum or tower service, full path resolution logic, build_pipeline wiring sketch, health, simple end-to-end using mocks + core types).
+   **Dependencies on other PRs**: PR 1, PR 3, PR 4.
    **Description**: Minimal listening server. Buntime routing precedence, URL rewrite, worker resolution. Implements the "Main Binary & Composition" sketch. Integration tests via test client. Health endpoints live.
 
-7. **PR Title**: `feat(auth): implement principal resolution, namespace gating, root key, and public route bypass (immediate Turso/SQLite persistence)`  
-   **Files/components affected**: `edger-orchestrator/src/auth.rs` + pipeline integration, `edger-core/src/auth.rs` (full principal + helpers), store (Turso/SQLite from day one per user decision; no primary in-mem). Tests for all cases (root, namespaced, publicRoutes, bypass).  
-   **Dependencies on other PRs**: PR 3, PR 6.  
+7. **PR Title**: `feat(auth): implement principal resolution, namespace gating, root key, and public route bypass (immediate Turso/SQLite persistence)`
+   **Files/components affected**: `crates/edger-orchestrator/src/auth.rs` + pipeline integration, `crates/edger-core/src/auth.rs` (full principal + helpers), store (Turso/SQLite from day one per user decision; no primary in-mem). Tests for all cases (root, namespaced, publicRoutes, bypass).
+   **Dependencies on other PRs**: PR 3, PR 6.
    **Description**: Faithful port of Buntime auth model with immediate Turso/SQLite persistence (user decision). Early gate before worker dispatch. Matches security.md behavior. (Persistence wiring completed/verified in PR 11 if needed.)
 
-8. **PR Title**: `feat(core + orchestrator): extension traits, registry, static registration + hook execution`  
-   **Files/components affected**: Core traits (if not complete in PR 3), `edger-orchestrator/src/registry.rs` (ExtensionRegistry, hook runners with priority/topo, registration). Example in bin or tests.  
-   **Dependencies on other PRs**: PR 1, PR 3, PR 6.  
+8. **PR Title**: `feat(core + orchestrator): extension traits, registry, static registration + hook execution`
+   **Files/components affected**: Core traits (if not complete in PR 3), `crates/edger-orchestrator/src/registry.rs` (ExtensionRegistry, hook runners with priority/topo, registration). Example in bin or tests.
+   **Dependencies on other PRs**: PR 1, PR 3, PR 6.
    **Description**: Registry + execution of on_request (short-circuit) / on_response / on_init etc. Static registration. No real extensions yet.
 
-9. **PR Title**: `feat: add edger-ext-auth as first extension (demonstrates pattern)`  
-   **Files/components affected**: New `edger-ext-auth/` crate (Cargo.toml + src/lib.rs implementing AuthProvider + registration), wiring in orchestrator example, tests.  
-   **Dependencies on other PRs**: PR 8.  
+9. **PR Title**: `feat: add edger-ext-auth as first extension (demonstrates pattern)`
+   **Files/components affected**: New `edger-ext-auth/` crate (Cargo.toml + src/lib.rs implementing AuthProvider + registration), wiring in orchestrator example, tests.
+   **Dependencies on other PRs**: PR 8.
    **Description**: First real extension crate. Shows compile-time registration + "one responsibility per crate" (auth provider, no routes). Updates registry examples. Follows OCP.
 
-10. **PR Title**: `feat(isolation): initial real JS/TS execution (deno_core + facade per user decision) + standalone wasmtime for Wasm`  
-    **Files/components affected**: `edger-isolation/src/deno.rs` (facade per PR 2 + user decision for JS/TS), wasmtime integration for standalone Wasm + WASI, integration into worker/instance, support for fetch + routes + StaticSpa + Wasm. Temp worker dir tests with real JS/Wasm fixtures. eszip-style bundling/precomp support.  
-    **Dependencies on other PRs**: PR 2 (spike), PR 4, PR 5, PR 6.  
+10. **PR Title**: `feat(isolation): initial real JS/TS execution (deno_core + facade per user decision) + standalone wasmtime for Wasm`
+    **Files/components affected**: `crates/edger-isolation/src/deno.rs` (facade per PR 2 + user decision for JS/TS), wasmtime integration for standalone Wasm + WASI, integration into worker/instance, support for fetch + routes + StaticSpa + Wasm. Temp worker dir tests with real JS/Wasm fixtures. eszip-style bundling/precomp support.
+    **Dependencies on other PRs**: PR 2 (spike), PR 4, PR 5, PR 6.
     **Description**: First production-path execution: JS/TS via deno_core + facade (user decision); Wasm via standalone wasmtime + WASI (not co-located, per user decision). Resource limits, bundling, and multi-process prep enabled. Handles Buntime-compatible entrypoints + Wasm. **Blocked until spike lands.**
 
-11. **PR Title**: `feat(orchestrator): full manifests, kinds, shell (evolved protocol), end-to-end + native Rust cron scheduler`  
-    **Files/components affected**: Router/pipeline for all ExecutionKind + base injection, shell routing (evolve protocol per user decision e.g. toward WebTransport while preserving Buntime compat), full manifest loading, native Rust scheduler (tokio-cron or similar per user decision; core-driven not just internal reqs), auth Turso completion if needed. Integration tests exercising auth + hooks + real workers + SPA + Wasm. Multi-process notes.  
-    **Dependencies on other PRs**: PR 6, PR 10, PR 3.  
+11. **PR Title**: `feat(orchestrator): full manifests, kinds, shell (evolved protocol), end-to-end + native Rust cron scheduler`
+    **Files/components affected**: Router/pipeline for all ExecutionKind + base injection, shell routing (evolve protocol per user decision e.g. toward WebTransport while preserving Buntime compat), full manifest loading, native Rust scheduler (tokio-cron or similar per user decision; core-driven not just internal reqs), auth Turso completion if needed. Integration tests exercising auth + hooks + real workers + SPA + Wasm. Multi-process notes.
+    **Dependencies on other PRs**: PR 6, PR 10, PR 3.
     **Description**: Complete request flows. Multi-type support. Shell evolution noted (user decision). Cron uses native Rust scheduler (user decision). Preserves all Buntime contracts listed in rollout. (Turso auth persistence verified here if split from PR 7.)
 
-12. **PR Title**: `chore: observability, hardening, discipline, docs, and measurement (define targets + ported harness per user decision)`  
-    **Files/components affected**: Tracing + OTEL + metrics across crates, body/header limits + sanitization, error types, security/namespace tests, full discipline CI, README + architecture docs (diagrams), example workers, basic perf harness (ported from Buntime) + measurement notes. Define performance targets & baselines here per user decision. Update Risks if needed.  
-    **Dependencies on other PRs**: All prior.  
+12. **PR Title**: `chore: observability, hardening, discipline, docs, and measurement (define targets + ported harness per user decision)`
+    **Files/components affected**: Tracing + OTEL + metrics across crates, body/header limits + sanitization, error types, security/namespace tests, full discipline CI, README + architecture docs (diagrams), example workers, basic perf harness (ported from Buntime) + measurement notes. Define performance targets & baselines here per user decision. Update Risks if needed.
+    **Dependencies on other PRs**: All prior.
     **Description**: Production readiness for foundation phase. Tree perfectly clean under strict lint. Ports key Buntime behaviors. Per user decision: performance targets & measurement defined in this PR with ported harness (no earlier requirement). Documents resolved decisions and open items (if any remain). Multi-process and other user choices validated.
 
 (Note: Wasm via standalone wasmtime is integrated in PR 10 per user decision; no separate stretch needed for core Wasm path.)

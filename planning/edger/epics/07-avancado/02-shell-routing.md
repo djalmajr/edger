@@ -18,12 +18,12 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/shell.rs` | create | Lógica de shell routing, flags UI, rewrite de paths |
-| `edger-orchestrator/src/router.rs` | edit | Rotas reservadas shell vs worker; homepage fallback |
-| `edger-orchestrator/src/pipeline.rs` | edit | Branch shell antes/depois de worker dispatch conforme regra |
-| `edger-isolation/src/isolate.rs` | edit | `serve_static_spa` com injeção `<base href>` quando `inject_base` |
-| `edger-core/src/wire.rs` | edit | Campo `base_href` em `SerializedRequest` preenchido pelo orchestrator |
-| `edger-orchestrator/tests/shell_routing_test.rs` | create | SPA sob `/@scope/app`, assets relativos, base correto |
+| `crates/edger-orchestrator/src/shell.rs` | create | Lógica de shell routing, flags UI, rewrite de paths |
+| `crates/edger-orchestrator/src/router.rs` | edit | Rotas reservadas shell vs worker; homepage fallback |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Branch shell antes/depois de worker dispatch conforme regra |
+| `crates/edger-isolation/src/isolate.rs` | edit | `serve_static_spa` com injeção `<base href>` quando `inject_base` |
+| `crates/edger-core/src/wire.rs` | edit | Campo `base_href` em `SerializedRequest` preenchido pelo orchestrator |
+| `crates/edger-orchestrator/tests/shell_routing_test.rs` | create | SPA sob `/@scope/app`, assets relativos, base correto |
 | `workers/shell-spa/` | create | Fixture HTML + manifest `inject_base: true` |
 | `planning/edger/design.md` ou `planning/edger/docs/shell-protocol.md` | edit/create | Notas de protocolo evoluído (WebTransport, preservação z-frame compat) |
 
@@ -59,7 +59,7 @@
 
 ## Test-first plan
 - **Behavior:** Acceptance criteria above fail before implementation; first test targets smallest vertical slice of the story.
-- **Level:** crate integration tests (`edger-orchestrator/tests/`, `edger-isolation/tests/`) + workspace gate.
+- **Level:** crate integration tests (`crates/edger-orchestrator/tests/`, `crates/edger-isolation/tests/`) + workspace gate.
 - **Avoid:** Re-implementing production logic inside tests; hard-coded expected values without driving real entry points.
 
 ## Tasks
@@ -72,7 +72,7 @@
 ### Fase 2 — Shell module
 - [x] Criar `shell.rs` com regras de quando aplicar shell wrapper vs dispatch direto. (entregue como `shell_gateway.rs` na 08.05; módulo separado desnecessário)
 - [x] Integrar no router: homepage fallback, worker UI flags. (`shell_gateway.rs` + `shellExcludes`)
-- [x] Conectar `serve_static_spa` no isolate com injeção condicional. (`edger-isolation/src/deno/mod.rs::serve_static_spa`; `injectBase: false` respeitado via fix em `infer_execution_kind`)
+- [x] Conectar `serve_static_spa` no isolate com injeção condicional. (`crates/edger-isolation/src/deno/mod.rs::serve_static_spa`; `injectBase: false` respeitado via fix em `infer_execution_kind`)
 
 ### Fase 3 — Integração e documentação
 - [x] Fixture + teste E2E. (temp-dir em `shell_routing_test.rs`; fixtures repo `workers/shell-demo`, `workers/todos-shell-demo`)
@@ -96,7 +96,7 @@ cargo fmt -- --check
 
 **completed** (2026-07-02) — A decisão de shell routing (document vs iframe,
 excludes, reserved paths, homepage) foi entregue pela Story 08.05 em
-`edger-orchestrator/src/shell_gateway.rs`; esta story fechou os gaps de SPA
+`crates/edger-orchestrator/src/shell_gateway.rs`; esta story fechou os gaps de SPA
 namespaced: base injection sob `/@scope/app`, asset relativo pela mesma rota,
 `injectBase: false` respeitado (fix em `edger-core::infer_execution_kind`, que
 fixava `inject_base: true` para `kind: spa` explícito) e a seção "Evolução

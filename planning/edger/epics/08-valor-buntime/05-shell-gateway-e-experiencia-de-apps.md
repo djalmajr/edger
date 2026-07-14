@@ -22,15 +22,15 @@ completed (2026-06-29) — shell routing Rust-native por worker com `base: "/"`,
 | Path | Action | Reason |
 |---|---|---|
 | `planning/edger/docs/shell-protocol.md` | edit | Contrato de composição e navegação |
-| `edger-core/src/manifest.rs` | edit | Declarar `shellExcludes` no manifesto puro |
-| `edger-core/src/config.rs` | edit | Preservar excludes no `WorkerConfig` |
-| `edger-core/tests/models_mapping.rs` | edit | Cobrir parsing de `shellExcludes` |
-| `edger-orchestrator/src/shell_gateway.rs` | create | Decisão pura de shell routing |
-| `edger-orchestrator/src/manifest_index_stub.rs` | edit | Identificar worker shell por `base: "/"` |
-| `edger-orchestrator/src/lib.rs` | edit | Exportar shell gateway |
+| `crates/edger-core/src/manifest.rs` | edit | Declarar `shellExcludes` no manifesto puro |
+| `crates/edger-core/src/config.rs` | edit | Preservar excludes no `WorkerConfig` |
+| `crates/edger-core/tests/models_mapping.rs` | edit | Cobrir parsing de `shellExcludes` |
+| `crates/edger-orchestrator/src/shell_gateway.rs` | create | Decisão pura de shell routing |
+| `crates/edger-orchestrator/src/manifest_index_stub.rs` | edit | Identificar worker shell por `base: "/"` |
+| `crates/edger-orchestrator/src/lib.rs` | edit | Exportar shell gateway |
 | `edger-ext-gateway/src/lib.rs` | edit | Regras gateway/proxy como extensão |
-| `edger-orchestrator/src/pipeline.rs` | edit | Roteamento shell/gateway antes de dispatch final |
-| `edger-orchestrator/tests/shell_gateway.rs` | create | E2E de shell, base injection, proxy e auth |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Roteamento shell/gateway antes de dispatch final |
+| `crates/edger-orchestrator/tests/shell_gateway.rs` | create | E2E de shell, base injection, proxy e auth |
 | `edger-ext-gateway/tests/gateway_middleware.rs` | edit | Provar CORS/preflight mínimo |
 | `workers/shell-demo/manifest.yaml` | create | Fixture de shell |
 | `workers/shell-demo/index.html` | create | Fixture SPA/shell mínima |

@@ -22,14 +22,14 @@
 | `edger-ext-auth/src/store.rs` | criar | Turso/SQLite (mover ou compartilhar com orchestrator) |
 | `edger-ext-auth/tests/auth_provider.rs` | criar | unit tests |
 | `Cargo.toml` (workspace) | alterar | add member |
-| `edger-orchestrator/src/bin/edger.rs` | alterar | register `AuthExtension` |
-| `edger-orchestrator/src/auth.rs` | alterar | delegar ao AuthProvider do registry |
+| `crates/edger-orchestrator/src/bin/edger.rs` | alterar | register `AuthExtension` |
+| `crates/edger-orchestrator/src/auth.rs` | alterar | delegar ao AuthProvider do registry |
 | `planning/edger/docs/extensions.md` | criar (nesta story) | exemplo auth |
 
 ## Detail
 
 ### AS-IS
-Gate auth inline em `edger-orchestrator/src/auth.rs`; sem crate ext.
+Gate auth inline em `crates/edger-orchestrator/src/auth.rs`; sem crate ext.
 
 ### TO-BE
 - Crate `edger-ext-auth`:

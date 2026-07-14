@@ -16,20 +16,23 @@ binário `edger` compõe explicitamente o runtime.
   manifest loader e registry de extensões.
 * `edger-ext-auth` implementa `AuthProvider` com root key e SQLite.
 * `edger-ext-gateway` é o template inicial de `Middleware`.
-* `workers/` contém fixtures e exemplos reais executados pelo pipeline Rust.
+* `workers/core/` contém cPanel e WebIDE, distribuídos e reservados pelo produto.
+* `workers/examples/` contém exemplos reais executados pelo pipeline Rust.
 * `planning/edger/` contém backlog, checkpoints e evidências; `/docs` contém a
   documentação consolidada.
 
 [source]
 ----
 edger/
-├── edger-core/              # vocabulário puro: tipos, traits, manifests, wire
-├── edger-isolation/         # Deno CLI bridge, Wasm, mock isolate
-├── edger-worker/            # pool, supervisor, lifecycle, LRU, métricas
-├── edger-orchestrator/      # axum server, auth, router, pipeline, loader
+├── crates/edger-core/              # vocabulário puro: tipos, traits, manifests, wire
+├── crates/edger-isolation/         # Deno CLI bridge, Wasm, mock isolate
+├── crates/edger-worker/            # pool, supervisor, lifecycle, LRU, métricas
+├── crates/edger-orchestrator/      # axum server, auth, router, pipeline, loader
 ├── edger-ext-auth/          # AuthProvider + SQLite API key store
 ├── edger-ext-gateway/       # Middleware template
-├── workers/                 # exemplos JS/TS, CommonJS e Wasm
+├── workers/
+│   ├── core/                # cPanel e WebIDE runtime-ready
+│   └── examples/            # exemplos JS/TS, CommonJS e Wasm
 ├── docs/                    # esta documentação
 └── planning/edger/          # planejamento, epics, status e evidências
 ----

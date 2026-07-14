@@ -13,7 +13,7 @@ O Buntime tem cPanel e outras superficies de operacao. O edger precisa de uma UI
 | Path | Action | Reason |
 |---|---|---|
 | `workers/` | edit | Adicionar ou ajustar app worker de admin UI quando a implementacao comecar |
-| `edger-orchestrator/tests/value_parity.rs` | edit | Provar rota local do frontend quando existir |
+| `crates/edger-orchestrator/tests/value_parity.rs` | edit | Provar rota local do frontend quando existir |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar como abrir e validar localmente |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Atualizar status da UI administrativa |
 
@@ -61,4 +61,4 @@ cargo fmt -- --check
 
 ## Status
 
-completed (2026-06-30) - `workers/cpanel` entrega a primeira UI administrativa modular: overview operacional, workers, modulos/extensoes, gateway e chaves. A UI consome apenas Admin APIs root existentes, mantem a root key em memoria, nao acessa arquivos internos e deixa lacunas de catalogo/shell para 12.02 e operacao dinamica para Epics 10/11.
+completed (2026-06-30) - `workers/core/cpanel` entrega a primeira UI administrativa modular: overview operacional, workers, modulos/extensoes, gateway e chaves. A UI consome apenas Admin APIs root existentes, mantem a root key em memoria, nao acessa arquivos internos e deixa lacunas de catalogo/shell para 12.02 e operacao dinamica para Epics 10/11.

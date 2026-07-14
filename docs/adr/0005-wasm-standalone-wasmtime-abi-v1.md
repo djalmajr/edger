@@ -47,6 +47,6 @@ Custos:
 
 ## Status
 
-Aceito em 2026-06-29. Fonte de verdade: `edger-isolation/src/wasm/handler.rs`,
+Aceito em 2026-06-29. Fonte de verdade: `crates/edger-isolation/src/wasm/handler.rs`,
 `planning/edger/docs/wasm-abi.md` e
 `planning/edger/status/checkpoint-2026-06-29-story-07-05-wip.md`.

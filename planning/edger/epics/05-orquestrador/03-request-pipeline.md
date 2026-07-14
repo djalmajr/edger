@@ -17,12 +17,12 @@
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `edger-orchestrator/src/pipeline.rs` | criar | `build_pipeline`, `OrchestratorService` |
-| `edger-orchestrator/src/wire.rs` | criar | hyper Request → SerializedRequest |
-| `edger-orchestrator/src/context.rs` | criar | `RequestContext`, request_id |
-| `edger-orchestrator/src/server.rs` | alterar | montar service do pipeline |
-| `edger-orchestrator/tests/pipeline_integration.rs` | criar | E2E mock |
-| `edger-orchestrator/src/lib.rs` | alterar | exports |
+| `crates/edger-orchestrator/src/pipeline.rs` | criar | `build_pipeline`, `OrchestratorService` |
+| `crates/edger-orchestrator/src/wire.rs` | criar | hyper Request → SerializedRequest |
+| `crates/edger-orchestrator/src/context.rs` | criar | `RequestContext`, request_id |
+| `crates/edger-orchestrator/src/server.rs` | alterar | montar service do pipeline |
+| `crates/edger-orchestrator/tests/pipeline_integration.rs` | criar | E2E mock |
+| `crates/edger-orchestrator/src/lib.rs` | alterar | exports |
 
 ## Detail
 

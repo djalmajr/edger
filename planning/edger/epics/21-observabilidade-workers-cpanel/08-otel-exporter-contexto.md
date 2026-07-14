@@ -20,14 +20,14 @@
 | Path | Action | Reason |
 |---|---|---|
 | `Cargo.toml` | edit | Dependências/features OTEL alinhadas |
-| `edger-orchestrator/Cargo.toml` | edit | Exporter OTLP opt-in |
-| `edger-orchestrator/src/tracing_init.rs` | edit | Resource, sampler, batch exporter e shutdown |
-| `edger-orchestrator/src/pipeline.rs` | edit | Span de ingress/dispatch e atributos allowlisted |
-| `edger-orchestrator/src/wire.rs` | edit | Propagar `traceparent`/`tracestate` ao worker |
-| `edger-isolation/src/wire.rs` | inspect/edit | Preservar contexto no frame interno |
-| `edger-isolation/src/multiproc_harness.mjs` | inspect/edit | Disponibilizar contexto ao handler sem quebrar Fetch |
-| `edger-orchestrator/src/observability.rs` | edit | Exportar eventos/logs pelo sink OTEL |
-| `edger-orchestrator/tests/otel.rs` | create | Feature off/on, collector fake, queue e shutdown |
+| `crates/edger-orchestrator/Cargo.toml` | edit | Exporter OTLP opt-in |
+| `crates/edger-orchestrator/src/tracing_init.rs` | edit | Resource, sampler, batch exporter e shutdown |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Span de ingress/dispatch e atributos allowlisted |
+| `crates/edger-orchestrator/src/wire.rs` | edit | Propagar `traceparent`/`tracestate` ao worker |
+| `crates/edger-isolation/src/wire.rs` | inspect/edit | Preservar contexto no frame interno |
+| `crates/edger-isolation/src/multiproc_harness.mjs` | inspect/edit | Disponibilizar contexto ao handler sem quebrar Fetch |
+| `crates/edger-orchestrator/src/observability.rs` | edit | Exportar eventos/logs pelo sink OTEL |
+| `crates/edger-orchestrator/tests/otel.rs` | create | Feature off/on, collector fake, queue e shutdown |
 | `planning/edger/docs/observability.md` | edit | Configuração, atributos e troubleshooting |
 
 ## Detail

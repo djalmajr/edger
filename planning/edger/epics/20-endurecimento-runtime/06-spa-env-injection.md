@@ -12,10 +12,10 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/static_spa.rs` | edit | Servir HTML com env de runtime e base ajustada |
-| `edger-isolation/src/fullstack.rs` | inspect/edit | Garantir compatibilidade com adapters fullstack |
-| `edger-core/src/manifest.rs` | inspect/edit | Expor contrato declarativo de env/base se necessário |
-| `edger-isolation/tests/` | inspect/edit | Cobrir HTML, env e assets sob base path |
+| `crates/edger-isolation/src/static_spa.rs` | edit | Servir HTML com env de runtime e base ajustada |
+| `crates/edger-isolation/src/fullstack.rs` | inspect/edit | Garantir compatibilidade com adapters fullstack |
+| `crates/edger-core/src/manifest.rs` | inspect/edit | Expor contrato declarativo de env/base se necessário |
+| `crates/edger-isolation/tests/` | inspect/edit | Cobrir HTML, env e assets sob base path |
 
 ## Detail
 

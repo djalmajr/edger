@@ -41,7 +41,7 @@ O Epic 08 provou contratos locais de estado para SQL/KV/queue, mas registrava "T
 - `planning/edger/docs/durable-provider-contract.md`
 - `planning/edger/docs/extensions.md`
 - `docs/developers/06-operacao-e-testes.adoc`
-- `edger-core/src/bindings.rs`
+- `crates/edger-core/src/bindings.rs`
 - `edger-ext-turso/src/lib.rs`
 - `edger-ext-keyval/src/lib.rs`
 

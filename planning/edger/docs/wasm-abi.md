@@ -70,13 +70,13 @@ zero vira `None`.
 
 ## Fixture local
 
-`workers/wasm-hello/index.wat` é a fonte versionada do fixture. O runtime
+`workers/examples/wasm-hello/index.wat` é a fonte versionada do fixture. O runtime
 compila `.wat` para bytes Wasm antes da validação, o que mantém o exemplo
 auditável sem exigir toolchain Wasm no checkout. O fixture ecoa a URI recebida
 como `wasm path: <uri>`, provando que a request chegou ao guest.
 
 Para materializar `index.wasm` manualmente, veja
-`workers/wasm-hello/README.md`.
+`workers/examples/wasm-hello/README.md`.
 
 ## Versionamento
 

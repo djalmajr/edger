@@ -17,12 +17,12 @@
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `edger-orchestrator/src/auth.rs` | criar | gate, root principal, namespace check |
-| `edger-orchestrator/src/store.rs` | criar | Turso/SQLite API key store |
-| `edger-orchestrator/src/pipeline.rs` | alterar | inserir gate antes de hooks/dispatch |
-| `edger-core/src/auth.rs` | alterar (se necessário) | helpers `can_access_namespace` |
-| `edger-orchestrator/tests/auth_gate.rs` | criar | cenários Buntime |
-| `edger-orchestrator/Cargo.toml` | alterar | libsql/turso ou rusqlite |
+| `crates/edger-orchestrator/src/auth.rs` | criar | gate, root principal, namespace check |
+| `crates/edger-orchestrator/src/store.rs` | criar | Turso/SQLite API key store |
+| `crates/edger-orchestrator/src/pipeline.rs` | alterar | inserir gate antes de hooks/dispatch |
+| `crates/edger-core/src/auth.rs` | alterar (se necessário) | helpers `can_access_namespace` |
+| `crates/edger-orchestrator/tests/auth_gate.rs` | criar | cenários Buntime |
+| `crates/edger-orchestrator/Cargo.toml` | alterar | libsql/turso ou rusqlite |
 
 ## Detail
 

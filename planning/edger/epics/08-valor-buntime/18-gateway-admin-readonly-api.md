@@ -22,8 +22,8 @@
 |---|---|---|
 | `edger-ext-gateway/src/lib.rs` | edit | Adicionar `config` seguro ao snapshot de diagnóstico |
 | `edger-ext-gateway/tests/gateway_middleware.rs` | edit | Provar config seguro no diagnóstico |
-| `edger-orchestrator/src/admin_api.rs` | edit | Adicionar `/api/admin/gateway/stats`, `/logs` e `/config` |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar auth root-only, stats, config e filtros de logs |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Adicionar `/api/admin/gateway/stats`, `/logs` e `/config` |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar auth root-only, stats, config e filtros de logs |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Atualizar evidência de gateway/logging |
 | `planning/edger/docs/compat-matrix.md` | edit | Registrar API admin read-only do gateway |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar os endpoints e limites |

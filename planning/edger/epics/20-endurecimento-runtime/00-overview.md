@@ -36,9 +36,9 @@ leader election de cron multi-réplica; ver `follow-ups/e20-deferred-tail.md`.
 
 ## Roadmap / ordem de execução
 
-Arquivos-quentes compartilhados: `edger-core/src/config.rs` + `manifest.rs`,
-`edger-isolation/src/multiproc.rs` + `limits.rs` + `multiproc_harness.mjs`,
-`edger-worker/src/pool.rs`. Por isso o cluster multiproc/pool/limits/harness roda
+Arquivos-quentes compartilhados: `crates/edger-core/src/config.rs` + `manifest.rs`,
+`crates/edger-isolation/src/multiproc.rs` + `limits.rs` + `multiproc_harness.mjs`,
+`crates/edger-worker/src/pool.rs`. Por isso o cluster multiproc/pool/limits/harness roda
 majoritariamente SEQUENCIAL; stories de arquivos disjuntos rodam em paralelo.
 
 - **Onda 1 (paralela, disjunta):** 02 (oidc.rs), 05 (cron.rs), 06 (fullstack/static_spa), 07 (wasm/*). A cauda 09-OTLP foi consolidada na Story 21.08.

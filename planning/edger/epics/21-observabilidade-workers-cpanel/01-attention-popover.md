@@ -18,8 +18,8 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `workers/cpanel/index.js` | edit | Substituir tooltip por popover e ações |
-| `workers/cpanel/components/ui/popover.js` | edit/reuse | Garantir fechamento externo e acessibilidade |
+| `workers/core/cpanel/index.js` | edit | Substituir tooltip por popover e ações |
+| `workers/core/cpanel/components/ui/popover.js` | edit/reuse | Garantir fechamento externo e acessibilidade |
 | `planning/edger/scripts/cpanel-ui-gate.sh` | edit | Proteger contrato do popover |
 | `planning/edger/status/evidence/` | create | Evidência Browser dos cenários curto e longo |
 

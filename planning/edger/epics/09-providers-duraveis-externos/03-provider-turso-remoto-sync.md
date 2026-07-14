@@ -14,7 +14,7 @@ Turso remoto/sync é útil para estado compartilhado entre processos/pods, mas d
 
 ## Traceability
 
-- `edger-core/src/bindings.rs`
+- `crates/edger-core/src/bindings.rs`
 - `planning/edger/docs/durable-provider-contract.md`
 - `planning/edger/docs/value-parity-matrix.md`
 - `edger-ext-turso-remote/src/lib.rs`

@@ -18,11 +18,11 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/multiproc.rs` | edit | Pipe e drene stdout/stderr continuamente |
-| `edger-isolation/src/multiproc_harness.mjs` | inspect/edit | Separar protocolo de logs do worker quando necessário |
-| `edger-orchestrator/src/observability.rs` | edit | Normalizar console em eventos bounded |
-| `edger-worker/src/pool.rs` | edit | Propagar identidade/processo e lifecycle |
-| `edger-isolation/tests/` | create/edit | Volume, linha longa, crash e processo lento |
+| `crates/edger-isolation/src/multiproc.rs` | edit | Pipe e drene stdout/stderr continuamente |
+| `crates/edger-isolation/src/multiproc_harness.mjs` | inspect/edit | Separar protocolo de logs do worker quando necessário |
+| `crates/edger-orchestrator/src/observability.rs` | edit | Normalizar console em eventos bounded |
+| `crates/edger-worker/src/pool.rs` | edit | Propagar identidade/processo e lifecycle |
+| `crates/edger-isolation/tests/` | create/edit | Volume, linha longa, crash e processo lento |
 | `planning/edger/docs/observability.md` | create/edit | Contrato de captura, redaction e limites |
 
 ## Detail

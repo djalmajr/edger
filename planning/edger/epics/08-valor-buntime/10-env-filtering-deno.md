@@ -20,8 +20,8 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/deno/cli.rs` | edit | Clear inherited environment and inject only filtered manifest env |
-| `edger-orchestrator/tests/kind_dispatch_integration.rs` | edit | Add JS/TS observable behavior test for allowed env and blocked secrets |
+| `crates/edger-isolation/src/deno/cli.rs` | edit | Clear inherited environment and inject only filtered manifest env |
+| `crates/edger-orchestrator/tests/kind_dispatch_integration.rs` | edit | Add JS/TS observable behavior test for allowed env and blocked secrets |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Mark Deno env filtering evidence |
 | `planning/edger/docs/compat-matrix.md` | edit | Sync technical compatibility status |
 | `planning/edger/status/evidence/story-08-10-runtime.txt` | create | Capture commands and results |
@@ -65,7 +65,7 @@
 - Low-value tests avoided: direct unit test of `Command` internals or asserting the full environment map.
 
 ## Tasks
-- [x] Add env filtering/injection helper in `edger-isolation/src/deno/cli.rs`.
+- [x] Add env filtering/injection helper in `crates/edger-isolation/src/deno/cli.rs`.
   - Done when: child command is built with cleared env and filtered manifest env.
 - [x] Add pipeline integration test for Deno manifest env.
   - Done when: test proves safe env is readable and sensitive env is absent from worker behavior.

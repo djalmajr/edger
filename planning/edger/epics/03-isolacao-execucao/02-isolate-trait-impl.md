@@ -17,13 +17,13 @@
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `edger-isolation/Cargo.toml` | alterar | deps: `edger-core`, `async-trait`, `tokio`, `bytes`, `thiserror` |
-| `edger-isolation/src/lib.rs` | criar/alterar | crate root, re-exports |
-| `edger-isolation/src/isolate.rs` | criar | trait alias/re-export + tipos auxiliares |
-| `edger-isolation/src/mock.rs` | criar | `MockIsolate` impl completa |
-| `edger-isolation/src/error.rs` | criar | `IsolationBackendError` mapeando de `CoreError` |
-| `edger-isolation/src/kinds.rs` | criar | dispatch por `ExecutionKind` |
-| `edger-isolation/tests/mock_isolate.rs` | criar | testes por kind + lifecycle |
+| `crates/edger-isolation/Cargo.toml` | alterar | deps: `edger-core`, `async-trait`, `tokio`, `bytes`, `thiserror` |
+| `crates/edger-isolation/src/lib.rs` | criar/alterar | crate root, re-exports |
+| `crates/edger-isolation/src/isolate.rs` | criar | trait alias/re-export + tipos auxiliares |
+| `crates/edger-isolation/src/mock.rs` | criar | `MockIsolate` impl completa |
+| `crates/edger-isolation/src/error.rs` | criar | `IsolationBackendError` mapeando de `CoreError` |
+| `crates/edger-isolation/src/kinds.rs` | criar | dispatch por `ExecutionKind` |
+| `crates/edger-isolation/tests/mock_isolate.rs` | criar | testes por kind + lifecycle |
 
 ## Detail
 

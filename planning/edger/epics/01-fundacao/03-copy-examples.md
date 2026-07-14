@@ -16,7 +16,7 @@
 | Path | Action | Reason |
 |---|---|---|
 | `workers/<name>/index.{ts,js,mjs}` | create | Verbatim examples from edge-runtime |
-| `workers/serve-html/*` | create | Static SPA + readTextFile shim case |
+| `workers/examples/serve-html/*` | create | Static SPA + readTextFile shim case |
 | `planning/edger/status/closure-2026-06-28-edger-func.md` | read | Launch evidence reference |
 
 ## Detail
@@ -33,7 +33,7 @@ Loader exists; no workers directory populated.
 
 ### Acceptance criteria
 - [x] 11+ `workers/` subdirs with `index.{ts,js,mjs}` compatible with Deno.serve or default `{fetch}`
-- [x] `bun edger.ts --dir workers/hello-world` returns JSON Hello message
+- [x] `bun edger.ts --dir workers/examples/hello-world` returns JSON Hello message
 - [x] chunked-text returns `meow`; serve-html serves foo/bar HTML
 - [x] stream/sse load without crash
 
@@ -54,8 +54,8 @@ Loader exists; no workers directory populated.
 ## Verification
 ```bash
 bun test
-bun edger.ts --dir workers/hello-world --port 8001 &
+bun edger.ts --dir workers/examples/hello-world --port 8001 &
 curl -s -X POST -H 'content-type: application/json' -d '{"name":"Test"}' http://localhost:8001/
-bun edger.ts --dir workers/chunked-text --port 8002 &
+bun edger.ts --dir workers/examples/chunked-text --port 8002 &
 curl -s http://localhost:8002/
 ```

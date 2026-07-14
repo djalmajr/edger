@@ -21,23 +21,23 @@ completed (2026-06-29) — contratos puros de binding/SQL/KV/queue, provider loc
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/bindings.rs` | create | Vocabulário puro para service bindings |
+| `crates/edger-core/src/bindings.rs` | create | Vocabulário puro para service bindings |
 | `edger-ext-turso/Cargo.toml` | create | Extensão SQL durável |
 | `edger-ext-turso/src/lib.rs` | create | Provider SQL local via contrato de extensão |
 | `edger-ext-turso/tests/local_provider.rs` | create | Provar SQL local durável e namespace independente |
 | `edger-ext-keyval/Cargo.toml` | create | Extensão KV/queue |
 | `edger-ext-keyval/src/lib.rs` | create | Provider KV e queue mínima |
 | `edger-ext-keyval/tests/keyval_queue.rs` | create | Provar KV set/get/delete e queue enqueue/dequeue/ack |
-| `edger-orchestrator/src/service_bindings.rs` | create | Injeção de bindings no worker |
-| `edger-orchestrator/src/lib.rs` | edit | Exportar módulo de service bindings |
-| `edger-orchestrator/src/pipeline.rs` | edit | Adicionar header de bindings antes do dispatch |
-| `edger-orchestrator/tests/state_services.rs` | create | Worker usando SQL, KV e queue |
+| `crates/edger-orchestrator/src/service_bindings.rs` | create | Injeção de bindings no worker |
+| `crates/edger-orchestrator/src/lib.rs` | edit | Exportar módulo de service bindings |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Adicionar header de bindings antes do dispatch |
+| `crates/edger-orchestrator/tests/state_services.rs` | create | Worker usando SQL, KV e queue |
 | `workers/state-demo/manifest.yaml` | create | Fixture de prova |
 | `workers/state-demo/index.ts` | create | Worker de prova por contrato |
 | `Cargo.toml` | edit | Adicionar crates de extensão ao workspace |
-| `edger-core/src/lib.rs` | edit | Exportar contratos de binding |
-| `edger-core/src/config.rs` | edit | Normalizar bindings no `WorkerConfig` |
-| `edger-core/src/manifest.rs` | edit | Declarar bindings no manifesto do worker |
+| `crates/edger-core/src/lib.rs` | edit | Exportar contratos de binding |
+| `crates/edger-core/src/config.rs` | edit | Normalizar bindings no `WorkerConfig` |
+| `crates/edger-core/src/manifest.rs` | edit | Declarar bindings no manifesto do worker |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar providers e header de binding v1 |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Evidência para serviços de estado |
 
@@ -90,7 +90,7 @@ completed (2026-06-29) — contratos puros de binding/SQL/KV/queue, provider loc
 
 ## Tasks
 - [x] Fase 1 — Contratos puros de binding e estado.
-  - Done when: `edger-core/src/bindings.rs`, `manifest.rs`, `config.rs` e `lib.rs` expuserem tipos puros para `durableSql`, `keyValue`, `queue`, `StateValue`, `StateKey`, traits de provider e normalização deny-by-default.
+  - Done when: `crates/edger-core/src/bindings.rs`, `manifest.rs`, `config.rs` e `lib.rs` expuserem tipos puros para `durableSql`, `keyValue`, `queue`, `StateValue`, `StateKey`, traits de provider e normalização deny-by-default.
 - [x] Fase 2 — Provider SQL local.
   - Done when: `edger-ext-turso` compilar como provider especializado, abrir namespace local/in-memory, executar DDL/insert/select e provar durabilidade local em teste.
 - [x] Fase 3 — KV e queue local sobre SQL.

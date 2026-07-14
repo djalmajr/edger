@@ -11,20 +11,20 @@
 
 ## Traceability
 
-- `edger-isolation/src/limits.rs` (`ResourceLimits`, `LimitGuard`, `CpuTimer` — stub → real)
-- `edger-core/src/config.rs` (`memory_mb` via `low_memory`, `timeout_ms`, `max_requests`)
-- `edger-isolation/src/deno/process.rs` (spawn com limites)
-- `edger-worker/src/supervisor.rs` (reciclar no kill)
+- `crates/edger-isolation/src/limits.rs` (`ResourceLimits`, `LimitGuard`, `CpuTimer` — stub → real)
+- `crates/edger-core/src/config.rs` (`memory_mb` via `low_memory`, `timeout_ms`, `max_requests`)
+- `crates/edger-isolation/src/deno/process.rs` (spawn com limites)
+- `crates/edger-worker/src/supervisor.rs` (reciclar no kill)
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/deno/process.rs` | edit | Aplicar rlimit (RLIMIT_AS/CPU/NOFILE/NPROC) no spawn; `--v8-flags=--max-old-space-size` |
-| `edger-isolation/src/limits.rs` | edit | Mapear `WorkerConfig` → limites reais; enforcement de mem via processo (não stub) |
-| `edger-core/src/manifest.rs`/`config.rs` | edit | Campo explícito de memória por worker no manifest, se necessário |
-| `edger-worker/src/supervisor.rs` | edit | Detectar kill por limite → reciclar + registrar erro operacional |
-| `edger-isolation/tests/resource_limits.rs` | create | Worker que aloca acima do teto é morto; teto respeitado |
+| `crates/edger-isolation/src/deno/process.rs` | edit | Aplicar rlimit (RLIMIT_AS/CPU/NOFILE/NPROC) no spawn; `--v8-flags=--max-old-space-size` |
+| `crates/edger-isolation/src/limits.rs` | edit | Mapear `WorkerConfig` → limites reais; enforcement de mem via processo (não stub) |
+| `crates/edger-core/src/manifest.rs`/`config.rs` | edit | Campo explícito de memória por worker no manifest, se necessário |
+| `crates/edger-worker/src/supervisor.rs` | edit | Detectar kill por limite → reciclar + registrar erro operacional |
+| `crates/edger-isolation/tests/resource_limits.rs` | create | Worker que aloca acima do teto é morto; teto respeitado |
 
 ## Detail
 

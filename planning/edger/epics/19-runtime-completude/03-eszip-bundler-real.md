@@ -4,7 +4,7 @@
 
 ## Context
 
-- **Problema:** `StubBundler` em `edger-isolation/src/deno/bundle.rs` não empacotava dependências reais.
+- **Problema:** `StubBundler` em `crates/edger-isolation/src/deno/bundle.rs` não empacotava dependências reais.
 - **Objetivo:** substituir o stub por bundling condicional via `deno bundle` para workers multi-file, com fallback relativo e import direto para worker single-file.
 - **Valor:** reduz cold-start e remove uma capacidade apenas aparente do runtime.
 
@@ -12,9 +12,9 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/deno/bundle.rs` | edit | Trocar `StubBundler` por bundling condicional via `deno bundle` |
-| `edger-isolation/src/deno/` | inspect/edit | Integrar artefato gerado ao caminho Deno existente |
-| `edger-isolation/tests/` | edit | Cobrir worker multi-file com dependência local |
+| `crates/edger-isolation/src/deno/bundle.rs` | edit | Trocar `StubBundler` por bundling condicional via `deno bundle` |
+| `crates/edger-isolation/src/deno/` | inspect/edit | Integrar artefato gerado ao caminho Deno existente |
+| `crates/edger-isolation/tests/` | edit | Cobrir worker multi-file com dependência local |
 
 ## Detail
 

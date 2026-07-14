@@ -23,7 +23,7 @@ Documento dedicado para itens não resolvidos durante execução da Fase 7.
 
 - [x] Adapter Bun removido; runtime ativo é Rust.
 - [x] `DenoIsolate` executa `Deno.serve` e `export default { fetch }` via bridge Deno CLI.
-- [x] `workers/hello-world`, `read-body`, `empty-response`, `serve-declarative-style`, `chunked-text`, `stream`, `sse`, `serve-html` passam pelo pipeline Rust em teste E2E.
+- [x] `workers/examples/hello-world`, `read-body`, `empty-response`, `serve-declarative-style`, `chunked-text`, `stream`, `sse`, `serve-html` passam pelo pipeline Rust em teste E2E.
 - [x] `stream`/`sse` usam fallback bounded-first-chunk; passthrough streaming real segue pendente.
 - [x] `deno.json`/import map local carregado no cwd do worker.
 - [x] `logger-stdout` (import remoto) e `serve` (deno.json/JSR) responderam manualmente via bin Rust.
@@ -35,10 +35,10 @@ Documento dedicado para itens não resolvidos durante execução da Fase 7.
 - [x] Validação manual com `cargo run -p edger-orchestrator --bin edger` + `curl`.
 - [x] Timeout/process kill por manifest no bridge Deno CLI.
 - [ ] V8 singleton + op registration embutido (`deno_core` facade Edge Runtime) — aguarda aprovação explícita.
-- [x] `execute_routes` production: bridge despacha `routes` export (exact > `:param` > `*`, method map 405, fallback `fetch`, 404 sem fallback); fixture `workers/routes-demo` + E2E em `kind_dispatch_integration.rs`.
+- [x] `execute_routes` production: bridge despacha `routes` export (exact > `:param` > `*`, method map 405, fallback `fetch`, 404 sem fallback); fixture `workers/examples/routes-demo` + E2E em `kind_dispatch_integration.rs`.
 - [x] `serve_static_spa` v1 com path traversal/base injection.
-- [x] Harden de permissões/sandbox da Deno CLI bridge: migrado de `deno eval` (permissão total) para `deno run --no-prompt` com `--allow-read=<worker_dir>`, `--allow-env` sobre env limpo/filtrado e `--allow-net` configurável via `EDGER_DENO_ALLOW_NET` (`false|hosts`); write/run/ffi/sys negados. Testes `edger-isolation/tests/deno_sandbox.rs`.
-- [x] Pool recicla worker após erro de isolate (antes ficava preso em `Active` e todo request seguinte falhava com `worker not ready for dispatch`); regressão em `edger-worker/tests/pool_error_recovery.rs`.
+- [x] Harden de permissões/sandbox da Deno CLI bridge: migrado de `deno eval` (permissão total) para `deno run --no-prompt` com `--allow-read=<worker_dir>`, `--allow-env` sobre env limpo/filtrado e `--allow-net` configurável via `EDGER_DENO_ALLOW_NET` (`false|hosts`); write/run/ffi/sys negados. Testes `crates/edger-isolation/tests/deno_sandbox.rs`.
+- [x] Pool recicla worker após erro de isolate (antes ficava preso em `Active` e todo request seguinte falhava com `worker not ready for dispatch`); regressão em `crates/edger-worker/tests/pool_error_recovery.rs`.
 
 ### 07.05 Wasm execution — **completed (standalone wasmtime + ABI v2)**
 
@@ -49,7 +49,7 @@ Documento dedicado para itens não resolvidos durante execução da Fase 7.
 - [x] `WorkerPool::fetch` usa `WorkerConfig.kind` quando `kind_hint` não é passado
 - [x] Factory dinâmica do orquestrador Rust escolhe `WasmIsolate` por kind
 - [x] Coexistência JS/TS + Wasm no mesmo processo/pool coberta por integração
-- [x] Fixture `workers/wasm-hello/index.wat` documenta materialização opcional de `index.wasm`
+- [x] Fixture `workers/examples/wasm-hello/index.wat` documenta materialização opcional de `index.wasm`
 - [x] Host WASI real: `wasi_snapshot_preview1` linkado com deny-all de FS/rede por default, env filtrado quando permitido e stdout/stderr opt-in
 - [x] ABI request/response em linear memory
 - [ ] Preopen explícito de worker root para futuros workers WASI que precisem ler arquivos locais
@@ -73,11 +73,11 @@ Documento dedicado para itens não resolvidos durante execução da Fase 7.
 
 ### 07.03 Cron nativo — **completed (scheduler v1)**
 
-- [x] `CronScheduler` em `edger-orchestrator/src/cron.rs` registra jobs de
+- [x] `CronScheduler` em `crates/edger-orchestrator/src/cron.rs` registra jobs de
   workers habilitados e despacha requests internas pelo `Router` Axum local.
 - [x] Requests internas usam `x-edger-internal: true`,
   `Authorization: Bearer $ROOT_API_KEY` e `x-request-id: cron-...`.
-- [x] `workers/cron-worker` documenta manifest `cron[]` funcional.
+- [x] `workers/examples/cron-worker` documenta manifest `cron[]` funcional.
 - [x] `/metrics` expõe `edger_cron_executions_total` e
   `edger_cron_failures_total`.
 - [x] Shutdown do binário cancela tasks cron antes do shutdown do pool.
@@ -85,7 +85,7 @@ Documento dedicado para itens não resolvidos durante execução da Fase 7.
 
 ### 07.06 OTEL — **completed (observability v1)**
 
-- [x] `edger-orchestrator/src/tracing_init.rs` centraliza startup de tracing,
+- [x] `crates/edger-orchestrator/src/tracing_init.rs` centraliza startup de tracing,
   prefere `EDGER_LOG` sobre `RUST_LOG` e aceita `OTEL_EXPORTER_OTLP_ENDPOINT`
   e `OTEL_TRACES_SAMPLER` sem falhar startup.
 - [x] Request sem `x-request-id` recebe UUID gerado antes do dispatch; response

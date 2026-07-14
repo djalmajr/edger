@@ -9,7 +9,7 @@ comparativa (vs Supabase/run2biz edge-runtimes) já classificara como cauda.
 ## 09 (parte OTLP) — exportador OTLP real
 
 **O que falta:** linkar um exportador OTLP de traces atrás do stub em
-`edger-orchestrator/src/tracing_init.rs` (que hoje só emite warning quando
+`crates/edger-orchestrator/src/tracing_init.rs` (que hoje só emite warning quando
 `OTEL_EXPORTER_OTLP_ENDPOINT` está setado). A parte de **evento por-execução**
 já foi entregue (target `edger.dispatch`, PR #28) e alimenta o OTLP quando linkado.
 

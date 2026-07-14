@@ -11,26 +11,26 @@
 
 ## Traceability
 
-- `edger-worker/src/ephemeral.rs` (`EphemeralGate`, semáforo + queue_limit para `ttl_ms == 0`)
-- `edger-worker/src/error.rs` (`WorkerError::EphemeralQueueFull`; falta erro persistente tipado)
-- `edger-worker/src/pool.rs` (`fetch_worker_inner`, `fetch_worker_stream_inner`, locks e cancel safety)
-- `edger-orchestrator/src/pipeline.rs` (`worker_error_to_core`, `map_error_status` hoje mapeia `WORKER_ERROR` para 500)
-- `edger-worker/tests/metrics_ephemeral.rs` (`ephemeral_queue_full_returns_typed_error`)
-- `edger-worker/tests/cancel_safety.rs` (request cancelado recicla instância)
+- `crates/edger-worker/src/ephemeral.rs` (`EphemeralGate`, semáforo + queue_limit para `ttl_ms == 0`)
+- `crates/edger-worker/src/error.rs` (`WorkerError::EphemeralQueueFull`; falta erro persistente tipado)
+- `crates/edger-worker/src/pool.rs` (`fetch_worker_inner`, `fetch_worker_stream_inner`, locks e cancel safety)
+- `crates/edger-orchestrator/src/pipeline.rs` (`worker_error_to_core`, `map_error_status` hoje mapeia `WORKER_ERROR` para 500)
+- `crates/edger-worker/tests/metrics_ephemeral.rs` (`ephemeral_queue_full_returns_typed_error`)
+- `crates/edger-worker/tests/cancel_safety.rs` (request cancelado recicla instância)
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/manifest.rs` | edit | Adicionar `queueLimit`/`queueTimeout` ou nomes equivalentes ao contrato do worker |
-| `edger-core/src/config.rs` | edit | Normalizar fila/timeout em `WorkerConfig` |
-| `edger-worker/src/types.rs` | edit | Incluir configuração de fila persistente por worker/grupo |
-| `edger-worker/src/error.rs` | edit | Adicionar erros tipados (`WorkerQueueFull`, `WorkerQueueTimeout`, saturação/shutdown) |
-| `edger-worker/src/pool.rs` | edit | Implementar fila bounded por grupo e aquisição com timeout |
-| `edger-worker/src/metrics.rs` | edit | Preparar contadores de fila/rejeição/latência para 18.D |
-| `edger-orchestrator/src/pipeline.rs` | edit | Mapear erros tipados para 429/503 e body JSON consistente |
-| `edger-worker/tests/metrics_ephemeral.rs` | edit | Reusar padrões de teste do gate, sem confundir ephemeral com persistente |
-| `edger-orchestrator/tests/pipeline_integration.rs` | edit | Provar status HTTP tipado sob saturação |
+| `crates/edger-core/src/manifest.rs` | edit | Adicionar `queueLimit`/`queueTimeout` ou nomes equivalentes ao contrato do worker |
+| `crates/edger-core/src/config.rs` | edit | Normalizar fila/timeout em `WorkerConfig` |
+| `crates/edger-worker/src/types.rs` | edit | Incluir configuração de fila persistente por worker/grupo |
+| `crates/edger-worker/src/error.rs` | edit | Adicionar erros tipados (`WorkerQueueFull`, `WorkerQueueTimeout`, saturação/shutdown) |
+| `crates/edger-worker/src/pool.rs` | edit | Implementar fila bounded por grupo e aquisição com timeout |
+| `crates/edger-worker/src/metrics.rs` | edit | Preparar contadores de fila/rejeição/latência para 18.D |
+| `crates/edger-orchestrator/src/pipeline.rs` | edit | Mapear erros tipados para 429/503 e body JSON consistente |
+| `crates/edger-worker/tests/metrics_ephemeral.rs` | edit | Reusar padrões de teste do gate, sem confundir ephemeral com persistente |
+| `crates/edger-orchestrator/tests/pipeline_integration.rs` | edit | Provar status HTTP tipado sob saturação |
 
 ## Detail
 

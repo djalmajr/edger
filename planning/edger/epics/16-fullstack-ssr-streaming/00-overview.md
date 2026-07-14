@@ -13,7 +13,7 @@
 
 - `planning/edger/epics/15-runtime-js-duravel/05-streaming-hardening.md` (adiados: passthrough)
 - `planning/edger/docs/compat-matrix.md` (linhas SSE/stream/fullstack)
-- `edger-isolation/src/multiproc.rs`, `edger-isolation/src/multiproc_harness.mjs` (protocolo UDS)
+- `crates/edger-isolation/src/multiproc.rs`, `crates/edger-isolation/src/multiproc_harness.mjs` (protocolo UDS)
 - Docs Hono: hono.dev/docs/guides/jsx, hono.dev/docs/middleware/builtin/jsx-renderer
 
 ## Story backlog

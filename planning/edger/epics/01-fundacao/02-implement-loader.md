@@ -36,7 +36,7 @@ Implement the adapter and cli so examples with correct index run and return expe
 ## Verification
 ```bash
 bun test edger.test.ts
-bun edger.ts --dir workers/hello-world --port 19001 &
+bun edger.ts --dir workers/examples/hello-world --port 19001 &
 sleep 1
 curl -s -X POST http://127.0.0.1:19001/ -d '{}' | jq .
 kill %1 2>/dev/null || true

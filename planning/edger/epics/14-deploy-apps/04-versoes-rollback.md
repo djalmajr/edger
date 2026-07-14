@@ -11,18 +11,18 @@
 
 ## Traceability
 
-- `edger-orchestrator/src/router.rs` + `tests/routing_resolution.rs` (resolução `latest`, exata, ranges)
-- `edger-orchestrator/src/manifest_index_stub.rs` (bucket por nome com versões)
+- `crates/edger-orchestrator/src/router.rs` + `tests/routing_resolution.rs` (resolução `latest`, exata, ranges)
+- `crates/edger-orchestrator/src/manifest_index_stub.rs` (bucket por nome com versões)
 - Story 14.01 (install de nova versão)
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/manifest_index_stub.rs` | edit | Enable/disable por `name@version` (hoje é por nome) se necessário |
-| `edger-orchestrator/src/admin_api.rs` | edit | Enable/disable aceitando `name@version`; listar versões por worker |
-| `edger-orchestrator/tests/deploy_install.rs` | edit | Cenário deploy v2 → rollback para v1 |
-| `workers/cpanel/index.js` | edit | Workers view: agrupar versões + ação rollback |
+| `crates/edger-orchestrator/src/manifest_index_stub.rs` | edit | Enable/disable por `name@version` (hoje é por nome) se necessário |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Enable/disable aceitando `name@version`; listar versões por worker |
+| `crates/edger-orchestrator/tests/deploy_install.rs` | edit | Cenário deploy v2 → rollback para v1 |
+| `workers/core/cpanel/index.js` | edit | Workers view: agrupar versões + ação rollback |
 
 ## Detail
 
@@ -56,7 +56,7 @@
 ## Test-first plan
 
 - **Behavior:** E2E deploy v1 → v2 → rollback, asserções por body servido em `/<name>`.
-- **Level:** `edger-orchestrator/tests/deploy_install.rs` + `routing_resolution.rs`.
+- **Level:** `crates/edger-orchestrator/tests/deploy_install.rs` + `routing_resolution.rs`.
 - **Avoid:** asserções sobre estrutura interna do bucket de versões.
 
 ## Tasks

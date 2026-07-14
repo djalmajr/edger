@@ -30,6 +30,26 @@ ingress:
 runtime:
   workerDirs: "/app/workers"
   jsRuntime: "process"
+  coreWorkerDir: "/opt/edger/core-workers"
+  coreWorkerOverlayDir: "/app/core-worker-overlays"
+
+coreWorkerOverlay:
+  persistence:
+    enabled: true
+    existingClaim: ""
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 1Gi
+
+userWorkers:
+  persistence:
+    enabled: true
+    existingClaim: ""
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 5Gi
 
 cron:
   enabled: true

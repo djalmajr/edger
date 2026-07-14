@@ -5,25 +5,25 @@
 ## Context
 
 - **Problema:** o runtime durável do Epic 15 removeu o custo de reimportar módulo a cada request, mas hoje cada worker persistente tem uma única `WorkerInstance` por `WorkerCacheKey`. Essa instância segura um único isolate/processo e serializa concorrência pelo `dispatch_lock`; em streaming, os locks viajam dentro do body até o fim do stream. Resultado: 1 processo persistente = 1 request concorrente por worker por réplica.
-- **AS-IS:** `edger-worker/src/pool.rs` cacheia `WorkerInstance` em `WorkerLru`; `edger-worker/src/instance.rs` tem `dispatch_lock` e um `isolate`; `edger-isolation/src/multiproc.rs` tem `DenoProcessIsolate` com `process: Option<DenoWorkerProcess>`; `WorkerManifest` (`edger-core/src/manifest.rs`) expõe `ttl`, `timeout`, `idleTimeout`, `maxRequests`, `lowMemory`, mas não campos de concorrência/pool; fila limitada existe só para `ttl_ms == 0` via `EphemeralGate`.
+- **AS-IS:** `crates/edger-worker/src/pool.rs` cacheia `WorkerInstance` em `WorkerLru`; `crates/edger-worker/src/instance.rs` tem `dispatch_lock` e um `isolate`; `crates/edger-isolation/src/multiproc.rs` tem `DenoProcessIsolate` com `process: Option<DenoWorkerProcess>`; `WorkerManifest` (`crates/edger-core/src/manifest.rs`) expõe `ttl`, `timeout`, `idleTimeout`, `maxRequests`, `lowMemory`, mas não campos de concorrência/pool; fila limitada existe só para `ttl_ms == 0` via `EphemeralGate`.
 - **TO-BE:** cada worker persistente pode ter um pool local de processos Deno, configurado por manifesto e normalizado em `WorkerConfig`. O edger escolhe uma instância livre por request (least-busy/round-robin), cria processos sob demanda até `maxProcesses`, aplica TTL/idle/maxRequests por processo, enfileira de forma limitada quando todos estão ocupados e expõe métricas por worker. O chart/HPA existente segue como Level 2 documentado, sem construir Knative/FaaS.
 - **Princípio-guia:** escala horizontal interna primeiro, mantendo o edger stateless e o worker soberano. O pool melhora concorrência sem introduzir estado compartilhado, sem reabrir gateway/bindings/extensões, e sem esconder backpressure.
 - **Fora de escopo:** Level 3 (Knative/FaaS), balanceamento multi-réplica dentro do edger, estado distribuído, sticky sessions no runtime, filas persistentes, autoscaling por métrica customizada em cluster como implementação obrigatória.
 
 ## Traceability
 
-- `edger-worker/src/pool.rs` (`WorkerPool`, `get_or_create`, `fetch_worker_inner`, `fetch_worker_stream_inner`, `shutdown`, métricas)
-- `edger-worker/src/instance.rs` (`WorkerInstance`, `dispatch_lock`, `isolate`, `request_count`, TTL handle)
-- `edger-worker/src/types.rs` (`PoolConfig`, `WorkerCacheKey`)
-- `edger-worker/src/supervisor.rs` (`Supervisor::on_request_start`, `on_request_complete`, `retire_for_max_requests`, TTL)
-- `edger-worker/src/ephemeral.rs` (`EphemeralGate`, fila limitada hoje apenas para `ttl_ms == 0`)
-- `edger-worker/src/metrics.rs` (`PoolMetrics`, `WorkerStats`, `MetricsCollector`)
-- `edger-isolation/src/multiproc.rs` (`DenoWorkerProcess`, `DenoProcessIsolate`, UDS framed stream)
-- `edger-isolation/src/limits.rs` (`ResourceLimits::from_config`)
-- `edger-core/src/manifest.rs` (`WorkerManifest`)
-- `edger-core/src/config.rs` (`WorkerConfig`, `parse_worker_config`)
-- `edger-orchestrator/src/metrics.rs`, `edger-orchestrator/src/pipeline.rs`, `edger-orchestrator/src/server.rs` (`/metrics`, `/metrics/stats`, erro HTTP)
-- `edger-orchestrator/tests/perf_harness.rs` (baseline warm-hit)
+- `crates/edger-worker/src/pool.rs` (`WorkerPool`, `get_or_create`, `fetch_worker_inner`, `fetch_worker_stream_inner`, `shutdown`, métricas)
+- `crates/edger-worker/src/instance.rs` (`WorkerInstance`, `dispatch_lock`, `isolate`, `request_count`, TTL handle)
+- `crates/edger-worker/src/types.rs` (`PoolConfig`, `WorkerCacheKey`)
+- `crates/edger-worker/src/supervisor.rs` (`Supervisor::on_request_start`, `on_request_complete`, `retire_for_max_requests`, TTL)
+- `crates/edger-worker/src/ephemeral.rs` (`EphemeralGate`, fila limitada hoje apenas para `ttl_ms == 0`)
+- `crates/edger-worker/src/metrics.rs` (`PoolMetrics`, `WorkerStats`, `MetricsCollector`)
+- `crates/edger-isolation/src/multiproc.rs` (`DenoWorkerProcess`, `DenoProcessIsolate`, UDS framed stream)
+- `crates/edger-isolation/src/limits.rs` (`ResourceLimits::from_config`)
+- `crates/edger-core/src/manifest.rs` (`WorkerManifest`)
+- `crates/edger-core/src/config.rs` (`WorkerConfig`, `parse_worker_config`)
+- `crates/edger-orchestrator/src/metrics.rs`, `crates/edger-orchestrator/src/pipeline.rs`, `crates/edger-orchestrator/src/server.rs` (`/metrics`, `/metrics/stats`, erro HTTP)
+- `crates/edger-orchestrator/tests/perf_harness.rs` (baseline warm-hit)
 - `charts/edger/templates/hpa.yaml`, `charts/edger/values.yaml`, `planning/edger/docs/deployment-k8s.md` (HPA Level 2 existente)
 
 ## Story backlog
@@ -59,7 +59,7 @@ Ordem = primeiro abrir a unidade de concorrência (processos por worker), depois
 - [x] Quando todos os processos estão ocupados, requests entram em fila limitada por worker ou recebem resposta tipada 429/503; streams longos não causam head-of-line blocking além da capacidade configurada.
 - [x] `/metrics` e `/metrics/stats` expõem processos ativos/ociosos, ocupação, fila, latência de espera e rejeições por worker sem labels secret-like.
 - [x] cPanel mostra, no mínimo como should, a visão operacional do pool por worker sem bloquear o runtime headless.
-- [x] `edger-orchestrator/tests/perf_harness.rs` cobre comparação 1 vs N sob concorrência e demonstra melhora verificável em p50/p95/throughput ou queda de wait time.
+- [x] `crates/edger-orchestrator/tests/perf_harness.rs` cobre comparação 1 vs N sob concorrência e demonstra melhora verificável em p50/p95/throughput ou queda de wait time.
 - [x] Docs explicam Level 1 (pool interno), Level 2 (HPA via `charts/edger`) e declaram Level 3 Knative/FaaS fora de escopo.
 - [x] Gates esperados: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`; harness de perf ignorado executável explicitamente; validação live com `cargo run -p edger-orchestrator --bin edger` + `curl` para workers concorrentes e `/metrics`.
 

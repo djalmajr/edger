@@ -70,7 +70,7 @@ Story 09.05 keeps the Buntime responsibility boundary: the provider owns
 connection/sync transport, while each consumer owns its schema and behavior.
 Always-on tests cover:
 
-- `edger-orchestrator/tests/state_services.rs`: a worker with `durableSql`,
+- `crates/edger-orchestrator/tests/state_services.rs`: a worker with `durableSql`,
   `keyValue` and `queue` bindings receives the same binding descriptors when the
   registry uses `RemoteTursoProvider`.
 - `edger-ext-keyval/tests/external_provider_contract.rs`: `SqlKeyValueProvider`

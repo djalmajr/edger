@@ -101,6 +101,10 @@ print("PASS — all stories have required sections")
 PY
 log "PASS artifact inspection"
 
+# --- WebIDE design-system and build contract ---
+bash planning/edger/scripts/webide-ui-gate.sh 2>&1 | tee "$SCRATCH/webide-ui-gate.txt"
+log "PASS webide-ui-gate"
+
 # --- optional JS tests + cargo check ---
 ROOT_JS_TESTS=$(find . -maxdepth 2 \( -name '*.test.ts' -o -name '*.spec.ts' \) -not -path './target/*' -print | sort)
 if [[ -n "$ROOT_JS_TESTS" ]]; then

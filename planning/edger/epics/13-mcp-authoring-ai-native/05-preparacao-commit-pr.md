@@ -12,8 +12,8 @@ O fluxo AI-native deve terminar em uma mudanca revisavel. Nesta fase, o limite e
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-mcp/src/discovery.rs` | create | Implementar resumo Git e metadata segura |
-| `edger-mcp/tests/protocol.rs` | create | Provar status, mensagem e PR metadata sem commit |
+| `crates/edger-mcp/src/discovery.rs` | create | Implementar resumo Git e metadata segura |
+| `crates/edger-mcp/tests/protocol.rs` | create | Provar status, mensagem e PR metadata sem commit |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar politica local de commit/PR |
 | `planning/edger/status/evidence/` | edit | Registrar evidencia do fluxo completo |
 

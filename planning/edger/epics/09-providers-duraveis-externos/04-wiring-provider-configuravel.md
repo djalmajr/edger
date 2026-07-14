@@ -10,8 +10,8 @@ Depois que provider local e remoto tiverem fronteiras claras, o binário `edger`
 
 ## Traceability
 
-- `edger-orchestrator/src/bin/edger.rs`
-- `edger-orchestrator/Cargo.toml`
+- `crates/edger-orchestrator/src/bin/edger.rs`
+- `crates/edger-orchestrator/Cargo.toml`
 - `planning/edger/docs/extensions.md`
 - `docs/developers/06-operacao-e-testes.adoc`
 
@@ -19,8 +19,8 @@ Depois que provider local e remoto tiverem fronteiras claras, o binário `edger`
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/bin/edger.rs` | alter | Selecionar provider por configuração no composition root |
-| `edger-orchestrator/Cargo.toml` | alter | Adicionar dependência do provider remoto apenas no composition root/bin package |
+| `crates/edger-orchestrator/src/bin/edger.rs` | alter | Selecionar provider por configuração no composition root |
+| `crates/edger-orchestrator/Cargo.toml` | alter | Adicionar dependência do provider remoto apenas no composition root/bin package |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar seleção de provider e fallback local |
 | Unit tests do bin `edger` | edit | Provar parsing e seleção remota sem conexão de rede |
 | `planning/edger/epics/09-providers-duraveis-externos/00-overview.md` | edit | Atualizar status |

@@ -13,10 +13,10 @@ O MCP server e a primeira interface AI-native funcional do edger. Ele deve expor
 | Path | Action | Reason |
 |---|---|---|
 | `Cargo.toml` | edit | Registrar crate `edger-mcp` no workspace |
-| `edger-mcp/Cargo.toml` | create | Definir crate/binario MCP sem contaminar core |
-| `edger-mcp/src/lib.rs` | create | Expor handler testavel de protocolo MCP |
-| `edger-mcp/src/main.rs` | create | Rodar servidor stdio local |
-| `edger-mcp/tests/protocol.rs` | create | Provar initialize, tools/list e tools/call |
+| `crates/edger-mcp/Cargo.toml` | create | Definir crate/binario MCP sem contaminar core |
+| `crates/edger-mcp/src/lib.rs` | create | Expor handler testavel de protocolo MCP |
+| `crates/edger-mcp/src/main.rs` | create | Rodar servidor stdio local |
+| `crates/edger-mcp/tests/protocol.rs` | create | Provar initialize, tools/list e tools/call |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar execucao local do MCP |
 
 ## Detail

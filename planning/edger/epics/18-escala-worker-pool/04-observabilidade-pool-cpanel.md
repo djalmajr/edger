@@ -11,23 +11,23 @@
 
 ## Traceability
 
-- `edger-worker/src/metrics.rs` (`PoolMetrics`, `WorkerStats`, `MetricsCollector`)
-- `edger-worker/src/pool.rs` (`get_metrics`, `worker_stats`, `worker_stats_for_instance`)
-- `edger-orchestrator/src/metrics.rs` (`pool_metrics_prometheus`, `metrics_stats_response`)
-- `edger-orchestrator/src/pipeline.rs` (`/metrics`, `/metrics/stats`)
-- `edger-orchestrator/src/server.rs` (`ServerState::pool_metrics`)
-- `edger-orchestrator/tests/metrics_endpoint.rs`
-- `workers/cpanel/` (interface de control plane servida em `/cpanel/`)
+- `crates/edger-worker/src/metrics.rs` (`PoolMetrics`, `WorkerStats`, `MetricsCollector`)
+- `crates/edger-worker/src/pool.rs` (`get_metrics`, `worker_stats`, `worker_stats_for_instance`)
+- `crates/edger-orchestrator/src/metrics.rs` (`pool_metrics_prometheus`, `metrics_stats_response`)
+- `crates/edger-orchestrator/src/pipeline.rs` (`/metrics`, `/metrics/stats`)
+- `crates/edger-orchestrator/src/server.rs` (`ServerState::pool_metrics`)
+- `crates/edger-orchestrator/tests/metrics_endpoint.rs`
+- `workers/core/cpanel/` (interface de control plane servida em `/cpanel/`)
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-worker/src/metrics.rs` | edit | Adicionar métricas de grupo/processo/fila/wait/rejeição |
-| `edger-worker/src/pool.rs` | edit | Coletar snapshots por worker e por processo sem segredos |
-| `edger-orchestrator/src/metrics.rs` | edit | Expor Prometheus e JSON com labels/campos estáveis |
-| `edger-orchestrator/tests/metrics_endpoint.rs` | edit | Provar shape de `/metrics` e `/metrics/stats` sem labels secret-like |
-| `workers/cpanel/` | edit | Should: mostrar processos/fila na aba Workers consumindo `/metrics/stats` |
+| `crates/edger-worker/src/metrics.rs` | edit | Adicionar métricas de grupo/processo/fila/wait/rejeição |
+| `crates/edger-worker/src/pool.rs` | edit | Coletar snapshots por worker e por processo sem segredos |
+| `crates/edger-orchestrator/src/metrics.rs` | edit | Expor Prometheus e JSON com labels/campos estáveis |
+| `crates/edger-orchestrator/tests/metrics_endpoint.rs` | edit | Provar shape de `/metrics` e `/metrics/stats` sem labels secret-like |
+| `workers/core/cpanel/` | edit | Should: mostrar processos/fila na aba Workers consumindo `/metrics/stats` |
 | `planning/edger/docs/performance-baselines.md` | edit | Atualizar nomes de métricas e baseline após 18.E |
 
 ## Detail

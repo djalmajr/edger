@@ -4,7 +4,7 @@
 
 ## Context
 - **Problema:** Testes unitários isolados não garantem que pool + supervisor + métricas + mock isolate funcionam ponta-a-ponta como o orquestrador usará.
-- **Objetivo:** Suite em `edger-worker/tests/` com fixtures de worker dir (manifest.yaml + entrypoint stub), `edger-isolation` mock como dev-dependency, cenários Buntime-like.
+- **Objetivo:** Suite em `crates/edger-worker/tests/` com fixtures de worker dir (manifest.yaml + entrypoint stub), `edger-isolation` mock como dev-dependency, cenários Buntime-like.
 - **Valor:** Regressão forte antes do orquestrador (Fase 5); valida contratos de fetch/TTL/ephemeral juntos.
 - **Restrições:** Testes usam `tempfile`; sem rede; dev-dep `edger-isolation` com feature mock; alinhar com disciplina ai-memory (`tests/` directory).
 
@@ -16,11 +16,11 @@
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `edger-worker/Cargo.toml` | alterar | `[dev-dependencies] edger-isolation`, `tempfile`, `serde_yaml` |
-| `edger-worker/tests/integration_pool.rs` | criar | E2E pool + mock isolate |
-| `edger-worker/tests/fixtures/` | criar | manifest.yaml samples (serverless, persistent, spa) |
-| `edger-worker/tests/helpers/mod.rs` | criar | `setup_worker_dir`, `sample_request` |
-| `edger-worker/src/factory.rs` | criar | `IsolateFactory` usando MockIsolate de edger-isolation |
+| `crates/edger-worker/Cargo.toml` | alterar | `[dev-dependencies] edger-isolation`, `tempfile`, `serde_yaml` |
+| `crates/edger-worker/tests/integration_pool.rs` | criar | E2E pool + mock isolate |
+| `crates/edger-worker/tests/fixtures/` | criar | manifest.yaml samples (serverless, persistent, spa) |
+| `crates/edger-worker/tests/helpers/mod.rs` | criar | `setup_worker_dir`, `sample_request` |
+| `crates/edger-worker/src/factory.rs` | criar | `IsolateFactory` usando MockIsolate de edger-isolation |
 
 ## Detail
 

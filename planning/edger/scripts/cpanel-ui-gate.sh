@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-SOURCE="${ROOT}/workers/cpanel/index.js"
+SOURCE="${ROOT}/workers/core/cpanel/index.js"
 
 required=(
   'Search apps'
@@ -125,7 +125,7 @@ for token in "${required[@]}"; do
   }
 done
 
-STYLE_SOURCE="${ROOT}/workers/cpanel/index.css"
+STYLE_SOURCE="${ROOT}/workers/core/cpanel/index.css"
 for token in '@media (max-width: 1199px)' '.responsive-sidebar' 'width: 4rem !important'; do
   rg --fixed-strings --quiet "${token}" "${STYLE_SOURCE}" || {
     echo "missing responsive shell contract: ${token}" >&2
@@ -133,12 +133,12 @@ for token in '@media (max-width: 1199px)' '.responsive-sidebar' 'width: 4rem !im
   }
 done
 
-if ! grep -Fq 'collapsed ? "4rem" : "12rem"' workers/cpanel/components/ui/sidebar.js; then
+if ! grep -Fq 'collapsed ? "4rem" : "12rem"' workers/core/cpanel/components/ui/sidebar.js; then
   echo "cpanel-ui-gate: expanded sidebar must remain 12rem wide" >&2
   exit 1
 fi
 
-TOOLTIP_SOURCE="${ROOT}/workers/cpanel/components/ui/tooltip.js"
+TOOLTIP_SOURCE="${ROOT}/workers/core/cpanel/components/ui/tooltip.js"
 for token in 'useState' 'onMouseEnter' 'onMouseLeave' 'break-words' 'whitespace-normal' 'open ? "visible opacity-100" : "hidden"'; do
   rg --fixed-strings --quiet "${token}" "${TOOLTIP_SOURCE}" || {
     echo "missing isolated tooltip contract: ${token}" >&2
@@ -176,7 +176,7 @@ if rg --fixed-strings --quiet 'RUNTIME_WORKER_DIRS' "${SOURCE}"; then
   exit 1
 fi
 
-if rg --fixed-strings --quiet 'min-w-40' "${ROOT}/workers/cpanel/components/ui/select.js"; then
+if rg --fixed-strings --quiet 'min-w-40' "${ROOT}/workers/core/cpanel/components/ui/select.js"; then
   echo "shadcn Select triggers must size to their content" >&2
   exit 1
 fi
@@ -187,7 +187,7 @@ if rg --fixed-strings --quiet 'grid-cols-[110px_minmax(0,1fr)' "${SOURCE}"; then
 fi
 
 for component in select.js dropdown-menu.js; do
-  rg --fixed-strings --quiet 'handlePointerDown' "${ROOT}/workers/cpanel/components/ui/${component}" || {
+  rg --fixed-strings --quiet 'handlePointerDown' "${ROOT}/workers/core/cpanel/components/ui/${component}" || {
     echo "${component} must close on outside pointer interaction" >&2
     exit 1
   }

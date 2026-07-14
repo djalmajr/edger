@@ -12,11 +12,11 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-worker/src/pool.rs` | edit | Aplicar admissão por worker antes da execução |
-| `edger-isolation/src/multiproc.rs` | edit | Propagar timeouts e falhas do processo |
-| `edger-isolation/src/multiproc_harness.mjs` | edit | Encerrar leitura ociosa sem travar o harness |
-| `edger-core/src/config.rs` | inspect/edit | Expor limites de admissão se necessário |
-| `edger-worker/tests/` | inspect/edit | Cobrir rate-limit, cota e idle timeout |
+| `crates/edger-worker/src/pool.rs` | edit | Aplicar admissão por worker antes da execução |
+| `crates/edger-isolation/src/multiproc.rs` | edit | Propagar timeouts e falhas do processo |
+| `crates/edger-isolation/src/multiproc_harness.mjs` | edit | Encerrar leitura ociosa sem travar o harness |
+| `crates/edger-core/src/config.rs` | inspect/edit | Expor limites de admissão se necessário |
+| `crates/edger-worker/tests/` | inspect/edit | Cobrir rate-limit, cota e idle timeout |
 
 ## Detail
 

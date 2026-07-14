@@ -12,11 +12,11 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/tracing_init.rs` | edit | Inicializar export OTLP quando configurado |
-| `edger-worker/src/pool.rs` | inspect/edit | Emitir evento por execução com causa/custo |
-| `edger-isolation/src/multiproc.rs` | inspect/edit | Propagar causa de execução quando necessário |
+| `crates/edger-orchestrator/src/tracing_init.rs` | edit | Inicializar export OTLP quando configurado |
+| `crates/edger-worker/src/pool.rs` | inspect/edit | Emitir evento por execução com causa/custo |
+| `crates/edger-isolation/src/multiproc.rs` | inspect/edit | Propagar causa de execução quando necessário |
 | `Cargo.toml` | inspect/edit | Declarar feature/dependência OTLP se necessário |
-| `edger-orchestrator/tests/` | inspect/edit | Cobrir configuração ligada e desligada |
+| `crates/edger-orchestrator/tests/` | inspect/edit | Cobrir configuração ligada e desligada |
 
 ## Detail
 

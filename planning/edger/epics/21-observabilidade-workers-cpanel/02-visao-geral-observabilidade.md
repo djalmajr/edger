@@ -18,8 +18,8 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `workers/cpanel/index.js` | edit | Nova view e navegação Observability |
-| `workers/cpanel/components/ui/chart.js` | reuse | Sparklines/séries cliente bounded |
+| `workers/core/cpanel/index.js` | edit | Nova view e navegação Observability |
+| `workers/core/cpanel/components/ui/chart.js` | reuse | Sparklines/séries cliente bounded |
 | `planning/edger/scripts/cpanel-ui-gate.sh` | edit | Contrato visual e de fontes |
 | `planning/edger/status/evidence/` | create | Browser proof com tráfego real |
 

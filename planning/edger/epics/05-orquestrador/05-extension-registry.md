@@ -17,12 +17,12 @@
 
 | Path | Ação | Motivo |
 |---|---|---|
-| `edger-orchestrator/src/registry.rs` | criar | `ExtensionRegistry`, hook runners |
-| `edger-orchestrator/src/pipeline.rs` | alterar | substituir hook stub por registry |
-| `edger-orchestrator/src/hooks.rs` | criar | `run_on_request`, `run_on_response`, lifecycle |
-| `edger-orchestrator/tests/registry_hooks.rs` | criar | priority + short-circuit |
-| `edger-orchestrator/src/bin/edger.rs` | alterar | `registry.register(...)` explícito |
-| `edger-orchestrator/tests/mock_extension.rs` | criar | Middleware de teste |
+| `crates/edger-orchestrator/src/registry.rs` | criar | `ExtensionRegistry`, hook runners |
+| `crates/edger-orchestrator/src/pipeline.rs` | alterar | substituir hook stub por registry |
+| `crates/edger-orchestrator/src/hooks.rs` | criar | `run_on_request`, `run_on_response`, lifecycle |
+| `crates/edger-orchestrator/tests/registry_hooks.rs` | criar | priority + short-circuit |
+| `crates/edger-orchestrator/src/bin/edger.rs` | alterar | `registry.register(...)` explícito |
+| `crates/edger-orchestrator/tests/mock_extension.rs` | criar | Middleware de teste |
 
 ## Detail
 

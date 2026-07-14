@@ -30,7 +30,7 @@ Validar embedding via spike time-boxed (deno_core + facade primário; wasmtime p
 - Disciplina: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`
 
 ### AS-IS
-- `edger-isolation/` contém apenas `Cargo.toml` stub ou `lib.rs` mínimo
+- `crates/edger-isolation/` contém apenas `Cargo.toml` stub ou `lib.rs` mínimo
 - Trait `Isolate` pode existir apenas como assinatura em `edger-core` (Epic 02)
 - Sem spike documentado, sem mock backend, sem limites
 

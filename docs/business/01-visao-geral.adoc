@@ -34,7 +34,9 @@ Um operador inicia o runtime apontando para um diretório de workers:
 
 [source,bash]
 ----
-ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers \
+ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers/examples \
+  EDGER_CORE_WORKER_DIR=workers/core \
+  EDGER_CORE_WORKER_OVERLAY_DIR=.edger/core-worker-overlays \
   cargo run -p edger-orchestrator --bin edger
 ----
 

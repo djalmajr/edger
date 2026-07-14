@@ -40,7 +40,7 @@ Snapshot de métricas após duas chamadas a `hello-world` efêmero:
 | `edger_ephemeral_rejected_total` | 0 |
 
 O cache-hit persistente é coberto por teste automatizado em
-`edger-orchestrator/tests/metrics_endpoint.rs`, com manifesto `ttl: 30s`.
+`crates/edger-orchestrator/tests/metrics_endpoint.rs`, com manifesto `ttl: 30s`.
 
 ## Comandos de captura
 

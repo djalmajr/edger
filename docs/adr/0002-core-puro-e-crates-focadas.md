@@ -48,5 +48,5 @@ Custos:
 
 ## Status
 
-Aceito em 2026-06-29. Fonte de verdade: `edger-core/`, `Cargo.toml` e regras em
+Aceito em 2026-06-29. Fonte de verdade: `crates/edger-core/`, `Cargo.toml` e regras em
 `AGENTS.md`.

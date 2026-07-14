@@ -12,7 +12,10 @@
 
 [source,bash]
 ----
-ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers \
+ROOT_API_KEY=test-root PORT=19080 \
+  RUNTIME_WORKER_DIRS=workers/examples \
+  EDGER_CORE_WORKER_DIR=workers/core \
+  EDGER_CORE_WORKER_OVERLAY_DIR=.edger/core-worker-overlays \
   cargo run -p edger-orchestrator --bin edger
 ----
 
@@ -47,7 +50,7 @@ curl -H 'authorization: Bearer test-root' \
 
 [source,bash]
 ----
-ROOT_API_KEY=test-root RUNTIME_WORKER_DIRS='workers:/tmp/edger-workers' \
+ROOT_API_KEY=test-root RUNTIME_WORKER_DIRS='workers/examples:/tmp/edger-workers' \
   cargo run -p edger-orchestrator --bin edger
 ----
 

@@ -20,8 +20,8 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/manifest_loader.rs` | edit | Incluir `index.html` na lista de entrypoints inferidos e na detecção de worker dir |
-| `edger-orchestrator/tests/manifest_loader.rs` | edit | Provar autodiscovery de SPA sem manifesto e prioridade sobre JS |
+| `crates/edger-orchestrator/src/manifest_loader.rs` | edit | Incluir `index.html` na lista de entrypoints inferidos e na detecção de worker dir |
+| `crates/edger-orchestrator/tests/manifest_loader.rs` | edit | Provar autodiscovery de SPA sem manifesto e prioridade sobre JS |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Atualizar linha de manifests/entrypoint detection |
 | `planning/edger/docs/compat-matrix.md` | edit | Registrar compatibilidade técnica do `index.html` manifest-less |
 | `planning/edger/epics/08-valor-buntime/00-overview.md` | edit | Adicionar 08.14 no backlog e status |
@@ -63,7 +63,7 @@
 ## Test-first plan
 - **Behavior:** app sem manifesto com `index.html` é roteável como `StaticSpa`.
 - **First failing test:** criar tempdir `landing/index.html` + `landing/index.ts`; loader deve escolher `index.html` e `ExecutionKind::StaticSpa`.
-- **Preferred level:** integração em `edger-orchestrator/tests/manifest_loader.rs`, porque o contrato é filesystem -> `ManifestIndex`.
+- **Preferred level:** integração em `crates/edger-orchestrator/tests/manifest_loader.rs`, porque o contrato é filesystem -> `ManifestIndex`.
 - **Mutation captured:** remover `index.html` da lista de candidatos ou colocá-lo depois de `index.ts` deve quebrar o teste.
 - **Avoid:** teste unitário privado de `infer_entrypoint`; a prova precisa passar pelo loader público.
 

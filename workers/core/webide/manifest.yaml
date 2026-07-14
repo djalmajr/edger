@@ -1,0 +1,4 @@
+name: webide
+version: "0.1.0"
+entrypoint: dist/index.html
+injectBase: true

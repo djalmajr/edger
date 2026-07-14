@@ -28,15 +28,15 @@ TEST_COMMAND = [
     "--exact",
 ]
 REQUIRED_CONTRACT_FILES = [
-    "edger-orchestrator/tests/compat_matrix.rs",
+    "crates/edger-orchestrator/tests/compat_matrix.rs",
     "planning/edger/epics/17-edger-minimalista/00-overview.md",
     "planning/edger/docs/compat-matrix.md",
     "planning/edger/docs/value-parity-matrix.md",
 ]
 
 REMOVED_RUNTIME_FILES = [
-    "edger-orchestrator/src/registry.rs",
-    "edger-orchestrator/tests/admin_workers_plugins.rs",
+    "crates/edger-orchestrator/src/registry.rs",
+    "crates/edger-orchestrator/tests/admin_workers_plugins.rs",
 ]
 
 

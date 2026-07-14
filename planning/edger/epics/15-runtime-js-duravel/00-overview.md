@@ -33,11 +33,11 @@ A execução JS/TS hoje usa a ponte Deno CLI v1: um `deno eval` por request, com
 ## Traceability
 
 - `planning/edger/docs/js-runtime-durable-design.md` (design canônico)
-- `edger-isolation/src/transport.rs` (`IsolateTransport`, `UdsTransport`, `InProcessTransport`)
-- `edger-isolation/src/wire.rs` + `edger-core/src/wire.rs` (`SerializedRequest/Response`, framing postcard)
-- `edger-isolation/src/deno/cli.rs` (ponte v1; harness/captura a evoluir)
-- `edger-isolation/src/limits.rs` (`ResourceLimits`, `LimitGuard`, `CpuTimer` — stub → real)
-- `edger-worker/src/{pool,supervisor,ephemeral}.rs` (lifecycle, gate)
+- `crates/edger-isolation/src/transport.rs` (`IsolateTransport`, `UdsTransport`, `InProcessTransport`)
+- `crates/edger-isolation/src/wire.rs` + `crates/edger-core/src/wire.rs` (`SerializedRequest/Response`, framing postcard)
+- `crates/edger-isolation/src/deno/cli.rs` (ponte v1; harness/captura a evoluir)
+- `crates/edger-isolation/src/limits.rs` (`ResourceLimits`, `LimitGuard`, `CpuTimer` — stub → real)
+- `crates/edger-worker/src/{pool,supervisor,ephemeral}.rs` (lifecycle, gate)
 - `planning/edger/docs/compat-matrix.md` (Express/Hono como novas linhas)
 
 ## Story backlog

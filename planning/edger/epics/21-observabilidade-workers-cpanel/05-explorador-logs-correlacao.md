@@ -18,10 +18,10 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `workers/cpanel/index.js` | edit | Views logs e request trace |
-| `workers/cpanel/components/ui/table.js` | reuse | Tabela compacta e acessível |
-| `workers/cpanel/components/ui/sheet.js` | reuse | Detalhe de evento/request |
-| `edger-orchestrator/src/admin_api.rs` | edit | Ajustar filtros/cursor conforme uso real |
+| `workers/core/cpanel/index.js` | edit | Views logs e request trace |
+| `workers/core/cpanel/components/ui/table.js` | reuse | Tabela compacta e acessível |
+| `workers/core/cpanel/components/ui/sheet.js` | reuse | Detalhe de evento/request |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Ajustar filtros/cursor conforme uso real |
 | `planning/edger/scripts/cpanel-ui-gate.sh` | edit | Contratos de filtros e estados |
 
 ## Detail

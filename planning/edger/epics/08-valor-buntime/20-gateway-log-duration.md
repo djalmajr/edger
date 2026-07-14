@@ -22,8 +22,8 @@
 |---|---|---|
 | `edger-ext-gateway/src/lib.rs` | edit | Registrar `durationMs` nas decisões e atualizar entrada em `on_response` |
 | `edger-ext-gateway/tests/gateway_middleware.rs` | edit | Provar duração em short-circuit e response hook |
-| `edger-orchestrator/src/admin_api.rs` | edit | Calcular `duration.avgMs` e `samples` em `/logs/stats` |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar stats com duração rastreada |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Calcular `duration.avgMs` e `samples` em `/logs/stats` |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | edit | Provar stats com duração rastreada |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Remover duração média real da lacuna de logging |
 | `planning/edger/docs/compat-matrix.md` | edit | Registrar duração em logs/stats |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar `duration.avgMs`/`samples` |

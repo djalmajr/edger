@@ -18,12 +18,12 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/manifest.rs` | edit | Contrato `healthCheck` opcional |
-| `edger-core/src/config.rs` | edit | Validar path, method, timeout e modo |
-| `edger-orchestrator/src/deploy.rs` | edit | Executar check on-deploy antes de promoção |
-| `edger-orchestrator/src/admin_api.rs` | edit | Endpoint root-only de execução manual |
-| `workers/cpanel/index.js` | edit | Ação, loading e resultado do check |
-| `edger-orchestrator/tests/deploy_admin.rs` | edit | Provar success/failure/timeout e autorização |
+| `crates/edger-core/src/manifest.rs` | edit | Contrato `healthCheck` opcional |
+| `crates/edger-core/src/config.rs` | edit | Validar path, method, timeout e modo |
+| `crates/edger-orchestrator/src/deploy.rs` | edit | Executar check on-deploy antes de promoção |
+| `crates/edger-orchestrator/src/admin_api.rs` | edit | Endpoint root-only de execução manual |
+| `workers/core/cpanel/index.js` | edit | Ação, loading e resultado do check |
+| `crates/edger-orchestrator/tests/deploy_admin.rs` | edit | Provar success/failure/timeout e autorização |
 
 ## Detail
 

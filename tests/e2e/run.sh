@@ -15,7 +15,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PORT="${EDGER_E2E_PORT:-19080}"
 BASE="http://127.0.0.1:${PORT}"
 AUTH="authorization: Bearer test-root"
-WORKER_DIR="$SCRIPT_DIR/workers/param-e2e"
+WORKER_DIR="$REPO_ROOT/tests/fixtures/param-e2e"
 COMPOSE=(docker compose --project-directory "$SCRIPT_DIR" -f "$SCRIPT_DIR/docker-compose.yml")
 
 command -v docker >/dev/null || { echo "SKIP: docker not found"; exit 0; }
@@ -46,7 +46,7 @@ echo "==> booting edger (release phase applies migrations before serving)"
 rm -f "$WORKER_DIR/.edger-release"
 lsof -ti:"$PORT" 2>/dev/null | xargs kill -9 2>/dev/null || true
 ( cd "$REPO_ROOT" && ROOT_API_KEY=test-root PORT="$PORT" \
-    RUNTIME_WORKER_DIRS="$SCRIPT_DIR/workers" RUST_LOG=warn ./target/debug/edger ) \
+    RUNTIME_WORKER_DIRS="$REPO_ROOT/tests/fixtures" RUST_LOG=warn ./target/debug/edger ) \
     >"$SCRIPT_DIR/edger.log" 2>&1 &
 EDGER_PID=$!
 

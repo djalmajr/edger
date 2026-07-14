@@ -12,10 +12,10 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/cron.rs` | edit | Coordenar execução do cron com liderança |
+| `crates/edger-orchestrator/src/cron.rs` | edit | Coordenar execução do cron com liderança |
 | `charts/edger/templates/` | inspect/edit | Expor RBAC/configuração de Lease se necessário |
 | `Cargo.toml` | inspect/edit | Declarar dependência Kubernetes se necessária |
-| `edger-orchestrator/tests/cron_scheduler_test.rs` | inspect/edit | Cobrir liderança, perda de liderança e modo sem Kubernetes |
+| `crates/edger-orchestrator/tests/cron_scheduler_test.rs` | inspect/edit | Cobrir liderança, perda de liderança e modo sem Kubernetes |
 
 ## Detail
 

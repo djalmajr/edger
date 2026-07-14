@@ -12,11 +12,11 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/multiproc_harness.mjs` | edit | Sinalizar lifecycle ao worker JS |
-| `edger-isolation/src/multiproc.rs` | edit | Enviar shutdown/drain e aplicar teto de tempo |
-| `edger-worker/src/pool.rs` | inspect/edit | Chamar drain antes de recycle quando aplicável |
-| `edger-core/src/config.rs` | inspect/edit | Expor opt-in e timeout se necessário |
-| `edger-isolation/tests/` | inspect/edit | Cobrir sinal, `waitUntil` e timeout |
+| `crates/edger-isolation/src/multiproc_harness.mjs` | edit | Sinalizar lifecycle ao worker JS |
+| `crates/edger-isolation/src/multiproc.rs` | edit | Enviar shutdown/drain e aplicar teto de tempo |
+| `crates/edger-worker/src/pool.rs` | inspect/edit | Chamar drain antes de recycle quando aplicável |
+| `crates/edger-core/src/config.rs` | inspect/edit | Expor opt-in e timeout se necessário |
+| `crates/edger-isolation/tests/` | inspect/edit | Cobrir sinal, `waitUntil` e timeout |
 
 ## Detail
 

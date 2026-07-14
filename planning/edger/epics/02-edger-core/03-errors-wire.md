@@ -16,12 +16,12 @@
 ## Files
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/wire.rs` | create | SerializedRequest/Response |
-| `edger-core/src/error.rs` | create | CoreError + error codes |
-| `edger-core/src/lib.rs` | alter | re-exports |
-| `edger-core/Cargo.toml` | alter | add `bytes` workspace dep |
+| `crates/edger-core/src/wire.rs` | create | SerializedRequest/Response |
+| `crates/edger-core/src/error.rs` | create | CoreError + error codes |
+| `crates/edger-core/src/lib.rs` | alter | re-exports |
+| `crates/edger-core/Cargo.toml` | alter | add `bytes` workspace dep |
 | `Cargo.toml` | alter | workspace.dependencies bytes |
-| `edger-core/tests/wire_roundtrip.rs` | create | integration tests |
+| `crates/edger-core/tests/wire_roundtrip.rs` | create | integration tests |
 
 ## Detail
 
@@ -48,7 +48,7 @@ Wire types + header limits + roundtrip tests.
 
 ## Test-first plan
 - **First failing test:** deserialize `SerializedRequest` missing required field fails
-- **Level:** `edger-core/tests/wire_roundtrip.rs`
+- **Level:** `crates/edger-core/tests/wire_roundtrip.rs`
 
 ## Tasks
 - [x] Add `bytes` to workspace + edger-core (feature `serde`)

@@ -17,9 +17,9 @@
 
 | Arquivo | Ação | Motivo | Confiança |
 |---|---|---|---|
-| `edger-orchestrator/src/registry.rs` | Alterar | Armazenar e recarregar overlay de status por extensão registrada | core |
-| `edger-orchestrator/src/bin/edger.rs` | Alterar | Carregar o arquivo opcional via env no composition root | core |
-| `edger-orchestrator/tests/admin_workers_plugins.rs` | Alterar | Provar o fluxo observável pela Admin API | core |
+| `crates/edger-orchestrator/src/registry.rs` | Alterar | Armazenar e recarregar overlay de status por extensão registrada | core |
+| `crates/edger-orchestrator/src/bin/edger.rs` | Alterar | Carregar o arquivo opcional via env no composition root | core |
+| `crates/edger-orchestrator/tests/admin_workers_plugins.rs` | Alterar | Provar o fluxo observável pela Admin API | core |
 | `planning/edger/docs/value-parity-matrix.md` | Alterar | Atualizar evidência e lacuna remanescente | core |
 | `planning/edger/epics/08-valor-buntime/00-overview.md` | Alterar | Registrar a nova story no backlog/status | core |
 | `planning/edger/status/checkpoint-2026-06-29-epic-08-value-parity.md` | Alterar | Atualizar checkpoint e evidência | core |
@@ -67,7 +67,7 @@
 
 ## Test-first plan
 - Comportamento a provar antes da implementação: `POST /api/admin/extensions/gateway/disable` persiste status e o inventário reconstruído lê `disabled`.
-- Primeiro teste falhando: teste de integração em `edger-orchestrator/tests/admin_workers_plugins.rs`.
+- Primeiro teste falhando: teste de integração em `crates/edger-orchestrator/tests/admin_workers_plugins.rs`.
 - Nível preferido: integração de Admin API + unitário do registry.
 - Valor do teste: contrato de API operacional e persistência local observável.
 - Testes de baixo valor a evitar: snapshot grande do JSON, teste que só verifica que arquivo existe sem provar reload.

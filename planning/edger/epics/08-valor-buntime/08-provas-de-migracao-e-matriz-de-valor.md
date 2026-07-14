@@ -20,9 +20,9 @@
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/tests/value_parity.rs` | create | Suite E2E de fluxos must-have |
-| `edger-orchestrator/src/manifest_index_stub.rs` | edit | Proteger roteamento contra `base: ""` aprendido do Buntime |
-| `workers/value-parity/todos/` | create | Fixture visual para Browser em `/todos` |
+| `crates/edger-orchestrator/tests/value_parity.rs` | create | Suite E2E de fluxos must-have |
+| `crates/edger-orchestrator/src/manifest_index_stub.rs` | edit | Proteger roteamento contra `base: ""` aprendido do Buntime |
+| `workers/examples/value-parity/todos/` | create | Fixture visual para Browser em `/todos` |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Atualizar status e evidências finais |
 | `planning/edger/docs/compat-matrix.md` | edit | Sincronizar lacunas técnicas encontradas |
 | `planning/edger/status/evidence/story-08-08-runtime.txt` | create | Evidência runtime manual e Browser |
@@ -60,14 +60,14 @@
 | Decisão | Escolha | Motivo |
 |---|---|---|
 | Provas mínimas | SPA `/todos`, worker protegido, state bindings, shell/gateway, CORS/auth, `base: ""` guard | Cobre valor operacional real sem fingir paridade total |
-| Fixture visual | `workers/value-parity/todos` com `visibility: public` | Permite validação Browser direta em `/todos` sem credencial manual |
+| Fixture visual | `workers/examples/value-parity/todos` com `visibility: public` | Permite validação Browser direta em `/todos` sem credencial manual |
 | Cron | Marcar `partial/planned` | A foundation de cron ainda não está pronta; não inventar sucesso sem execução |
 | Gateway/proxy | Provar middleware/CORS e shell routing; proxy externo fica lacuna explícita | A story 08.05 entregou gateway v1, não proxy/cache/rate-limit persistente |
 | Buntime gotcha | `base: ""` deve ser ignorado como app surface | Evita repetir o bug de plugin puro sequestrar navegação de workers |
 
 **Test-first plan:**
 
-- Primeiro teste novo: `edger-orchestrator/tests/value_parity.rs` deve falhar enquanto a suite não existir e provar contratos de valor por fluxo.
+- Primeiro teste novo: `crates/edger-orchestrator/tests/value_parity.rs` deve falhar enquanto a suite não existir e provar contratos de valor por fluxo.
 - Casos:
   - SPA TodoMVC-equivalente serve documento, asset e fallback sob `/todos`;
   - worker protegido retorna `401` sem auth e `200` com root key;
@@ -89,7 +89,7 @@
 - Epic 07 para execução JS/Wasm/shell/cron conforme fluxo escolhido.
 
 ## Tasks
-- [x] Criar fixture visual `workers/value-parity/todos/`.
+- [x] Criar fixture visual `workers/examples/value-parity/todos/`.
   - Done when: `/todos` servir HTML, asset e fallback em runtime local.
 - [x] Implementar testes E2E por fluxo must-have.
   - Done when: `cargo test -p edger-orchestrator --test value_parity` cobrir SPA, auth, state, shell/gateway, CORS/auth e `base: ""`.

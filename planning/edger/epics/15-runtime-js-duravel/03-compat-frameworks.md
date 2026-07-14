@@ -11,18 +11,18 @@
 
 ## Traceability
 
-- `edger-isolation/src/deno/worker_host.rs` (captura de listener node/`Deno.serve`)
+- `crates/edger-isolation/src/deno/worker_host.rs` (captura de listener node/`Deno.serve`)
 - `planning/edger/docs/compat-matrix.md`
-- `workers/commonjs*`, novas fixtures `workers/express-demo`, `workers/hono-demo`
+- `workers/examples/commonjs*`, novas fixtures `workers/examples/express-demo`, `workers/examples/hono-demo`
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-isolation/src/deno/worker_host.rs` | edit | Captura robusta de `app.listen()` (node:http) e `Deno.serve`/default fetch |
-| `workers/express-demo/` | create | Fixture Express (`npm:express`) |
-| `workers/hono-demo/` | create | Fixture Hono (`npm:hono`) |
-| `edger-orchestrator/tests/kind_dispatch_integration.rs` | edit | E2E Express/Hono respondendo por UDS |
+| `crates/edger-isolation/src/deno/worker_host.rs` | edit | Captura robusta de `app.listen()` (node:http) e `Deno.serve`/default fetch |
+| `workers/examples/express-demo/` | create | Fixture Express (`npm:express`) |
+| `workers/examples/hono-demo/` | create | Fixture Hono (`npm:hono`) |
+| `crates/edger-orchestrator/tests/kind_dispatch_integration.rs` | edit | E2E Express/Hono respondendo por UDS |
 | `planning/edger/docs/compat-matrix.md` | edit | Linhas Express/Hono → tested |
 
 ## Detail
@@ -48,7 +48,7 @@
 ### Fase 1 — Captura
 - [x] Adapter `node:http` (createServer/listen + node req/res) portado para o harness persistente.
 ### Fase 2 — Fixtures + E2E
-- [x] `workers/express-demo`, `workers/hono-demo` + E2E `framework_compat.rs` (validado ao vivo).
+- [x] `workers/examples/express-demo`, `workers/examples/hono-demo` + E2E `framework_compat.rs` (validado ao vivo).
 ### Fase 3 — Doc
 - [x] compat-matrix Express/Hono tested.
 
@@ -66,7 +66,7 @@ rodam pelo processo Deno persistente sem reimplementação: o harness ganhou o
 adapter `node:http` (captura de `http.createServer(app).listen()` + node
 req/res) portado da ponte v1, além da captura `Deno.serve` já existente. Sandbox
 do worker liberou leitura do cache Deno (`DENO_DIR`/default) para resolver `npm:`
-e `--allow-sys`. Fixtures `workers/express-demo` e `workers/hono-demo`; E2E
+e `--allow-sys`. Fixtures `workers/examples/express-demo` e `workers/examples/hono-demo`; E2E
 `framework_compat.rs` (ignored: precisa deno+npm), validado ao vivo pelo servidor
 (`{"framework":"express"}`, `{"user":"5"}`, `{"framework":"hono"}`). compat-matrix
 com Express/Hono `tested`.

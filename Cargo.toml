@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-  "edger-core",
-  "edger-worker",
-  "edger-isolation",
-  "edger-orchestrator",
-  "edger-mcp",
+  "crates/edger-core",
+  "crates/edger-worker",
+  "crates/edger-isolation",
+  "crates/edger-orchestrator",
+  "crates/edger-mcp",
 ]
 
 [workspace.package]

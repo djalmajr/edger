@@ -56,12 +56,12 @@ Definir e entregar a primeira estrutura de frontends modulares do edger: cPanel/
 
 ## Status
 
-completed (2026-07-01) - cPanel/admin UI minimo foi entregue em `workers/cpanel`, empacotado como Static SPA worker e validado no Browser in-app com login root e criacao/revogacao de chave descartavel. Shell/catalogo v1 foi entregue em `workers/shell-demo` com `GET /api/admin/catalog`, derivado do `ManifestIndex` e de `MenuContribution` de extensoes. Cobertura: `edger-orchestrator/tests/shell_gateway.rs`, `admin_workers_plugins.rs` e `registry_providers.rs`; gate de planejamento verde em `planning/edger/status/evidence/refinement-report.txt`.
+completed (2026-07-01) - cPanel/admin UI minimo foi entregue em `workers/core/cpanel`, empacotado como Static SPA worker e validado no Browser in-app com login root e criacao/revogacao de chave descartavel. Shell/catalogo v1 foi entregue em `workers/shell-demo` com `GET /api/admin/catalog`, derivado do `ManifestIndex` e de `MenuContribution` de extensoes. Cobertura: `crates/edger-orchestrator/tests/shell_gateway.rs`, `admin_workers_plugins.rs` e `registry_providers.rs`; gate de planejamento verde em `planning/edger/status/evidence/refinement-report.txt`.
 
 ### Refinamento cPanel (2026-07-02)
 
-`workers/cpanel` foi reescrito para espelhar o layout do cPanel do Buntime, mantendo-se Static SPA sem build (stack CDN: Preact + htm + Tailwind v4 + catalogo shadcn em `components/ui/`). Mudancas de UX pedidas na revisao Browser:
+`workers/core/cpanel` foi reescrito para espelhar o layout do cPanel do Buntime, mantendo-se Static SPA sem build (stack CDN: Preact + htm + Tailwind v4 + catalogo shadcn em `components/ui/`). Mudancas de UX pedidas na revisao Browser:
 - **Login gated**: o painel so aparece apos autenticar (`POST` implicito via `/api/admin/session`); antes o shell renderizava "offline" com a UI ja visivel.
 - **Widgets so no Overview**: os cards de metricas (Workers/Modules/Requests/Keys) saem do topo global e passam a viver dentro da view Overview.
 - **shadcn real**: `Select` (com chevron), `Table`, `Card`, `Badge`, `Sidebar`, `Alert`, `Button` importados do catalogo — o `select` nativo cru foi substituido.
-Correcao de runtime necessaria para a UI: Static SPA agora tem TTL default persistente (`edger-core::STATIC_SPA_DEFAULT_TTL_MS`) em vez de efemero, e o `WorkerPool` re-resolve instancia efemera terminada sob concorrencia (antes ~40 imports paralelos do mesmo worker davam `worker not ready for dispatch`). Evidencia: `planning/edger/status/evidence/browser-preview-2026-07-02.md`; regressoes `edger-worker/tests/pool_ephemeral_concurrency.rs`.
+Correcao de runtime necessaria para a UI: Static SPA agora tem TTL default persistente (`edger-core::STATIC_SPA_DEFAULT_TTL_MS`) em vez de efemero, e o `WorkerPool` re-resolve instancia efemera terminada sob concorrencia (antes ~40 imports paralelos do mesmo worker davam `worker not ready for dispatch`). Evidencia: `planning/edger/status/evidence/browser-preview-2026-07-02.md`; regressoes `crates/edger-worker/tests/pool_ephemeral_concurrency.rs`.

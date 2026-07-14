@@ -14,7 +14,7 @@ O gateway atual cobre redirects e rate limit local, mas ainda nao encaminha requ
 |---|---|---|
 | `edger-ext-gateway/src/lib.rs` | edit | Implementar regra de proxy forwarding com limites |
 | `edger-ext-gateway/tests/gateway_middleware.rs` | edit | Provar upstream permitido, bloqueios e redaction |
-| `edger-orchestrator/tests/value_parity.rs` | edit | Cobrir fluxo representativo quando fizer sentido |
+| `crates/edger-orchestrator/tests/value_parity.rs` | edit | Cobrir fluxo representativo quando fizer sentido |
 | `docs/developers/06-operacao-e-testes.adoc` | edit | Documentar configuracao local segura |
 
 ## Detail

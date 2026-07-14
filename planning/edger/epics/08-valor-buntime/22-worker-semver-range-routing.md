@@ -15,15 +15,15 @@ faixa compatível sem fixar sempre uma versão exata.
 
 - `planning/edger/docs/value-parity-matrix.md`
 - `planning/edger/docs/compat-matrix.md`
-- `edger-orchestrator/src/manifest_index_stub.rs`
-- `edger-orchestrator/tests/routing_resolution.rs`
+- `crates/edger-orchestrator/src/manifest_index_stub.rs`
+- `crates/edger-orchestrator/tests/routing_resolution.rs`
 
 ## Files
 
 | Path | Action | Reason |
 |---|---|---|
-| `edger-orchestrator/src/manifest_index_stub.rs` | alter | Resolver `semver::VersionReq` preservando `latest` e versão exata |
-| `edger-orchestrator/tests/routing_resolution.rs` | alter | Provar ranges em rotas namespaced e unscoped |
+| `crates/edger-orchestrator/src/manifest_index_stub.rs` | alter | Resolver `semver::VersionReq` preservando `latest` e versão exata |
+| `crates/edger-orchestrator/tests/routing_resolution.rs` | alter | Provar ranges em rotas namespaced e unscoped |
 | `planning/edger/docs/value-parity-matrix.md` | edit | Marcar linha de worker addressing como testada |
 | `planning/edger/docs/compat-matrix.md` | edit | Registrar compatibilidade técnica de semver range |
 | `planning/edger/status/evidence/story-08-22-runtime.txt` | create | Registrar comandos de verificação |

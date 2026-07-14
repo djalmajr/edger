@@ -22,7 +22,7 @@
 | `edger-ext-gateway/README.md` | criar | instruções copy-paste para nova ext |
 | `edger-ext-gateway/tests/gateway_middleware.rs` | criar | on_request pass-through |
 | `Cargo.toml` (workspace) | alterar | member (opcional feature `examples`) |
-| `edger-orchestrator/src/bin/edger.rs` | alterar | register gateway (feature ou always) |
+| `crates/edger-orchestrator/src/bin/edger.rs` | alterar | register gateway (feature ou always) |
 | `planning/edger/docs/extensions.md` | criar/atualizar (nesta story) | seção template |
 
 ## Detail

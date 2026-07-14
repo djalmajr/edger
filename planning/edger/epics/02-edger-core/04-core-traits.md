@@ -16,12 +16,12 @@
 ## Files
 | Path | Action | Reason |
 |---|---|---|
-| `edger-core/src/extension.rs` | create | Extension, Middleware, WorkerHandler |
-| `edger-core/src/auth.rs` | create | AuthProvider |
-| `edger-core/src/isolate.rs` | create | Isolate trait |
-| `edger-core/src/context.rs` | create | RequestContext, ExtensionContext |
-| `edger-core/src/lib.rs` | alter | public re-exports |
-| `edger-core/tests/traits_mock.rs` | create | compile-time mock impl smoke tests |
+| `crates/edger-core/src/extension.rs` | create | Extension, Middleware, WorkerHandler |
+| `crates/edger-core/src/auth.rs` | create | AuthProvider |
+| `crates/edger-core/src/isolate.rs` | create | Isolate trait |
+| `crates/edger-core/src/context.rs` | create | RequestContext, ExtensionContext |
+| `crates/edger-core/src/lib.rs` | alter | public re-exports |
+| `crates/edger-core/tests/traits_mock.rs` | create | compile-time mock impl smoke tests |
 
 ## Detail
 
