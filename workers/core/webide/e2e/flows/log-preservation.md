@@ -22,7 +22,7 @@ Escolher se um novo deploy começa com logs limpos ou mantém o histórico local
 4. **clique no ícone Deploy project e aguarde concluir** → os logs anteriores são limpos no início e a lista final contém somente a sequência do novo deploy.
 5. **marque Preserve logs across restarts** → a preferência passa a habilitada.
 6. **clique em Validate project novamente** → um novo marcador VALIDATE aparece após os logs existentes.
-7. **execute outro deploy explícito e aguarde concluir** → o marcador e a sequência anterior permanecem acima dos novos logs.
+7. **abra `manifest.yaml`, altere version para `1.0.1`, salve e execute outro deploy explícito** → o marcador e a sequência anterior permanecem acima dos novos logs.
 8. **recarregue a página e abra Logs** → checkbox continua marcado e o histórico preservado é restaurado.
 9. **clique em outra tab do footer e volte a Logs** → o estado do checkbox e os eventos não mudam.
 10. **desmarque Preserve logs across restarts** → o projeto fica preparado para uma futura execução com limpeza.
