@@ -1,6 +1,53 @@
 import { highlightCode, languageFor, lintDocument, reorderItems, searchProjectFiles } from "./editor-tools.js";
 import { icon } from "./icons.js";
 import { getIcon as getMaterialFileIcon } from "./vendor/material-file-icons.js";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  Badge,
+  Button,
+  ButtonLink,
+  CardContent,
+  CardDescription,
+  CardTitle,
+  Checkbox,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Empty,
+  EmptyDescription,
+  EmptyTitle,
+  Field,
+  FieldError,
+  FieldLabel,
+  Input,
+  InputGroup,
+  InputGroupAddon,
+  ResizableHandle,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+  Textarea,
+  Toast,
+  Toaster,
+  Tooltip,
+} from "./components/ui/index.js";
 
 const SESSION_KEY = "edger.cpanel.apiKey";
 const DB_NAME = "edger-webide";
@@ -136,6 +183,8 @@ const state = {
   preserveLogs: localStorage.getItem("edger.webide.preserveLogs") === "true",
   collapsedFolders: new Set(),
   fileDialog: null,
+  projectDialog: null,
+  toast: null,
   terminalHistory: [],
   message: "Projects are stored locally in this browser.",
   templateCategory: "frontend",
@@ -284,8 +333,7 @@ async function removeProject(id) {
 }
 
 let saveTimer;
-let draggedEditorTab = null;
-let draggedFooterTab = null;
+let suppressReorderClick = false;
 function scheduleSave() {
   const active = project();
   if (!active) return;
@@ -308,6 +356,21 @@ function scheduleSave() {
       renderStatus();
     }
   }, 350);
+}
+
+function workbenchStateKey(id) {
+  return `edger.webide.workbench.${id}`;
+}
+
+function persistWorkbenchState(active) {
+  localStorage.setItem(workbenchStateKey(active.id), JSON.stringify({
+    selected: active.selected,
+    openTabs: active.openTabs,
+  }));
+  void saveProject(active).catch((error) => {
+    state.message = error.message;
+    renderStatus();
+  });
 }
 
 function sortProjects() {
@@ -369,12 +432,14 @@ async function deploy() {
   state.deploying = true;
   state.deploySteps = DEPLOY_STEPS.map((label) => ({ label, status: "pending" }));
   if (!state.preserveLogs) active.logs = [];
-  appendLog(`Deploy requested for ${active.name}@${active.version}.`, "info", "DEPLOY");
+  const requested = parseManifest(active.files["manifest.yaml"] || "");
+  appendLog(`Deploy requested for ${requested.name || active.name}@${requested.version || active.version}.`, "info", "DEPLOY");
   renderWorkbench();
   const previousPreview = active.previewUrl;
   try {
     markStep(0, "active");
     const manifest = validateProject(active);
+    active.version = manifest.version;
     appendLog("Manifest and project files validated.", "info", "VALIDATE");
     markStep(0, "done");
     markStep(1, "active");
@@ -423,8 +488,11 @@ function openProject(id) {
   if (!active) return;
   state.activeProjectId = id;
   state.screen = "workbench";
-  const initialSelected = active.selected && active.files[active.selected] !== undefined ? active.selected : Object.keys(active.files)[0];
-  state.openTabs = Array.isArray(active.openTabs) ? active.openTabs.filter((file) => active.files[file] !== undefined) : [initialSelected];
+  const savedWorkbench = loadJsonStorage(workbenchStateKey(id));
+  const savedSelected = savedWorkbench?.selected || active.selected;
+  const savedTabs = Array.isArray(savedWorkbench?.openTabs) ? savedWorkbench.openTabs : active.openTabs;
+  const initialSelected = savedSelected && active.files[savedSelected] !== undefined ? savedSelected : Object.keys(active.files)[0];
+  state.openTabs = Array.isArray(savedTabs) ? savedTabs.filter((file) => active.files[file] !== undefined) : [initialSelected];
   state.selected = state.openTabs.includes(initialSelected) ? initialSelected : state.openTabs[0] || "";
   state.message = "Draft ready";
   history.replaceState(null, "", `${location.pathname}?project=${encodeURIComponent(id)}`);
@@ -517,28 +585,62 @@ function closeTemplateModal() {
   requestAnimationFrame(() => document.querySelector("#new-project")?.focus());
 }
 
+function trapDialogFocus(event, selector) {
+  if (event.key !== "Tab") return;
+  const container = document.querySelector(selector);
+  if (!container) return;
+  const focusable = [...container.querySelectorAll('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => element.offsetWidth > 0 && element.offsetHeight > 0);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+}
+
+function focusSelector(element) {
+  if (!element) return "";
+  if (element.id) return `#${CSS.escape(element.id)}`;
+  for (const name of ["treeMenu", "file", "folder"]) {
+    if (element.dataset?.[name]) return `[data-${name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}="${CSS.escape(element.dataset[name])}"]`;
+  }
+  return "";
+}
+
 function renderTemplateModal() {
   if (!state.templateModalOpen) return "";
   const options = Object.entries(templates).filter(([, definition]) => definition.category === state.templateCategory);
-  return `<div class="dialog-overlay" data-close-template-modal>
-    <section aria-labelledby="template-dialog-title" aria-modal="true" class="template-modal" data-slot="dialog-content" role="dialog">
-      <header class="template-modal-header">
-        <div><h2 id="template-dialog-title">Create a new project</h2><p>Choose a starter that matches what you want to deploy on EdgeR.</p></div>
-        <button aria-label="Close template picker" class="icon-button" data-size="icon-sm" data-slot="button" data-variant="ghost" id="close-template-modal">${icon("close")}</button>
-      </header>
-      <div class="template-tabs" data-slot="tabs-list" role="tablist">
-        ${templateCategories.map((category) => `<button aria-selected="${category.id === state.templateCategory}" class="template-tab ${category.id === state.templateCategory ? "active" : ""}" data-slot="tabs-trigger" data-template-category="${category.id}" role="tab">${category.label}</button>`).join("")}
-      </div>
-      <div class="template-options" data-slot="tabs-content" role="tabpanel">
-        ${options.map(([type, definition]) => `<button class="template-option" data-create-template="${type}" data-slot="card" ${definition.supported ? "" : "disabled"} title="${escapeHtml(definition.supported ? definition.description : `${definition.name} requires runtime capabilities that are not available yet.`)}">
-          <span class="template-option-icon">${icon(definition.icon, 22)}</span>
-          <span class="template-option-copy" data-slot="card-content"><strong data-slot="card-title">${escapeHtml(definition.name)}</strong><small data-slot="card-description">${escapeHtml(definition.runtime)}</small></span>
-          <span class="template-availability ${definition.supported ? "ready" : "planned"}" data-slot="badge">${definition.supported ? "Ready" : "Planned"}</span>
-        </button>`).join("")}
-      </div>
-      <footer class="template-modal-footer"><p>Planned templates remain disabled until EdgeR can build and run them safely.</p></footer>
-    </section>
-  </div>`;
+  const tabs = TabsList({
+    className: "template-tabs",
+    children: templateCategories.map((category) => TabsTrigger({
+      active: category.id === state.templateCategory,
+      className: `template-tab ${category.id === state.templateCategory ? "active" : ""}`,
+      "data-template-category": category.id,
+      children: category.label,
+    })).join(""),
+  });
+  const cards = TabsContent({
+    className: "template-options",
+    children: options.map(([type, definition]) => Button({
+      className: "template-option",
+      variant: "ghost",
+      "data-create-template": type,
+      disabled: !definition.supported,
+      title: definition.supported ? definition.description : `${definition.name} requires runtime capabilities that are not available yet.`,
+      children: `<span class="template-option-icon">${icon(definition.icon, 22)}</span>${CardContent({ className: "template-option-copy", children: `${CardTitle({ children: escapeHtml(definition.name) })}${CardDescription({ children: escapeHtml(definition.runtime) })}` })}${Badge({ className: `template-availability ${definition.supported ? "ready" : "planned"}`, children: definition.supported ? "Ready" : "Planned" })}`,
+    })).join(""),
+  });
+  return Dialog({
+    className: "dialog-overlay",
+    "data-close-template-modal": true,
+    children: DialogContent({
+      as: "section",
+      className: "template-modal",
+      id: "template-dialog",
+      "aria-labelledby": "template-dialog-title",
+      children: `${DialogHeader({ className: "template-modal-header", children: `<div>${DialogTitle({ id: "template-dialog-title", children: "Create a new project" })}${DialogDescription({ children: "Choose a starter that matches what you want to deploy on EdgeR." })}</div>${Button({ ariaLabel: undefined, "aria-label": "Close template picker", className: "icon-button", size: "icon-sm", variant: "ghost", id: "close-template-modal", children: icon("close") })}` })}${tabs}${cards}<footer class="template-modal-footer"><p>Planned templates remain disabled until EdgeR can build and run them safely.</p></footer>`,
+    }),
+  });
 }
 
 function duplicateProject(id) {
@@ -557,21 +659,100 @@ function duplicateProject(id) {
   saveProject(copy).then(() => render()).catch(showError);
 }
 
-function renameProject(id) {
+function openProjectDialog(kind, id) {
   const active = state.projects.find((item) => item.id === id);
   if (!active) return;
-  const name = prompt("Project name", active.name);
-  if (!name) return;
-  active.name = slugify(name);
-  active.files["manifest.yaml"] = active.files["manifest.yaml"].replace(/^name:.*$/m, `name: ${active.name}`);
-  saveProject(active).then(render).catch(showError);
+  state.projectDialog = { kind, projectId: id, value: active.name, error: "" };
+  renderDashboard();
+  requestAnimationFrame(() => document.querySelector(kind === "rename" ? "#project-dialog-input" : "#cancel-project-dialog")?.focus());
 }
 
-function deleteProject(id) {
-  const active = state.projects.find((item) => item.id === id);
-  if (!active || !confirm(`Delete local project ${active.name}? Deployed workers are not removed.`)) return;
-  state.projects = state.projects.filter((item) => item.id !== id);
-  removeProject(id).then(render).catch(showError);
+function closeProjectDialog() {
+  const dialog = state.projectDialog;
+  state.projectDialog = null;
+  renderDashboard();
+  requestAnimationFrame(() => document.querySelector(`[data-${dialog?.kind}="${dialog?.projectId}"]`)?.focus());
+}
+
+function renderProjectDialog() {
+  const dialog = state.projectDialog;
+  if (!dialog) return "";
+  const active = state.projects.find((item) => item.id === dialog.projectId);
+  if (!active) return "";
+  const deleting = dialog.kind === "delete";
+  const parts = deleting
+    ? { Root: AlertDialog, Content: AlertDialogContent, Header: AlertDialogHeader, Title: AlertDialogTitle, Description: AlertDialogDescription, Footer: AlertDialogFooter }
+    : { Root: Dialog, Content: DialogContent, Header: DialogHeader, Title: DialogTitle, Description: DialogDescription, Footer: DialogFooter };
+  const header = parts.Header({
+    children: `${parts.Title({ id: "project-dialog-title", children: deleting ? "Delete project" : "Rename project" })}${deleting ? parts.Description({ children: `Delete local project <strong>${escapeHtml(active.name)}</strong>? Only the local draft will be removed. Deployed workers are not removed.` }) : ""}`,
+  });
+  const field = deleting ? "" : Field({
+    children: FieldLabel({
+      htmlFor: "project-dialog-input",
+      children: `Project name${Input({ id: "project-dialog-input", autocomplete: "off", value: dialog.value, "aria-invalid": Boolean(dialog.error) })}`,
+    }),
+  });
+  const error = dialog.error ? FieldError({ className: "dialog-error", children: escapeHtml(dialog.error) }) : "";
+  const footer = parts.Footer({
+    children: `${Button({ className: "button", variant: "outline", id: "cancel-project-dialog", children: "Cancel" })}${Button({ className: `button ${deleting ? "danger" : "primary"}`, variant: deleting ? "destructive" : "default", type: "submit", children: deleting ? "Delete" : "Rename" })}`,
+  });
+  return parts.Root({
+    className: "workbench-dialog-overlay",
+    id: "project-dialog-overlay",
+    children: parts.Content({ className: "workbench-dialog", id: "project-dialog", "aria-labelledby": "project-dialog-title", children: `${header}${field}${error}${footer}` }),
+  });
+}
+
+let toastTimer;
+function renderToaster() {
+  const toast = state.toast;
+  return Toaster({
+    className: "toaster",
+    children: toast ? Toast({
+      className: `toast ${escapeHtml(toast.variant)}`,
+      variant: toast.variant,
+      title: escapeHtml(toast.title),
+      description: escapeHtml(toast.description),
+      children: Button({ className: "icon-button", variant: "ghost", size: "icon-sm", id: "dismiss-toast", "aria-label": "Dismiss notification", children: icon("close", 14) }),
+    }) : "",
+  });
+}
+
+function syncToaster() {
+  const toaster = document.querySelector('[data-slot="toaster"]');
+  if (!toaster) return;
+  toaster.outerHTML = renderToaster();
+  document.querySelector("#dismiss-toast")?.addEventListener("click", () => {
+    clearTimeout(toastTimer);
+    state.toast = null;
+    syncToaster();
+  });
+}
+
+function showToast(title, description = "", variant = "default") {
+  state.toast = { title, description, variant };
+  syncToaster();
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { state.toast = null; syncToaster(); }, 4500);
+}
+
+async function applyProjectDialog() {
+  const dialog = state.projectDialog;
+  const active = state.projects.find((item) => item.id === dialog?.projectId);
+  if (!dialog || !active) return;
+  if (dialog.kind === "rename") {
+    if (!dialog.value.trim()) throw new Error("Project name is required.");
+    active.name = slugify(dialog.value);
+    active.files["manifest.yaml"] = active.files["manifest.yaml"].replace(/^name:.*$/m, `name: ${active.name}`);
+    await saveProject(active);
+    sortProjects();
+  } else {
+    await removeProject(active.id);
+    localStorage.removeItem(workbenchStateKey(active.id));
+    state.projects = state.projects.filter((item) => item.id !== active.id);
+  }
+  state.projectDialog = null;
+  renderDashboard();
 }
 
 function render() {
@@ -579,55 +760,107 @@ function render() {
   else renderWorkbench();
 }
 
+function renderProjectTable(items) {
+  const header = TableHeader({ children: TableRow({
+    className: "project-row project-head",
+    children: ["Project", "Runtime", "Version", "Updated", ""].map((label) => TableHead({ children: label })).join(""),
+  }) });
+  const body = TableBody({
+    children: items.map((item) => {
+      const definition = templates[item.type] || templates.FetchHandler;
+      const name = TableCell({ children: `<div class="project-name"><span class="project-avatar">${icon(definition.icon, 18)}</span><span><strong>${escapeHtml(item.name)}</strong><small>${item.previewUrl ? `Deployed at ${escapeHtml(item.previewUrl)}` : "Local draft"}</small></span></div>` });
+      const runtime = TableCell({ children: escapeHtml(item.type.replace(/([a-z])([A-Z])/g, "$1 $2")) });
+      const version = TableCell({ children: `<code>${escapeHtml(item.version)}</code>` });
+      const updated = TableCell({ children: `<time>${escapeHtml(new Date(item.updatedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}</time>` });
+      const actions = TableCell({
+        children: `<span class="row-actions">${Button({ className: "icon-button", size: "icon-sm", variant: "ghost", title: "Duplicate project", "aria-label": `Duplicate ${item.name}`, "data-duplicate": item.id, children: icon("copy") })}${Button({ className: "icon-button", size: "icon-sm", variant: "ghost", title: "Rename project", "aria-label": `Rename ${item.name}`, "data-rename": item.id, children: icon("edit") })}${Button({ className: "icon-button danger", size: "icon-sm", variant: "ghost", title: "Delete project", "aria-label": `Delete ${item.name}`, "data-delete": item.id, children: icon("trash") })}</span>`,
+      });
+      return TableRow({ className: "project-row", tabIndex: 0, "data-open-project": item.id, "aria-label": `Open project ${item.name}`, children: `${name}${runtime}${version}${updated}${actions}` });
+    }).join(""),
+  });
+  return Table({ children: `${header}${body}` });
+}
+
 function renderDashboard() {
   const query = state.query.trim().toLowerCase();
   const visible = state.projects.filter((item) => !query || item.name.toLowerCase().includes(query) || item.type.toLowerCase().includes(query));
   const recent = visible.slice(0, 6);
   const list = state.dashboardSection === "dashboard" ? recent : visible;
+  const projectSearch = InputGroup({
+    className: "dashboard-search",
+    children: `${Input({ id: "project-search", "aria-label": "Search projects", placeholder: "Search projects…", value: state.query })}${InputGroupAddon({ align: "inline-start", children: icon("search") })}`,
+  });
+  const navigation = [
+    ["dashboard", "grid", "Dashboard"],
+    ["projects", "stack", "Projects"],
+  ].map(([section, sectionIcon, label]) => Button({
+    className: `nav-item ${state.dashboardSection === section ? "active" : ""}`,
+    variant: "ghost",
+    "data-section": section,
+    "aria-label": label,
+    "aria-current": state.dashboardSection === section ? "page" : undefined,
+    children: `${icon(sectionIcon)}<span>${label}</span>`,
+  })).join("");
+  const actions = state.dashboardSection === "dashboard" ? `<section class="dashboard-actions" aria-label="Project actions">
+    ${Button({ className: "action-card", variant: "ghost", id: "new-project", children: `<span class="action-card-icon">${icon("plus", 24)}</span>${CardContent({ children: `${CardTitle({ children: "New project" })}${CardDescription({ children: "Choose an EdgeR starter and begin in the workbench." })}` })}${icon("chevron")}` })}
+    ${Button({ className: "action-card", variant: "ghost", id: "import-project", children: `<span class="action-card-icon">${icon("import", 24)}</span>${CardContent({ children: `${CardTitle({ children: "Import" })}${CardDescription({ children: "Open a local project folder containing manifest.yaml." })}` })}${icon("chevron")}` })}
+    ${Input({ hidden: true, id: "import-project-files", type: "file", multiple: true, webkitdirectory: true, directory: true })}
+  </section>` : "";
+  const projects = list.length
+    ? renderProjectTable(list)
+    : Empty({ className: "dashboard-empty", children: `${icon("stack", 28)}${EmptyTitle({ children: "No projects yet" })}${EmptyDescription({ children: "Create or import a project to open the workbench." })}` });
   document.querySelector("#app").innerHTML = `
     <main class="dashboard-shell">
       <header class="dashboard-topbar">
         <div class="dashboard-brand">${icon("logo", 24)}<strong>WebIDE</strong></div>
-        <label class="dashboard-search" data-slot="input-group">${icon("search")}<input data-slot="input" id="project-search" aria-label="Search projects" placeholder="Search projects…" value="${escapeHtml(state.query)}"></label>
+        ${projectSearch}
       </header>
       <aside class="dashboard-sidebar">
-        <nav>
-          <button class="nav-item ${state.dashboardSection === "dashboard" ? "active" : ""}" data-slot="button" data-variant="ghost" data-size="default" data-section="dashboard">${icon("grid")}<span>Dashboard</span></button>
-          <button class="nav-item ${state.dashboardSection === "projects" ? "active" : ""}" data-slot="button" data-variant="ghost" data-size="default" data-section="projects">${icon("stack")}<span>Projects</span></button>
-        </nav>
+        <nav>${navigation}</nav>
       </aside>
       <section class="dashboard-content">
         <div class="dashboard-heading"><div><h1>${state.dashboardSection === "dashboard" ? "Build at the edge" : "Projects"}</h1><p>${state.dashboardSection === "dashboard" ? "Create, edit, deploy, and inspect EdgeR workers from one workspace." : "Local drafts stay in this browser until you deploy explicitly."}</p></div></div>
-        ${state.dashboardSection === "dashboard" ? `<section class="dashboard-actions" aria-label="Project actions">
-          <button class="action-card" data-slot="card" id="new-project"><span class="action-card-icon">${icon("plus", 24)}</span><span data-slot="card-content"><strong data-slot="card-title">New project</strong><small data-slot="card-description">Choose an EdgeR starter and begin in the workbench.</small></span>${icon("chevron")}</button>
-          <button class="action-card" data-slot="card" id="import-project"><span class="action-card-icon">${icon("import", 24)}</span><span data-slot="card-content"><strong data-slot="card-title">Import</strong><small data-slot="card-description">Open a local project folder containing manifest.yaml.</small></span>${icon("chevron")}</button>
-          <input hidden id="import-project-files" type="file" multiple webkitdirectory directory>
-        </section>` : ""}
-        <section class="projects-section"><div class="section-title"><h2>${state.dashboardSection === "dashboard" ? "Recent projects" : "All projects"}</h2></div>${list.length ? `<div class="project-table" data-slot="table"><div class="project-row project-head" data-slot="table-header"><span>Project</span><span>Runtime</span><span>Version</span><span>Updated</span><span></span></div>${list.map((item) => { const definition = templates[item.type] || templates.FetchHandler; return `<div class="project-row" data-slot="table-row"><a class="project-row-link" href="?project=${encodeURIComponent(item.id)}" data-open-project="${item.id}" aria-label="Open project ${escapeHtml(item.name)}"></a><div class="project-name"><span class="project-avatar">${icon(definition.icon, 18)}</span><span><strong>${escapeHtml(item.name)}</strong><small>${item.previewUrl ? `Deployed at ${escapeHtml(item.previewUrl)}` : "Local draft"}</small></span></div><span>${escapeHtml(item.type.replace(/([a-z])([A-Z])/g, "$1 $2"))}</span><code>${escapeHtml(item.version)}</code><time>${escapeHtml(new Date(item.updatedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}</time><span class="row-actions"><button class="icon-button" data-size="icon-sm" data-slot="button" data-variant="ghost" title="Duplicate project" data-duplicate="${item.id}">${icon("copy")}</button><button class="icon-button" data-size="icon-sm" data-slot="button" data-variant="ghost" title="Rename project" data-rename="${item.id}">${icon("edit")}</button><button class="icon-button danger" data-size="icon-sm" data-slot="button" data-variant="ghost" title="Delete project" data-delete="${item.id}">${icon("trash")}</button></span></div>`; }).join("")}</div>` : `<div class="dashboard-empty" data-slot="empty">${icon("stack", 28)}<h3 data-slot="empty-title">No projects yet</h3><p data-slot="empty-description">Create or import a project to open the workbench.</p></div>`}</section>
+        ${actions}
+        <section class="projects-section"><div class="section-title"><h2>${state.dashboardSection === "dashboard" ? "Recent projects" : "All projects"}</h2></div>${projects}</section>
       </section>
       ${renderTemplateModal()}
+      ${renderProjectDialog()}
+      ${renderToaster()}
     </main>`;
   bindDashboard();
 }
 
 function bindDashboard() {
   document.onkeydown = (event) => {
-    if (event.key === "Escape" && state.templateModalOpen) closeTemplateModal();
+    if (event.key === "Escape" && state.projectDialog) { event.preventDefault(); closeProjectDialog(); }
+    else if (event.key === "Escape" && state.templateModalOpen) { event.preventDefault(); closeTemplateModal(); }
+    else if (state.projectDialog) trapDialogFocus(event, "#project-dialog");
+    else if (state.templateModalOpen) trapDialogFocus(event, "#template-dialog");
   };
   document.querySelectorAll("[data-section]").forEach((button) => button.onclick = () => showDashboard(button.dataset.section));
   document.querySelector("#project-search").oninput = (event) => { state.query = event.target.value; renderDashboard(); document.querySelector("#project-search")?.focus(); };
   document.querySelector("#new-project").onclick = () => openTemplateModal("frontend");
   const importInput = document.querySelector("#import-project-files");
   document.querySelector("#import-project")?.addEventListener("click", () => importInput?.click());
-  importInput?.addEventListener("change", () => importProject(importInput.files).catch((error) => alert(error.message)));
+  importInput?.addEventListener("change", () => importProject(importInput.files).catch((error) => showToast("Import failed", error.message, "error")));
   document.querySelectorAll("[data-template-category]").forEach((button) => button.onclick = () => openTemplateModal(button.dataset.templateCategory));
   document.querySelectorAll("[data-create-template]").forEach((button) => button.onclick = () => createNewProject(button.dataset.createTemplate));
   document.querySelector("#close-template-modal")?.addEventListener("click", closeTemplateModal);
   document.querySelector("[data-close-template-modal]")?.addEventListener("click", (event) => { if (event.target === event.currentTarget) closeTemplateModal(); });
-  document.querySelectorAll("[data-open-project]").forEach((link) => link.onclick = (event) => { event.preventDefault(); openProject(link.dataset.openProject); });
+  document.querySelectorAll("[data-open-project]").forEach((row) => {
+    row.onclick = (event) => { if (!event.target.closest("[data-duplicate],[data-rename],[data-delete]")) openProject(row.dataset.openProject); };
+    row.onkeydown = (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openProject(row.dataset.openProject); } };
+  });
   document.querySelectorAll("[data-duplicate]").forEach((button) => button.onclick = () => duplicateProject(button.dataset.duplicate));
-  document.querySelectorAll("[data-rename]").forEach((button) => button.onclick = () => renameProject(button.dataset.rename));
-  document.querySelectorAll("[data-delete]").forEach((button) => button.onclick = () => deleteProject(button.dataset.delete));
+  document.querySelectorAll("[data-rename]").forEach((button) => button.onclick = () => openProjectDialog("rename", button.dataset.rename));
+  document.querySelectorAll("[data-delete]").forEach((button) => button.onclick = () => openProjectDialog("delete", button.dataset.delete));
+  document.querySelector("#cancel-project-dialog")?.addEventListener("click", closeProjectDialog);
+  document.querySelector("#project-dialog-overlay")?.addEventListener("pointerdown", (event) => { if (event.target === event.currentTarget) closeProjectDialog(); });
+  document.querySelector("#project-dialog")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (document.querySelector("#project-dialog-input")) state.projectDialog.value = document.querySelector("#project-dialog-input").value;
+    applyProjectDialog().catch((error) => { state.projectDialog.error = error.message; renderDashboard(); });
+  });
 }
 
 function fileTree(files, explicitFolders = []) {
@@ -662,18 +895,23 @@ function fileTree(files, explicitFolders = []) {
 function renderTreeNode(node) {
   if (node.folder) {
     const collapsed = state.collapsedFolders.has(node.path);
-    return `<div class="file-tree-group" role="group"><div class="tree-row-wrap"><button aria-expanded="${!collapsed}" aria-label="Folder ${escapeHtml(node.path)}" class="tree-row folder-row" data-folder="${escapeHtml(node.path)}" role="treeitem">${icon("folder", 16)}<span class="tree-label">${escapeHtml(node.name)}</span></button><button class="tree-row-menu" data-tree-menu="${escapeHtml(node.path)}" data-tree-kind="folder" aria-label="Actions for ${escapeHtml(node.name)}">${icon("more", 13)}</button></div>${collapsed ? "" : `<div class="tree-children">${node.children.map(renderTreeNode).join("")}</div>`}</div>`;
+    const folder = Button({ variant: "ghost", "aria-expanded": !collapsed, "aria-label": `Folder ${node.path}`, className: "tree-row folder-row", "data-folder": node.path, role: "treeitem", children: `${icon("folder", 16)}<span class="tree-label">${escapeHtml(node.name)}</span>` });
+    const menu = Button({ variant: "ghost", size: "icon-sm", className: "tree-row-menu", "data-tree-menu": node.path, "data-tree-kind": "folder", "aria-label": `Actions for ${node.name}`, children: icon("more", 13) });
+    return `<div class="file-tree-group" role="group"><div class="tree-row-wrap">${folder}${menu}</div>${collapsed ? "" : `<div class="tree-children">${node.children.map(renderTreeNode).join("")}</div>`}</div>`;
   }
-  return `<div class="tree-row-wrap"><button aria-selected="${state.selected === node.path}" class="tree-row file-row ${state.selected === node.path ? "active" : ""}" data-file="${escapeHtml(node.path)}" role="treeitem">${fileTypeIcon(node.path, 16)}<span class="tree-label">${escapeHtml(node.name)}</span></button><button class="tree-row-menu" data-tree-menu="${escapeHtml(node.path)}" data-tree-kind="file" aria-label="Actions for ${escapeHtml(node.name)}">${icon("more", 13)}</button></div>`;
+  const file = Button({ variant: "ghost", "aria-selected": state.selected === node.path, className: `tree-row file-row ${state.selected === node.path ? "active" : ""}`, "data-file": node.path, role: "treeitem", children: `${fileTypeIcon(node.path, 16)}<span class="tree-label">${escapeHtml(node.name)}</span>` });
+  const menu = Button({ variant: "ghost", size: "icon-sm", className: "tree-row-menu", "data-tree-menu": node.path, "data-tree-kind": "file", "aria-label": `Actions for ${node.name}`, children: icon("more", 13) });
+  return `<div class="tree-row-wrap">${file}${menu}</div>`;
 }
 
 function searchPanel(files) {
   const outcome = searchProjectFiles(files, state.searchQuery, { caseSensitive: state.searchCaseSensitive, regex: state.searchRegex });
   const summary = outcome.error || (!state.searchQuery ? "Type to search across project files." : outcome.matchCount ? `${outcome.matchCount} result${outcome.matchCount === 1 ? "" : "s"} in ${outcome.results.length} file${outcome.results.length === 1 ? "" : "s"}` : "No results.");
+  const controls = InputGroup({ className: "search-field", children: `${Input({ id: "workspace-search", "aria-label": "Search files", placeholder: "Search", value: state.searchQuery })}${InputGroupAddon({ align: "inline-end", children: `${Button({ className: `search-toggle ${state.searchCaseSensitive ? "active" : ""}`, variant: "ghost", size: "icon-sm", id: "search-case", "aria-label": "Match case", "aria-pressed": state.searchCaseSensitive, title: "Match case", children: "Aa" })}${Button({ className: `search-toggle ${state.searchRegex ? "active" : ""}`, variant: "ghost", size: "icon-sm", id: "search-regex", "aria-label": "Use regular expression", "aria-pressed": state.searchRegex, title: "Use regular expression", children: ".*" })}` })}` });
   return `<div class="search-panel">
-    <label class="search-field" data-slot="input-group"><input data-slot="input" id="workspace-search" aria-label="Search files" placeholder="Search" value="${escapeHtml(state.searchQuery)}"><span data-slot="input-group-addon"><button class="search-toggle ${state.searchCaseSensitive ? "active" : ""}" data-slot="button" data-variant="ghost" data-size="icon-sm" id="search-case" aria-pressed="${state.searchCaseSensitive}" title="Match case">Aa</button><button class="search-toggle ${state.searchRegex ? "active" : ""}" data-slot="button" data-variant="ghost" data-size="icon-sm" id="search-regex" aria-pressed="${state.searchRegex}" title="Use regular expression">.*</button></span></label>
+    ${controls}
     <p class="search-summary">${escapeHtml(summary)}</p>
-    <div class="search-results">${outcome.results.map((result) => `<section class="search-group"><header>${fileTypeIcon(result.path)}<strong>${escapeHtml(result.path.split("/").at(-1))}</strong><small>${escapeHtml(result.path)}</small><span data-slot="badge">${result.matches.length}</span></header>${result.matches.map((match) => `<button class="search-match" data-slot="button" data-variant="ghost" data-search-file="${escapeHtml(result.path)}" data-search-line="${match.line}"><i>${match.line}</i><span>${escapeHtml(match.text.slice(0, match.start).trimStart())}<mark>${escapeHtml(match.text.slice(match.start, match.end))}</mark>${escapeHtml(match.text.slice(match.end))}</span></button>`).join("")}</section>`).join("")}</div>
+    <div class="search-results">${outcome.results.map((result) => `<section class="search-group"><header>${fileTypeIcon(result.path)}<strong>${escapeHtml(result.path.split("/").at(-1))}</strong><small>${escapeHtml(result.path)}</small>${Badge({ children: result.matches.length })}</header>${result.matches.map((match) => Button({ className: "search-match", variant: "ghost", "data-search-file": result.path, "data-search-line": match.line, children: `<i>${match.line}</i><span>${escapeHtml(match.text.slice(0, match.start).trimStart())}<mark>${escapeHtml(match.text.slice(match.start, match.end))}</mark>${escapeHtml(match.text.slice(match.end))}</span>` })).join("")}</section>`).join("")}</div>
   </div>`;
 }
 
@@ -687,9 +925,16 @@ function footerTabMeta(id) {
 }
 
 function openFileDialog(kind, options = {}) {
-  state.fileDialog = { kind, value: "", ...options };
+  state.fileDialog = { kind, value: "", returnFocus: focusSelector(document.activeElement), ...options };
   renderWorkbench();
   requestAnimationFrame(() => document.querySelector("#file-dialog-input")?.focus());
+}
+
+function closeFileDialog() {
+  const returnFocus = state.fileDialog?.returnFocus;
+  state.fileDialog = null;
+  renderWorkbench();
+  if (returnFocus) requestAnimationFrame(() => document.querySelector(returnFocus)?.focus());
 }
 
 function renderFileDialog() {
@@ -704,7 +949,14 @@ function renderFileDialog() {
     "delete-folder": "Delete folder",
   };
   const deleting = dialog.kind.startsWith("delete-");
-  return `<div class="workbench-dialog-overlay" data-slot="dialog-overlay" id="file-dialog-overlay"><form class="workbench-dialog" data-slot="dialog-content" id="file-dialog" role="dialog" aria-modal="true" aria-labelledby="file-dialog-title"><header data-slot="dialog-header"><h2 data-slot="dialog-title" id="file-dialog-title">${escapeHtml(titles[dialog.kind])}</h2>${deleting ? `<p data-slot="dialog-description">Delete <strong>${escapeHtml(dialog.path)}</strong>? This cannot be undone.</p>` : ""}</header>${deleting ? "" : `<label data-slot="field">Name<input data-slot="input" id="file-dialog-input" autocomplete="off" value="${escapeHtml(dialog.value)}"></label>`}${dialog.error ? `<p class="dialog-error">${escapeHtml(dialog.error)}</p>` : ""}<footer data-slot="dialog-footer"><button class="button" data-slot="button" data-variant="outline" type="button" id="cancel-file-dialog">Cancel</button><button class="button ${deleting ? "danger" : "primary"}" data-slot="button" data-variant="${deleting ? "destructive" : "default"}" type="submit">${deleting ? "Delete" : "Confirm"}</button></footer></form></div>`;
+  const parts = deleting
+    ? { Root: AlertDialog, Content: AlertDialogContent, Header: AlertDialogHeader, Title: AlertDialogTitle, Description: AlertDialogDescription, Footer: AlertDialogFooter }
+    : { Root: Dialog, Content: DialogContent, Header: DialogHeader, Title: DialogTitle, Description: DialogDescription, Footer: DialogFooter };
+  const header = parts.Header({ children: `${parts.Title({ id: "file-dialog-title", children: escapeHtml(titles[dialog.kind]) })}${deleting ? parts.Description({ children: `Delete <strong>${escapeHtml(dialog.path)}</strong>? This cannot be undone.` }) : ""}` });
+  const field = deleting ? "" : Field({ children: FieldLabel({ htmlFor: "file-dialog-input", children: `Name${Input({ id: "file-dialog-input", autocomplete: "off", value: dialog.value, "aria-invalid": Boolean(dialog.error) })}` }) });
+  const error = dialog.error ? FieldError({ className: "dialog-error", children: escapeHtml(dialog.error) }) : "";
+  const footer = parts.Footer({ children: `${Button({ className: "button", variant: "outline", id: "cancel-file-dialog", children: "Cancel" })}${Button({ className: `button ${deleting ? "danger" : "primary"}`, variant: deleting ? "destructive" : "default", type: "submit", children: deleting ? "Delete" : "Confirm" })}` });
+  return parts.Root({ className: "workbench-dialog-overlay", id: "file-dialog-overlay", children: parts.Content({ className: "workbench-dialog", id: "file-dialog", "aria-labelledby": "file-dialog-title", children: `${header}${field}${error}${footer}` }) });
 }
 
 function joinProjectPath(basePath, name) {
@@ -758,6 +1010,7 @@ function applyFileDialog() {
   active.selected = state.selected;
   active.openTabs = [...state.openTabs];
   state.fileDialog = null;
+  persistWorkbenchState(active);
   scheduleSave();
   renderWorkbench();
 }
@@ -772,46 +1025,106 @@ function renderWorkbench() {
   const content = selected ? active.files[selected] || "" : "";
   const lines = content.split("\n").length;
   const diagnostics = selected ? lintDocument(selected, content, active.files) : [];
+  const iconAction = (id, actionIcon, label, options = {}) => Button({
+    className: `icon-button ${options.active ? "active" : ""}`,
+    variant: "ghost",
+    size: "icon-sm",
+    id,
+    title: label,
+    "aria-label": label,
+    "aria-pressed": options.pressed,
+    disabled: options.disabled,
+    children: icon(actionIcon, options.iconSize),
+  });
+  const workbenchActions = [
+    iconAction("toggle-preview", "eye", `${state.previewVisible ? "Hide" : "Show"} preview`, { active: state.previewVisible, pressed: state.previewVisible }),
+    iconAction("toggle-footer", "terminal", `${state.footerVisible ? "Hide" : "Show"} panel`, { active: state.footerVisible, pressed: state.footerVisible }),
+    iconAction("validate-project", "check", "Validate project"),
+    iconAction("deploy", "deploy", state.deploying ? "Deploying" : "Deploy project", { disabled: state.deploying }),
+  ].join("");
+  const activity = [
+    ["files", "file", "Explorer"],
+    ["search", "search", "Search (Cmd/Ctrl+Shift+F)"],
+  ].map(([view, viewIcon, label]) => Button({
+    className: `activity ${state.sidebarView === view ? "active" : ""}`,
+    variant: "ghost",
+    size: "icon",
+    id: `activity-${view}`,
+    title: label,
+    "aria-label": label,
+    "aria-pressed": state.sidebarView === view,
+    children: icon(viewIcon, 19),
+  })).join("");
+  const paneActions = state.sidebarView === "files" ? `<span>${iconAction("add-file", "filePlus", "New file", { iconSize: 16 })}${iconAction("add-folder", "folderPlus", "New folder", { iconSize: 16 })}</span>` : "";
+  const editorTabs = TabsList({
+    className: "editor-tabs",
+    children: state.openTabs.filter((file) => active.files[file] !== undefined).map((file) => Tooltip({
+      content: escapeHtml(file),
+      children: `<div class="editor-tab ${file === selected ? "active" : ""}" data-editor-tab="${escapeHtml(file)}">${TabsTrigger({ active: file === selected, title: file, tabIndex: 0, children: `${fileTypeIcon(file, 16)}<span>${escapeHtml(file.split("/").at(-1))}</span>` })}${Button({ className: "editor-tab-close", variant: "ghost", size: "icon-sm", "data-close-tab": file, "aria-label": `Close ${file.split("/").at(-1)}`, children: icon("close", 12) })}</div>`,
+    })).join(""),
+  });
+  const editorSurface = selected
+    ? `<div class="code-editor"><div class="line-numbers" id="line-numbers">${Array.from({ length: lines }, (_, index) => `<span>${index + 1}</span>`).join("")}</div><div class="editor-stack"><pre class="syntax-layer" id="syntax-layer" aria-hidden="true">${highlightCode(selected, content)}</pre>${Textarea({ id: "editor", "aria-label": `${selected} editor`, spellcheck: false })}</div></div>`
+    : Empty({ className: "editor-empty", children: EmptyDescription({ children: "Open a file from the Explorer." }) });
+  const previewActions = `${iconAction("refresh-preview", "refresh", "Refresh preview")}${active.previewUrl
+    ? ButtonLink({ className: "icon-button", variant: "ghost", size: "icon-sm", id: "open-preview", href: active.previewUrl, target: "_blank", rel: "noopener noreferrer", title: "Open in new tab", "aria-label": "Open in new tab", children: icon("external") })
+    : iconAction("open-preview", "external", "Open in new tab", { disabled: true })}`;
+  const previewContent = active.previewUrl
+    ? `<iframe id="preview-frame" sandbox="allow-forms allow-modals allow-popups allow-scripts" src="${escapeHtml(active.previewUrl)}"></iframe>`
+    : Empty({ className: "preview-empty", children: `${icon("eye", 24)}${EmptyTitle({ children: "No deployment to preview" })}${EmptyDescription({ children: "Autosave stores only the draft. Deploy explicitly to update this panel." })}${Button({ className: "button primary", id: "preview-deploy", children: "Deploy project" })}` });
+  const footerTabs = TabsList({
+    children: state.footerOrder.map((tab) => {
+      const [label, tabIcon] = footerTabMeta(tab);
+      return TabsTrigger({ active: state.footerTab === tab, className: `console-tab ${state.footerTab === tab ? "active" : ""}`, "data-footer-tab": tab, children: `${icon(tabIcon, 14)}${label}` });
+    }).join(""),
+  });
+  const preserveLogs = state.footerTab === "logs" ? FieldLabel({ className: "preserve-logs", htmlFor: "preserve-logs", children: `${Checkbox({ id: "preserve-logs", checked: state.preserveLogs })}<span>Preserve logs across restarts</span>` }) : "";
   document.querySelector("#app").innerHTML = `
     <main class="workbench-shell" style="--explorer-width:${localStorage.getItem("edger.webide.explorerWidth") || "190"}px">
       <header class="workbench-topbar">
-        <button class="workbench-brand" data-slot="button" data-variant="ghost" data-size="icon" id="workbench-home" aria-label="Open WebIDE dashboard" title="Open WebIDE dashboard">${icon("logo", 19)}</button>
+        ${Button({ className: "workbench-brand", variant: "ghost", size: "icon", id: "workbench-home", "aria-label": "Open WebIDE dashboard", title: "Open WebIDE dashboard", children: icon("logo", 19) })}
         <div></div><div class="project-identity"><strong>${escapeHtml(active.name)}</strong></div>
-        <div class="workbench-actions"><button class="icon-button ${state.previewVisible ? "active" : ""}" data-slot="button" data-variant="ghost" data-size="icon-sm" id="toggle-preview" aria-pressed="${state.previewVisible}" title="${state.previewVisible ? "Hide" : "Show"} preview" aria-label="${state.previewVisible ? "Hide" : "Show"} preview">${icon("eye")}</button><button class="icon-button ${state.footerVisible ? "active" : ""}" data-slot="button" data-variant="ghost" data-size="icon-sm" id="toggle-footer" aria-pressed="${state.footerVisible}" title="${state.footerVisible ? "Hide" : "Show"} panel" aria-label="${state.footerVisible ? "Hide" : "Show"} panel">${icon("terminal")}</button><button class="icon-button" data-slot="button" data-variant="ghost" data-size="icon-sm" id="validate-project" title="Validate project" aria-label="Validate project">${icon("check")}</button><button class="icon-button" data-slot="button" data-variant="ghost" data-size="icon-sm" id="deploy" title="${state.deploying ? "Deploying" : "Deploy project"}" aria-label="${state.deploying ? "Deploying" : "Deploy project"}" ${state.deploying ? "disabled" : ""}>${icon("deploy")}</button></div>
+        <div class="workbench-actions">${workbenchActions}</div>
       </header>
       <div class="workbench-body">
-        <aside class="activity-bar"><button class="activity ${state.sidebarView === "files" ? "active" : ""}" data-slot="button" data-variant="ghost" data-size="icon" id="activity-files" title="Explorer">${icon("file", 19)}</button><button class="activity ${state.sidebarView === "search" ? "active" : ""}" data-slot="button" data-variant="ghost" data-size="icon" id="activity-search" title="Search (Cmd/Ctrl+Shift+F)">${icon("search", 19)}</button></aside>
-        <aside class="explorer"><div class="pane-title"><span>${state.sidebarView === "search" ? "SEARCH" : "EXPLORER"}</span>${state.sidebarView === "files" ? `<span><button class="icon-button" data-slot="button" data-variant="ghost" data-size="icon-sm" id="add-file" title="New file" aria-label="New file">${icon("filePlus", 16)}</button><button class="icon-button" data-slot="button" data-variant="ghost" data-size="icon-sm" id="add-folder" title="New folder" aria-label="New folder">${icon("folderPlus", 16)}</button></span>` : ""}</div>${state.sidebarView === "files" ? `<div class="file-tree" role="tree" aria-label="Workspace file tree">${fileTree(active.files, active.folders)}</div>` : searchPanel(active.files)}</aside>
-        <div class="splitter vertical explorer-splitter" id="explorer-splitter"></div>
+        <aside class="activity-bar">${activity}</aside>
+        <aside class="explorer ${state.sidebarView === "search" ? "search-open" : ""}"><div class="pane-title"><span>${state.sidebarView === "search" ? "SEARCH" : "EXPLORER"}</span>${paneActions}</div>${state.sidebarView === "files" ? `<div class="file-tree" role="tree" aria-label="Workspace file tree">${fileTree(active.files, active.folders)}</div>` : searchPanel(active.files)}</aside>
+        ${ResizableHandle({ className: "splitter vertical explorer-splitter", id: "explorer-splitter", orientation: "vertical", "aria-label": "Resize Explorer" })}
         <section class="workbench-main ${state.previewVisible ? "" : "preview-hidden"} ${state.footerVisible ? "" : "footer-hidden"}" style="--preview-width:${localStorage.getItem("edger.webide.previewWidth") || "40"}%;--footer-height:${localStorage.getItem("edger.webide.footerHeight") || "28"}%">
           <div class="editor-preview-row">
             <section class="editor-area">
-              <nav class="editor-tabs" data-slot="tabs-list" role="tablist">${state.openTabs.filter((file) => active.files[file] !== undefined).map((file) => `<div class="editor-tab ${file === selected ? "active" : ""}" data-slot="tabs-trigger" draggable="true" role="tab" tabindex="0" title="${escapeHtml(file)}" data-editor-tab="${escapeHtml(file)}">${fileTypeIcon(file, 16)}<span>${escapeHtml(file.split("/").at(-1))}</span><button data-close-tab="${escapeHtml(file)}" aria-label="Close ${escapeHtml(file.split("/").at(-1))}">${icon("close", 12)}</button></div>`).join("")}</nav>
-              ${selected ? `<div class="code-editor"><div class="line-numbers" id="line-numbers">${Array.from({ length: lines }, (_, index) => `<span>${index + 1}</span>`).join("")}</div><div class="editor-stack"><pre class="syntax-layer" id="syntax-layer" aria-hidden="true">${highlightCode(selected, content)}</pre><textarea id="editor" aria-label="${escapeHtml(selected)} editor" spellcheck="false"></textarea></div></div>` : `<div class="editor-empty">Open a file from the Explorer.</div>`}
+              ${editorTabs}
+              ${editorSurface}
             </section>
-            <div class="splitter vertical" id="preview-splitter"></div>
-            <aside class="preview-area"><div class="preview-toolbar"><strong>Preview</strong><div><button class="icon-button" data-slot="button" data-variant="ghost" data-size="icon-sm" id="refresh-preview" title="Refresh preview">${icon("refresh")}</button><button class="icon-button" data-slot="button" data-variant="ghost" data-size="icon-sm" id="open-preview" title="Open in new tab" ${active.previewUrl ? "" : "disabled"}>${icon("external")}</button></div></div>${active.previewUrl ? `<iframe id="preview-frame" sandbox="allow-forms allow-modals allow-popups allow-scripts" src="${escapeHtml(active.previewUrl)}"></iframe>` : `<div class="preview-empty" data-slot="empty">${icon("eye", 24)}<strong data-slot="empty-title">No deployment to preview</strong><p data-slot="empty-description">Autosave stores only the draft. Deploy explicitly to update this panel.</p><button class="button primary" data-slot="button" data-variant="default" id="preview-deploy">Deploy project</button></div>`}</aside>
+            ${ResizableHandle({ className: "splitter vertical", id: "preview-splitter", orientation: "vertical", "aria-label": "Resize Preview" })}
+            <aside class="preview-area"><div class="preview-toolbar"><strong>Preview</strong><div>${previewActions}</div></div>${previewContent}</aside>
           </div>
-          <div class="splitter horizontal" id="footer-splitter"></div>
-          <section class="console-panel"><header><nav data-slot="tabs-list">${state.footerOrder.map((tab) => { const [label, tabIcon] = footerTabMeta(tab); return `<button class="console-tab ${state.footerTab === tab ? "active" : ""}" data-slot="tabs-trigger" draggable="true" data-footer-tab="${tab}">${icon(tabIcon, 14)}${label}</button>`; }).join("")}</nav>${state.footerTab === "logs" ? `<label class="preserve-logs"><input data-slot="checkbox" type="checkbox" id="preserve-logs" ${state.preserveLogs ? "checked" : ""}><span>Preserve logs across restarts</span></label>` : ""}</header><div data-slot="tabs-content" id="console-content">${renderConsoleContent(active, diagnostics)}</div></section>
+          ${ResizableHandle({ className: "splitter horizontal", id: "footer-splitter", orientation: "horizontal", "aria-label": "Resize panel" })}
+          <section class="console-panel"><header>${footerTabs}${preserveLogs}</header>${TabsContent({ id: "console-content", children: renderConsoleContent(active, diagnostics) })}</section>
         </section>
       </div>
-    </main>${renderFileDialog()}`;
+    </main>${renderFileDialog()}${renderToaster()}`;
   bindWorkbench();
 }
 
 function renderConsoleContent(active, diagnostics = lintDocument(state.selected, active.files[state.selected] || "", active.files)) {
   if (state.footerTab === "problems") {
-    return diagnostics.length ? `<div class="problems-output">${diagnostics.map((item) => `<button class="problem-row" data-slot="button" data-variant="ghost" data-problem-line="${item.line}"><span class="problem-severity ${escapeHtml(item.severity)}">!</span><p>${escapeHtml(item.message)}</p><small>${escapeHtml(state.selected)}:${item.line}</small></button>`).join("")}</div>` : '<div class="console-empty" data-slot="empty">No problems detected in the active file.</div>';
+    return diagnostics.length ? `<div class="problems-output">${diagnostics.map((item) => Button({ className: "problem-row", variant: "ghost", "data-problem-line": item.line, children: `<span class="problem-severity ${escapeHtml(item.severity)}">!</span><p>${escapeHtml(item.message)}</p><small>${escapeHtml(state.selected)}:${item.line}</small>` })).join("")}</div>` : Empty({ className: "console-empty", children: EmptyDescription({ children: "No problems detected in the active file." }) });
   }
   if (state.footerTab === "logs") {
     const logs = active.logs || [];
-    return `<div class="log-output">${logs.length ? logs.map((line) => `<div class="log-line ${escapeHtml(line.level)}"><time>${escapeHtml(new Date(line.at).toLocaleTimeString())}</time><span>${escapeHtml(line.source)}</span><p>${escapeHtml(line.message)}</p></div>`).join("") : '<div class="console-empty">No local events yet.</div>'}</div>`;
+    return `<div class="log-output">${logs.length ? logs.map((line) => `<div class="log-line ${escapeHtml(line.level)}"><time>${escapeHtml(new Date(line.at).toLocaleTimeString())}</time><span>${escapeHtml(line.source)}</span><p>${escapeHtml(line.message)}</p></div>`).join("") : Empty({ className: "console-empty", children: EmptyDescription({ children: "No local events yet." }) })}</div>`;
   }
   if (state.footerTab === "deployments") {
-    return `<div class="deploy-console"><div id="deploy-progress">${deployProgressHtml()}</div>${(active.deployments || []).map((item) => `<div class="deployment-row"><time>${escapeHtml(new Date(item.at).toLocaleString())}</time><strong class="${item.status === "Succeeded" ? "success" : "error"}">${escapeHtml(item.status)}</strong><span>${escapeHtml(item.message || [item.release, item.health, item.activation].filter(Boolean).join(" · ") || "Deployment completed")}</span></div>`).join("") || '<div class="console-empty">No deployments yet.</div>'}</div>`;
+    return `<div class="deploy-console"><div id="deploy-progress">${deployProgressHtml()}</div>${(active.deployments || []).map((item) => `<div class="deployment-row"><time>${escapeHtml(new Date(item.at).toLocaleString())}</time><strong class="${item.status === "Succeeded" ? "success" : "error"}">${escapeHtml(item.status)}</strong><span>${escapeHtml(item.message || [item.release, item.health, item.activation].filter(Boolean).join(" · ") || "Deployment completed")}</span></div>`).join("") || Empty({ className: "console-empty", children: EmptyDescription({ children: "No deployments yet." }) })}</div>`;
   }
-  return `<div class="terminal-output"><div class="terminal-banner">EdgeR operational console · type <code>help</code> for safe workspace commands. This is not a host shell.</div>${state.terminalHistory.map((entry) => `<div class="terminal-entry ${escapeHtml(entry.kind || "")}"><span>${entry.prompt ? "$" : "›"}</span><pre>${escapeHtml(entry.text)}</pre></div>`).join("")}</div><form class="terminal-input" data-slot="input-group" id="terminal-form"><span data-slot="input-group-addon">$</span><input data-slot="input" id="terminal-command" autocomplete="off" aria-label="Operational command" placeholder="help, validate, deploy, preview, files, status, clear"><button class="terminal-run" data-slot="button" data-variant="ghost" data-size="icon-sm" type="submit" aria-label="Run operational command">${icon("chevron")}</button></form>`;
+  const terminalInput = InputGroup({
+    as: "form",
+    className: "terminal-input",
+    id: "terminal-form",
+    children: `${Input({ id: "terminal-command", autocomplete: "off", "aria-label": "Operational command", placeholder: "help, validate, deploy, preview, files, status, clear" })}${InputGroupAddon({ align: "inline-start", children: "$" })}${InputGroupAddon({ align: "inline-end", children: Button({ className: "terminal-run", variant: "ghost", size: "icon-sm", type: "submit", "aria-label": "Run operational command", children: icon("chevron") }) })}`,
+  });
+  return `<div class="terminal-output"><div class="terminal-banner">EdgeR operational console · type <code>help</code> for safe workspace commands. This is not a host shell.</div>${state.terminalHistory.map((entry) => `<div class="terminal-entry ${escapeHtml(entry.kind || "")}"><span>${entry.prompt ? "$" : "›"}</span><pre>${escapeHtml(entry.text)}</pre></div>`).join("")}</div>${terminalInput}`;
 }
 
 function deployProgressHtml() {
@@ -836,7 +1149,7 @@ function selectFile(file) {
   state.selected = file;
   if (!state.openTabs.includes(file)) state.openTabs.push(file);
   active.openTabs = [...state.openTabs];
-  scheduleSave();
+  persistWorkbenchState(active);
   renderWorkbench();
 }
 
@@ -845,7 +1158,7 @@ function closeTab(file) {
   const index = state.openTabs.indexOf(file);
   state.openTabs = state.openTabs.filter((item) => item !== file);
   if (state.selected === file) state.selected = state.openTabs[index] || state.openTabs[index - 1] || "";
-  if (active) { active.selected = state.selected; active.openTabs = [...state.openTabs]; scheduleSave(); }
+  if (active) { active.selected = state.selected; active.openTabs = [...state.openTabs]; persistWorkbenchState(active); }
   renderWorkbench();
 }
 
@@ -853,7 +1166,7 @@ function reorderEditorTabs(from, target, side) {
   if (!from) return;
   state.openTabs = reorderItems(state.openTabs, from, target, side);
   const active = project();
-  if (active) { active.openTabs = [...state.openTabs]; scheduleSave(); }
+  if (active) { active.openTabs = [...state.openTabs]; persistWorkbenchState(active); }
 }
 
 function reorderFooterTabs(from, target) {
@@ -866,26 +1179,82 @@ function reorderFooterTabs(from, target) {
   localStorage.setItem("edger.webide.footerOrder", JSON.stringify(next));
 }
 
+function bindPointerReorder(elements, options) {
+  const clearIndicators = () => document.querySelectorAll(options.indicatorSelector).forEach((item) => {
+    options.indicatorClasses.forEach((className) => item.classList.remove(className));
+  });
+  elements.forEach((element) => {
+    element.onpointerdown = (event) => {
+      const nestedControl = event.target.closest("button,input");
+      if (event.button !== 0 || nestedControl && nestedControl !== element) return;
+      const source = options.key(element);
+      const start = { x: event.clientX, y: event.clientY };
+      let dragging = false;
+      let target = null;
+      let side = "after";
+      const move = (pointerEvent) => {
+        if (!dragging && Math.hypot(pointerEvent.clientX - start.x, pointerEvent.clientY - start.y) < 5) return;
+        dragging = true;
+        pointerEvent.preventDefault();
+        clearIndicators();
+        target = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)?.closest(options.targetSelector) || null;
+        if (!target || options.key(target) === source) return;
+        const rect = target.getBoundingClientRect();
+        side = pointerEvent.clientX < rect.left + rect.width / 2 ? "before" : "after";
+        target.classList.add(options.indicator(side));
+      };
+      const end = (pointerEvent) => {
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", end);
+        document.removeEventListener("pointercancel", end);
+        clearIndicators();
+        if (!dragging) return;
+        pointerEvent.preventDefault();
+        suppressReorderClick = true;
+        if (target && options.key(target) !== source) options.drop(source, options.key(target), side);
+        renderWorkbench();
+        setTimeout(() => { suppressReorderClick = false; }, 0);
+      };
+      document.addEventListener("pointermove", move, { passive: false });
+      document.addEventListener("pointerup", end);
+      document.addEventListener("pointercancel", end);
+    };
+  });
+}
+
 function openTreeMenu(event, path, kind) {
   event.preventDefault();
   document.querySelector("#tree-context-menu")?.remove();
-  const menu = document.createElement("div");
-  menu.id = "tree-context-menu";
-  menu.className = "tree-context-menu";
-  menu.dataset.slot = "context-menu-content";
-  menu.style.left = `${Math.min(event.clientX, innerWidth - 190)}px`;
-  menu.style.top = `${Math.min(event.clientY, innerHeight - 190)}px`;
   const basename = path.split("/").at(-1);
-  const item = (label, action, destructive = false) => `<button data-slot="context-menu-item" data-menu-action="${action}" class="${destructive ? "destructive" : ""}">${label}</button>`;
-  menu.innerHTML = kind === "folder"
-    ? `${item("New file…", "new-file")}${item("New folder…", "new-folder")}<div data-slot="context-menu-separator"></div>${item("Rename…", "rename")}${item("Delete", "delete", true)}`
+  const item = (label, action, destructive = false) => ContextMenuItem({ children: label, "data-menu-action": action, destructive, className: destructive ? "destructive" : "" });
+  const children = kind === "folder"
+    ? `${item("New file…", "new-file")}${item("New folder…", "new-folder")}${ContextMenuSeparator()}${item("Rename…", "rename")}${item("Delete", "delete", true)}`
     : `${item("Rename…", "rename")}${item("Delete", "delete", true)}`;
+  const host = document.createElement("div");
+  host.innerHTML = ContextMenuContent({
+    id: "tree-context-menu",
+    className: "tree-context-menu",
+    style: `left:${Math.min(event.clientX, innerWidth - 190)}px;top:${Math.min(event.clientY, innerHeight - 190)}px`,
+    children,
+  });
+  const menu = host.firstElementChild;
   document.body.append(menu);
   const actions = {
-    "new-file": () => openFileDialog("create-file", { basePath: path }),
-    "new-folder": () => openFileDialog("create-folder", { basePath: path }),
-    rename: () => openFileDialog(`rename-${kind}`, { path, value: basename }),
-    delete: () => openFileDialog(`delete-${kind}`, { path }),
+    "new-file": () => openFileDialog("create-file", { basePath: path, returnFocus: `[data-tree-menu="${CSS.escape(path)}"]` }),
+    "new-folder": () => openFileDialog("create-folder", { basePath: path, returnFocus: `[data-tree-menu="${CSS.escape(path)}"]` }),
+    rename: () => {
+      if (kind === "file") {
+        const active = project();
+        state.selected = path;
+        if (active) {
+          active.selected = path;
+          if (!state.openTabs.includes(path)) state.openTabs.push(path);
+          active.openTabs = [...state.openTabs];
+        }
+      }
+      openFileDialog(`rename-${kind}`, { path, value: basename, returnFocus: `[data-tree-menu="${CSS.escape(path)}"]` });
+    },
+    delete: () => openFileDialog(`delete-${kind}`, { path, returnFocus: `[data-tree-menu="${CSS.escape(path)}"]` }),
   };
   menu.querySelectorAll("[data-menu-action]").forEach((button) => button.onclick = () => { menu.remove(); actions[button.dataset.menuAction](); });
   const dismiss = (pointerEvent) => {
@@ -904,11 +1273,12 @@ function bindWorkbench() {
   document.querySelector("#toggle-footer").onclick = () => { state.footerVisible = !state.footerVisible; localStorage.setItem("edger.webide.footerVisible", state.footerVisible); renderWorkbench(); };
   document.querySelector("#preview-deploy")?.addEventListener("click", deploy);
   document.querySelector("#validate-project").onclick = () => {
-    try { validateProject(active); appendLog("Project validation passed.", "success", "VALIDATE"); state.message = "Validation passed"; }
-    catch (error) { appendLog(error.message, "error", "VALIDATE"); state.message = error.message; }
+    try { validateProject(active); appendLog("Project validation passed.", "success", "VALIDATE"); state.message = "Validation passed"; state.toast = { title: "Validation passed", description: "The project manifest and entrypoint are valid.", variant: "success" }; }
+    catch (error) { appendLog(error.message, "error", "VALIDATE"); state.message = error.message; state.toast = { title: "Validation failed", description: error.message, variant: "error" }; }
     state.footerTab = "logs"; state.footerVisible = true; localStorage.setItem("edger.webide.footerVisible", "true"); renderWorkbench();
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { state.toast = null; syncToaster(); }, 4500);
   };
-  document.querySelector("#open-preview")?.addEventListener("click", () => active.previewUrl && window.open(active.previewUrl, "_blank", "noopener,noreferrer"));
   document.querySelector("#refresh-preview")?.addEventListener("click", () => { const frame = document.querySelector("#preview-frame"); if (frame) frame.src = frame.src; });
   document.querySelector("#activity-files").onclick = () => { state.sidebarView = "files"; renderWorkbench(); };
   document.querySelector("#activity-search").onclick = () => { state.sidebarView = "search"; renderWorkbench(); requestAnimationFrame(() => document.querySelector("#workspace-search")?.focus()); };
@@ -921,15 +1291,19 @@ function bindWorkbench() {
   document.querySelectorAll("[data-folder]").forEach((button) => button.onclick = () => { const path = button.dataset.folder; state.collapsedFolders.has(path) ? state.collapsedFolders.delete(path) : state.collapsedFolders.add(path); renderWorkbench(); });
   document.querySelectorAll(".tree-row-wrap").forEach((row) => row.oncontextmenu = (event) => { const trigger = row.querySelector("[data-tree-menu]"); openTreeMenu(event, trigger.dataset.treeMenu, trigger.dataset.treeKind); });
   document.querySelectorAll("[data-tree-menu]").forEach((button) => button.onclick = (event) => { event.stopPropagation(); const rect = button.getBoundingClientRect(); openTreeMenu({ preventDefault() {}, clientX: rect.right, clientY: rect.bottom }, button.dataset.treeMenu, button.dataset.treeKind); });
-  document.querySelectorAll("[data-editor-tab]").forEach((tab) => {
-    tab.onclick = (event) => { if (!event.target.closest("[data-close-tab]")) selectFile(tab.dataset.editorTab); };
-    tab.ondragstart = (event) => { draggedEditorTab = tab.dataset.editorTab; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", draggedEditorTab); };
-    tab.ondragend = () => { draggedEditorTab = null; document.querySelectorAll(".drop-before,.drop-after").forEach((item) => item.classList.remove("drop-before", "drop-after")); };
-    tab.ondragover = (event) => { if (!draggedEditorTab || draggedEditorTab === tab.dataset.editorTab) return; event.preventDefault(); const rect = tab.getBoundingClientRect(); tab.classList.toggle("drop-before", event.clientX < rect.left + rect.width / 2); tab.classList.toggle("drop-after", event.clientX >= rect.left + rect.width / 2); };
-    tab.ondragleave = () => tab.classList.remove("drop-before", "drop-after");
-    tab.ondrop = (event) => { event.preventDefault(); const side = tab.classList.contains("drop-before") ? "before" : "after"; reorderEditorTabs(draggedEditorTab, tab.dataset.editorTab, side); draggedEditorTab = null; renderWorkbench(); };
+  const editorTabs = document.querySelectorAll("[data-editor-tab]");
+  editorTabs.forEach((tab) => {
+    tab.onclick = (event) => { if (!suppressReorderClick && !event.target.closest("[data-close-tab]")) selectFile(tab.dataset.editorTab); };
     tab.onauxclick = (event) => { if (event.button === 1) closeTab(tab.dataset.editorTab); };
     tab.onkeydown = (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectFile(tab.dataset.editorTab); } };
+  });
+  bindPointerReorder(editorTabs, {
+    key: (tab) => tab.dataset.editorTab,
+    targetSelector: "[data-editor-tab]",
+    indicatorSelector: ".drop-before,.drop-after",
+    indicatorClasses: ["drop-before", "drop-after"],
+    indicator: (side) => `drop-${side}`,
+    drop: reorderEditorTabs,
   });
   document.querySelectorAll("[data-close-tab]").forEach((button) => button.onclick = (event) => { event.stopPropagation(); closeTab(button.dataset.closeTab); });
   document.querySelector("#add-file")?.addEventListener("click", () => openFileDialog("create-file", { basePath: "" }));
@@ -944,24 +1318,30 @@ function bindWorkbench() {
     };
     editor.onscroll = syncEditorScroll;
   }
-  document.querySelectorAll("[data-footer-tab]").forEach((button) => {
-    button.onclick = () => { state.footerTab = button.dataset.footerTab; state.footerVisible = true; localStorage.setItem("edger.webide.footerVisible", "true"); renderWorkbench(); };
-    button.ondragstart = (event) => { draggedFooterTab = button.dataset.footerTab; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", draggedFooterTab); };
-    button.ondragend = () => { draggedFooterTab = null; document.querySelectorAll(".panel-tab-drop-target").forEach((item) => item.classList.remove("panel-tab-drop-target")); };
-    button.ondragover = (event) => { if (!draggedFooterTab || draggedFooterTab === button.dataset.footerTab) return; event.preventDefault(); button.classList.add("panel-tab-drop-target"); };
-    button.ondragleave = () => button.classList.remove("panel-tab-drop-target");
-    button.ondrop = (event) => { event.preventDefault(); reorderFooterTabs(draggedFooterTab, button.dataset.footerTab); draggedFooterTab = null; renderWorkbench(); };
+  const footerTabs = document.querySelectorAll("[data-footer-tab]");
+  footerTabs.forEach((button) => {
+    button.onclick = () => { if (suppressReorderClick) return; state.footerTab = button.dataset.footerTab; state.footerVisible = true; localStorage.setItem("edger.webide.footerVisible", "true"); renderWorkbench(); };
+  });
+  bindPointerReorder(footerTabs, {
+    key: (button) => button.dataset.footerTab,
+    targetSelector: "[data-footer-tab]",
+    indicatorSelector: ".panel-tab-drop-target",
+    indicatorClasses: ["panel-tab-drop-target"],
+    indicator: () => "panel-tab-drop-target",
+    drop: reorderFooterTabs,
   });
   document.querySelector("#preserve-logs")?.addEventListener("change", (event) => { state.preserveLogs = event.target.checked; localStorage.setItem("edger.webide.preserveLogs", state.preserveLogs); });
   document.querySelectorAll("[data-problem-line]").forEach((button) => button.onclick = () => focusEditorLine(Number(button.dataset.problemLine)));
-  document.querySelector("#cancel-file-dialog")?.addEventListener("click", () => { state.fileDialog = null; renderWorkbench(); });
-  document.querySelector("#file-dialog-overlay")?.addEventListener("pointerdown", (event) => { if (event.target === event.currentTarget) { state.fileDialog = null; renderWorkbench(); } });
+  document.querySelector("#cancel-file-dialog")?.addEventListener("click", closeFileDialog);
+  document.querySelector("#file-dialog-overlay")?.addEventListener("pointerdown", (event) => { if (event.target === event.currentTarget) closeFileDialog(); });
   document.querySelector("#file-dialog")?.addEventListener("submit", (event) => { event.preventDefault(); if (document.querySelector("#file-dialog-input")) state.fileDialog.value = document.querySelector("#file-dialog-input").value; try { applyFileDialog(); } catch (error) { state.fileDialog.error = error.message; renderWorkbench(); } });
   const terminal = document.querySelector("#terminal-form");
   if (terminal) terminal.onsubmit = (event) => { event.preventDefault(); runCommand(document.querySelector("#terminal-command").value); };
   bindSplitters();
   document.onkeydown = (event) => {
-    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "f") {
+    if (event.key === "Escape" && state.fileDialog) { event.preventDefault(); closeFileDialog(); }
+    else if (state.fileDialog) trapDialogFocus(event, "#file-dialog");
+    else if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "f") {
       event.preventDefault(); state.sidebarView = "search"; renderWorkbench(); requestAnimationFrame(() => document.querySelector("#workspace-search")?.focus());
     }
   };
@@ -974,6 +1354,13 @@ function updateEditorSurface(value) {
   if (syntax) syntax.innerHTML = highlightCode(state.selected, value);
   const active = project();
   const diagnostics = active ? lintDocument(state.selected, value, active.files) : [];
+  const consoleContent = document.querySelector("#console-content");
+  if (active && consoleContent && state.footerTab === "problems") {
+    consoleContent.innerHTML = renderConsoleContent(active, diagnostics);
+    consoleContent.querySelectorAll("[data-problem-line]").forEach((button) => {
+      button.onclick = () => focusEditorLine(Number(button.dataset.problemLine));
+    });
+  }
   const problemStatus = document.querySelector("#open-problems");
   if (problemStatus) {
     problemStatus.textContent = diagnostics.length ? `${diagnostics.length} problem${diagnostics.length === 1 ? "" : "s"}` : "No problems";
@@ -1015,21 +1402,35 @@ function bindSplitters() {
   const explorer = document.querySelector("#explorer-splitter");
   const vertical = document.querySelector("#preview-splitter");
   const horizontal = document.querySelector("#footer-splitter");
-  if (explorer) explorer.onpointerdown = (event) => {
-    explorer.setPointerCapture(event.pointerId);
-    explorer.onpointermove = (move) => { const width = Math.min(420, Math.max(180, move.clientX - 48)); shell.style.setProperty("--explorer-width", `${width}px`); };
-    explorer.onpointerup = () => { localStorage.setItem("edger.webide.explorerWidth", parseFloat(getComputedStyle(shell).getPropertyValue("--explorer-width"))); explorer.onpointermove = null; };
+  const bind = (handle, move, end) => {
+    if (!handle) return;
+    handle.onpointerdown = (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const onMove = (pointerEvent) => { pointerEvent.preventDefault(); move(pointerEvent); };
+      const onEnd = () => {
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onEnd);
+        document.removeEventListener("pointercancel", onEnd);
+        end();
+      };
+      document.addEventListener("pointermove", onMove, { passive: false });
+      document.addEventListener("pointerup", onEnd);
+      document.addEventListener("pointercancel", onEnd);
+    };
   };
-  if (vertical) vertical.onpointerdown = (event) => {
-    vertical.setPointerCapture(event.pointerId);
-    vertical.onpointermove = (move) => { const rect = main.getBoundingClientRect(); const preview = Math.min(65, Math.max(24, ((rect.right - move.clientX) / rect.width) * 100)); main.style.setProperty("--preview-width", `${preview}%`); };
-    vertical.onpointerup = () => { localStorage.setItem("edger.webide.previewWidth", parseFloat(getComputedStyle(main).getPropertyValue("--preview-width"))); vertical.onpointermove = null; };
-  };
-  if (horizontal) horizontal.onpointerdown = (event) => {
-    horizontal.setPointerCapture(event.pointerId);
-    horizontal.onpointermove = (move) => { const rect = main.getBoundingClientRect(); const footer = Math.min(48, Math.max(16, ((rect.bottom - move.clientY) / rect.height) * 100)); main.style.setProperty("--footer-height", `${footer}%`); };
-    horizontal.onpointerup = () => { localStorage.setItem("edger.webide.footerHeight", parseFloat(getComputedStyle(main).getPropertyValue("--footer-height"))); horizontal.onpointermove = null; };
-  };
+  bind(explorer,
+    (move) => { const width = Math.min(420, Math.max(180, move.clientX - 48)); shell.style.setProperty("--explorer-width", `${width}px`); },
+    () => localStorage.setItem("edger.webide.explorerWidth", parseFloat(getComputedStyle(shell).getPropertyValue("--explorer-width"))),
+  );
+  bind(vertical,
+    (move) => { const rect = main.getBoundingClientRect(); const preview = Math.min(65, Math.max(24, ((rect.right - move.clientX) / rect.width) * 100)); main.style.setProperty("--preview-width", `${preview}%`); },
+    () => localStorage.setItem("edger.webide.previewWidth", parseFloat(getComputedStyle(main).getPropertyValue("--preview-width"))),
+  );
+  bind(horizontal,
+    (move) => { const rect = main.getBoundingClientRect(); const footer = Math.min(48, Math.max(16, ((rect.bottom - move.clientY) / rect.height) * 100)); main.style.setProperty("--footer-height", `${footer}%`); },
+    () => localStorage.setItem("edger.webide.footerHeight", parseFloat(getComputedStyle(main).getPropertyValue("--footer-height"))),
+  );
 }
 
 function runCommand(raw) {
@@ -1055,6 +1456,7 @@ function runCommand(raw) {
 function showError(error) {
   state.message = error.message;
   renderStatus();
+  showToast("Something went wrong", error.message, "error");
 }
 
 async function initialize() {
