@@ -1,0 +1,20 @@
+@edger/cpanel build: 9:32:49 PM [vite] warning: `esbuild` option was specified by "vite:react-babel" plugin. This option is deprecated, please use `oxc` instead.
+@edger/cpanel build: `optimizeDeps.rollupOptions` / `ssr.optimizeDeps.rollupOptions` is deprecated. Use `optimizeDeps.rolldownOptions` instead. Note that this option may be set by a plugin. Set VITE_DEPRECATION_TRACE=1 to see where it is called.
+@edger/cpanel build: [vite:react-babel] We recommend switching to `@vitejs/plugin-react-oxc` for improved performance. More information at https://vite.dev/rolldown
+@edger/cpanel build: vite v8.1.4 building client environment for production...
+@edger/cpanel build: [2Ktransforming...✓ 1114 modules transformed.
+@edger/cpanel build: rendering chunks...
+@edger/cpanel build: computing gzip size...
+@edger/cpanel build: dist/index.html                           0.36 kB │ gzip:   0.24 kB
+@edger/cpanel build: dist/noto-sans-latin-wght-normal.woff2   35.82 kB
+@edger/cpanel build: dist/styles.css                         106.20 kB │ gzip:  17.25 kB
+@edger/cpanel build: dist/app.js                             973.02 kB │ gzip: 297.40 kB
+@edger/cpanel build:
+@edger/cpanel build: ✓ built in 587ms
+@edger/cpanel build: [plugin builtin:vite-reporter]
+@edger/cpanel build: (!) Some chunks are larger than 500 kB after minification. Consider:
+@edger/cpanel build: - Using dynamic import() to code-split the application
+@edger/cpanel build: - Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+@edger/cpanel build: - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+@edger/cpanel build: Exited with code 0
+cpanel-ui-gate ok

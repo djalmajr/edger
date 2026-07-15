@@ -1,4 +1,1 @@
-    Checking edger-isolation v0.1.0 (<repo>/edger-isolation)
-    Checking edger-orchestrator v0.1.0 (<repo>/edger-orchestrator)
-    Checking edger-mcp v0.1.0 (<repo>/edger-mcp)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.23s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.19s

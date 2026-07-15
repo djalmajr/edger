@@ -1,0 +1,21 @@
+@edger/webide build: 9:32:52 PM [vite] warning: `esbuild` option was specified by "vite:react-babel" plugin. This option is deprecated, please use `oxc` instead.
+@edger/webide build: `optimizeDeps.rollupOptions` / `ssr.optimizeDeps.rollupOptions` is deprecated. Use `optimizeDeps.rolldownOptions` instead. Note that this option may be set by a plugin. Set VITE_DEPRECATION_TRACE=1 to see where it is called.
+@edger/webide build: [vite:react-babel] We recommend switching to `@vitejs/plugin-react-oxc` for improved performance. More information at https://vite.dev/rolldown
+@edger/webide build: vite v8.1.4 building client environment for production...
+@edger/webide build: [2Ktransforming...✓ 563 modules transformed.
+@edger/webide build: rendering chunks...
+@edger/webide build: computing gzip size...
+@edger/webide build: dist/index.html                           0.36 kB │ gzip:   0.24 kB
+@edger/webide build: dist/noto-sans-latin-wght-normal.woff2   35.82 kB
+@edger/webide build: dist/styles.css                         109.05 kB │ gzip:  17.82 kB
+@edger/webide build: dist/app.js                             693.60 kB │ gzip: 216.26 kB
+@edger/webide build:
+@edger/webide build: [plugin builtin:vite-reporter]
+@edger/webide build: (!) Some chunks are larger than 500 kB after minification. Consider:
+@edger/webide build: - Using dynamic import() to code-split the application
+@edger/webide build: - Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+@edger/webide build: - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+@edger/webide build: ✓ built in 453ms
+@edger/webide build: Exited with code 0
+webide-flow-gate ok (19 flows)
+webide-ui-gate ok

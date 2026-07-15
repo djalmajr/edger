@@ -99,6 +99,30 @@ Planning documents include historical delivery records. The compatibility
 matrix and the current epic statuses are authoritative when an older story or
 evidence file describes a superseded architecture.
 
+## Core frontend development
+
+The cPanel and WebIDE are React 19 + TypeScript applications built by Vite.
+They share the EdgeR shadcn `base-nova` components, theme tokens and Lucide
+icons through `workers/ui`; icons are compiled with `unplugin-icons` rather
+than `lucide-react`. EdgeR serves only each application's generated `dist`.
+
+From `workers/`, install and build both applications with:
+
+```bash
+bun install
+bun run build
+```
+
+During UI development, keep production-format assets updated continuously:
+
+```bash
+bun run build:watch
+```
+
+The watch command monitors both applications and rewrites
+`workers/core/{cpanel,webide}/dist`, which the running EdgeR process serves
+without a second frontend development server.
+
 ## Deployment
 
 The Helm chart lives at [`charts/edger`](charts/edger). Validate it locally:

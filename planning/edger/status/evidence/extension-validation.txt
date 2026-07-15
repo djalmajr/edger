@@ -1,15 +1,14 @@
-extension-validation repo=<repo>
+extension-validation repo=/Users/djalmajr/Developer/djalmajr/edger
 extension-validation module=gateway
-extension-validation required contract files: ok
-extension-validation command: cargo test -p edger-orchestrator --test admin_workers_plugins local_extension_validation_contract_reports_manifest_status_diagnostics_and_redaction -- --exact
-   Compiling edger-isolation v0.1.0 (<repo>/edger-isolation)
-   Compiling edger-orchestrator v0.1.0 (<repo>/edger-orchestrator)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.52s
-     Running tests/admin_workers_plugins.rs (target/debug/deps/admin_workers_plugins-a58538dac251e357)
+extension-validation current boundary files: ok
+extension-validation removed runtime surfaces: absent
+extension-validation command: cargo test -p edger-orchestrator --test compat_matrix known_removed_rows_remain_explicit -- --exact
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.92s
+     Running tests/compat_matrix.rs (target/debug/deps/compat_matrix-20af3be6af463d58)
 
 running 1 test
-test local_extension_validation_contract_reports_manifest_status_diagnostics_and_redaction ... ok
+test known_removed_rows_remain_explicit ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
 
-PASS extension validation: manifest/status/diagnostics/redaction are locally validated
+PASS extension validation: minimal-runtime removals remain explicit and tested

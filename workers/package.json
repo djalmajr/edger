@@ -1,0 +1,16 @@
+{
+  "name": "@edger/core-frontends",
+  "private": true,
+  "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "ui",
+    "core/cpanel",
+    "core/webide"
+  ],
+  "scripts": {
+    "build": "bun run --filter '@edger/cpanel' build && bun run --filter '@edger/webide' build",
+    "build:watch": "bun run --parallel --filter '@edger/*' build:watch",
+    "typecheck": "bun run --parallel --filter '@edger/*' typecheck",
+    "test": "bun run --parallel --filter '@edger/*' test"
+  }
+}
