@@ -1,1 +1,26 @@
-bun test skipped: no root JS/TS test suite exists after Bun adapter removal
+$ bun run --parallel --filter '@edger/*' test
+@edger/cpanel:test | [vite:react-babel] We recommend switching to `@vitejs/plugin-react-oxc` for improved performance. More information at https://vite.dev/rolldown
+@edger/webide:test | [vite:react-babel] We recommend switching to `@vitejs/plugin-react-oxc` for improved performance. More information at https://vite.dev/rolldown
+@edger/webide:test |
+@edger/webide:test |  RUN  v2.1.9 /Users/djalmajr/Developer/djalmajr/edger/workers/core/webide/src
+@edger/webide:test |
+@edger/cpanel:test |
+@edger/cpanel:test |  RUN  v2.1.9 /Users/djalmajr/Developer/djalmajr/edger/workers/core/cpanel/src
+@edger/cpanel:test |
+@edger/webide:test |  ✓ lib/projects.test.ts (3 tests) 6ms
+@edger/webide:test |  ✓ lib/settings.test.ts (3 tests) 3ms
+@edger/webide:test |
+@edger/webide:test |  Test Files  2 passed (2)
+@edger/webide:test |       Tests  6 passed (6)
+@edger/webide:test |    Start at  21:32:55
+@edger/webide:test |    Duration  661ms (transform 104ms, setup 0ms, collect 223ms, tests 9ms, environment 0ms, prepare 177ms)
+@edger/webide:test |
+@edger/cpanel:test |  ✓ lib/api.test.ts (3 tests) 1ms
+@edger/cpanel:test |
+@edger/cpanel:test |  Test Files  1 passed (1)
+@edger/cpanel:test |       Tests  3 passed (3)
+@edger/cpanel:test |    Start at  21:32:55
+@edger/cpanel:test |    Duration  678ms (transform 44ms, setup 0ms, collect 30ms, tests 1ms, environment 0ms, prepare 70ms)
+@edger/cpanel:test |
+@edger/webide:test | Done in 1.12s
+@edger/cpanel:test | Done in 1.13s

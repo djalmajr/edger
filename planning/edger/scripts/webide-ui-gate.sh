@@ -2,15 +2,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-SOURCE="$ROOT/workers/core/webide/src"
-DIST="$ROOT/workers/core/webide/dist"
-PACKAGE="$ROOT/workers/core/webide/package.json"
-CONFIG="$ROOT/workers/core/webide/vite.config.js"
+APP="$ROOT/workers/core/webide"
+SOURCE="$APP/src"
+DIST="$APP/dist"
 
 require() {
   local pattern="$1"
-  local file="$2"
-  rg -q -- "$pattern" "$file" || { echo "missing $pattern in ${file#$ROOT/}" >&2; exit 1; }
+  local path="$2"
+  rg -q -- "$pattern" "$path" || { echo "missing $pattern in ${path#$ROOT/}" >&2; exit 1; }
 }
 
 reject() {
@@ -22,32 +21,23 @@ reject() {
   fi
 }
 
-require 'unplugin-icons/vite' "$CONFIG"
-require 'base: "\./"' "$CONFIG"
-require '@iconify-json/lucide' "$PACKAGE"
-require 'unplugin-icons' "$PACKAGE"
-require '~icons/lucide/search\?raw' "$SOURCE/icons.js"
-require 'data-slot="dialog-content"' "$SOURCE/app.js"
-require 'data-slot="tabs-list"' "$SOURCE/app.js"
-require 'data-slot="context-menu-item"' "$SOURCE/app.js"
-require 'data-slot="checkbox"' "$SOURCE/app.js"
-require 'icon\("logo", 24\)' "$SOURCE/app.js"
-require ':root\[data-theme="light"\] \{ --brand-icon: var\(--primary\); \}' "$SOURCE/styles.css"
-require 'justify-content: flex-start' "$SOURCE/styles.css"
-require '\.project-row:not\(\.project-head\):hover \{ background: var\(--accent\); \}' "$SOURCE/styles.css"
-require 'class="project-row-link"' "$SOURCE/app.js"
-require '\.project-row-link \{ position: absolute; inset: 0; z-index: 1;' "$SOURCE/styles.css"
-require 'title="\$\{escapeHtml\(file\)\}" data-editor-tab=' "$SOURCE/app.js"
+require 'react' "$APP/package.json"
+require 'vite build --watch' "$APP/package.json"
+require 'unplugin-icons/vite' "$APP/vite.config.ts"
+require 'base: "\./"' "$APP/vite.config.ts"
+require '@edger/ui/components/ui/(sortable|dialog)' "$SOURCE"
+require '@edger/ui/icons/lucide' "$SOURCE"
+require 'createRouter' "$SOURCE/main.tsx"
+require 'QueryClientProvider' "$SOURCE/main.tsx"
+require 'SettingsDialog' "$SOURCE/components/workbench.tsx"
+require 'SortableItemHandle' "$SOURCE/components/workbench.tsx"
+reject '(lucide-react|iconify-icon|htm/preact|prompt\()' "$SOURCE"
+
+(cd "$ROOT/workers" && bun run --filter '@edger/webide' build)
 require 'src="\./app.js"' "$DIST/index.html"
 require 'href="\./styles.css"' "$DIST/index.html"
-reject 'Open cPanel' "$SOURCE"
-reject 'Open cPanel' "$DIST"
-reject 'const paths = \{' "$SOURCE/app.js"
-reject 'list\.length\} project' "$SOURCE/app.js"
-reject '\.project-name:hover strong' "$SOURCE/styles.css"
-reject '<button class="project-name"' "$SOURCE/app.js"
-reject '<strong>Preview</strong><span>' "$SOURCE/app.js"
+test -s "$DIST/noto-sans-latin-wght-normal.woff2"
 
-bash "$ROOT/workers/core/webide/e2e/validate-flows.sh"
+bash "$APP/e2e/validate-flows.sh"
 
 echo "webide-ui-gate ok"

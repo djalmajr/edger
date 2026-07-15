@@ -1,0 +1,4 @@
+@import "@edger/ui/theme.css";
+@source "./**/*.{js,jsx,ts,tsx}";
+@source "../../../ui/src/**/*.{js,jsx,ts,tsx}";
+@import "./styles.css";

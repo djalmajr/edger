@@ -66,3 +66,12 @@
 completed (2026-07-13) — estrutura, origens core, imagem, WebIDE, Browser E2E e
 gates finais concluídos; evidência em
 `planning/edger/status/evidence/epic-22-core-webide-2026-07-13.md`.
+
+### Fundação React e shadcn compartilhada (2026-07-14)
+
+A WebIDE foi migrada para React 19 + TypeScript + Vite e passou a compartilhar
+com o cPanel o preset shadcn `base-nova`, tokens, fonte e componentes em
+`workers/ui`. TanStack Query/Router e dnd-kit sustentam estado remoto,
+navegação e ordenação; os ícones Lucide são compilados por `unplugin-icons`.
+`bun run build:watch`, em `workers/`, mantém `workers/core/webide/dist`
+atualizado, e o EdgeR serve somente esse `dist` como worker Static SPA.

@@ -65,3 +65,12 @@ completed (2026-07-01) - cPanel/admin UI minimo foi entregue em `workers/core/cp
 - **Widgets so no Overview**: os cards de metricas (Workers/Modules/Requests/Keys) saem do topo global e passam a viver dentro da view Overview.
 - **shadcn real**: `Select` (com chevron), `Table`, `Card`, `Badge`, `Sidebar`, `Alert`, `Button` importados do catalogo — o `select` nativo cru foi substituido.
 Correcao de runtime necessaria para a UI: Static SPA agora tem TTL default persistente (`edger-core::STATIC_SPA_DEFAULT_TTL_MS`) em vez de efemero, e o `WorkerPool` re-resolve instancia efemera terminada sob concorrencia (antes ~40 imports paralelos do mesmo worker davam `worker not ready for dispatch`). Evidencia: `planning/edger/status/evidence/browser-preview-2026-07-02.md`; regressoes `crates/edger-worker/tests/pool_ephemeral_concurrency.rs`.
+
+### Fundação React e shadcn compartilhada (2026-07-14)
+
+O frontend sem build descrito acima foi substituído por React 19 + TypeScript +
+Vite. O cPanel agora consome o preset shadcn `base-nova`, tokens, fonte e
+componentes compartilhados de `workers/ui`, com TanStack Query/Router, Recharts
+e Lucide compilado por `unplugin-icons`. `bun run build:watch`, executado em
+`workers/`, recompila `workers/core/cpanel/dist`; o EdgeR continua servindo
+somente esse artefato Static SPA, sem servidor de desenvolvimento em produção.

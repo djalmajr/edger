@@ -13,3 +13,11 @@
 13-mcp-authoring-ai-native: 6 stories
 14-deploy-apps: 6 stories
 15-runtime-js-duravel: 6 stories
+16-fullstack-ssr-streaming: 5 stories
+17-edger-minimalista: 7 stories
+18-escala-worker-pool: 6 stories
+19-runtime-completude: 6 stories
+20-endurecimento-runtime: 12 stories
+21-observabilidade-workers-cpanel: 13 stories
+22-core-workers-webide: 9 stories
+23-secrets-versionados: 2 stories

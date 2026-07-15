@@ -101,24 +101,26 @@ print("PASS — all stories have required sections")
 PY
 log "PASS artifact inspection"
 
-# --- WebIDE design-system and build contract ---
+# --- Core frontend design-system and build contracts ---
+bash planning/edger/scripts/cpanel-ui-gate.sh 2>&1 | tee "$SCRATCH/cpanel-ui-gate.txt"
+log "PASS cpanel-ui-gate"
 bash planning/edger/scripts/webide-ui-gate.sh 2>&1 | tee "$SCRATCH/webide-ui-gate.txt"
 log "PASS webide-ui-gate"
 
 # --- optional JS tests + cargo check ---
-ROOT_JS_TESTS=$(find . -maxdepth 2 \( -name '*.test.ts' -o -name '*.spec.ts' \) -not -path './target/*' -print | sort)
-if [[ -n "$ROOT_JS_TESTS" ]]; then
+WORKER_JS_TESTS=$(find workers/core -type f \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.spec.ts' -o -name '*.spec.tsx' \) -print | sort)
+if [[ -n "$WORKER_JS_TESTS" ]]; then
   set +e
-  bun test 2>&1 | tee "$SCRATCH/bun-test.txt"
+  (cd workers && bun run test) 2>&1 | tee "$SCRATCH/bun-test.txt"
   BUN_EXIT=${PIPESTATUS[0]}
   set -e
-  [[ "$BUN_EXIT" -eq 0 && $(grep -c '0 fail' "$SCRATCH/bun-test.txt") -ge 1 ]] || { log "FAIL bun test"; exit 1; }
-  log "PASS bun test"
+  [[ "$BUN_EXIT" -eq 0 ]] || { log "FAIL core frontend tests"; exit 1; }
+  log "PASS core frontend tests"
   BUN_STATUS='{"status":"passed","fail":0}'
 else
-  printf 'bun test skipped: no root JS/TS test suite exists after Bun adapter removal\n' | tee "$SCRATCH/bun-test.txt"
-  log "SKIP bun test (no root JS/TS test suite)"
-  BUN_STATUS='{"status":"skipped","reason":"no root JS/TS test suite"}'
+  printf 'core frontend tests skipped: no workers/core JS/TS test suite exists\n' | tee "$SCRATCH/bun-test.txt"
+  log "SKIP core frontend tests"
+  BUN_STATUS='{"status":"skipped","reason":"no core frontend JS/TS test suite"}'
 fi
 
 set +e
