@@ -130,8 +130,12 @@ function Sortable<T>(props: SortableProps<T>) {
   const [activeId, setActiveId] = React.useState<UniqueIdentifier | null>(null);
 
   const sensors = useSensors(
-    useSensor(MouseSensor),
-    useSensor(TouchSensor),
+    useSensor(MouseSensor, {
+      activationConstraint: { distance: 4 },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 150, tolerance: 5 },
+    }),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
     }),
@@ -487,7 +491,7 @@ function SortableItemHandle(props: SortableItemHandleProps) {
   const isDisabled = disabled ?? itemContext.disabled;
 
   const composedRef = useComposedRefs(ref, (node) => {
-    if (!isDisabled) return;
+    if (isDisabled) return;
     itemContext.setActivatorNodeRef(node);
   });
 
@@ -528,8 +532,10 @@ const dropAnimation: DropAnimation = {
   }),
 };
 
-interface SortableOverlayProps
-  extends Omit<React.ComponentProps<typeof DragOverlay>, "children"> {
+interface SortableOverlayProps extends Omit<
+  React.ComponentProps<typeof DragOverlay>,
+  "children"
+> {
   container?: Element | DocumentFragment | null;
   children?:
     | ((params: { value: UniqueIdentifier }) => React.ReactNode)

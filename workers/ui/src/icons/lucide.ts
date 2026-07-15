@@ -4,6 +4,8 @@ import ChevronLeft from "~icons/lucide/chevron-left";
 import ChevronRight from "~icons/lucide/chevron-right";
 import ChevronUp from "~icons/lucide/chevron-up";
 import ChevronsUpDown from "~icons/lucide/chevrons-up-down";
+import ChevronsLeft from "~icons/lucide/chevrons-left";
+import ChevronsRight from "~icons/lucide/chevrons-right";
 import CircleCheck from "~icons/lucide/circle-check";
 import Info from "~icons/lucide/info";
 import LoaderCircle from "~icons/lucide/loader-circle";
@@ -16,10 +18,14 @@ import Trash2 from "~icons/lucide/trash-2";
 import TriangleAlert from "~icons/lucide/triangle-alert";
 import X from "~icons/lucide/x";
 import Asterisk from "~icons/lucide/asterisk";
+import Atom from "~icons/lucide/atom";
 import Boxes from "~icons/lucide/boxes";
 import Braces from "~icons/lucide/braces";
+import Component from "~icons/lucide/component";
 import Copy from "~icons/lucide/copy";
+import Download from "~icons/lucide/download";
 import FileArchive from "~icons/lucide/file-archive";
+import Flame from "~icons/lucide/flame";
 import FolderInput from "~icons/lucide/folder-input";
 import Gauge from "~icons/lucide/gauge";
 import Import from "~icons/lucide/import";
@@ -38,10 +44,13 @@ import Folder from "~icons/lucide/folder";
 import FolderOpen from "~icons/lucide/folder-open";
 import FolderPlus from "~icons/lucide/folder-plus";
 import List from "~icons/lucide/list";
+import ListFilter from "~icons/lucide/list-filter";
 import MoreVertical from "~icons/lucide/more-vertical";
+import Network from "~icons/lucide/network";
 import PanelBottom from "~icons/lucide/panel-bottom";
 import RefreshCw from "~icons/lucide/refresh-cw";
 import Terminal from "~icons/lucide/terminal";
+import Triangle from "~icons/lucide/triangle";
 import Upload from "~icons/lucide/upload";
 import Activity from "~icons/lucide/activity";
 import ArrowLeft from "~icons/lucide/arrow-left";
@@ -52,12 +61,16 @@ import HeartPulse from "~icons/lucide/heart-pulse";
 import KeyRound from "~icons/lucide/key-round";
 import LogIn from "~icons/lucide/log-in";
 import LogOut from "~icons/lucide/log-out";
+import Monitor from "~icons/lucide/monitor";
+import Moon from "~icons/lucide/moon";
 import PowerOff from "~icons/lucide/power-off";
 import Rocket from "~icons/lucide/rocket";
 import RotateCcw from "~icons/lucide/rotate-ccw";
 import ScrollText from "~icons/lucide/scroll-text";
 import ShieldCheck from "~icons/lucide/shield-check";
+import Sun from "~icons/lucide/sun";
 import UploadCloud from "~icons/lucide/upload-cloud";
+import Webhook from "~icons/lucide/webhook";
 
 export {
   Check,
@@ -67,6 +80,8 @@ export {
   ChevronRight as ChevronRightIcon,
   ChevronUp as ChevronUpIcon,
   ChevronsUpDown,
+  ChevronsLeft as ChevronsLeftIcon,
+  ChevronsRight as ChevronsRightIcon,
   CircleCheck as CircleCheckIcon,
   Info as InfoIcon,
   LoaderCircle as Loader2Icon,
@@ -80,10 +95,14 @@ export {
   X,
   X as XIcon,
   Asterisk as AsteriskIcon,
+  Atom as AtomIcon,
   Boxes as BoxesIcon,
   Braces as BracesIcon,
+  Component as ComponentIcon,
   Copy as CopyIcon,
+  Download as DownloadIcon,
   FileArchive as FileArchiveIcon,
+  Flame as FlameIcon,
   FolderInput as FolderInputIcon,
   Gauge as GaugeIcon,
   Import as ImportIcon,
@@ -102,10 +121,13 @@ export {
   FolderOpen as FolderOpenIcon,
   FolderPlus as FolderPlusIcon,
   List as ListIcon,
+  ListFilter as ListFilterIcon,
   MoreVertical as MoreVerticalIcon,
+  Network as NetworkIcon,
   PanelBottom as PanelBottomIcon,
   RefreshCw as RefreshCwIcon,
   Terminal as TerminalIcon,
+  Triangle as TriangleIcon,
   Upload as UploadIcon,
   Activity as ActivityIcon,
   ArrowLeft as ArrowLeftIcon,
@@ -116,10 +138,14 @@ export {
   KeyRound as KeyRoundIcon,
   LogIn as LogInIcon,
   LogOut as LogOutIcon,
+  Monitor as MonitorIcon,
+  Moon as MoonIcon,
   PowerOff as PowerOffIcon,
   Rocket as RocketIcon,
   RotateCcw as RotateCcwIcon,
   ScrollText as ScrollTextIcon,
   ShieldCheck as ShieldCheckIcon,
+  Sun as SunIcon,
   UploadCloud as UploadCloudIcon,
+  Webhook as WebhookIcon,
 };

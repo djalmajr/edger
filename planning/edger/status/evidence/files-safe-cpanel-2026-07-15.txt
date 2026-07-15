@@ -1,0 +1,82 @@
+EdgeR story 14.06 — arquivos seguros no cPanel
+Data: 2026-07-15
+
+TDD Red
+- worker_files_downloads_a_file_and_a_folder_zip: esperado 200, obtido 404.
+- worker_files_rejects_uploads_to_core_origins: esperado 403, obtido 200.
+
+TDD Green
+- cargo test -p edger-orchestrator --test deploy_install: 18 passed.
+- arquivo preservou bytes/nome; pasta ZIP preservou paths relativos.
+- traversal retornou 403; arquivo acima de 4 MiB retornou 413.
+- upload para core_bundled retornou 403 e não alterou o arquivo.
+
+Gates
+- cargo test --workspace: passou.
+- cargo clippy --workspace -- -D warnings: passou.
+- cargo fmt -- --check: passou.
+- planning/edger/scripts/cpanel-ui-gate.sh: passou.
+
+Browser builtin — http://127.0.0.1:19080
+- commonjs@latest/files: raiz sem breadcrumb; ações Download em arquivo/pasta.
+- commonjs@latest/files/node_modules: breadcrumb commonjs/node_modules visível.
+- cpanel@0.3.0/files: texto "Browse and download"; Upload files ausente;
+  ações Download presentes para manifest.yaml, arquivos e pastas.
+
+Ajuste UX posterior
+- sessão Browser permaneceu autenticada como root/admin.
+- bloco "Files" + descrição removido.
+- texto Download substituído por ícone; cada botão mantém aria-label específico
+  (por exemplo, "Download lib") e tooltip.
+- shell normalizado para 16px: conteúdo `p-4` nos quatro lados e header `px-4`,
+  confirmado no Browser por computed style em viewport largo.
+- Workers: Refresh saiu do header e ficou imediatamente à esquerda de Deploy;
+  ambos na mesma linha, grupo alinhado à direita e gap final de 16px.
+- Overview: Refresh saiu do header e foi para uma linha de ações no conteúdo.
+- Observability/Logs: Refresh saiu do header e ficou à direita das tabs, na
+  mesma linha; Browser confirmou zero Refresh no header nas duas superfícies.
+
+Invariante de versão do cPanel
+- teste Red confirmou que habilitar cpanel@1.0.0 mantinha cpanel@2.0.0 ativo.
+- inserção de uma versão habilitada e reativação de versão existente agora
+  deixam exatamente uma versão do `cpanel` habilitada.
+- `Open URL` fica sempre desabilitado para o próprio cPanel; nos demais workers,
+  versões desativadas também não podem abrir URL.
+- `cargo test -p edger-orchestrator cpanel_version`: 2 passed.
+- gate final: 4 testes `cpanel_` passaram; workspace, clippy e fmt verdes.
+- runtime expôs somente cpanel@0.3.0 como `loaded`; a versão é `Default`, mas
+  `Open URL` permanece desabilitado por ser a própria superfície do cPanel.
+- Browser confirmou `Open URL`: `enabled=false` e atributo `disabled` presente
+  em cpanel@0.3.0 ativo.
+
+Paginação de workers
+- Workers e logs compartilham o mesmo controle de paginação.
+- inclui primeira/anterior/próxima/última, indicador `Page X of Y` e seletor de
+  15/30/60 aplicações com largura intrínseca ao conteúdo.
+- busca, filtro de kind e mudança de page size retornam à página 1.
+- Browser confirmou `15` como padrão; ao selecionar `30`, a lista e o total de
+  páginas foram recalculados.
+
+Menu de ações dos workers
+- largura mínima ampliada para 176px e labels mantidos em uma única linha.
+- Browser mediu menu com 176px; `Default required` ficou com 28px de altura,
+  `white-space: nowrap` e sem overflow horizontal.
+
+Data-grid de logs
+- tabela manual substituída por componente TanStack no padrão do appliance.
+- colunas Time, Level, Worker, Event, Outcome e Duration são ordenáveis.
+- paginação inclui primeira/anterior/próxima/última e 15/30/60 linhas.
+- refresh automático preserva a página; busca ou nível retornam à primeira.
+- Browser confirmou ordenação ascendente por Time (13:06:00 antes de 13:06:14)
+  e troca do seletor de 15 para 30 linhas.
+- linhas acionáveis por clique, Enter ou Espaço abrem painel lateral com todos
+  os campos disponíveis e JSON copiável.
+- Browser abriu `process.terminated` e exibiu ID, timestamp, source, worker,
+  version, event, outcome, duration, processId e o JSON integral.
+- painel lateral ampliado para até 672px em telas maiores.
+- Browser confirmou largura renderizada de 672px em viewport de 1790px.
+- badges de level usam cores suaves: azul para info, âmbar para warn e vermelho
+  para error, incluindo variantes de tema escuro.
+- Browser confirmou estilos computados distintos: `warn` com fundo âmbar claro
+  (`lab(98.6252 -0.635922 8.42309)`) e `info` com fundo azul claro
+  (`lab(97.3623 -2.33802 -4.13098)`).

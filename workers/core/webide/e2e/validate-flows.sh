@@ -37,6 +37,7 @@ expected=(
   operational-terminal
   layout-resizing-and-responsive
   keyboard-and-dialog-accessibility
+  settings-preferences
 )
 
 fail() {
@@ -128,6 +129,9 @@ coverage=(
   'clear'
   'splitter'
   'viewport'
+  'Search settings'
+  'Modified in Workspace'
+  'Reset Font Size'
 )
 
 for pattern in "${coverage[@]}"; do

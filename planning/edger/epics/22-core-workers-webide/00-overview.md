@@ -39,6 +39,7 @@
 | 22.06 Deploy e preview | `06-webide-deploy-preview.md` | ZIP, pipeline, histórico e preview explícitos | completed |
 | 22.07 Integrações e aceite | `07-integrations-verification.md` | Logs, observabilidade, docs e gates finais | completed |
 | 22.08 Workbench completo | `08-reference-workbench-layout.md` | Dashboard, projetos, editor, preview e console seguro | completed |
+| 22.09 Settings modernas | `09-settings-modernas.md` | Busca, escopos, herança, reset e efeitos coerentes | completed |
 
 ## Epic acceptance criteria
 
@@ -59,6 +60,8 @@
   implementadas, com fixtures locais e gate de cobertura.
 - [x] Os fluxos usam personas próprias do produto para avaliar onboarding,
   eficiência, operação, confiabilidade, segurança, UI/UX e acessibilidade.
+- [x] Settings oferece busca, categorias, filtro de modificadas, reset e escopos
+  User/Workspace sem expor preferências sem efeito real.
 - [x] Gate Rust e refinement gate estão verdes.
 
 ## Status
@@ -75,3 +78,13 @@ com o cPanel o preset shadcn `base-nova`, tokens, fonte e componentes em
 navegação e ordenação; os ícones Lucide são compilados por `unplugin-icons`.
 `bun run build:watch`, em `workers/`, mantém `workers/core/webide/dist`
 atualizado, e o EdgeR serve somente esse `dist` como worker Static SPA.
+
+### Settings pesquisáveis e coerentes por escopo (2026-07-15)
+
+A Settings da WebIDE passou a usar um catálogo tipado para busca, categorias,
+origem e escopos válidos. User e Workspace exibem o valor editável correto,
+oferecem filtro de modificadas e reset para herança; Theme permanece User-only.
+Word Wrap mantém as camadas do editor alinhadas, e Files Exclude também filtra a
+busca. A preferência Auto Preview deixou de ser exibida enquanto não houver um
+efeito compatível com deploy explícito. A jornada foi incorporada ao catálogo
+E2E; busca, escopos e reset foram validados no Browser builtin.

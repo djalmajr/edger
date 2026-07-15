@@ -27,20 +27,64 @@ export type RuntimeWorker = {
   idleProcesses?: number;
   maxProcesses?: number;
   name: string;
+  queued?: number;
+  rejectedTotal?: number;
+  requestDurationMsLast?: number;
   requestDurationMsP95?: number;
   requestTotal?: number;
   state?: string;
   terminatingProcesses?: number;
+  timeoutTotal?: number;
+  totalProcesses?: number;
+  uptimeSeconds?: number;
   version: string;
+  waitMs?: number;
+  waitMsP95?: number;
+};
+export type RuntimePool = {
+  activeRequests?: number;
+  activeWorkers?: number;
+  cacheHits?: number;
+  cacheMisses?: number;
+  ephemeralInflight?: number;
+  ephemeralQueued?: number;
+  ephemeralRejected?: number;
+  idleWorkers?: number;
+  requestDurationMsLast?: number;
+  spawnLatencyMsLast?: number;
+  spawnLatencyMsP50?: number;
+  terminatedTotal?: number;
+  totalWorkers?: number;
 };
 export type RuntimeData = {
   metricsStats: {
-    pool?: Record<string, number>;
+    pool?: RuntimePool;
     workers?: RuntimeWorker[];
   } | null;
   principal: Principal;
   workerErrors: Record<string, { count?: number; latest?: { code?: string } }>;
   workers: Worker[];
+};
+
+export type OperationalEvent = {
+  atMs?: number;
+  code?: string;
+  droppedCount?: number;
+  durationMs?: number | null;
+  id?: number | string;
+  kind?: string;
+  level?: string;
+  message?: string;
+  namespace?: string;
+  outcome?: string;
+  processId?: string;
+  requestId?: string;
+  source?: string;
+  status?: number | string;
+  traceId?: string;
+  truncated?: boolean;
+  version?: string;
+  worker?: string;
 };
 
 export async function apiJson<T>(
@@ -64,6 +108,22 @@ export async function apiJson<T>(
     throw new Error(message);
   }
   return data as T;
+}
+
+export async function apiDownload(
+  apiKey: string,
+  path: string,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(path, { headers: { "x-api-key": apiKey } });
+  if (!response.ok) {
+    const data = (await response.json().catch(() => ({}))) as {
+      message?: string;
+    };
+    throw new Error(data.message ?? `${response.status} ${response.statusText}`);
+  }
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? "download";
+  return { blob: await response.blob(), filename };
 }
 
 export async function loadAll(apiKey: string): Promise<RuntimeData> {

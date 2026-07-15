@@ -1,19 +1,21 @@
 import * as React from "react";
 
+import { ScrollArea } from "@edger/ui/components/ui/scroll-area";
 import { cn } from "@edger/ui/lib/utils";
 
 function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
-    <div
+    <ScrollArea
       data-slot="table-container"
-      className="relative w-full overflow-x-auto"
+      className="w-full"
+      scrollbars="horizontal"
     >
       <table
         data-slot="table"
-        className={cn("w-full caption-bottom text-sm", className)}
+        className={cn("w-full min-w-max caption-bottom text-sm", className)}
         {...props}
       />
-    </div>
+    </ScrollArea>
   );
 }
 

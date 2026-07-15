@@ -82,6 +82,9 @@
 | 21.10 Health passivo e vocabulário | `10-health-passivo-vocabulario.md` | Separar roteamento, processo e confiabilidade recente | large | 21.03 | completed |
 | 21.11 Eventos de release e drain | `11-eventos-release-drain.md` | Tornar migrations e encerramento observáveis no cPanel | medium | 21.03, 21.05 | completed |
 | 21.12 Health check opcional | `12-health-check-opcional.md` | Validar uma versão manualmente ou no deploy sem polling | medium | 21.10, 21.11 | completed |
+| 21.13 Overview operacional | `13-overview-runtime-operacional.md` | Tornar `/cpanel/` uma visão operacional compreensiva e acionável | medium | 21.02, 21.03, 21.10 | completed |
+| 21.14 Ações primárias no topo do conteúdo | `14-acoes-primarias-header.md` | Centralizar ações na faixa superior do conteúdo do cPanel | small | 21.13 | completed |
+| 21.15 Preferências e conta no header | `15-preferencias-conta-sidebar.md` | Oferecer idioma, tema e conta compacta no header | small | 21.14 | completed |
 
 ## Roadmap
 

@@ -2,7 +2,8 @@
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -10,13 +11,14 @@ use axum::{Json, Router};
 use edger_core::{
     principal_has_permission, root_principal, AdminCatalogItem, AdminCatalogResponse,
     AdminErrorResponse, AdminMutationResponse, AdminSessionResponse, AdminWorkerInfo,
-    AdminWorkersResponse, ApiKeyPrincipal, CoreError, SerializedRequest,
+    AdminWorkersResponse, ApiKeyPrincipal, CoreError, SerializedRequest, WorkerOrigin,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::fs;
+use std::io::{Read, Seek, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -59,6 +61,10 @@ pub fn router() -> Router<OrchestratorState> {
             get(worker_files)
                 .post(upload_worker_files)
                 .layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
+        .route(
+            "/api/admin/workers/{name}/files/download",
+            get(download_worker_files),
         )
 }
 
@@ -695,6 +701,47 @@ async fn worker_files(
     }
 }
 
+struct WorkerFileDownload {
+    bytes: Vec<u8>,
+    content_type: &'static str,
+    filename: String,
+}
+
+const MAX_DOWNLOAD_ENTRIES: usize = 10_000;
+
+async fn download_worker_files(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(query): Query<WorkerFilesQuery>,
+) -> Response {
+    match authenticate(&state, &headers).await.and_then(|principal| {
+        require_permission(&principal, "workers:read")?;
+        build_worker_file_download(
+            &state,
+            &principal,
+            &name,
+            query.version.as_deref(),
+            query.path.as_deref(),
+        )
+    }) {
+        Ok(download) => {
+            let mut response_headers = HeaderMap::new();
+            response_headers.insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static(download.content_type),
+            );
+            response_headers.insert(
+                CONTENT_DISPOSITION,
+                HeaderValue::from_str(&format!("attachment; filename=\"{}\"", download.filename))
+                    .expect("download filename is sanitized"),
+            );
+            (response_headers, download.bytes).into_response()
+        }
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
 // Drop-to-publish: extracts an uploaded zip (client-zipped files/folders) into
 // the version's directory at `path`, overwriting in place. Same gate as
 // install; `extract_zip` rejects zip-slip on every entry name.
@@ -728,7 +775,7 @@ fn resolve_worker_dir(
     principal: &ApiKeyPrincipal,
     name: &str,
     version: Option<&str>,
-) -> Result<(std::path::PathBuf, String), CoreError> {
+) -> Result<(std::path::PathBuf, AdminWorkerInfo), CoreError> {
     let workers = state.index.admin_workers_for_principal(principal);
     let worker = workers
         .iter()
@@ -737,7 +784,7 @@ fn resolve_worker_dir(
     let base = std::fs::canonicalize(&worker.source).map_err(|err| {
         CoreError::new("NOT_FOUND", format!("worker directory unavailable: {err}"))
     })?;
-    Ok((base, worker.version.clone()))
+    Ok((base, worker.clone()))
 }
 
 // Canonicalize base + sub_path and confirm the result stays within base.
@@ -766,7 +813,13 @@ fn write_worker_files(
     sub_path: Option<&str>,
     zip_bytes: &[u8],
 ) -> Result<serde_json::Value, CoreError> {
-    let (base, _) = resolve_worker_dir(state, principal, name, version)?;
+    let (base, worker) = resolve_worker_dir(state, principal, name, version)?;
+    if worker.origin != WorkerOrigin::User {
+        return Err(CoreError::new(
+            "FORBIDDEN",
+            "core worker files are read-only; publish a new core overlay version instead",
+        ));
+    }
     let rel = sub_path.unwrap_or("").trim_matches('/');
     if rel.split('/').any(|segment| segment == "..") {
         return Err(CoreError::new(
@@ -796,7 +849,7 @@ fn list_worker_files(
     version: Option<&str>,
     sub_path: Option<&str>,
 ) -> Result<serde_json::Value, CoreError> {
-    let (base, resolved_version) = resolve_worker_dir(state, principal, name, version)?;
+    let (base, worker) = resolve_worker_dir(state, principal, name, version)?;
     let rel = sub_path.unwrap_or("").trim_matches('/');
     let target = resolve_within(&base, rel)?;
 
@@ -828,8 +881,174 @@ fn list_worker_files(
         "entries": entries,
         "name": name,
         "path": rel,
-        "version": resolved_version,
+        "version": worker.version,
     }))
+}
+
+fn build_worker_file_download(
+    state: &OrchestratorState,
+    principal: &ApiKeyPrincipal,
+    name: &str,
+    version: Option<&str>,
+    sub_path: Option<&str>,
+) -> Result<WorkerFileDownload, CoreError> {
+    let (base, worker) = resolve_worker_dir(state, principal, name, version)?;
+    let rel = sub_path.unwrap_or("").trim_matches('/');
+    let target = resolve_within(&base, rel)?;
+    let metadata = std::fs::symlink_metadata(&target)
+        .map_err(|err| CoreError::new("NOT_FOUND", format!("path not found: {err}")))?;
+    if metadata.file_type().is_symlink() {
+        return Err(CoreError::new(
+            "FORBIDDEN",
+            "symlink downloads are not allowed",
+        ));
+    }
+
+    let fallback = format!("{}-{}", worker.name, worker.version);
+    let target_name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(&fallback);
+    if metadata.is_file() {
+        if metadata.len() > MAX_BODY_BYTES as u64 {
+            return Err(download_too_large());
+        }
+        let bytes = std::fs::read(&target)
+            .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot read file: {err}")))?;
+        if bytes.len() > MAX_BODY_BYTES {
+            return Err(download_too_large());
+        }
+        return Ok(WorkerFileDownload {
+            bytes,
+            content_type: "application/octet-stream",
+            filename: sanitize_download_filename(target_name),
+        });
+    }
+    if !metadata.is_dir() {
+        return Err(CoreError::new(
+            "BAD_REQUEST",
+            "path is not a file or directory",
+        ));
+    }
+
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let mut total_bytes = 0_u64;
+    let mut total_entries = 0_usize;
+    append_directory_to_zip(
+        &mut writer,
+        &target,
+        &target,
+        &mut total_bytes,
+        &mut total_entries,
+    )?;
+    let archive = writer
+        .finish()
+        .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot finish archive: {err}")))?
+        .into_inner();
+    if archive.len() > MAX_BODY_BYTES {
+        return Err(download_too_large());
+    }
+    Ok(WorkerFileDownload {
+        bytes: archive,
+        content_type: "application/zip",
+        filename: format!("{}.zip", sanitize_download_filename(target_name)),
+    })
+}
+
+fn append_directory_to_zip<W: Write + Seek>(
+    writer: &mut zip::ZipWriter<W>,
+    root: &std::path::Path,
+    directory: &std::path::Path,
+    total_bytes: &mut u64,
+    total_entries: &mut usize,
+) -> Result<(), CoreError> {
+    let mut entries = std::fs::read_dir(directory)
+        .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot read directory: {err}")))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot read directory: {err}")))?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        *total_entries = total_entries
+            .checked_add(1)
+            .ok_or_else(download_too_large)?;
+        if *total_entries > MAX_DOWNLOAD_ENTRIES {
+            return Err(download_too_large());
+        }
+        let file_type = entry
+            .file_type()
+            .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot inspect entry: {err}")))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| CoreError::new("FORBIDDEN", "path escapes the download directory"))?;
+        let zip_name = relative
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        if file_type.is_dir() {
+            writer
+                .add_directory(
+                    format!("{zip_name}/"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .map_err(|err| {
+                    CoreError::new("BAD_REQUEST", format!("cannot archive directory: {err}"))
+                })?;
+            append_directory_to_zip(writer, root, &path, total_bytes, total_entries)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let length = entry
+            .metadata()
+            .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot inspect file: {err}")))?
+            .len();
+        *total_bytes = total_bytes
+            .checked_add(length)
+            .ok_or_else(download_too_large)?;
+        if *total_bytes > MAX_BODY_BYTES as u64 {
+            return Err(download_too_large());
+        }
+        writer
+            .start_file(zip_name, zip::write::SimpleFileOptions::default())
+            .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot archive file: {err}")))?;
+        let file = std::fs::File::open(&path)
+            .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot read file: {err}")))?;
+        std::io::copy(&mut file.take(length), writer)
+            .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot archive file: {err}")))?;
+    }
+    Ok(())
+}
+
+fn sanitize_download_filename(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "download".into()
+    } else {
+        sanitized
+    }
+}
+
+fn download_too_large() -> CoreError {
+    CoreError::new(
+        "DOWNLOAD_TOO_LARGE",
+        format!("download exceeds the {} byte limit", MAX_BODY_BYTES),
+    )
 }
 
 async fn authenticate(
@@ -881,8 +1100,9 @@ fn map_error_status(err: &CoreError) -> StatusCode {
         "UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
         "CSRF_DENIED" | "FORBIDDEN" => StatusCode::FORBIDDEN,
+        "DOWNLOAD_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
         "COLLISION"
-        | "CPANEL_DEFAULT_REQUIRED"
+        | "CORE_DEFAULT_REQUIRED"
         | "DEPLOY_TARGET_EXISTS"
         | "DEPLOY_HEALTH_CHECK_FAILED"
         | "HEALTH_CHECK_NOT_CONFIGURED" => StatusCode::CONFLICT,

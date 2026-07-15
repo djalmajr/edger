@@ -87,6 +87,23 @@ async fn send(
     (status, json, text)
 }
 
+async fn download(app: Router, uri: &str) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header("authorization", "Bearer test-root")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (parts, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+    (parts.status, parts.headers, bytes.to_vec())
+}
+
 fn zip_package(files: &[(&str, &str)]) -> Vec<u8> {
     let mut cursor = std::io::Cursor::new(Vec::new());
     {
@@ -490,6 +507,96 @@ fn write_manual_worker(root: &std::path::Path, name: &str, marker: &str) {
         format!("<!doctype html><html><head></head><body>{marker}</body></html>"),
     )
     .unwrap();
+}
+
+#[tokio::test]
+async fn worker_files_downloads_a_file_and_a_folder_zip() {
+    let root = tempfile::tempdir().unwrap();
+    write_manual_worker(root.path(), "download-app", "download-body");
+    let assets = root.path().join("download-app/assets");
+    fs::create_dir_all(assets.join("nested")).unwrap();
+    fs::write(assets.join("plain.txt"), b"plain-bytes").unwrap();
+    fs::write(assets.join("nested/deep.txt"), b"deep-bytes").unwrap();
+    let app = build_pipeline(state_with_root(root.path().to_path_buf()));
+
+    let (status, headers, body) = download(
+        app.clone(),
+        "/api/admin/workers/download-app/files/download?version=1.0.0&path=assets%2Fplain.txt",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"plain-bytes");
+    assert_eq!(
+        headers["content-disposition"],
+        "attachment; filename=\"plain.txt\""
+    );
+
+    let (status, headers, body) = download(
+        app.clone(),
+        "/api/admin/workers/download-app/files/download?version=1.0.0&path=assets",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "application/zip");
+    assert_eq!(
+        headers["content-disposition"],
+        "attachment; filename=\"assets.zip\""
+    );
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(body)).unwrap();
+    let mut plain = String::new();
+    std::io::Read::read_to_string(&mut archive.by_name("plain.txt").unwrap(), &mut plain).unwrap();
+    assert_eq!(plain, "plain-bytes");
+    let mut deep = String::new();
+    std::io::Read::read_to_string(&mut archive.by_name("nested/deep.txt").unwrap(), &mut deep)
+        .unwrap();
+    assert_eq!(deep, "deep-bytes");
+
+    fs::write(root.path().join("secret.txt"), b"outside-worker").unwrap();
+    let (status, _, _) = download(
+        app.clone(),
+        "/api/admin/workers/download-app/files/download?version=1.0.0&path=..%2Fsecret.txt",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    fs::write(
+        root.path().join("download-app/oversized.bin"),
+        vec![0_u8; edger_orchestrator::MAX_BODY_BYTES + 1],
+    )
+    .unwrap();
+    let (status, _, _) = download(
+        app,
+        "/api/admin/workers/download-app/files/download?version=1.0.0&path=oversized.bin",
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn worker_files_rejects_uploads_to_core_origins() {
+    let bundled = tempfile::tempdir().unwrap();
+    let overlay = tempfile::tempdir().unwrap();
+    let user = tempfile::tempdir().unwrap();
+    write_manual_worker(bundled.path(), "cpanel", "bundled-body");
+    let app = build_pipeline(state_with_roots(
+        bundled.path().to_path_buf(),
+        overlay.path().to_path_buf(),
+        user.path().to_path_buf(),
+    ));
+
+    let (status, _, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/cpanel/files?version=1.0.0",
+        Some("test-root"),
+        "application/zip",
+        zip_package(&[("index.html", "mutated")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "unexpected body: {text}");
+    assert!(fs::read_to_string(bundled.path().join("cpanel/index.html"))
+        .unwrap()
+        .contains("bundled-body"));
 }
 
 // Mutation captured: making rescan apply behave like dry-run (never touching
