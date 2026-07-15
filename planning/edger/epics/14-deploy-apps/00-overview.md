@@ -54,6 +54,7 @@ Hoje o deploy de um worker no EdgeR é filesystem puro: copiar um diretório par
 | 14.03 Deploy DnD no cPanel | `03-deploy-dnd-cpanel.md` | View Deploy com drag-and-drop, preview de manifest e URL do app | large | **completed** | 14.01, 14.02, Epic 12 |
 | 14.04 Versões e rollback | `04-versoes-rollback.md` | `name@semver` coexistindo; rollback via enable/disable de versão | medium | **completed** | 14.01 |
 | 14.05 Transparência pós-deploy | `05-transparencia-pos-deploy.md` | Resposta de deploy com URL/kind/visibilidade + erros por worker na listagem | small | **completed** | 14.01, 14.03 |
+| 14.06 Arquivos seguros no cPanel | `06-arquivos-seguros-cpanel.md` | Download de arquivo/pasta sem mutar versões ativas; bloquear escrita em core | medium | **completed** | 14.01, 14.03 |
 
 ## Roadmap
 

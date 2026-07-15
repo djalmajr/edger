@@ -25,7 +25,7 @@ import {
   InputGroupInput,
 } from "@edger/ui/components/ui/input-group";
 import { Label } from "@edger/ui/components/ui/label";
-import { Separator } from "@edger/ui/components/ui/separator";
+import { ScrollArea } from "@edger/ui/components/ui/scroll-area";
 import {
   Sortable,
   SortableContent,
@@ -39,7 +39,6 @@ import {
   TooltipTrigger,
 } from "@edger/ui/components/ui/tooltip";
 import {
-  AsteriskIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -61,9 +60,11 @@ import {
   TerminalIcon,
   Trash2Icon,
   UploadIcon,
+  WebhookIcon,
   XIcon,
 } from "@edger/ui/icons/lucide";
 import { useTheme } from "@edger/ui/lib/theme";
+import { cn } from "@edger/ui/lib/utils";
 
 import {
   highlightCode,
@@ -79,6 +80,7 @@ import {
   type FullSettings,
   type PartialSettings,
   type SettingsScope,
+  unsetPartialSetting,
   updatePartialSettings,
   USER_SETTINGS_KEY,
 } from "../lib/settings";
@@ -183,14 +185,12 @@ function buildTree(project: Project, excluded: string[]): TreeNode[] {
     .forEach((path) => {
       if (isPathExcluded(path, excluded)) return;
       const parts = path.split("/");
-      nodes
-        .get(parts.slice(0, -1).join("/"))
-        ?.children.push({
-          children: [],
-          folder: false,
-          name: parts.at(-1) ?? path,
-          path,
-        });
+      nodes.get(parts.slice(0, -1).join("/"))?.children.push({
+        children: [],
+        folder: false,
+        name: parts.at(-1) ?? path,
+        path,
+      });
     });
   const sort = (children: TreeNode[]): TreeNode[] =>
     children
@@ -403,9 +403,18 @@ function LoadedWorkbench({
     () => lintDocument(selected, source, project.files),
     [project.files, selected, source],
   );
+  const searchableFiles = React.useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(project.files).filter(
+          ([path]) => !isPathExcluded(path, settings.files.exclude),
+        ),
+      ),
+    [project.files, settings.files.exclude],
+  );
   const searchResult = React.useMemo(
-    () => searchProjectFiles(project.files, search, { caseSensitive, regex }),
-    [caseSensitive, project.files, regex, search],
+    () => searchProjectFiles(searchableFiles, search, { caseSensitive, regex }),
+    [caseSensitive, regex, search, searchableFiles],
   );
   const tree = React.useMemo(
     () => buildTree(project, settings.files.exclude),
@@ -415,6 +424,12 @@ function LoadedWorkbench({
   React.useEffect(() => {
     setTheme(settings.workbench.theme);
   }, [setTheme, settings.workbench.theme]);
+  React.useEffect(() => {
+    setPreviewVisible(settings.workbench.previewVisible);
+  }, [settings.workbench.previewVisible]);
+  React.useEffect(() => {
+    setFooterVisible(settings.workbench.panelVisible);
+  }, [settings.workbench.panelVisible]);
   React.useEffect(() => {
     document.documentElement.style.setProperty(
       "--editor-font-family",
@@ -448,10 +463,10 @@ function LoadedWorkbench({
               reason instanceof Error ? reason.message : String(reason),
             ),
           ),
-      350,
+      settings.files.autoSaveDelay,
     );
     return () => window.clearTimeout(timer);
-  }, [openTabs, project, selected]);
+  }, [openTabs, project, selected, settings.files.autoSaveDelay]);
 
   const deployMutation = useMutation({
     mutationFn: async () => {
@@ -541,6 +556,10 @@ function LoadedWorkbench({
       );
       setFooterTab("deployments");
       setFooterVisible(true);
+      if (settings.preview.autoPreview) {
+        setPreviewVisible(true);
+        setRefreshKey((value) => value + 1);
+      }
       setMessage(`Deployed ${next.name}@${next.version}`);
     },
     onError: (reason) => {
@@ -598,6 +617,26 @@ function LoadedWorkbench({
           group,
           name,
           value,
+        ),
+      }));
+  }
+  function resetSetting<
+    Group extends keyof FullSettings,
+    Name extends keyof FullSettings[Group],
+  >(scope: SettingsScope, group: Group, name: Name) {
+    if (scope === "user") {
+      setUserSettings((current) => {
+        const next = unsetPartialSetting(current, group, name);
+        localStorage.setItem(USER_SETTINGS_KEY, JSON.stringify(next));
+        return next;
+      });
+    } else
+      setProject((current) => ({
+        ...current,
+        settings: unsetPartialSetting(
+          current.settings as PartialSettings,
+          group,
+          name,
         ),
       }));
   }
@@ -834,15 +873,16 @@ function LoadedWorkbench({
     deployments: project.deployments.length,
   };
   return (
-    <main className="grid h-screen min-h-0 grid-rows-[3.5rem_minmax(0,1fr)] overflow-hidden bg-background text-foreground">
-      <header className="flex items-center gap-2 border-b bg-card px-2">
-        <ActionButton label="Dashboard" onClick={onHome}>
-          <AsteriskIcon className="size-5" />
-        </ActionButton>
-        <Separator orientation="vertical" className="mx-1 h-7" />
-        <div className="min-w-0">
-          <strong className="block truncate text-sm">{project.name}</strong>
-          <span className="block text-xs text-muted-foreground">
+    <main className="grid h-screen min-h-0 grid-rows-[2.5rem_minmax(0,1fr)] overflow-hidden bg-background text-foreground">
+      <header className="flex items-center gap-3 border-b bg-card pr-2">
+        <div className="flex h-full w-12 shrink-0 items-center border-r pl-2">
+          <ActionButton label="Dashboard" onClick={onHome}>
+            <WebhookIcon className="size-5 text-primary dark:text-white" />
+          </ActionButton>
+        </div>
+        <div className="flex min-w-0 items-baseline gap-2">
+          <strong className="truncate text-sm">{project.name}</strong>
+          <span className="shrink-0 text-xs text-muted-foreground">
             {project.type} · {project.version}
           </span>
         </div>
@@ -853,13 +893,12 @@ function LoadedWorkbench({
           label={previewVisible ? "Hide preview" : "Show preview"}
           pressed={previewVisible}
           onClick={() => {
-            setPreviewVisible((value) => {
-              localStorage.setItem(
-                "edger.webide.previewVisible",
-                String(!value),
-              );
-              return !value;
-            });
+            updateSetting(
+              "user",
+              "workbench",
+              "previewVisible",
+              !previewVisible,
+            );
           }}
         >
           <EyeIcon />
@@ -868,13 +907,12 @@ function LoadedWorkbench({
           label={footerVisible ? "Hide panel" : "Show panel"}
           pressed={footerVisible}
           onClick={() => {
-            setFooterVisible((value) => {
-              localStorage.setItem(
-                "edger.webide.footerVisible",
-                String(!value),
-              );
-              return !value;
-            });
+            updateSetting(
+              "user",
+              "workbench",
+              "panelVisible",
+              !footerVisible,
+            );
           }}
         >
           <PanelBottomIcon />
@@ -910,26 +948,29 @@ function LoadedWorkbench({
             pressed={sidebar === "files"}
             onClick={() => setSidebar("files")}
           >
-            <FileIcon />
+            <FileIcon className="size-5" />
           </ActionButton>
           <ActionButton
             label="Search"
             pressed={sidebar === "search"}
             onClick={() => setSidebar("search")}
           >
-            <SearchIcon />
+            <SearchIcon className="size-5" />
           </ActionButton>
           <div className="mt-auto">
             <ActionButton
               label="Settings"
               onClick={() => setSettingsOpen(true)}
             >
-              <SettingsIcon />
+              <SettingsIcon className="size-5" />
             </ActionButton>
           </div>
         </aside>
 
-        <aside className="min-h-0 overflow-auto border-r bg-sidebar p-2 text-sidebar-foreground">
+        <ScrollArea
+          className="min-h-0 border-r bg-sidebar text-sidebar-foreground"
+          viewportClassName="p-2"
+        >
           {sidebar === "files" ? (
             <>
               <div className="mb-2 flex h-7 items-center gap-1 px-1">
@@ -1007,7 +1048,7 @@ function LoadedWorkbench({
               </div>
             </>
           )}
-        </aside>
+        </ScrollArea>
 
         <section
           className={`grid min-h-0 ${footerVisible ? "grid-rows-[minmax(0,1fr)_16rem]" : "grid-rows-[minmax(0,1fr)_0]"}`}
@@ -1021,63 +1062,80 @@ function LoadedWorkbench({
                 value={openTabs}
                 onValueChange={(tabs) => setOpenTabs(tabs)}
               >
-                <SortableContent className="flex min-w-0 overflow-x-auto border-b border-white/10 bg-[#18191f]">
-                  {openTabs.map((path) => (
-                    <SortableItem
-                      className={`flex h-10 min-w-32 max-w-48 items-center border-r border-white/10 ${path === selected ? "border-t-2 border-t-primary bg-[#111216]" : "text-white/60"}`}
-                      key={path}
-                      value={path}
-                    >
-                      <SortableItemHandle asChild>
-                        <button
-                          className="flex min-w-0 flex-1 items-center gap-2 px-3"
-                          onClick={() => setSelected(path)}
-                          title={path}
-                          type="button"
-                        >
-                          <FileTypeIcon path={path} />
-                          <span className="truncate">
-                            {path.split("/").at(-1)}
-                          </span>
-                        </button>
-                      </SortableItemHandle>
-                      <Button
-                        aria-label={`Close ${path}`}
-                        size="icon-xs"
-                        variant="ghost"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          closeTab(path);
-                        }}
+                <ScrollArea
+                  className="h-10 bg-[#18191f]"
+                  scrollbars="horizontal"
+                >
+                  <SortableContent className="flex h-10 w-max min-w-full">
+                    {openTabs.map((path) => (
+                      <SortableItem
+                        className={cn(
+                          "flex h-10 min-w-32 max-w-48 items-center border-r border-white/10",
+                          path === selected
+                            ? "border-t-[3px] border-t-primary bg-[#111216]"
+                            : "border-b border-b-white/10 text-white/60",
+                        )}
+                        key={path}
+                        value={path}
                       >
-                        <XIcon />
-                      </Button>
-                    </SortableItem>
-                  ))}
-                </SortableContent>
+                        <SortableItemHandle asChild>
+                          <button
+                            className="flex min-w-0 flex-1 items-center gap-2 px-3"
+                            onClick={() => setSelected(path)}
+                            title={path}
+                            type="button"
+                          >
+                            <FileTypeIcon path={path} />
+                            <span className="truncate">
+                              {path.split("/").at(-1)}
+                            </span>
+                          </button>
+                        </SortableItemHandle>
+                        <Button
+                          aria-label={`Close ${path}`}
+                          className="text-white/40 hover:bg-white/10 hover:text-white/70"
+                          size="icon-xs"
+                          variant="ghost"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            closeTab(path);
+                          }}
+                        >
+                          <XIcon />
+                        </Button>
+                      </SortableItem>
+                    ))}
+                    <div
+                      aria-hidden
+                      className="h-10 min-w-0 flex-1 border-b border-white/10"
+                    />
+                  </SortableContent>
+                </ScrollArea>
               </Sortable>
               <div
-                className="relative grid min-h-0 grid-cols-[3rem_minmax(0,1fr)] overflow-hidden font-mono"
+                className={`relative grid min-h-0 overflow-hidden font-mono ${settings.editor.wordWrap ? "grid-cols-1" : "grid-cols-[3rem_minmax(0,1fr)]"}`}
                 style={{
                   fontFamily: "var(--editor-font-family)",
                   fontSize: "var(--editor-font-size)",
                   lineHeight: 1.55,
                 }}
               >
-                <div
-                  className="overflow-hidden border-r border-white/10 bg-[#0d0e11] py-2 text-right text-white/35"
-                  ref={linesRef}
-                >
-                  {source.split("\n").map((_line, index) => (
-                    <span className="block pr-3" key={index}>
-                      {index + 1}
-                    </span>
-                  ))}
-                </div>
+                {settings.editor.lineNumbers && !settings.editor.wordWrap && (
+                  <div
+                    className="overflow-hidden border-r border-white/10 bg-[#0d0e11] py-2 text-right text-white/35"
+                    ref={linesRef}
+                  >
+                    {source.split("\n").map((_line, index) => (
+                      <span className="block pr-3" key={index}>
+                        {index + 1}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="relative min-h-0 overflow-hidden">
                   <pre
                     aria-hidden
-                    className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre p-2"
+                    className={`pointer-events-none absolute inset-0 overflow-hidden whitespace-pre p-2 ${settings.editor.wordWrap ? "whitespace-pre-wrap break-all" : ""}`}
                     dangerouslySetInnerHTML={{
                       __html: highlightCode(selected, source),
                     }}
@@ -1202,7 +1260,12 @@ function LoadedWorkbench({
                     <SortableItem className="h-full" key={tab} value={tab}>
                       <SortableItemHandle asChild>
                         <Button
-                          className={`h-full rounded-none border-b-2 ${footerTab === tab ? "border-primary" : "border-transparent"}`}
+                          className={cn(
+                            "h-full rounded-none border-0 border-b-2 bg-transparent shadow-none hover:bg-transparent",
+                            footerTab === tab
+                              ? "border-primary text-foreground"
+                              : "border-transparent text-muted-foreground",
+                          )}
                           onClick={() => setFooterTab(tab)}
                           variant="ghost"
                         >
@@ -1243,7 +1306,10 @@ function LoadedWorkbench({
                 Preserve logs across restarts
               </Label>
             </div>
-            <div className="h-[calc(100%-2.25rem)] overflow-auto p-3 font-mono text-xs">
+            <ScrollArea
+              className="h-[calc(100%-2.25rem)] font-mono text-xs"
+              viewportClassName="p-3"
+            >
               {footerTab === "logs" &&
                 project.logs.map((log, index) => (
                   <div
@@ -1350,13 +1416,14 @@ function LoadedWorkbench({
                   </form>
                 </div>
               )}
-            </div>
+            </ScrollArea>
           </section>
         </section>
       </div>
 
       <SettingsDialog
         onOpenChange={setSettingsOpen}
+        onReset={resetSetting}
         onSet={updateSetting}
         open={settingsOpen}
         snapshot={snapshot}

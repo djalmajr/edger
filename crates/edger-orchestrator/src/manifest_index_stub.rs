@@ -103,6 +103,14 @@ impl ManifestIndex {
             state.host_routes.insert(host, worker.clone());
         }
 
+        if key == "cpanel" && worker.config.enabled {
+            if let Some(entries) = state.entries.get_mut(&key) {
+                for entry in entries {
+                    entry.worker.config.enabled = false;
+                }
+            }
+        }
+
         state.entries.entry(key).or_default().push(ManifestEntry {
             plugin_base,
             origin,
@@ -429,6 +437,11 @@ impl ManifestIndex {
                 "CORE_DEFAULT_REQUIRED",
                 format!("core worker {name} must keep at least one enabled default version"),
             ));
+        }
+        if name == "cpanel" && enabled {
+            for entry in bucket.iter_mut() {
+                entry.worker.config.enabled = entry.worker.version == target_version;
+            }
         }
         let entry = bucket
             .iter_mut()
@@ -771,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn cpanel_can_disable_one_version_when_another_default_remains() {
+    fn cpanel_can_keep_an_inactive_version_disabled() {
         let mut index = ManifestIndex::new();
         index
             .insert_with_origin(
@@ -789,12 +802,85 @@ mod tests {
             .unwrap();
 
         index
+            .set_worker_enabled("cpanel", Some("1.0.0"), true)
+            .unwrap();
+        index
             .set_worker_enabled("cpanel", Some("2.0.0"), false)
             .unwrap();
 
         assert_eq!(
             index.resolve_worker("cpanel", None).unwrap().version,
             "1.0.0"
+        );
+    }
+
+    #[test]
+    fn enabling_cpanel_version_atomically_disables_the_other_versions() {
+        let mut index = ManifestIndex::new();
+        index
+            .insert_with_origin(
+                PathBuf::from("/w/cpanel-v1"),
+                manifest("cpanel", "1.0.0"),
+                WorkerOrigin::CoreBundled,
+            )
+            .unwrap();
+        index
+            .insert_with_origin(
+                PathBuf::from("/w/cpanel-v2"),
+                manifest("cpanel", "2.0.0"),
+                WorkerOrigin::CoreOverlay,
+            )
+            .unwrap();
+
+        index
+            .set_worker_enabled("cpanel", Some("1.0.0"), true)
+            .unwrap();
+
+        assert_eq!(
+            index.resolve_worker("cpanel", None).unwrap().version,
+            "1.0.0"
+        );
+        let workers = index.admin_workers();
+        assert_eq!(
+            workers
+                .iter()
+                .find(|worker| worker.name == "cpanel" && worker.version == "2.0.0")
+                .unwrap()
+                .status,
+            "disabled"
+        );
+    }
+
+    #[test]
+    fn inserting_enabled_cpanel_version_disables_the_previous_default() {
+        let mut index = ManifestIndex::new();
+        index
+            .insert_with_origin(
+                PathBuf::from("/w/cpanel-v1"),
+                manifest("cpanel", "1.0.0"),
+                WorkerOrigin::CoreBundled,
+            )
+            .unwrap();
+        index
+            .insert_with_origin(
+                PathBuf::from("/w/cpanel-v2"),
+                manifest("cpanel", "2.0.0"),
+                WorkerOrigin::CoreOverlay,
+            )
+            .unwrap();
+
+        assert_eq!(
+            index.resolve_worker("cpanel", None).unwrap().version,
+            "2.0.0"
+        );
+        let workers = index.admin_workers();
+        assert_eq!(
+            workers
+                .iter()
+                .find(|worker| worker.name == "cpanel" && worker.version == "1.0.0")
+                .unwrap()
+                .status,
+            "disabled"
         );
     }
 

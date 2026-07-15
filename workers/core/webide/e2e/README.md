@@ -45,6 +45,7 @@ execução devem ser adicionados em `e2e/usability/` sem alterar os arquivos em
 | `operational-terminal` | Usar somente comandos operacionais permitidos | adversarial-security-researcher | 14 |
 | `layout-resizing-and-responsive` | Redimensionar e usar layout compacto | ui-ux-responsive-auditor | 12 |
 | `keyboard-and-dialog-accessibility` | Operar navegação e diálogos por teclado | assistive-technology-developer | 13 |
+| `settings-preferences` | Pesquisar, alterar e restaurar preferências por escopo | assistive-technology-developer | 10 |
 
 ## Distribuição das personas
 
@@ -56,7 +57,7 @@ execução devem ser adicionados em `e2e/usability/` sem alterar os arquivos em
 | `release-reliability-engineer` | 3 | Persistência e recuperação segura |
 | `adversarial-security-researcher` | 1 | Limites e vazamentos observáveis pela UI |
 | `ui-ux-responsive-auditor` | 1 | Consistência visual e breakpoints |
-| `assistive-technology-developer` | 1 | Teclado, leitor de tela e foco |
+| `assistive-technology-developer` | 2 | Teclado, leitor de tela, foco e preferências |
 
 ## Matriz de cobertura
 
@@ -83,6 +84,7 @@ execução devem ser adicionados em `e2e/usability/` sem alterar os arquivos em
 | help, files, status, preview, validate, deploy, clear e comando inválido | `operational-terminal` |
 | Três splitters, persistência e breakpoints compactos | `layout-resizing-and-responsive` |
 | Escape, overlay, Enter/Espaço, foco, tooltips e atalhos | `keyboard-and-dialog-accessibility` |
+| Settings, busca, categorias, User/Workspace, Modified e reset | `settings-preferences` |
 
 ## Fixtures
 

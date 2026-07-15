@@ -1,9 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  type ColumnDef,
+  getCoreRowModel,
+  getPaginationRowModel,
+  useReactTable,
+} from "@tanstack/react-table";
 import * as React from "react";
+import DenoLogo from "~icons/logos/deno";
+import HtmlLogo from "~icons/logos/html-5";
+import NextLogo from "~icons/logos/nextjs-icon";
+import NodeLogo from "~icons/logos/nodejs-icon";
+import ReactLogo from "~icons/logos/react";
+import SvelteLogo from "~icons/logos/svelte-icon";
+import ViteLogo from "~icons/logos/vitejs";
+import VueLogo from "~icons/logos/vue";
 
 import { Badge } from "@edger/ui/components/ui/badge";
 import { Button } from "@edger/ui/components/ui/button";
-import { Card, CardDescription, CardTitle } from "@edger/ui/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -13,20 +26,8 @@ import {
   DialogTitle,
 } from "@edger/ui/components/ui/dialog";
 import { Input } from "@edger/ui/components/ui/input";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from "@edger/ui/components/ui/input-group";
 import { Label } from "@edger/ui/components/ui/label";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@edger/ui/components/ui/table";
+import { ScrollArea } from "@edger/ui/components/ui/scroll-area";
 import {
   Tabs,
   TabsContent,
@@ -39,21 +40,24 @@ import {
   TooltipTrigger,
 } from "@edger/ui/components/ui/tooltip";
 import {
-  AsteriskIcon,
+  AtomIcon,
   BoxesIcon,
   BracesIcon,
   ChevronRightIcon,
   CopyIcon,
   FolderInputIcon,
+  FlameIcon,
   ImportIcon,
-  Layers3Icon,
   LayoutDashboardIcon,
   PanelsTopLeftIcon,
   PencilIcon,
   PlusIcon,
   RouteIcon,
-  SearchIcon,
+  ComponentIcon,
+  NetworkIcon,
   Trash2Icon,
+  TriangleIcon,
+  WebhookIcon,
 } from "@edger/ui/icons/lucide";
 
 import {
@@ -68,6 +72,11 @@ import {
   slugify,
   templates,
 } from "../lib/projects";
+import {
+  detectProjectBrand,
+  type ProjectBrand,
+} from "../lib/project-brand";
+import { DataTable } from "./data-table/data-table";
 
 type DashboardProps = { onOpenProject(id: string): void };
 type ProjectDialog = { kind: "delete" | "rename"; project: Project } | null;
@@ -78,16 +87,67 @@ const CATEGORY_LABELS = {
   fullstack: "Fullstack",
 } as const;
 
+const PROJECT_TYPE_ICONS: Record<
+  ProjectType,
+  React.ComponentType<{ className?: string }>
+> = {
+  FetchHandler: BracesIcon,
+  NextJs: TriangleIcon,
+  React: AtomIcon,
+  RoutesTable: RouteIcon,
+  StaticSpa: PanelsTopLeftIcon,
+  Svelte: FlameIcon,
+  TanStackStart: NetworkIcon,
+  Vue: ComponentIcon,
+};
+
 function TemplateIcon({ type }: { type: ProjectType }) {
-  const Icon =
-    type === "RoutesTable"
-      ? RouteIcon
-      : type === "FetchHandler"
-        ? BracesIcon
-        : type === "StaticSpa"
-          ? PanelsTopLeftIcon
-          : Layers3Icon;
+  const Icon = PROJECT_TYPE_ICONS[type];
   return <Icon className="size-5" />;
+}
+
+const PROJECT_BRAND_LOGOS: Record<
+  ProjectBrand,
+  {
+    className: string;
+    icon: React.ComponentType<{ className?: string }>;
+    label: string;
+  }
+> = {
+  deno: { className: "size-6 dark:invert", icon: DenoLogo, label: "Deno" },
+  html: { className: "size-6", icon: HtmlLogo, label: "HTML" },
+  next: {
+    className: "size-6 dark:invert",
+    icon: NextLogo,
+    label: "Next.js",
+  },
+  node: { className: "size-6", icon: NodeLogo, label: "Node.js" },
+  react: { className: "size-6", icon: ReactLogo, label: "React" },
+  svelte: { className: "size-6", icon: SvelteLogo, label: "Svelte" },
+  vite: { className: "size-6", icon: ViteLogo, label: "Vite" },
+  vue: { className: "size-6", icon: VueLogo, label: "Vue" },
+};
+
+function ProjectLogo({ project }: { project: Project }) {
+  const brand = PROJECT_BRAND_LOGOS[detectProjectBrand(project)];
+  const Icon = brand.icon;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            aria-label={`${brand.label} project`}
+            className="grid size-9 place-items-center rounded-lg bg-muted/60"
+            role="img"
+          />
+        }
+      >
+        <Icon className={brand.className} />
+      </TooltipTrigger>
+      <TooltipContent>{brand.label}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 function IconButton({
@@ -123,7 +183,6 @@ export function Dashboard({ onOpenProject }: DashboardProps) {
   const [section, setSection] = React.useState<"dashboard" | "projects">(
     "dashboard",
   );
-  const [search, setSearch] = React.useState("");
   const [templateOpen, setTemplateOpen] = React.useState(false);
   const [templateCategory, setTemplateCategory] =
     React.useState<keyof typeof CATEGORY_LABELS>("frontend");
@@ -148,15 +207,6 @@ export function Dashboard({ onOpenProject }: DashboardProps) {
   });
 
   const projects = projectsQuery.data ?? [];
-  const normalizedSearch = search.trim().toLowerCase();
-  const filtered = projects.filter(
-    (project) =>
-      !normalizedSearch ||
-      project.name.toLowerCase().includes(normalizedSearch) ||
-      project.type.toLowerCase().includes(normalizedSearch),
-  );
-  const visible = section === "dashboard" ? filtered.slice(0, 6) : filtered;
-
   function nextProjectName(type: ProjectType) {
     const base = slugify(`${templates[type].name}-app`);
     const names = new Set(projects.map((project) => project.name));
@@ -217,38 +267,133 @@ export function Dashboard({ onOpenProject }: DashboardProps) {
     });
   }
 
+  const projectColumns: ColumnDef<Project>[] = [
+    {
+      accessorKey: "name",
+      header: "Project",
+      cell: ({ row }) => {
+        const project = row.original;
+        return (
+          <div className="flex items-center gap-3">
+            <ProjectLogo project={project} />
+            <span className="min-w-0">
+              <strong className="block truncate font-medium">
+                {project.name}
+              </strong>
+              <small className="block truncate text-muted-foreground">
+                {project.previewUrl
+                  ? `Deployed at ${project.previewUrl}`
+                  : "Local draft"}
+              </small>
+            </span>
+          </div>
+        );
+      },
+    },
+    {
+      accessorKey: "type",
+      header: "Runtime",
+      cell: ({ row }) => templates[row.original.type].name,
+    },
+    {
+      accessorKey: "version",
+      header: "Version",
+      cell: ({ row }) => (
+        <Badge className="font-mono" variant="secondary">
+          {row.original.version}
+        </Badge>
+      ),
+    },
+    {
+      accessorKey: "updatedAt",
+      header: "Updated",
+      cell: ({ row }) => (
+        <span className="text-muted-foreground">
+          {new Date(row.original.updatedAt).toLocaleString([], {
+            dateStyle: "medium",
+            timeStyle: "short",
+          })}
+        </span>
+      ),
+    },
+    {
+      id: "actions",
+      header: () => <span className="sr-only">Actions</span>,
+      cell: ({ row }) => {
+        const project = row.original;
+        return (
+          <div
+            className="flex justify-end gap-1"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
+            <IconButton
+              label={`Duplicate ${project.name}`}
+              onClick={() =>
+                mutation.mutate(async () =>
+                  saveProject(duplicateProject(project)),
+                )
+              }
+            >
+              <CopyIcon />
+            </IconButton>
+            <IconButton
+              label={`Rename ${project.name}`}
+              onClick={() => openDialog("rename", project)}
+            >
+              <PencilIcon />
+            </IconButton>
+            <IconButton
+              label={`Delete ${project.name}`}
+              onClick={() => openDialog("delete", project)}
+            >
+              <Trash2Icon />
+            </IconButton>
+          </div>
+        );
+      },
+    },
+  ];
+  const projectTable = useReactTable({
+    columns: projectColumns,
+    data: projects,
+    getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    initialState: {
+      pagination: {
+        pageIndex: 0,
+        pageSize: 10,
+      },
+    },
+  });
+
   return (
-    <main className="grid min-h-screen grid-cols-[13rem_minmax(0,1fr)] grid-rows-[3.75rem_minmax(0,1fr)] bg-background text-foreground">
+    <main className="grid min-h-screen grid-cols-[13rem_minmax(0,1fr)] grid-rows-[2.5rem_minmax(0,1fr)] bg-background text-foreground">
       <header className="col-span-2 flex items-center border-b bg-card px-5">
-        <div className="flex w-48 items-center gap-3 font-heading font-semibold">
-          <AsteriskIcon className="size-6 text-primary dark:text-white" />
+        <div className="flex items-center gap-3 font-heading font-semibold">
+          <WebhookIcon className="size-6 text-primary dark:text-white" />
           <span>WebIDE</span>
         </div>
-        <InputGroup className="mx-auto max-w-md">
-          <InputGroupAddon>
-            <SearchIcon />
-          </InputGroupAddon>
-          <InputGroupInput
-            aria-label="Search projects"
-            onChange={(event) => setSearch(event.currentTarget.value)}
-            placeholder="Search projects…"
-            value={search}
-          />
-        </InputGroup>
       </header>
 
       <aside className="border-r bg-sidebar p-3 text-sidebar-foreground">
         <nav className="flex flex-col gap-1">
           <Button
             className="justify-start"
-            onClick={() => setSection("dashboard")}
+            onClick={() => {
+              projectTable.setPageIndex(0);
+              setSection("dashboard");
+            }}
             variant={section === "dashboard" ? "secondary" : "ghost"}
           >
             <LayoutDashboardIcon /> Dashboard
           </Button>
           <Button
             className="justify-start"
-            onClick={() => setSection("projects")}
+            onClick={() => {
+              projectTable.setPageIndex(0);
+              setSection("projects");
+            }}
             variant={section === "projects" ? "secondary" : "ghost"}
           >
             <BoxesIcon /> Projects
@@ -256,8 +401,8 @@ export function Dashboard({ onOpenProject }: DashboardProps) {
         </nav>
       </aside>
 
-      <section className="min-w-0 overflow-auto px-8 py-7 lg:px-12">
-        <div className="mx-auto flex max-w-6xl flex-col gap-7">
+      <ScrollArea className="min-h-0 min-w-0">
+        <div className="mx-auto flex max-w-6xl flex-col gap-7 px-8 py-7 lg:px-12">
           <div>
             <h1 className="font-heading text-4xl font-semibold tracking-tight">
               {section === "dashboard" ? "Build at the edge" : "Projects"}
@@ -280,163 +425,80 @@ export function Dashboard({ onOpenProject }: DashboardProps) {
 
           {section === "dashboard" && (
             <div className="grid gap-3 md:grid-cols-2">
-              <Card>
-                <Button
-                  className="h-auto w-full justify-start gap-4 rounded-xl px-4 py-5 text-left"
-                  onClick={() => setTemplateOpen(true)}
-                  variant="ghost"
-                >
-                  <span className="grid size-11 place-items-center rounded-lg bg-primary/15 text-primary">
-                    <PlusIcon className="size-6" />
+              <Button
+                className="h-auto min-h-28 w-full justify-start gap-5 rounded-xl px-5 py-6 text-left"
+                onClick={() => setTemplateOpen(true)}
+                variant="outline"
+              >
+                <span className="grid size-12 place-items-center rounded-lg bg-primary/15 text-primary">
+                  <PlusIcon className="size-6" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block font-heading text-base font-medium text-foreground">
+                    New project
                   </span>
-                  <div className="min-w-0 flex-1">
-                    <CardTitle>New project</CardTitle>
-                    <CardDescription>
-                      Choose an EdgeR starter and begin in the workbench.
-                    </CardDescription>
-                  </div>
-                  <ChevronRightIcon />
-                </Button>
-              </Card>
-              <Card>
-                <Button
-                  className="h-auto w-full justify-start gap-4 rounded-xl px-4 py-5 text-left"
-                  onClick={() => importInput.current?.click()}
-                  variant="ghost"
-                >
-                  <span className="grid size-11 place-items-center rounded-lg bg-primary/15 text-primary">
-                    <FolderInputIcon className="size-6" />
+                  <span className="mt-1 block text-sm text-muted-foreground">
+                    Choose an EdgeR starter and begin in the workbench.
                   </span>
-                  <div className="min-w-0 flex-1">
-                    <CardTitle>Import</CardTitle>
-                    <CardDescription>
-                      Open a local project folder containing manifest.yaml.
-                    </CardDescription>
-                  </div>
-                  <ChevronRightIcon />
-                </Button>
-                <Input
-                  className="hidden"
-                  ref={importInput}
-                  type="file"
-                  multiple
-                  {...({
-                    webkitdirectory: "",
-                    directory: "",
-                  } as React.InputHTMLAttributes<HTMLInputElement>)}
-                  onChange={(event) =>
-                    void importFiles(event.currentTarget.files)
-                  }
-                />
-              </Card>
+                </span>
+                <ChevronRightIcon />
+              </Button>
+              <Button
+                className="h-auto min-h-28 w-full justify-start gap-5 rounded-xl px-5 py-6 text-left"
+                onClick={() => importInput.current?.click()}
+                variant="outline"
+              >
+                <span className="grid size-12 place-items-center rounded-lg bg-primary/15 text-primary">
+                  <FolderInputIcon className="size-6" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block font-heading text-base font-medium text-foreground">
+                    Import
+                  </span>
+                  <span className="mt-1 block text-sm text-muted-foreground">
+                    Open a local project folder containing manifest.yaml.
+                  </span>
+                </span>
+                <ChevronRightIcon />
+              </Button>
+              <Input
+                className="hidden"
+                ref={importInput}
+                type="file"
+                multiple
+                {...({
+                  webkitdirectory: "",
+                  directory: "",
+                } as React.InputHTMLAttributes<HTMLInputElement>)}
+                onChange={(event) => void importFiles(event.currentTarget.files)}
+              />
             </div>
           )}
 
           <section className="flex flex-col gap-3">
-            <h2 className="font-heading text-base font-medium">
-              {section === "dashboard" ? "Recent projects" : "All projects"}
-            </h2>
-            <div className="overflow-hidden rounded-xl border bg-card">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Project</TableHead>
-                    <TableHead>Runtime</TableHead>
-                    <TableHead>Version</TableHead>
-                    <TableHead>Updated</TableHead>
-                    <TableHead>
-                      <span className="sr-only">Actions</span>
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {visible.map((project) => (
-                    <TableRow
-                      className="cursor-pointer hover:bg-muted/50"
-                      key={project.id}
-                      onClick={() => onOpenProject(project.id)}
-                      tabIndex={0}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ")
-                          onOpenProject(project.id);
-                      }}
-                    >
-                      <TableCell>
-                        <div className="flex items-center gap-3">
-                          <span className="grid size-9 place-items-center rounded-lg bg-primary/15 text-primary">
-                            <TemplateIcon type={project.type} />
-                          </span>
-                          <span className="min-w-0">
-                            <strong className="block truncate font-medium">
-                              {project.name}
-                            </strong>
-                            <small className="block truncate text-muted-foreground">
-                              {project.previewUrl
-                                ? `Deployed at ${project.previewUrl}`
-                                : "Local draft"}
-                            </small>
-                          </span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        {templates[project.type]?.name ?? project.type}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="secondary" className="font-mono">
-                          {project.version}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {new Date(project.updatedAt).toLocaleString([], {
-                          dateStyle: "medium",
-                          timeStyle: "short",
-                        })}
-                      </TableCell>
-                      <TableCell onClick={(event) => event.stopPropagation()}>
-                        <div className="flex justify-end gap-1">
-                          <IconButton
-                            label={`Duplicate ${project.name}`}
-                            onClick={() =>
-                              mutation.mutate(async () =>
-                                saveProject(duplicateProject(project)),
-                              )
-                            }
-                          >
-                            <CopyIcon />
-                          </IconButton>
-                          <IconButton
-                            label={`Rename ${project.name}`}
-                            onClick={() => openDialog("rename", project)}
-                          >
-                            <PencilIcon />
-                          </IconButton>
-                          <IconButton
-                            label={`Delete ${project.name}`}
-                            onClick={() => openDialog("delete", project)}
-                          >
-                            <Trash2Icon />
-                          </IconButton>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {!projectsQuery.isLoading && visible.length === 0 && (
-                    <TableRow>
-                      <TableCell
-                        colSpan={5}
-                        className="h-40 text-center text-muted-foreground"
-                      >
-                        <ImportIcon className="mx-auto mb-2 size-6" />
-                        No projects yet. Create or import one to get started.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
+            {section === "dashboard" ? (
+              <h2 className="font-heading text-base font-medium">
+                Recent projects
+              </h2>
+            ) : null}
+            <DataTable
+              emptyState={
+                projectsQuery.isLoading ? (
+                  "Loading projects…"
+                ) : (
+                  <span className="flex flex-col items-center gap-2">
+                    <ImportIcon className="size-6" />
+                    No projects yet. Create or import one to get started.
+                  </span>
+                )
+              }
+              onRowClick={(row) => onOpenProject(row.original.id)}
+              paginated={section === "projects"}
+              table={projectTable}
+            />
           </section>
         </div>
-      </section>
+      </ScrollArea>
 
       <Dialog open={templateOpen} onOpenChange={setTemplateOpen}>
         <DialogContent className="sm:max-w-3xl">

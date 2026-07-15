@@ -1,0 +1,3 @@
+name: static-spa-app-7
+version: "1.0.1"
+entrypoint: index.html

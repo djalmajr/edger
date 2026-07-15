@@ -86,7 +86,7 @@ Validação Browser:
 
 ## Paginação e expansão
 
-O inventário pagina depois de busca, filtros e ordenação, com 10, 25, 50 ou 100
+O inventário pagina depois de busca, filtros e ordenação, com 15, 30 ou 60
 apps por página, primeiro/anterior/próximo/último e status `Showing X–Y of N`.
 Alterar filtro, ordenação ou page size retorna à primeira página. Os detalhes de
 versões não criam mais scroll horizontal interno nem `min-width`; o conteúdo

@@ -11,7 +11,16 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
+import {
+  type ColumnDef,
+  getCoreRowModel,
+  getPaginationRowModel,
+  getSortedRowModel,
+  type SortingState,
+  useReactTable,
+} from "@tanstack/react-table";
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { CartesianGrid, Line, LineChart, XAxis } from "recharts";
 
@@ -42,7 +51,11 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@edger/ui/components/ui/dropdown-menu";
@@ -63,9 +76,16 @@ import {
   SelectValue,
 } from "@edger/ui/components/ui/select";
 import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@edger/ui/components/ui/sheet";
+import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
+  SidebarGroup,
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
@@ -91,11 +111,12 @@ import {
 import {
   ActivityIcon,
   ArrowLeftIcon,
-  BoxIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  CopyIcon,
   CpuIcon,
+  DownloadIcon,
   ExternalLinkIcon,
   EyeIcon,
   EyeOffIcon,
@@ -108,26 +129,47 @@ import {
   KeyRoundIcon,
   LogInIcon,
   LogOutIcon,
+  MonitorIcon,
   MoreVerticalIcon,
+  MoonIcon,
   PowerOffIcon,
   RefreshCwIcon,
   RocketIcon,
   RotateCcwIcon,
-  RouteIcon,
   ScrollTextIcon,
   SearchIcon,
   ShieldCheckIcon,
+  SunIcon,
   UploadCloudIcon,
   UploadIcon,
 } from "@edger/ui/icons/lucide";
-import { ThemeProvider } from "@edger/ui/lib/theme";
+import {
+  ThemeProvider,
+  type ThemePreference,
+  useTheme,
+} from "@edger/ui/lib/theme";
 
 import "./app.css";
 import {
+  DataGrid,
+  DataGridColumnHeader,
+  DEFAULT_PAGE_SIZE,
+  PaginationControls,
+} from "./components/data-grid";
+import { Overview } from "./components/overview";
+import {
+  I18nProvider,
+  type Locale,
+  type TranslationKey,
+  useI18n,
+} from "./lib/i18n";
+import {
+  apiDownload,
   apiJson,
   compareSemver,
   kindLabel,
   loadAll,
+  type OperationalEvent,
   type RuntimeData,
   type RuntimeWorker,
   type Worker,
@@ -142,22 +184,22 @@ type RouteState = { path: string; target?: Target; view: View };
 
 const NAVIGATION = [
   {
-    description: "Runtime posture at a glance",
+    descriptionKey: "nav.overview.description" as TranslationKey,
     icon: GaugeIcon,
     id: "overview" as const,
-    title: "Overview",
+    titleKey: "nav.overview" as TranslationKey,
   },
   {
-    description: "Runtime worker inventory",
+    descriptionKey: "nav.workers.description" as TranslationKey,
     icon: CpuIcon,
     id: "workers" as const,
-    title: "Workers",
+    titleKey: "nav.workers" as TranslationKey,
   },
   {
-    description: "Local runtime signals and logs",
+    descriptionKey: "nav.observability.description" as TranslationKey,
     icon: ActivityIcon,
     id: "observability" as const,
-    title: "Observability",
+    titleKey: "nav.observability" as TranslationKey,
   },
 ];
 
@@ -241,6 +283,13 @@ function ActionButton({
       <TooltipContent>{label}</TooltipContent>
     </Tooltip>
   );
+}
+
+const PageActionsContext = React.createContext<HTMLElement | null>(null);
+
+function PageActions({ children }: { children: React.ReactNode }) {
+  const target = React.useContext(PageActionsContext);
+  return target ? createPortal(children, target) : null;
 }
 
 function MetricCard({
@@ -344,132 +393,6 @@ function Login({ onAuthenticated }: { onAuthenticated(apiKey: string): void }) {
   );
 }
 
-function Overview({
-  data,
-  onWorkers,
-}: {
-  data: RuntimeData;
-  onWorkers(): void;
-}) {
-  const workers = data.workers;
-  const pool = data.metricsStats?.pool ?? {};
-  const apps = new Set(workers.map((worker) => worker.name));
-  const enabled = workers.filter((worker) => worker.status !== "disabled");
-  const requests = (data.metricsStats?.workers ?? []).reduce(
-    (sum, worker) => sum + (worker.requestTotal ?? 0),
-    0,
-  );
-  const attention =
-    workers.filter((worker) => worker.status === "disabled").length +
-    Object.values(data.workerErrors).filter((value) => (value.count ?? 0) > 0)
-      .length;
-  return (
-    <div className="grid gap-4">
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard
-          description="Worker versions loaded by the runtime"
-          icon={CpuIcon}
-          label="Workers"
-          value={String(workers.length)}
-        />
-        <MetricCard
-          description="Distinct applications"
-          icon={BoxIcon}
-          label="Apps"
-          value={String(apps.size)}
-        />
-        <MetricCard
-          description="Enabled worker versions"
-          icon={RouteIcon}
-          label="Routable"
-          value={String(enabled.length)}
-        />
-        <MetricCard
-          description="Observed across worker versions"
-          icon={ActivityIcon}
-          label="Total requests"
-          value={String(requests)}
-        />
-      </div>
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>Pool health</CardTitle>
-            <CardAction>
-              <Badge variant="outline">live · /metrics/stats</Badge>
-            </CardAction>
-          </CardHeader>
-          <CardContent className="grid grid-cols-2 gap-5 sm:grid-cols-3">
-            {[
-              ["Active requests", pool.activeRequests],
-              ["Idle workers", pool.idleWorkers],
-              ["Cache hits", pool.cacheHits],
-              ["Cache misses", pool.cacheMisses],
-              ["Spawn p50", `${pool.spawnLatencyMsP50 ?? 0} ms`],
-              ["Terminated", pool.terminatedTotal],
-            ].map(([label, value]) => (
-              <div key={String(label)}>
-                <span className="text-xs font-medium uppercase text-muted-foreground">
-                  {label}
-                </span>
-                <strong className="mt-1 block text-xl">
-                  {String(value ?? 0)}
-                </strong>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Runtime status</CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-3 text-sm">
-            {[
-              ["Principal", data.principal.name],
-              ["Role", data.principal.role],
-              ["Namespaces", data.principal.namespaces?.join(", ")],
-              ["Control plane", "root-key gate"],
-            ].map(([label, value]) => (
-              <div
-                className="flex justify-between gap-3 border-b pb-2 last:border-0"
-                key={label}
-              >
-                <span className="text-muted-foreground">{label}</span>
-                <strong className="truncate">{value ?? "-"}</strong>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      </div>
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            Needs attention{" "}
-            {attention > 0 && <Badge variant="secondary">{attention}</Badge>}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {attention === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Everything looks healthy — no disabled versions or recent errors.
-            </p>
-          ) : (
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-muted-foreground">
-                {attention} runtime signal{attention === 1 ? "" : "s"} need
-                review.
-              </p>
-              <Button onClick={onWorkers} variant="outline">
-                Review workers
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
 function Workers({
   apiKey,
   data,
@@ -486,6 +409,7 @@ function Workers({
   const [expanded, setExpanded] = React.useState<Set<string>>(() => new Set());
   const [deployOpen, setDeployOpen] = React.useState(false);
   const [page, setPage] = React.useState(0);
+  const [pageSize, setPageSize] = React.useState(DEFAULT_PAGE_SIZE);
   const queryClient = useQueryClient();
   const serving = new Map<string, string>();
   data.workers
@@ -511,9 +435,11 @@ function Workers({
         group.versions.some((worker) => worker.version.includes(normalized))) &&
       (kind === "all" || kindLabel(group.versions[0].kind) === kind),
   );
-  const pageSize = 10;
   const pages = Math.max(1, Math.ceil(visible.length / pageSize));
   const rows = visible.slice(page * pageSize, page * pageSize + pageSize);
+  React.useEffect(() => {
+    if (page >= pages) setPage(pages - 1);
+  }, [page, pages]);
   const kinds = [
     ...new Set(groups.map((group) => kindLabel(group.versions[0].kind))),
   ].sort();
@@ -531,52 +457,48 @@ function Workers({
   });
   return (
     <div className="grid gap-4">
-      <div className="flex flex-col gap-3 rounded-xl border bg-card p-4 lg:flex-row lg:items-center">
-        <div>
-          <h2 className="font-heading text-lg font-medium">Applications</h2>
-          <p className="text-sm text-muted-foreground">
-            Every version has its own pathname; the latest enabled version is
-            the default.
-          </p>
-        </div>
-        <div className="ml-auto flex flex-wrap gap-2">
-          <InputGroup className="w-64">
-            <InputGroupAddon>
-              <SearchIcon />
-            </InputGroupAddon>
-            <InputGroupInput
-              aria-label="Search workers"
-              placeholder="Search applications…"
-              value={query}
-              onChange={(event) => {
-                setQuery(event.currentTarget.value);
-                setPage(0);
-              }}
-            />
-          </InputGroup>
-          <Select
-            value={kind}
-            onValueChange={(value) => setKind(value ?? "all")}
-          >
-            <SelectTrigger className="w-44">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectItem value="all">All kinds</SelectItem>
-                {kinds.map((value) => (
-                  <SelectItem key={value} value={value}>
-                    {value}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          <Button onClick={() => setDeployOpen(true)}>
-            <UploadCloudIcon />
-            Deploy app
-          </Button>
-        </div>
+      <PageActions>
+        <Button onClick={() => setDeployOpen(true)}>
+          <UploadCloudIcon />
+          Deploy app
+        </Button>
+      </PageActions>
+      <div className="flex flex-wrap gap-2">
+        <InputGroup className="w-64">
+          <InputGroupAddon>
+            <SearchIcon />
+          </InputGroupAddon>
+          <InputGroupInput
+            aria-label="Search workers"
+            placeholder="Search applications…"
+            value={query}
+            onChange={(event) => {
+              setQuery(event.currentTarget.value);
+              setPage(0);
+            }}
+          />
+        </InputGroup>
+        <Select
+          value={kind}
+          onValueChange={(value) => {
+            setKind(value ?? "all");
+            setPage(0);
+          }}
+        >
+          <SelectTrigger aria-label="Filter by worker kind" className="w-44">
+            <SelectValue>{kind === "all" ? "All kinds" : kind}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="all">All kinds</SelectItem>
+              {kinds.map((value) => (
+                <SelectItem key={value} value={value}>
+                  {value}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
       </div>
       <div className="grid gap-2">
         {rows.map((group) => {
@@ -587,9 +509,9 @@ function Workers({
           ).length;
           const errors = data.workerErrors[group.name]?.count ?? 0;
           return (
-            <Card key={group.name}>
+            <Card className="gap-0 py-0" key={group.name}>
               <button
-                className="flex w-full items-center gap-3 p-4 text-left"
+                className="flex w-full items-center gap-3 p-3 text-left"
                 onClick={() =>
                   setExpanded((current) => {
                     const next = new Set(current);
@@ -649,6 +571,9 @@ function Workers({
                             candidate.version === worker.version,
                         );
                         const isCore = worker.origin !== "user";
+                        const canOpenUrl =
+                          worker.status !== "disabled" &&
+                          worker.name !== "cpanel";
                         return (
                           <TableRow key={`${worker.name}@${worker.version}`}>
                             <TableCell>
@@ -691,6 +616,7 @@ function Workers({
                                   <FolderOpenIcon />
                                 </ActionButton>
                                 <ActionButton
+                                  disabled={!canOpenUrl}
                                   label="Open URL"
                                   onClick={() =>
                                     window.open(
@@ -714,7 +640,10 @@ function Workers({
                                   >
                                     <MoreVerticalIcon />
                                   </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end">
+                                  <DropdownMenuContent
+                                    align="end"
+                                    className="min-w-44 whitespace-nowrap"
+                                  >
                                     <DropdownMenuItem
                                       onClick={() =>
                                         onOpen(worker, "observability")
@@ -786,31 +715,28 @@ function Workers({
           </Card>
         )}
       </div>
-      <div className="flex items-center justify-between text-sm text-muted-foreground">
+      <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
         <span>
-          Showing {rows.length} of {visible.length} applications
+          Showing {Math.min((page + 1) * pageSize, visible.length)} of{" "}
+          {visible.length} applications
         </span>
-        <div className="flex items-center gap-2">
-          <Button
-            disabled={page === 0}
-            onClick={() => setPage((value) => value - 1)}
-            size="sm"
-            variant="outline"
-          >
-            Previous
-          </Button>
-          <span>
-            Page {page + 1} of {pages}
-          </span>
-          <Button
-            disabled={page >= pages - 1}
-            onClick={() => setPage((value) => value + 1)}
-            size="sm"
-            variant="outline"
-          >
-            Next
-          </Button>
-        </div>
+        <nav aria-label="Workers pagination">
+          <PaginationControls
+            canNextPage={page < pages - 1}
+            canPreviousPage={page > 0}
+            onFirstPage={() => setPage(0)}
+            onLastPage={() => setPage(pages - 1)}
+            onNextPage={() => setPage((value) => value + 1)}
+            onPageSizeChange={(value) => {
+              setPageSize(value);
+              setPage(0);
+            }}
+            onPreviousPage={() => setPage((value) => value - 1)}
+            pageCount={pages}
+            pageIndex={page}
+            pageSize={pageSize}
+          />
+        </nav>
       </div>
       <DeployDialog
         apiKey={apiKey}
@@ -979,6 +905,17 @@ function Observability({
 function Logs({ apiKey, target }: { apiKey: string; target?: Target }) {
   const [level, setLevel] = React.useState("all");
   const [query, setQuery] = React.useState("");
+  const [selectedEvent, setSelectedEvent] =
+    React.useState<OperationalEvent | null>(null);
+  const [sorting, setSorting] = React.useState<SortingState>([
+    { desc: true, id: "atMs" },
+  ]);
+  const levelLabels: Record<string, string> = {
+    all: "All levels",
+    error: "Error",
+    info: "Info",
+    warn: "Warning",
+  };
   const eventsQuery = useQuery({
     queryKey: ["cpanel", "events", target],
     queryFn: () => {
@@ -988,7 +925,7 @@ function Logs({ apiKey, target }: { apiKey: string; target?: Target }) {
         params.set("version", target.version);
       }
       return apiJson<{
-        events: Array<Record<string, unknown>>;
+        events: OperationalEvent[];
         stats?: Record<string, number>;
       }>(apiKey, `/api/admin/observability/events?${params}`);
     },
@@ -1000,9 +937,130 @@ function Logs({ apiKey, target }: { apiKey: string; target?: Target }) {
       (!query ||
         JSON.stringify(event).toLowerCase().includes(query.toLowerCase())),
   );
+  const columns = React.useMemo<ColumnDef<OperationalEvent>[]>(
+    () => [
+      {
+        accessorKey: "atMs",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label="Time" />
+        ),
+        cell: ({ row }) => (
+          <span className="text-muted-foreground">
+            {new Date(Number(row.original.atMs)).toLocaleTimeString()}
+          </span>
+        ),
+      },
+      {
+        accessorKey: "level",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label="Level" />
+        ),
+        cell: ({ row }) => (
+          <Badge
+            className={
+              row.original.level === "error"
+                ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300"
+                : row.original.level === "warn"
+                  ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                  : "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300"
+            }
+            variant="outline"
+          >
+            {row.original.level ?? "info"}
+          </Badge>
+        ),
+      },
+      {
+        accessorFn: (event) =>
+          event.worker ? `${event.worker}@${event.version}` : "runtime",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label="Worker" />
+        ),
+        id: "worker",
+        cell: ({ getValue }) => (
+          <span className="font-mono text-xs">{String(getValue())}</span>
+        ),
+      },
+      {
+        accessorFn: (event) => event.kind ?? event.source ?? "-",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label="Event" />
+        ),
+        id: "event",
+      },
+      {
+        accessorFn: (event) => event.outcome ?? event.status ?? "-",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label="Outcome" />
+        ),
+        id: "outcome",
+      },
+      {
+        accessorFn: (event) => event.durationMs,
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label="Duration" />
+        ),
+        id: "durationMs",
+        cell: ({ row }) =>
+          row.original.durationMs == null
+            ? "-"
+            : `${row.original.durationMs} ms`,
+      },
+    ],
+    [],
+  );
+  const table = useReactTable({
+    autoResetPageIndex: false,
+    columns,
+    data: events,
+    getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    initialState: {
+      pagination: { pageIndex: 0, pageSize: DEFAULT_PAGE_SIZE },
+    },
+    onSortingChange: setSorting,
+    state: { sorting },
+  });
+  React.useEffect(() => {
+    table.setPageIndex(0);
+  }, [level, query, table]);
+  const detailFields = selectedEvent
+    ? [
+        ["ID", selectedEvent.id],
+        [
+          "Timestamp",
+          selectedEvent.atMs == null
+            ? undefined
+            : new Date(selectedEvent.atMs).toLocaleString(),
+        ],
+        ["Source", selectedEvent.source],
+        ["Level", selectedEvent.level],
+        ["Namespace", selectedEvent.namespace],
+        ["Worker", selectedEvent.worker],
+        ["Version", selectedEvent.version],
+        ["Event", selectedEvent.kind],
+        ["Outcome", selectedEvent.outcome],
+        ["Status", selectedEvent.status],
+        [
+          "Duration",
+          selectedEvent.durationMs == null
+            ? undefined
+            : `${selectedEvent.durationMs} ms`,
+        ],
+        ["Process ID", selectedEvent.processId],
+        ["Request ID", selectedEvent.requestId],
+        ["Trace ID", selectedEvent.traceId],
+        ["Code", selectedEvent.code],
+        ["Message", selectedEvent.message],
+        ["Truncated", selectedEvent.truncated],
+        ["Dropped count", selectedEvent.droppedCount],
+      ].filter(([, value]) => value !== undefined && value !== null)
+    : [];
   return (
-    <Card>
-      <CardHeader>
+    <>
+      <Card className="gap-3 overflow-visible rounded-none bg-transparent py-0 ring-0">
+      <CardHeader className="px-0">
         <CardTitle>
           {target ? `${target.name}@${target.version} logs` : "Runtime logs"}
         </CardTitle>
@@ -1025,14 +1083,14 @@ function Logs({ apiKey, target }: { apiKey: string; target?: Target }) {
               value={level}
               onValueChange={(value) => setLevel(value ?? "all")}
             >
-              <SelectTrigger className="w-32">
-                <SelectValue />
+              <SelectTrigger aria-label="Filter by log level" className="w-32">
+                <SelectValue>{levelLabels[level]}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
                   {["all", "info", "warn", "error"].map((value) => (
                     <SelectItem key={value} value={value}>
-                      {value}
+                      {levelLabels[value]}
                     </SelectItem>
                   ))}
                 </SelectGroup>
@@ -1041,81 +1099,92 @@ function Logs({ apiKey, target }: { apiKey: string; target?: Target }) {
           </div>
         </CardAction>
       </CardHeader>
-      <CardContent>
-        <div className="max-h-[calc(100vh-18rem)] overflow-auto rounded-lg border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Time</TableHead>
-                <TableHead>Level</TableHead>
-                <TableHead>Worker</TableHead>
-                <TableHead>Event</TableHead>
-                <TableHead>Outcome</TableHead>
-                <TableHead>Duration</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {events.map((event) => (
-                <TableRow key={String(event.id)}>
-                  <TableCell className="whitespace-nowrap text-muted-foreground">
-                    {new Date(Number(event.atMs)).toLocaleTimeString()}
-                  </TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={
-                        event.level === "error" ? "destructive" : "secondary"
-                      }
-                    >
-                      {String(event.level ?? "info")}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {event.worker
-                      ? `${event.worker}@${event.version}`
-                      : "runtime"}
-                  </TableCell>
-                  <TableCell>
-                    {String(event.kind ?? event.source ?? "-")}
-                  </TableCell>
-                  <TableCell>
-                    {String(event.outcome ?? event.status ?? "-")}
-                  </TableCell>
-                  <TableCell>
-                    {event.durationMs == null ? "-" : `${event.durationMs} ms`}
-                  </TableCell>
-                </TableRow>
-              ))}
-              {events.length === 0 && (
-                <TableRow>
-                  <TableCell
-                    className="h-32 text-center text-muted-foreground"
-                    colSpan={6}
-                  >
-                    No events match the current filters.
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
+      <CardContent className="px-0">
+        <DataGrid
+          emptyText="No events match the current filters."
+          onRowClick={setSelectedEvent}
+          rowLabel={(event) =>
+            `View details for ${event.kind ?? event.source ?? "event"}`
+          }
+          table={table}
+        />
       </CardContent>
-    </Card>
+      </Card>
+      <Sheet
+        onOpenChange={(open) => {
+          if (!open) setSelectedEvent(null);
+        }}
+        open={selectedEvent !== null}
+      >
+        <SheetContent className="data-[side=right]:w-full data-[side=right]:sm:max-w-2xl">
+          <SheetHeader>
+            <SheetTitle>Event details</SheetTitle>
+            <SheetDescription>
+              Complete allowlisted payload retained by this EdgeR process.
+            </SheetDescription>
+          </SheetHeader>
+          {selectedEvent && (
+            <div className="grid gap-4 overflow-y-auto px-4 pb-4">
+              <dl className="grid gap-3">
+                {detailFields.map(([label, value]) => (
+                  <div
+                    className="grid gap-1 border-b pb-3 last:border-0"
+                    key={String(label)}
+                  >
+                    <dt className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                      {String(label)}
+                    </dt>
+                    <dd className="break-words font-mono text-sm">
+                      {String(value)}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+              <div className="grid gap-2">
+                <div className="flex items-center justify-between">
+                  <strong className="text-sm">JSON</strong>
+                  <Button
+                    onClick={() =>
+                      void navigator.clipboard.writeText(
+                        JSON.stringify(selectedEvent, null, 2),
+                      )
+                    }
+                    size="sm"
+                    variant="outline"
+                  >
+                    <CopyIcon />
+                    Copy JSON
+                  </Button>
+                </div>
+                <pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs">
+                  {JSON.stringify(selectedEvent, null, 2)}
+                </pre>
+              </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
+    </>
   );
 }
 
 function Files({
   apiKey,
+  mutable,
   path,
   setPath,
   target,
 }: {
   apiKey: string;
+  mutable: boolean;
   path: string;
   setPath(path: string): void;
   target: Target;
 }) {
   const queryClient = useQueryClient();
   const fileInput = React.useRef<HTMLInputElement>(null);
+  const [downloadError, setDownloadError] = React.useState("");
+  const [downloading, setDownloading] = React.useState("");
   const filesQuery = useQuery({
     queryKey: ["cpanel", "files", target, path],
     queryFn: () =>
@@ -1150,54 +1219,82 @@ function Files({
     if (files.length) upload.mutate(zipSync(map));
     event.currentTarget.value = "";
   }
+  async function downloadEntry(entry: { kind: "dir" | "file"; name: string }) {
+    const entryPath = path ? `${path}/${entry.name}` : entry.name;
+    setDownloadError("");
+    setDownloading(entryPath);
+    try {
+      const { blob, filename } = await apiDownload(
+        apiKey,
+        `/api/admin/workers/${encodeURIComponent(target.name)}/files/download?${new URLSearchParams({ path: entryPath, version: target.version })}`,
+      );
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDownloading("");
+    }
+  }
   const crumbs = path ? path.split("/") : [];
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Files</CardTitle>
-        <CardDescription>
-          Browse and publish files for {target.name}@{target.version}.
-        </CardDescription>
-        <CardAction>
-          <Button onClick={() => fileInput.current?.click()} variant="outline">
+    <>
+      {mutable && (
+        <PageActions>
+          <Button
+            onClick={() => fileInput.current?.click()}
+            variant="outline"
+          >
             <UploadIcon />
             Upload files
           </Button>
-          <Input
-            className="hidden"
-            multiple
-            onChange={(event) => void pick(event)}
-            ref={fileInput}
-            type="file"
-          />
-        </CardAction>
-      </CardHeader>
-      <CardContent>
-        <div className="mb-3 flex items-center gap-1 text-sm text-muted-foreground">
-          <button
-            className="hover:text-foreground"
-            onClick={() => setPath("")}
-            type="button"
-          >
-            {target.name}
-          </button>
-          {crumbs.map((crumb, index) => (
-            <React.Fragment key={`${crumb}-${index}`}>
-              <span>/</span>
+        </PageActions>
+      )}
+      <Input
+        className="hidden"
+        multiple
+        onChange={(event) => void pick(event)}
+        ref={fileInput}
+        type="file"
+      />
+      <Card className="gap-3 overflow-visible rounded-none bg-transparent py-0 ring-0">
+        <CardContent className="px-0">
+          {path && (
+            <div className="mb-3 flex items-center gap-1 text-sm text-muted-foreground">
               <button
-                className="font-mono hover:text-foreground"
-                onClick={() => setPath(crumbs.slice(0, index + 1).join("/"))}
+                className="hover:text-foreground"
+                onClick={() => setPath("")}
                 type="button"
               >
-                {crumb}
+                {target.name}
               </button>
-            </React.Fragment>
-          ))}
-        </div>
+              {crumbs.map((crumb, index) => (
+                <React.Fragment key={`${crumb}-${index}`}>
+                  <span>/</span>
+                  <button
+                    className="font-mono hover:text-foreground"
+                    onClick={() =>
+                      setPath(crumbs.slice(0, index + 1).join("/"))
+                    }
+                    type="button"
+                  >
+                    {crumb}
+                  </button>
+                </React.Fragment>
+              ))}
+            </div>
+          )}
         {upload.error && (
           <p className="mb-3 text-sm text-destructive">
             {upload.error.message}
           </p>
+        )}
+        {downloadError && (
+          <p className="mb-3 text-sm text-destructive">{downloadError}</p>
         )}
         <div className="overflow-hidden rounded-lg border">
           <Table>
@@ -1205,6 +1302,7 @@ function Files({
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead className="text-right">Size</TableHead>
+                <TableHead className="w-16 text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1213,7 +1311,7 @@ function Files({
                   className="cursor-pointer"
                   onClick={() => setPath(crumbs.slice(0, -1).join("/"))}
                 >
-                  <TableCell colSpan={2}>
+                  <TableCell colSpan={3}>
                     <FolderOpenIcon className="mr-2 inline size-4" />
                     ..
                   </TableCell>
@@ -1243,13 +1341,28 @@ function Files({
                   <TableCell className="text-right text-muted-foreground">
                     {entry.kind === "dir" ? "—" : formatBytes(entry.size)}
                   </TableCell>
+                  <TableCell className="text-right">
+                    <ActionButton
+                      label={`Download ${entry.name}`}
+                      disabled={
+                        downloading ===
+                        (path ? `${path}/${entry.name}` : entry.name)
+                      }
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void downloadEntry(entry);
+                      }}
+                    >
+                      <DownloadIcon />
+                    </ActionButton>
+                  </TableCell>
                 </TableRow>
               ))}
               {!filesQuery.isLoading && !filesQuery.data?.entries.length && (
                 <TableRow>
                   <TableCell
                     className="h-32 text-center text-muted-foreground"
-                    colSpan={2}
+                    colSpan={3}
                   >
                     This folder is empty.
                   </TableCell>
@@ -1258,8 +1371,9 @@ function Files({
             </TableBody>
           </Table>
         </div>
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+    </>
   );
 }
 
@@ -1413,6 +1527,157 @@ function DeployDialog({
   );
 }
 
+const LOCALE_OPTIONS: Array<{
+  flag: string;
+  label: string;
+  value: Locale;
+}> = [
+  { flag: "🇧🇷", label: "Português", value: "pt-BR" },
+  { flag: "🇺🇸", label: "English", value: "en-US" },
+  { flag: "🇪🇸", label: "Español", value: "es-ES" },
+];
+
+function LanguageMenu() {
+  const { locale, setLocale, t } = useI18n();
+  const selected =
+    LOCALE_OPTIONS.find((option) => option.value === locale) ??
+    LOCALE_OPTIONS[0];
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            aria-label={t("preferences.language")}
+            size="icon-sm"
+            title={t("preferences.language")}
+            variant="ghost"
+          />
+        }
+      >
+        <span aria-hidden className="text-lg leading-none">
+          {selected.flag}
+        </span>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="min-w-40" side="bottom">
+        <DropdownMenuRadioGroup
+          onValueChange={(value) => setLocale(value as Locale)}
+          value={locale}
+        >
+          {LOCALE_OPTIONS.map((option) => (
+            <DropdownMenuRadioItem key={option.value} value={option.value}>
+              <span aria-hidden className="text-base leading-none">
+                {option.flag}
+              </span>
+              {option.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function ThemeMenu() {
+  const { t } = useI18n();
+  const { resolvedTheme, setTheme, theme } = useTheme();
+  const options: Array<{ label: string; value: ThemePreference }> = [
+    { label: t("preferences.theme.light"), value: "light" },
+    { label: t("preferences.theme.dark"), value: "dark" },
+    { label: t("preferences.theme.system"), value: "system" },
+  ];
+  const currentLabel =
+    options.find((option) => option.value === theme)?.label ?? options[2].label;
+  const ThemeIcon =
+    theme === "system"
+      ? MonitorIcon
+      : resolvedTheme === "dark"
+        ? MoonIcon
+        : SunIcon;
+  const label = `${t("preferences.theme")}: ${currentLabel}`;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            aria-label={label}
+            size="icon-sm"
+            title={label}
+            variant="ghost"
+          />
+        }
+      >
+        <ThemeIcon />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="min-w-32" side="bottom">
+        <DropdownMenuRadioGroup
+          onValueChange={(value) => setTheme(value as ThemePreference)}
+          value={theme}
+        >
+          {options.map((option) => (
+            <DropdownMenuRadioItem key={option.value} value={option.value}>
+              {option.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function AccountMenu({
+  logout,
+  principal,
+}: {
+  logout(): void;
+  principal: RuntimeData["principal"];
+}) {
+  const { t } = useI18n();
+  const name = principal.name ?? "—";
+  const initials = name.slice(0, 2).toLocaleUpperCase();
+  const namespaces = principal.namespaces?.join(", ") || "*";
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <button
+            aria-label={t("account.label")}
+            className="grid size-8 shrink-0 place-items-center rounded-full bg-emerald-600 text-xs font-semibold text-white outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            title={name}
+            type="button"
+          />
+        }
+      >
+        {initials}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-56" side="bottom">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="font-normal">
+            <div className="flex items-center gap-3 py-1">
+              <span className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-600 text-xs font-semibold text-white">
+                {initials}
+              </span>
+              <div className="min-w-0">
+                <strong className="block truncate text-sm">{name}</strong>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {t("account.role")}: {principal.role ?? "—"}
+                </span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {t("account.namespaces")}: {namespaces}
+                </span>
+              </div>
+            </div>
+          </DropdownMenuLabel>
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={logout} variant="destructive">
+          <LogOutIcon />
+          {t("account.logout")}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function Shell({
   apiKey,
   data,
@@ -1422,7 +1687,10 @@ function Shell({
   data: RuntimeData;
   logout(): void;
 }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
+  const [pageActionsElement, setPageActionsElement] =
+    React.useState<HTMLDivElement | null>(null);
   const [route, setRoute] = React.useState(readRoute);
   const active =
     NAVIGATION.find((entry) => entry.id === route.view) ??
@@ -1454,10 +1722,10 @@ function Shell({
           worker.version === route.target?.version,
       )
     : undefined;
-  const title = route.target ? route.target.name : active.title;
+  const title = route.target ? route.target.name : t(active.titleKey);
   const description = route.target
     ? `Version ${route.target.version} · ${route.view}`
-    : active.description;
+    : t(active.descriptionKey);
   return (
     <SidebarProvider className="h-screen min-h-0">
       <Sidebar>
@@ -1471,46 +1739,31 @@ function Shell({
           </div>
         </SidebarHeader>
         <SidebarContent>
-          <SidebarMenu>
-            {NAVIGATION.map((entry) => (
-              <SidebarMenuItem key={entry.id}>
-                <SidebarMenuButton
-                  isActive={
-                    route.target
-                      ? entry.id === "workers"
-                      : route.view === entry.id ||
-                        (route.view === "logs" && entry.id === "observability")
-                  }
-                  onClick={() => navigate({ path: "", view: entry.id })}
-                >
-                  <entry.icon />
-                  <span>{entry.title}</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            ))}
-          </SidebarMenu>
+          <SidebarGroup>
+            <SidebarMenu>
+              {NAVIGATION.map((entry) => (
+                <SidebarMenuItem key={entry.id}>
+                  <SidebarMenuButton
+                    isActive={
+                      route.target
+                        ? entry.id === "workers"
+                        : route.view === entry.id ||
+                          (route.view === "logs" &&
+                            entry.id === "observability")
+                    }
+                    onClick={() => navigate({ path: "", view: entry.id })}
+                  >
+                    <entry.icon />
+                    <span>{t(entry.titleKey)}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroup>
         </SidebarContent>
-        <SidebarFooter>
-          <div className="flex items-center gap-2 px-2 py-2">
-            <span className="grid size-8 place-items-center rounded-full bg-muted text-xs font-medium">
-              {(data.principal.name ?? "?").slice(0, 2)}
-            </span>
-            <span className="min-w-0 flex-1">
-              <strong className="block truncate text-xs">
-                {data.principal.name}
-              </strong>
-              <small className="block truncate text-xs text-muted-foreground">
-                {data.principal.role}
-              </small>
-            </span>
-            <ActionButton label="Disconnect" onClick={logout}>
-              <LogOutIcon />
-            </ActionButton>
-          </div>
-        </SidebarFooter>
       </Sidebar>
       <SidebarInset className="min-w-0">
-        <header className="flex min-h-16 items-center gap-3 border-b px-4 sm:px-6">
+        <header className="flex min-h-16 items-center gap-3 border-b px-4">
           {route.target && (
             <ActionButton
               label="Back to workers"
@@ -1527,83 +1780,112 @@ function Shell({
               {description}
             </p>
           </div>
-          <Button
-            className="ml-auto"
-            onClick={() => void refresh()}
-            variant="outline"
+          <div
+            className="ml-auto flex items-center gap-1"
+            data-slot="header-preferences"
           >
-            <RefreshCwIcon />
-            Refresh
-          </Button>
+            <LanguageMenu />
+            <ThemeMenu />
+            <AccountMenu logout={logout} principal={data.principal} />
+          </div>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
-          {route.target && (
-            <Tabs
-              className="mb-4"
-              value={route.view}
-              onValueChange={(value) =>
-                navigate({
-                  path: value === "files" ? route.path : "",
-                  target: route.target,
-                  view: value as View,
-                })
-              }
-            >
-              <TabsList>
-                <TabsTrigger value="files">Files</TabsTrigger>
-                <TabsTrigger value="observability">Observability</TabsTrigger>
-                <TabsTrigger value="logs">Logs</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          )}
-          {!route.target && ["observability", "logs"].includes(route.view) && (
-            <Tabs
-              className="mb-4"
-              value={route.view}
-              onValueChange={(value) =>
-                navigate({ path: "", view: value as View })
-              }
-            >
-              <TabsList>
-                <TabsTrigger value="observability">Overview</TabsTrigger>
-                <TabsTrigger value="logs">Logs</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          )}
-          {route.view === "overview" && (
-            <Overview
-              data={data}
-              onWorkers={() => navigate({ path: "", view: "workers" })}
-            />
-          )}
-          {route.view === "workers" && (
-            <Workers
-              apiKey={apiKey}
-              data={data}
-              onOpen={(worker, view) =>
-                navigate({
-                  path: "",
-                  target: { name: worker.name, version: worker.version },
-                  view,
-                })
-              }
-              onRefresh={refresh}
-            />
-          )}
-          {route.view === "observability" && (
-            <Observability apiKey={apiKey} data={data} target={route.target} />
-          )}
-          {route.view === "logs" && (
-            <Logs apiKey={apiKey} target={route.target} />
-          )}
-          {route.view === "files" && route.target && targetWorker && (
-            <Files
-              apiKey={apiKey}
-              path={route.path}
-              setPath={(path) => navigate({ ...route, path })}
-              target={route.target}
-            />
-          )}
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <PageActionsContext.Provider value={pageActionsElement}>
+            <div className="mb-4 flex min-h-8 items-center gap-3">
+              {route.target && (
+                <Tabs
+                  value={route.view}
+                  onValueChange={(value) =>
+                    navigate({
+                      path: value === "files" ? route.path : "",
+                      target: route.target,
+                      view: value as View,
+                    })
+                  }
+                >
+                  <TabsList>
+                    <TabsTrigger value="files">Files</TabsTrigger>
+                    <TabsTrigger value="observability">
+                      Observability
+                    </TabsTrigger>
+                    <TabsTrigger value="logs">Logs</TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              )}
+              {!route.target &&
+                ["observability", "logs"].includes(route.view) && (
+                  <Tabs
+                    value={route.view}
+                    onValueChange={(value) =>
+                      navigate({ path: "", view: value as View })
+                    }
+                  >
+                    <TabsList>
+                      <TabsTrigger value="observability">Overview</TabsTrigger>
+                      <TabsTrigger value="logs">Logs</TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                )}
+              <div
+                className="ml-auto flex items-center gap-2"
+                data-slot="page-actions"
+              >
+                <Button onClick={() => void refresh()} variant="outline">
+                  <RefreshCwIcon />
+                  Refresh
+                </Button>
+                <div className="contents" ref={setPageActionsElement} />
+              </div>
+            </div>
+            {route.view === "overview" && (
+              <Overview
+                apiKey={apiKey}
+                data={data}
+                onLogs={() => navigate({ path: "", view: "logs" })}
+                onWorker={(name, version) =>
+                  navigate({
+                    path: "",
+                    target: { name, version },
+                    view: "observability",
+                  })
+                }
+                onWorkers={() => navigate({ path: "", view: "workers" })}
+              />
+            )}
+            {route.view === "workers" && (
+              <Workers
+                apiKey={apiKey}
+                data={data}
+                onOpen={(worker, view) =>
+                  navigate({
+                    path: "",
+                    target: { name: worker.name, version: worker.version },
+                    view,
+                  })
+                }
+                onRefresh={refresh}
+              />
+            )}
+            {route.view === "observability" && (
+              <Observability
+                apiKey={apiKey}
+                data={data}
+                target={route.target}
+              />
+            )}
+            {route.view === "logs" && (
+              <Logs apiKey={apiKey} target={route.target} />
+            )}
+            {route.view === "files" && route.target && targetWorker && (
+              <Files
+                apiKey={apiKey}
+                mutable={targetWorker.origin === "user"}
+                path={route.path}
+                setPath={(path) => navigate({ ...route, path })}
+                target={route.target}
+              />
+            )}
+          </PageActionsContext.Provider>
         </div>
       </SidebarInset>
     </SidebarProvider>
@@ -1618,6 +1900,7 @@ function CpanelApp() {
     queryKey: ["cpanel", "runtime", apiKey],
     queryFn: () => loadAll(apiKey),
     enabled: Boolean(apiKey),
+    refetchInterval: 5000,
     refetchOnWindowFocus: true,
   });
   React.useEffect(() => {
@@ -1661,9 +1944,11 @@ createRoot(root).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <TooltipProvider delay={200}>
-          <RouterProvider router={router} />
-        </TooltipProvider>
+        <I18nProvider>
+          <TooltipProvider delay={200}>
+            <RouterProvider router={router} />
+          </TooltipProvider>
+        </I18nProvider>
       </ThemeProvider>
     </QueryClientProvider>
   </React.StrictMode>,
