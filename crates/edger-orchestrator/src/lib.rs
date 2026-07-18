@@ -25,7 +25,7 @@ pub use cron::{collect_cron_registrations, CronMetrics, CronScheduler, CronSched
 pub use deploy::{
     install_worker_from_zip, prewarm_min_process_workers, rescan_workers,
     rescan_workers_and_prewarm, rescan_workers_and_prewarm_with_events, run_pending_releases,
-    run_pending_releases_with_events, InstalledWorker, RescanReport,
+    run_pending_releases_with_events, InstalledWorker, RescanReport, MAX_DEPLOY_PACKAGE_BYTES,
 };
 pub use manifest_index_stub::{ManifestEntry, ManifestIndex};
 pub use manifest_loader::{

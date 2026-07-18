@@ -551,6 +551,26 @@ async fn worker_files_downloads_a_file_and_a_folder_zip() {
         .unwrap();
     assert_eq!(deep, "deep-bytes");
 
+    let (status, headers, body) = download(
+        app.clone(),
+        "/api/admin/workers/download-app/files/download?version=1.0.0&path=",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "application/zip");
+    assert_eq!(
+        headers["content-disposition"],
+        "attachment; filename=\"download-app.zip\""
+    );
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(body)).unwrap();
+    let mut manifest = String::new();
+    std::io::Read::read_to_string(
+        &mut archive.by_name("manifest.yaml").unwrap(),
+        &mut manifest,
+    )
+    .unwrap();
+    assert!(manifest.contains("name: download-app"));
+
     fs::write(root.path().join("secret.txt"), b"outside-worker").unwrap();
     let (status, _, _) = download(
         app.clone(),
@@ -561,7 +581,7 @@ async fn worker_files_downloads_a_file_and_a_folder_zip() {
 
     fs::write(
         root.path().join("download-app/oversized.bin"),
-        vec![0_u8; edger_orchestrator::MAX_BODY_BYTES + 1],
+        vec![0_u8; edger_orchestrator::MAX_DEPLOY_PACKAGE_BYTES + 1],
     )
     .unwrap();
     let (status, _, _) = download(
@@ -706,14 +726,14 @@ async fn rescan_dry_run_is_idempotent() {
     }
 }
 
-// Mutation captured: raising the install route's DefaultBodyLimit above
-// MAX_BODY_BYTES accepts the oversized package and this test goes red.
+// Mutation captured: raising the install route's package limit accepts the
+// oversized package and this test goes red.
 #[tokio::test]
 async fn install_rejects_body_above_cap() {
     let root = tempfile::tempdir().unwrap();
     let app = build_pipeline(state_with_root(root.path().to_path_buf()));
 
-    let oversized = vec![0u8; edger_orchestrator::MAX_BODY_BYTES + 1];
+    let oversized = vec![0u8; edger_orchestrator::MAX_DEPLOY_PACKAGE_BYTES + 1];
     let (status, _json, _text) = send(
         app,
         "POST",

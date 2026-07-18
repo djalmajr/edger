@@ -25,7 +25,6 @@ import {
   CircleAlertIcon,
   CircleCheckIcon,
   CpuIcon,
-  HeartPulseIcon,
   ListIcon,
   RouteIcon,
 } from "@edger/ui/icons/lucide";
@@ -84,13 +83,11 @@ export function Overview({
     eventsQuery.isError ||
     !data.metricsStats ||
     seriesQuery.data?.partialWindow;
-  const status = statusPresentation(summary.status);
-
   return (
     <div className="grid gap-4">
       {partial && <Badge variant="secondary">Partial window</Badge>}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           description={`${summary.routable} routable versions`}
           icon={BoxIcon}
@@ -102,12 +99,6 @@ export function Overview({
           icon={RouteIcon}
           label="Worker versions"
           value={String(summary.versions)}
-        />
-        <MetricCard
-          description={`${summary.health.healthy} healthy · ${summary.health.unobserved} unobserved`}
-          icon={HeartPulseIcon}
-          label="Health"
-          value={status.label}
         />
         <MetricCard
           description={`${summary.errors5m} errors · ${summary.p95Ms == null ? "no latency data" : `${summary.p95Ms} ms p95`}`}
@@ -428,22 +419,6 @@ function HealthIndicator({ worker }: { worker: RuntimeWorker }) {
       {status}
     </span>
   );
-}
-
-function statusPresentation(status: "critical" | "degraded" | "healthy") {
-  if (status === "critical") {
-    return {
-      label: "Critical",
-    };
-  }
-  if (status === "degraded") {
-    return {
-      label: "Needs attention",
-    };
-  }
-  return {
-    label: "Healthy",
-  };
 }
 
 function formatAge(timestamp: number) {

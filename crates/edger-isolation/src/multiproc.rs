@@ -64,6 +64,21 @@ pub type ConsoleLogSender = mpsc::Sender<ConsoleLogRecord>;
 
 static PROCESS_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NodeHttpMode {
+    Capture,
+    Proxy,
+}
+
+impl NodeHttpMode {
+    fn as_arg(self) -> &'static str {
+        match self {
+            Self::Capture => "capture",
+            Self::Proxy => "proxy",
+        }
+    }
+}
+
 fn sanitize_console_line(bytes: &[u8]) -> (String, bool) {
     let truncated = bytes.len() > CONSOLE_LINE_MAX_BYTES;
     let bytes = &bytes[..bytes.len().min(CONSOLE_LINE_MAX_BYTES)];
@@ -219,6 +234,35 @@ impl DenoWorkerProcess {
             timeout,
             env,
             memory_mb,
+            NodeHttpMode::Capture,
+            true,
+            None,
+            DenoCacheMode::default(),
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Spawn with a real node:http server bound to a private Unix socket.
+    /// Heavy frameworks that require genuine IncomingMessage/ServerResponse
+    /// semantics use this path; no TCP port or network permission is opened.
+    pub async fn spawn_with_node_http_proxy(
+        worker_dir: &Path,
+        entrypoint: Option<&str>,
+        timeout: Duration,
+        env: &std::collections::HashMap<String, String>,
+        memory_mb: Option<u32>,
+    ) -> Result<Self, IsolationError> {
+        Self::spawn_with_policy(
+            worker_dir,
+            entrypoint,
+            timeout,
+            env,
+            memory_mb,
+            NodeHttpMode::Proxy,
+            true,
             None,
             DenoCacheMode::default(),
             None,
@@ -243,6 +287,8 @@ impl DenoWorkerProcess {
             timeout,
             env,
             memory_mb,
+            NodeHttpMode::Capture,
+            true,
             None,
             DenoCacheMode::default(),
             None,
@@ -259,6 +305,8 @@ impl DenoWorkerProcess {
         timeout: Duration,
         env: &std::collections::HashMap<String, String>,
         memory_mb: Option<u32>,
+        node_http_mode: NodeHttpMode,
+        bundle_entrypoint: bool,
         allow_net: Option<&[String]>,
         deno_cache_mode: DenoCacheMode,
         caps: Option<crate::limits::ResourceLimits>,
@@ -279,14 +327,15 @@ impl DenoWorkerProcess {
         std::fs::write(&harness_path, harness_script()).map_err(|err| {
             IsolationError::new("UDS_HARNESS", format!("write harness failed: {err}"))
         })?;
-        let (entry_url, bundle_dir) = if entry_needs_bundle(&worker_dir, &entry)? {
-            let bundle_dir = create_bundle_dir(&worker_dir, workdir.path())?;
-            let bundler = DenoCliBundler::default();
-            let bundle = bundler.bundle_entrypoint(&worker_dir, &entry, bundle_dir.path())?;
-            (path_to_file_url(Path::new(&bundle.path))?, Some(bundle_dir))
-        } else {
-            (path_to_file_url(&entry)?, None)
-        };
+        let (entry_url, bundle_dir) =
+            if bundle_entrypoint && entry_needs_bundle(&worker_dir, &entry)? {
+                let bundle_dir = create_bundle_dir(&worker_dir, workdir.path())?;
+                let bundler = DenoCliBundler::default();
+                let bundle = bundler.bundle_entrypoint(&worker_dir, &entry, bundle_dir.path())?;
+                (path_to_file_url(Path::new(&bundle.path))?, Some(bundle_dir))
+            } else {
+                (path_to_file_url(&entry)?, None)
+            };
 
         let listener = UnixListener::bind(&socket_path).map_err(|err| {
             IsolationError::new("UDS_BIND", format!("bind {}: {err}", socket_path.display()))
@@ -359,6 +408,7 @@ impl DenoWorkerProcess {
             .arg(&harness_path)
             .arg(&socket_path)
             .arg(&entry_url)
+            .arg(node_http_mode.as_arg())
             .current_dir(&worker_dir)
             .stdin(Stdio::null())
             .stdout(if console_sender.is_some() {
@@ -1033,6 +1083,16 @@ impl DenoProcessIsolate {
                 timeout,
                 &config.env,
                 limits.memory_mb,
+                if config.fullstack.as_ref().is_some_and(|fullstack| {
+                    matches!(fullstack.adapter.as_str(), "nextjs" | "remix")
+                }) {
+                    NodeHttpMode::Proxy
+                } else {
+                    NodeHttpMode::Capture
+                },
+                !config.fullstack.as_ref().is_some_and(|fullstack| {
+                    matches!(fullstack.adapter.as_str(), "fresh" | "sveltekit")
+                }),
                 config.allow_net.as_deref(),
                 config.deno_cache_mode,
                 Some(limits.clone()),

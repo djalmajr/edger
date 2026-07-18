@@ -78,7 +78,13 @@ impl DenoCliRunner {
             )
         })?;
         let entrypoint = resolve_entrypoint(&worker_dir, config.entrypoint.as_deref())?;
-        let (entry_url, bundle_dir) = if entry_needs_bundle(&worker_dir, &entrypoint)? {
+        let preserve_entrypoint_path = config
+            .fullstack
+            .as_ref()
+            .is_some_and(|fullstack| matches!(fullstack.adapter.as_str(), "fresh" | "sveltekit"));
+        let (entry_url, bundle_dir) = if !preserve_entrypoint_path
+            && entry_needs_bundle(&worker_dir, &entrypoint)?
+        {
             let bundle_dir = create_bundle_dir(&worker_dir)?;
             let bundler = DenoCliBundler::new(self.executable.clone());
             let bundle = bundler.bundle_entrypoint(&worker_dir, &entrypoint, bundle_dir.path())?;

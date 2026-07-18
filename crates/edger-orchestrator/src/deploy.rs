@@ -20,6 +20,13 @@ use crate::observability::{
     OperationalEventInput, OperationalEventLevel, OperationalEventSource, OperationalStore,
 };
 
+/// Compressed package cap for admin deploy and project upload/download.
+/// Framework artifacts such as Next.js standalone routinely exceed the
+/// request-path default while still remaining bounded operational payloads.
+pub const MAX_DEPLOY_PACKAGE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DEPLOY_EXPANDED_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_DEPLOY_ENTRIES: usize = 50_000;
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstalledWorker {
@@ -438,11 +445,24 @@ fn is_core_name(name: &str) -> bool {
 }
 
 pub(crate) fn extract_zip(bytes: &[u8], destination: &Path) -> Result<(), CoreError> {
+    if bytes.len() > MAX_DEPLOY_PACKAGE_BYTES {
+        return Err(CoreError::new(
+            "PAYLOAD_TOO_LARGE",
+            format!("deploy package exceeds the {MAX_DEPLOY_PACKAGE_BYTES} byte limit"),
+        ));
+    }
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|err| CoreError::new("DEPLOY_INVALID_PACKAGE", format!("invalid zip: {err}")))?;
     if archive.is_empty() {
         return Err(CoreError::new("DEPLOY_INVALID_PACKAGE", "zip is empty"));
     }
+    if archive.len() > MAX_DEPLOY_ENTRIES {
+        return Err(CoreError::new(
+            "DEPLOY_INVALID_PACKAGE",
+            "zip contains too many entries",
+        ));
+    }
+    let mut expanded_bytes = 0_u64;
     for entry_index in 0..archive.len() {
         let mut entry = archive.by_index(entry_index).map_err(|err| {
             CoreError::new(
@@ -462,6 +482,15 @@ pub(crate) fn extract_zip(bytes: &[u8], destination: &Path) -> Result<(), CoreEr
             fs::create_dir_all(&target)
                 .map_err(|err| deploy_io(format!("failed to create dir: {err}")))?;
             continue;
+        }
+        expanded_bytes = expanded_bytes
+            .checked_add(entry.size())
+            .ok_or_else(|| CoreError::new("DEPLOY_INVALID_PACKAGE", "zip is too large"))?;
+        if expanded_bytes > MAX_DEPLOY_EXPANDED_BYTES {
+            return Err(CoreError::new(
+                "DEPLOY_INVALID_PACKAGE",
+                "expanded zip exceeds the safety limit",
+            ));
         }
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)

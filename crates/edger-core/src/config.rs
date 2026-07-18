@@ -205,6 +205,23 @@ pub fn fullstack_config_from_manifest(manifest: &WorkerManifest) -> Option<Fulls
 
 fn default_fullstack_asset_prefixes(adapter: &str, has_client_dir: bool) -> Vec<String> {
     match adapter {
+        "astro" if has_client_dir => ["/_astro/", "/favicon.ico", "/robots.txt"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        "lume" if has_client_dir => vec!["/".to_string()],
+        "nuxt" if has_client_dir => ["/_nuxt/", "/favicon.ico", "/robots.txt"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        "solidstart" if has_client_dir => ["/_build/", "/favicon.ico", "/robots.txt"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        "remix" if has_client_dir => ["/assets/", "/favicon.ico", "/robots.txt"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
         "tanstack" => [
             "/assets/",
             "/favicon.ico",

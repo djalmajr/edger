@@ -6,6 +6,8 @@
 
 const socketPath = Deno.args[0];
 const entryUrl = Deno.args[1];
+const nodeHttpMode = Deno.args[2] ?? "capture";
+const nodeHttpSocketPath = `${socketPath}.http`;
 
 // A durable per-worker process must survive background errors thrown by user
 // code AFTER a response was sent — a stray `setInterval` that enqueues into a
@@ -96,6 +98,8 @@ function sendJson(obj) {
 
 let capturedHandler = null;
 const capturedNodeHandlers = [];
+const proxiedNodeServers = [];
+let proxiedNodeServerReady = null;
 const originalServe = Deno.serve;
 Deno.serve = (arg) => {
   if (typeof arg === "function") {
@@ -119,6 +123,28 @@ async function installNodeHttpAdapter() {
   try {
     const nodeHttp = await import("node:http");
     const http = nodeHttp.default ?? nodeHttp;
+    const originalCreateServer = http.createServer.bind(http);
+    if (nodeHttpMode === "proxy") {
+      http.createServer = (...args) => {
+        const server = originalCreateServer(...args);
+        const originalListen = server.listen.bind(server);
+        server.listen = (...listenArgs) => {
+          const callback = listenArgs.find((arg) => typeof arg === "function");
+          proxiedNodeServerReady = new Promise((resolve, reject) => {
+            server.once("error", reject);
+            originalListen(nodeHttpSocketPath, () => {
+              server.removeListener("error", reject);
+              callback?.();
+              resolve();
+            });
+          });
+          return server;
+        };
+        proxiedNodeServers.push(server);
+        return server;
+      };
+      return;
+    }
     http.createServer = (...args) => {
       const listener = args.find((arg) => typeof arg === "function");
       if (listener) capturedNodeHandlers.push(listener);
@@ -169,6 +195,51 @@ async function installNodeHttpAdapter() {
   } catch (_) {
     // Non-Node workers do not need the server-listen adapter.
   }
+}
+
+async function dispatchNodeHttpProxy(request) {
+  await proxiedNodeServerReady;
+  const nodeHttp = await import("node:http");
+  const { Readable } = await import("node:stream");
+  const url = new URL(request.url);
+  const headers = Object.fromEntries(request.headers.entries());
+  if (!headers.host) headers.host = url.host;
+
+  return await new Promise((resolve, reject) => {
+    const outgoing = nodeHttp.request(
+      {
+        socketPath: nodeHttpSocketPath,
+        method: request.method,
+        path: url.pathname + url.search,
+        headers,
+      },
+      (incoming) => {
+        const responseHeaders = new Headers();
+        for (let index = 0; index < incoming.rawHeaders.length; index += 2) {
+          responseHeaders.append(
+            incoming.rawHeaders[index],
+            incoming.rawHeaders[index + 1] ?? "",
+          );
+        }
+        resolve(
+          new Response(Readable.toWeb(incoming), {
+            status: incoming.statusCode ?? 500,
+            statusText: incoming.statusMessage ?? "",
+            headers: responseHeaders,
+          }),
+        );
+      },
+    );
+    outgoing.once("error", reject);
+    if (request.body) {
+      request.arrayBuffer().then(
+        (body) => outgoing.end(new Uint8Array(body)),
+        reject,
+      );
+    } else {
+      outgoing.end();
+    }
+  });
 }
 
 function asUint8Array(chunk) {
@@ -357,7 +428,6 @@ function makeRoutesHandler(routes, fallback) {
 async function loadHandler() {
   await installNodeHttpAdapter();
   const mod = await import(entryUrl);
-  Deno.serve = originalServe;
   let handler = capturedHandler;
   if (!handler && mod) {
     if (typeof mod.default === "function") {
@@ -366,12 +436,21 @@ async function loadHandler() {
       handler = mod.default.fetch.bind(mod.default);
     } else if (typeof mod.fetch === "function") {
       handler = mod.fetch;
+    } else if (typeof mod.handle === "function") {
+      // The official Astro Deno adapter exports `handle` and starts
+      // Deno.serve from an unawaited tracing bootstrap. Using the exported
+      // request handler avoids racing that background registration.
+      handler = mod.handle;
     }
   }
   // Express and other node:http servers: dispatch through the captured listener.
   if (!handler && capturedNodeHandlers.length > 0) {
     const handlers = [...capturedNodeHandlers];
     handler = (request) => dispatchNodeHandler(handlers, request);
+  }
+  if (!handler && proxiedNodeServers.length > 0) {
+    await proxiedNodeServerReady;
+    handler = dispatchNodeHttpProxy;
   }
   const routesTable = (mod && ((mod.default && mod.default.routes) || mod.routes)) || null;
   if (routesTable) {
@@ -422,7 +501,11 @@ async function writeTagged(tag, payload) {
 async function respond(handler, raw) {
   let response;
   try {
-    response = await handler(buildRequest(raw));
+    response = await handler(buildRequest(raw), {
+      localAddr: { transport: "tcp", hostname: "127.0.0.1", port: 0 },
+      remoteAddr: { transport: "tcp", hostname: "127.0.0.1", port: 0 },
+      completed: Promise.resolve(),
+    });
   } catch (err) {
     console.error("worker handler failed", err);
     const message = new TextEncoder().encode("Internal worker error");
@@ -498,6 +581,11 @@ async function main() {
     // A shutdown control frame is not a request: drain and exit cleanly.
     if (raw && raw.__control === "shutdown") {
       const report = await handleShutdown(raw.reason ?? "shutdown", raw.graceMs ?? 0);
+      await Promise.allSettled(
+        proxiedNodeServers.map(
+          (server) => new Promise((resolve) => server.close(() => resolve())),
+        ),
+      );
       try {
         await sendJson({ shutdown: "done", ...report });
       } catch (_) {

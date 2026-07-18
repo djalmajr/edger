@@ -33,6 +33,8 @@
   autoria/deploy EdgeR-native pela WebIDE, sem acoplar autosave ao runtime.
 - Objetivo 11: Injetar secrets versionados por referências provider-agnostic,
   sem materializar valores no manifesto, ZIP, logs ou respostas administrativas.
+- Objetivo 12: Executar os nove frameworks da lista oficial do Deno Deploy como
+  apps declarativos, com deploy ZIP e subpath do EdgeR.
 
 ## Initiatives / Epics
 | Initiative | Epic | Stories | Status | Dependency |
@@ -55,6 +57,7 @@
 | Fase 21: Observabilidade de Workers e OTEL | [`epics/21-observabilidade-workers-cpanel/`](epics/21-observabilidade-workers-cpanel/00-overview.md) | 12 | **completed** (observabilidade local-first, logs/live tail, health passivo, release/drain, probe opt-in e OTLP opt-in) | Fase 12, Fase 15, Epic 18, Story 20.09 |
 | Fase 22: Workers Core e WebIDE | [`epics/22-core-workers-webide/`](epics/22-core-workers-webide/00-overview.md) | 8 | **completed** (estrutura, overlay, imagem mínima e workbench WebIDE validados) | Fase 14, Fase 21 |
 | Fase 23: Secrets versionados | [`epics/23-secrets-versionados/`](epics/23-secrets-versionados/00-overview.md) | 1 | planned (contrato, threat model e provider E2E) | Fase 15, Fase 22 |
+| Fase 24: Frameworks Deno SSR | [`epics/24-frameworks-deno-ssr/`](epics/24-frameworks-deno-ssr/00-overview.md) | 2 | **completed** (nove frameworks oficiais validados; Remix experimental, Lume estático) | Fase 14, Fase 15 |
 
 ## Suggested sequence
 1. Fase 1 (Fundação) -- Alinha o skeleton real e estabelece cultura (AGENTS, testes, gate). Alta prioridade porque desbloqueia tudo e evita dívida técnica.
@@ -76,6 +79,8 @@
     com overlays e incorpora autoria/deploy explícito ao próprio EdgeR.
 17. Fase 23 (Secrets versionados) -- Define referências, provider substituível,
     rotação, auditoria e injeção segura antes de expor UX global/local na WebIDE.
+18. Fase 24 (Frameworks Deno SSR) -- Formaliza adapters e receitas de build para
+    os nove frameworks da lista do Deno Deploy, preservando o subpath.
 
 Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador podem avançar com mocks. Extensões podem começar protótipos cedo.
 
@@ -86,7 +91,9 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 - **Provider remoto/sync**: Risco de acoplar edger a Turso/libSQL específico. Mitigação: Epic 09 mantém `DurableSqlProvider` como fronteira; `edger-ext-turso-remote` vive como crate separado e o registro no composition root fica concentrado na Story 09.04.
 - **Epic gigante / core inchado**: Risco de repetir o Epic 8 e empacotar produto, frontend, provider, gateway e MCP no core. Mitigação: novas capacidades com fronteira técnica/ciclo de vida próprio viram epics e módulos dedicados; `edger-core` permanece vocabulário/contratos essenciais.
 - **AI-native só no papel**: Risco de MCP ficar apenas planejado. Mitigação: Epic 13 exige uma primeira versão funcional testada localmente, sem deploy remoto, com tools para descoberta, authoring, validação e preparação de commit/PR.
-- **Escopo creep**: Querer tudo (full SSR Next.js nativo) cedo. Mitigação: non-goals claros no intake/design; foco em foundation + adapters.
+- **Compatibilidade de frameworks**: upgrades podem alterar entrypoints e presets.
+  Mitigação: adapters explícitos, receitas versionadas e prova SSR/API/asset por
+  artefato de produção, sem prometer APIs internas não exercitadas.
 - **WebIDE virar segundo runtime**: compiladores em browser, Nodepod ou deploy
   implícito criariam um plano de execução paralelo. Mitigação: templates EdgeR,
   snapshot ZIP e install pipeline existente; autosave permanece local.
@@ -101,7 +108,8 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 - Implementação completa de todos plugins Buntime atuais (serão edger-ext-* em fases futuras).
 - Deploy remoto/K8s/Helm nesta fase; validação deve ser local e `docker-compose` é permitido para dependências locais.
 - Marketplace completo.
-- 100% compat Node/full Next.js sem adapters (documentar tiers).
+- 100% de APIs Node ou de recursos avançados não exercitados pelos adapters
+  declarativos (por exemplo, toda combinação de ISR/PPR/image optimization).
 - Dynamic loading de crates Rust em runtime (estático primeiro).
 - Performance numbers finais (definir baselines em Fase 7).
 - Multi-proc clustering full (começar early, mas full depois).

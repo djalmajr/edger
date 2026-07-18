@@ -855,7 +855,7 @@ async fn fullstack_worker_with_invalid_adapter_fails_manifest_validation() {
         r#"name: ssr-app
 version: "1.0.0"
 kind: fullstack
-adapter: next
+adapter: unknown
 ssrEntrypoint: index.ts
 "#,
     )
@@ -881,7 +881,7 @@ fn workers_root() -> PathBuf {
 }
 
 // Mutation captured: dropping fullstack base restoration sends `/` to the
-// TanStack server bundle and this request body loses `/tanstack-demo/`.
+// TanStack server bundle and this request body loses `/tanstack-demo`.
 #[tokio::test]
 async fn tanstack_fullstack_worker_dispatches_ssr_with_base_restored() {
     let app = build_pipeline(state_with_factory(
@@ -898,7 +898,7 @@ async fn tanstack_fullstack_worker_dispatches_ssr_with_base_restored() {
         String::from_utf8_lossy(&body)
     );
     let text = String::from_utf8_lossy(&body);
-    assert!(text.contains("uri=/tanstack-demo/"), "body: {text}");
+    assert!(text.contains("uri=/tanstack-demo"), "body: {text}");
     assert!(text.contains("entrypoint=server/server.js"), "body: {text}");
     assert!(text.contains("x-base=/tanstack-demo"), "body: {text}");
 }

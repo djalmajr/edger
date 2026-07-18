@@ -457,13 +457,7 @@ function Workers({
   });
   return (
     <div className="grid gap-4">
-      <PageActions>
-        <Button onClick={() => setDeployOpen(true)}>
-          <UploadCloudIcon />
-          Deploy app
-        </Button>
-      </PageActions>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <InputGroup className="w-64">
           <InputGroupAddon>
             <SearchIcon />
@@ -499,6 +493,10 @@ function Workers({
             </SelectGroup>
           </SelectContent>
         </Select>
+        <Button onClick={() => setDeployOpen(true)}>
+          <UploadCloudIcon />
+          Deploy app
+        </Button>
       </div>
       <div className="grid gap-2">
         {rows.map((group) => {
@@ -1184,7 +1182,7 @@ function Files({
   const queryClient = useQueryClient();
   const fileInput = React.useRef<HTMLInputElement>(null);
   const [downloadError, setDownloadError] = React.useState("");
-  const [downloading, setDownloading] = React.useState("");
+  const [downloading, setDownloading] = React.useState<string | null>(null);
   const filesQuery = useQuery({
     queryKey: ["cpanel", "files", target, path],
     queryFn: () =>
@@ -1219,14 +1217,13 @@ function Files({
     if (files.length) upload.mutate(zipSync(map));
     event.currentTarget.value = "";
   }
-  async function downloadEntry(entry: { kind: "dir" | "file"; name: string }) {
-    const entryPath = path ? `${path}/${entry.name}` : entry.name;
+  async function downloadPath(downloadPath: string) {
     setDownloadError("");
-    setDownloading(entryPath);
+    setDownloading(downloadPath);
     try {
       const { blob, filename } = await apiDownload(
         apiKey,
-        `/api/admin/workers/${encodeURIComponent(target.name)}/files/download?${new URLSearchParams({ path: entryPath, version: target.version })}`,
+        `/api/admin/workers/${encodeURIComponent(target.name)}/files/download?${new URLSearchParams({ path: downloadPath, version: target.version })}`,
       );
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -1237,14 +1234,26 @@ function Files({
     } catch (error) {
       setDownloadError(error instanceof Error ? error.message : String(error));
     } finally {
-      setDownloading("");
+      setDownloading(null);
     }
+  }
+  function downloadEntry(entry: { kind: "dir" | "file"; name: string }) {
+    const entryPath = path ? `${path}/${entry.name}` : entry.name;
+    return downloadPath(entryPath);
   }
   const crumbs = path ? path.split("/") : [];
   return (
     <>
-      {mutable && (
-        <PageActions>
+      <PageActions>
+        <Button
+          disabled={downloading === ""}
+          onClick={() => void downloadPath("")}
+          variant="outline"
+        >
+          <DownloadIcon />
+          Download
+        </Button>
+        {mutable && (
           <Button
             onClick={() => fileInput.current?.click()}
             variant="outline"
@@ -1252,8 +1261,8 @@ function Files({
             <UploadIcon />
             Upload files
           </Button>
-        </PageActions>
-      )}
+        )}
+      </PageActions>
       <Input
         className="hidden"
         multiple
@@ -1827,7 +1836,7 @@ function Shell({
                   </Tabs>
                 )}
               <div
-                className="ml-auto flex items-center gap-2"
+                className="ml-auto flex flex-wrap items-center justify-end gap-2"
                 data-slot="page-actions"
               >
                 <Button onClick={() => void refresh()} variant="outline">

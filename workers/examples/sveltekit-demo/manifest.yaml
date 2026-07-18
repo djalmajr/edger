@@ -1,4 +1,7 @@
 name: sveltekit-demo
 version: "1.0.0"
-entrypoint: wrapper.mjs
-kind: fetch
+kind: fullstack
+adapter: sveltekit
+ssrEntrypoint: wrapper.mjs
+clientDir: client
+basePath: /sveltekit-demo

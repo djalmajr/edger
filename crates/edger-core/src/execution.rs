@@ -13,19 +13,37 @@ pub enum ExecutionKind {
     WasmModule {
         entry: Option<String>,
     },
-    /// Fullstack/SSR: adapter-specific (`hono`, `sveltekit`, `tanstack`).
+    /// Fullstack/SSR: adapter-specific framework build output.
     Fullstack {
         adapter: String,
     },
 }
 
-pub const SUPPORTED_FULLSTACK_ADAPTERS: [&str; 3] = ["hono", "sveltekit", "tanstack"];
+pub const SUPPORTED_FULLSTACK_ADAPTERS: [&str; 10] = [
+    "astro",
+    "fresh",
+    "hono",
+    "lume",
+    "nextjs",
+    "nuxt",
+    "remix",
+    "solidstart",
+    "sveltekit",
+    "tanstack",
+];
 
 pub fn normalize_fullstack_adapter(adapter: &str) -> Option<&'static str> {
     match adapter.trim().to_ascii_lowercase().as_str() {
+        "astro" => Some("astro"),
+        "fresh" => Some("fresh"),
         "hono" => Some("hono"),
-        "sveltekit" => Some("sveltekit"),
-        "tanstack" => Some("tanstack"),
+        "lume" => Some("lume"),
+        "next" | "nextjs" => Some("nextjs"),
+        "nuxt" | "nuxtjs" => Some("nuxt"),
+        "react-router" | "reactrouter" | "remix" => Some("remix"),
+        "solid" | "solidstart" => Some("solidstart"),
+        "svelte" | "sveltekit" => Some("sveltekit"),
+        "tanstack" | "tanstack-start" | "tanstackstart" => Some("tanstack"),
         _ => None,
     }
 }

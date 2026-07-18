@@ -7,7 +7,9 @@
 - **Problema:** `kind: fullstack` responde `501 adapter-required` — o EdgeR não tem caminho first-class para apps SSR. E o streaming ao cliente é bounded (snapshot), não passthrough: SSE/streaming progressivo não chegam incrementais.
 - **AS-IS:** o processo Deno persistente (Epic 15) já captura `Deno.serve`, default fetch e `node:http.createServer().listen()` — Express e Hono rodam. Deno transpila TSX nativamente (`jsxImportSource: hono/jsx` provado em scratchpad: SSR sem build step). Frameworks cujo build gera um desses três contratos já *poderiam* rodar como `kind: fetch`, mas nada é testado/documentado. Body é lido bounded (`EDGER_STREAM_MAX_*`).
 - **TO-BE:** (1) Hono SSR+JSX como caminho fullstack **blessed** (fixture + docs + validação live, deploy de fonte `.tsx` sem build); (2) SvelteKit e TanStack Start validados por spike com build real, findings documentados; (3) streaming passthrough real: frames chunk/end no UDS, cliente recebe incremental (SSE de verdade, SSR progressivo).
-- **Fora de escopo:** Next.js (complexidade/superfície de compat — tier futuro via captura `node:http` do standalone); HonoX islands; backpressure fino/HTTP2 push; adapter declarativo `kind: fullstack` com roteamento estático-vs-SSR no Rust (fica para depois dos spikes).
+- **Fora de escopo histórico desta fase:** Next.js e o adapter declarativo ficaram
+  para depois dos spikes e foram entregues posteriormente pelos Epics 19 e 24.
+  HonoX islands e backpressure fino/HTTP2 push continuam fora desta fase.
 
 ## Traceability
 
