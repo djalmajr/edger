@@ -7,7 +7,7 @@
 - **Problema:** o único caminho de deploy é copiar diretório + reiniciar o binário; nenhuma API instala um worker.
 - **Objetivo:** `POST /api/admin/workers/install` recebe um zip do app, valida, escreve atomicamente no worker root e indexa o worker em runtime.
 - **Valor:** primeiro passo do "mini Vercel": um `curl` (ou o cPanel na 14.03) coloca um app no ar sem tocar em infra.
-- **Restrições:** body cap global de 4 MiB (`MAX_BODY_BYTES`); sem build server-side; extração deny-by-default contra zip-slip; permissão `workers:install` (paridade Buntime).
+- **Restrições:** cap dedicado de 64 MiB para pacotes comprimidos; sem build server-side; extração deny-by-default contra zip-slip; permissão `workers:install` (paridade Buntime).
 
 ## Traceability
 
@@ -39,6 +39,7 @@
 ### TO-BE
 
 - `POST /api/admin/workers/install` com `content-type: application/zip` e body = pacote do app.
+- `manifest.yaml` é opcional. O loader completa `name` por manifesto, `package.json`, pasta top-level ou header `x-edger-package-name`; `version` usa `latest`; `entrypoint` usa `package.json` ou autodiscovery de `index.*`; o `kind` é inferido pelo entrypoint quando ausente.
 - Pipeline: (1) checar permissão `workers:install`; (2) extrair para diretório temporário dentro do root; (3) validar com `load_worker_manifest` (mesma regra do boot: `manifest.yaml`/`package.json`/`index.*`); (4) checar colisão `name@version` no índice; (5) rename atômico para o destino final; (6) `ManifestIndex::insert`; (7) responder `{ worker, url, kind, visibility }`.
 - Zip-slip: cada entry canonicalizada precisa continuar sob o diretório de extração; entries absolutas ou com `..` são rejeitadas com erro tipado.
 - Colisão: `409` com código `COLLISION` (mesma semântica do índice); instalar nova versão é permitido.
@@ -54,7 +55,7 @@
 - [x] Install de zip válido retorna `201` com `{ name, version, url, kind, visibility }` e o worker responde na rota **sem restart**.
 - [x] Key sem `workers:install` recebe `403`; sem key, `401`.
 - [x] Zip com entry `../fora` ou path absoluto é rejeitado com `400` tipado e nada é escrito no root.
-- [x] Zip sem entrypoint/manifest válido é rejeitado com `400` e diretório temporário é limpo.
+- [x] Zip sem entrypoint válido é rejeitado com `400` e diretório temporário é limpo; manifesto ausente ou parcial usa defaults canônicos.
 - [x] Instalar `name@version` já indexado retorna `409 COLLISION`; nova versão do mesmo nome instala e coexiste.
 - [x] Body acima do cap responde `413` (comportamento existente preservado).
 
@@ -104,3 +105,8 @@ cargo fmt -- --check
 `{name, version, url, kind, visibility, source}`. Permissão `workers:install`
 + CSRF guard. Evidência live:
 `status/evidence/deploy-vertical-slice-2026-07-02.txt`.
+
+Revisão 2026-07-18: o install passou a espelhar integralmente o boot para
+pacotes sem manifesto. O nome estável pode vir do ZIP/pasta, a versão default é
+`latest`, o entrypoint `index.*` e o kind são inferidos; o limite dedicado é
+64 MiB.

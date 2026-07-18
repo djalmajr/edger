@@ -230,8 +230,11 @@ http.createServer(async (request, response) => {
   response.statusCode = 201;
   response.setHeader("content-type", "application/json");
   response.setHeader("x-real-node-http", String(typeof response._implicitHeader === "function"));
+  const output = JSON.stringify({ method: request.method, url: request.url, body });
+  response.setHeader("content-length", String(Buffer.byteLength(output)));
+  response.setHeader("connection", "keep-alive");
   response._implicitHeader();
-  response.end(JSON.stringify({ method: request.method, url: request.url, body }));
+  response.end(output);
 }).listen(3000);
 "#,
     );
@@ -255,6 +258,10 @@ http.createServer(async (request, response) => {
         .headers
         .iter()
         .any(|(name, value)| name == "x-real-node-http" && value == "true"));
+    assert!(response
+        .headers
+        .iter()
+        .all(|(name, _)| name != "content-length" && name != "connection"));
     let body: serde_json::Value =
         serde_json::from_slice(response.body.as_deref().unwrap()).unwrap();
     assert_eq!(body["method"], "POST");

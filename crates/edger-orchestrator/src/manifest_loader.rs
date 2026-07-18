@@ -128,6 +128,13 @@ fn is_worker_dir(path: &Path) -> bool {
 }
 
 pub(crate) fn load_worker_manifest(worker_dir: &Path) -> Result<WorkerManifest, CoreError> {
+    load_worker_manifest_with_name_fallback(worker_dir, None)
+}
+
+pub(crate) fn load_worker_manifest_with_name_fallback(
+    worker_dir: &Path,
+    name_fallback: Option<&str>,
+) -> Result<WorkerManifest, CoreError> {
     for manifest_name in MANIFEST_CANDIDATES {
         let path = worker_dir.join(manifest_name);
         if path.is_file() {
@@ -139,26 +146,33 @@ pub(crate) fn load_worker_manifest(worker_dir: &Path) -> Result<WorkerManifest, 
             })?;
             let manifest = serde_yaml::from_str(&text)
                 .map_err(|e| CoreError::parse(format!("failed to parse {}: {e}", path.display())));
-            return manifest.and_then(|manifest| complete_manifest(worker_dir, manifest));
+            return manifest
+                .and_then(|manifest| complete_manifest(worker_dir, manifest, name_fallback));
         }
     }
 
     if worker_dir.join("package.json").is_file() {
-        return load_package_json_manifest(worker_dir);
+        return load_package_json_manifest(worker_dir, name_fallback);
     }
 
-    Ok(default_manifest(worker_dir, None, None))
+    Ok(default_manifest(
+        worker_dir,
+        name_fallback.map(str::to_owned),
+        None,
+    ))
 }
 
 fn complete_manifest(
     worker_dir: &Path,
     mut manifest: WorkerManifest,
+    name_fallback: Option<&str>,
 ) -> Result<WorkerManifest, CoreError> {
     let package = read_package_json(worker_dir)?;
     if manifest.name.is_empty() {
         manifest.name = package
             .as_ref()
             .and_then(|package| package.name.clone())
+            .or_else(|| name_fallback.map(str::to_owned))
             .unwrap_or_else(|| dir_name(worker_dir));
     }
     if manifest.version.is_none() {
@@ -172,7 +186,10 @@ fn complete_manifest(
     Ok(manifest)
 }
 
-fn load_package_json_manifest(worker_dir: &Path) -> Result<WorkerManifest, CoreError> {
+fn load_package_json_manifest(
+    worker_dir: &Path,
+    name_fallback: Option<&str>,
+) -> Result<WorkerManifest, CoreError> {
     let package = read_package_json(worker_dir)?.ok_or_else(|| {
         CoreError::new(
             "MANIFEST_IO",
@@ -184,7 +201,11 @@ fn load_package_json_manifest(worker_dir: &Path) -> Result<WorkerManifest, CoreE
         .or(package.main)
         .or_else(|| infer_entrypoint(worker_dir));
 
-    let mut manifest = default_manifest(worker_dir, package.name, package.version);
+    let mut manifest = default_manifest(
+        worker_dir,
+        package.name.or_else(|| name_fallback.map(str::to_owned)),
+        package.version,
+    );
     manifest.entrypoint = entrypoint;
     Ok(manifest)
 }
