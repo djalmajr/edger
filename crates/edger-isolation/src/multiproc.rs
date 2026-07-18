@@ -1083,9 +1083,11 @@ impl DenoProcessIsolate {
                 timeout,
                 &config.env,
                 limits.memory_mb,
-                if config.fullstack.as_ref().is_some_and(|fullstack| {
-                    matches!(fullstack.adapter.as_str(), "nextjs" | "remix")
-                }) {
+                if config.node_http_proxy
+                    || config.fullstack.as_ref().is_some_and(|fullstack| {
+                        matches!(fullstack.adapter.as_str(), "nextjs" | "remix")
+                    })
+                {
                     NodeHttpMode::Proxy
                 } else {
                     NodeHttpMode::Capture

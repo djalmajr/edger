@@ -457,7 +457,7 @@ function Workers({
   });
   return (
     <div className="grid gap-4">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex items-center gap-2">
         <InputGroup className="w-64">
           <InputGroupAddon>
             <SearchIcon />
@@ -493,10 +493,16 @@ function Workers({
             </SelectGroup>
           </SelectContent>
         </Select>
-        <Button onClick={() => setDeployOpen(true)}>
-          <UploadCloudIcon />
-          Deploy app
-        </Button>
+        <div className="ml-auto flex items-center gap-2">
+          <Button onClick={() => void onRefresh()} variant="outline">
+            <RefreshCwIcon />
+            Refresh
+          </Button>
+          <Button onClick={() => setDeployOpen(true)}>
+            <UploadCloudIcon />
+            Deploy app
+          </Button>
+        </div>
       </div>
       <div className="grid gap-2">
         {rows.map((group) => {
@@ -1411,23 +1417,59 @@ function DeployDialog({
   const input = React.useRef<HTMLInputElement>(null);
   async function stageFile(file: File) {
     try {
+      if (file.size > 64 * 1024 * 1024)
+        throw new Error("The archive exceeds the 64 MiB limit");
       const zip = new Uint8Array(await file.arrayBuffer());
       const files = unzipSync(zip);
-      const names = Object.keys(files);
-      const manifestName = names.find((name) => name.endsWith("manifest.yaml"));
-      if (!manifestName)
-        throw new Error("The archive must contain manifest.yaml");
-      const manifest = new TextDecoder().decode(files[manifestName]);
+      const names = Object.keys(files).filter((name) => !name.endsWith("/"));
+      const firstSegment = names[0]?.split("/")[0];
+      const rootPrefix =
+        firstSegment &&
+        names.every(
+          (name) => name.includes("/") && name.split("/")[0] === firstSegment,
+        )
+          ? `${firstSegment}/`
+          : "";
+      const packageFiles = names.map((name) => ({
+        contents: files[name],
+        name: name.slice(rootPrefix.length),
+      }));
+      const manifestFile = packageFiles.find(({ name }) =>
+        ["manifest.yaml", "manifest.yml"].includes(name),
+      );
+      const manifest = manifestFile
+        ? new TextDecoder().decode(manifestFile.contents)
+        : "";
       const read = (key: string) =>
         manifest
           .match(new RegExp(`^${key}:\\s*["']?([^"'\\n]+)`, "m"))?.[1]
           ?.trim();
-      const name = read("name");
-      const version = read("version");
-      const entrypoint = read("entrypoint");
-      if (!name || !version || !entrypoint)
+      const packageJsonFile = packageFiles.find(
+        ({ name }) => name === "package.json",
+      );
+      const packageJson = packageJsonFile
+        ? (JSON.parse(
+            new TextDecoder().decode(packageJsonFile.contents),
+          ) as { main?: string; module?: string; name?: string; version?: string })
+        : undefined;
+      const fallbackName =
+        file.name
+          .replace(/\.zip$/i, "")
+          .replace(/[^A-Za-z0-9._-]+/g, "-")
+          .replace(/^[-.]+|[-.]+$/g, "") || "app";
+      const name = read("name") || packageJson?.name || fallbackName;
+      const version = read("version") || packageJson?.version || "latest";
+      const entrypoint =
+        read("entrypoint") ||
+        read("ssrEntrypoint") ||
+        packageJson?.module ||
+        packageJson?.main ||
+        ["index.html", "index.ts", "index.js", "index.mjs", "index.wasm", "index.wat"].find(
+          (candidate) => packageFiles.some(({ name }) => name === candidate),
+        );
+      if (!entrypoint)
         throw new Error(
-          "manifest.yaml must define name, version, and entrypoint",
+          "No supported entrypoint found (index.html, index.ts, index.js, index.mjs, index.wasm, or index.wat)",
         );
       setStage({
         file,
@@ -1447,7 +1489,10 @@ function DeployDialog({
         "/api/admin/workers/install",
         {
           body: stage.zip ? bytesBody(stage.zip) : undefined,
-          headers: { "content-type": "application/zip" },
+          headers: {
+            "content-type": "application/zip",
+            "x-edger-package-name": stage.file?.name ?? "app.zip",
+          },
           method: "POST",
         },
       ),
@@ -1484,7 +1529,7 @@ function DeployDialog({
             <UploadCloudIcon className="mx-auto mb-2 size-8 text-muted-foreground" />
             <strong className="block text-sm">Choose a zip package</strong>
             <small className="text-muted-foreground">
-              Limit: 4 MiB · manifest.yaml required
+              Limit: 64 MiB
             </small>
           </span>
           <Input
@@ -1800,7 +1845,13 @@ function Shell({
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           <PageActionsContext.Provider value={pageActionsElement}>
-            <div className="mb-4 flex min-h-8 items-center gap-3">
+            <div
+              className={
+                route.view === "workers"
+                  ? "hidden"
+                  : "mb-4 flex min-h-8 items-center gap-3"
+              }
+            >
               {route.target && (
                 <Tabs
                   value={route.view}

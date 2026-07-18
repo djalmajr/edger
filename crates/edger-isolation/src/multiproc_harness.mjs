@@ -161,36 +161,77 @@ async function installNodeHttpAdapter() {
           capturedNodeHandlers.push(handler);
         }
       };
-      return {
+      const eventHandlers = new Map();
+      const addEvent = (event, handler, once = false) => {
+        captureEvent(event, handler);
+        const handlers = eventHandlers.get(event) ?? [];
+        handlers.push({ handler, once });
+        eventHandlers.set(event, handlers);
+      };
+      const server = {
+        listening: false,
         address() {
           return { address: "127.0.0.1", family: "IPv4", port: 0 };
         },
         close(callback) {
+          this.listening = false;
           if (typeof callback === "function") callback();
+          this.emit("close");
           return this;
         },
         listen(...listenArgs) {
           const callback = listenArgs.find((arg) => typeof arg === "function");
-          if (callback) callback();
+          this.listening = true;
+          queueMicrotask(() => {
+            if (callback) callback();
+            this.emit("listening");
+          });
           return this;
         },
         on(event, handler) {
-          captureEvent(event, handler);
+          addEvent(event, handler);
           return this;
         },
         once(event, handler) {
-          captureEvent(event, handler);
+          addEvent(event, handler, true);
           return this;
         },
         addListener(event, handler) {
-          captureEvent(event, handler);
+          addEvent(event, handler);
           return this;
         },
-        removeListener() { return this; },
+        removeListener(event, handler) {
+          const handlers = eventHandlers.get(event) ?? [];
+          eventHandlers.set(
+            event,
+            handlers.filter((entry) => entry.handler !== handler),
+          );
+          return this;
+        },
+        removeAllListeners(event) {
+          if (event === undefined) eventHandlers.clear();
+          else eventHandlers.delete(event);
+          return this;
+        },
+        emit(event, ...eventArgs) {
+          const handlers = [...(eventHandlers.get(event) ?? [])];
+          for (const entry of handlers) {
+            entry.handler(...eventArgs);
+            if (entry.once) this.removeListener(event, entry.handler);
+          }
+          return handlers.length > 0;
+        },
+        listeners(event) {
+          return (eventHandlers.get(event) ?? []).map((entry) => entry.handler);
+        },
+        listenerCount(event) {
+          return (eventHandlers.get(event) ?? []).length;
+        },
         setTimeout() { return this; },
         ref() { return this; },
         unref() { return this; },
       };
+      return server;
     };
   } catch (_) {
     // Non-Node workers do not need the server-listen adapter.
@@ -498,6 +539,20 @@ async function writeTagged(tag, payload) {
   await writeFrame(framed);
 }
 
+function streamedResponseHeaders(headers) {
+  const hopByHop = new Set([
+    "connection",
+    "content-length",
+    "keep-alive",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+  ]);
+  return Array.from(headers.entries()).filter(([name]) => !hopByHop.has(name.toLowerCase()));
+}
+
 async function respond(handler, raw) {
   let response;
   try {
@@ -525,7 +580,11 @@ async function respond(handler, raw) {
     new TextEncoder().encode(
       JSON.stringify({
         status: response.status,
-        headers: Array.from(response.headers.entries()),
+        // The outer HTTP server owns transfer framing. Forwarding a Node
+        // Content-Length lets Hyper stop polling after the last data chunk,
+        // before it observes our internal TAG_END, which falsely looks like a
+        // client disconnect and forces a warm-process recycle.
+        headers: streamedResponseHeaders(response.headers),
       }),
     ),
   );

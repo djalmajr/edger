@@ -138,7 +138,11 @@ async fn install_worker(
         let principal = authenticate(&state, &headers).await?;
         require_permission(&principal, "workers:install")?;
         validate_admin_mutation_security("POST", &headers, &principal)?;
-        let mut installed = install_worker_from_zip(&state.index, &principal, &body)?;
+        let package_name_hint = headers
+            .get("x-edger-package-name")
+            .and_then(|value| value.to_str().ok());
+        let mut installed =
+            install_worker_from_zip(&state.index, &principal, &body, package_name_hint)?;
         let candidate = state
             .index
             .worker_refs()

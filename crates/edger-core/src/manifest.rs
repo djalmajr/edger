@@ -104,6 +104,8 @@ pub struct WorkerManifest {
     pub auto_install: Option<bool>,
     #[serde(default, alias = "deno_cache_mode")]
     pub deno_cache_mode: Option<DenoCacheMode>,
+    #[serde(default, alias = "node_http_proxy")]
+    pub node_http_proxy: bool,
     pub inject_base: Option<bool>,
     pub adapter: Option<String>,
     pub ssr_entrypoint: Option<String>,

@@ -8,7 +8,7 @@ use std::fs;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::Router;
 use edger_core::ExecutionKind;
 use edger_isolation::{DenoProcessIsolate, WasmIsolate};
@@ -44,22 +44,47 @@ fn state(root: std::path::PathBuf) -> OrchestratorState {
 }
 
 async fn get(app: Router, uri: &str) -> (StatusCode, String) {
+    let (status, _, body) = request(app, Method::GET, uri, &[], "").await;
+    (status, body)
+}
+
+async fn request(
+    app: Router,
+    method: Method,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> (StatusCode, HeaderMap, String) {
+    let mut request = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    if !body.is_empty() {
+        request = request.header("content-length", body.len().to_string());
+    }
     let res = app
         .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(uri)
+            request
                 .header("authorization", "Bearer test-root")
-                .body(Body::empty())
+                .body(Body::from(body.to_owned()))
                 .unwrap(),
         )
         .await
         .unwrap();
     let status = res.status();
+    let headers = res.headers().clone();
     let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
         .await
         .unwrap();
-    (status, String::from_utf8_lossy(&bytes).into_owned())
+    (
+        status,
+        headers,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+fn framework_test_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workers/framework-tests")
 }
 
 fn worker(root: &std::path::Path, name: &str, index: &str) {
@@ -229,4 +254,135 @@ server.listen(3000);
     let (status, body) = get(app, "/polka-style").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("\"tracked\":2"), "process survived: {body}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs deno + npm network (cold cache); run explicitly"]
+async fn nestjs_express_and_fastify_cover_enterprise_http_features() {
+    let app = build_pipeline(state(framework_test_root()));
+
+    for (name, adapter) in [
+        ("nest-express-demo", "express"),
+        ("nest-fastify-demo", "fastify"),
+    ] {
+        let uri = format!("/{name}");
+        let (status, headers, body) = request(app.clone(), Method::GET, &uri, &[], "").await;
+        assert_eq!(status, StatusCode::OK, "{name} root: {body}");
+        assert!(body.contains("\"framework\":\"nestjs\""), "{body}");
+        assert!(
+            body.contains(&format!("\"adapter\":\"{adapter}\"")),
+            "{body}"
+        );
+        assert_eq!(headers["x-nest-interceptor"], "active");
+
+        let (status, _, body) = request(app.clone(), Method::GET, &uri, &[], "").await;
+        assert_eq!(status, StatusCode::OK, "{name} warm root: {body}");
+        assert!(
+            body.contains("\"count\":2"),
+            "provider state was not reused: {body}"
+        );
+
+        let guarded = format!("/{name}/guarded");
+        let (status, _, _) = request(app.clone(), Method::GET, &guarded, &[], "").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, body) = request(
+            app.clone(),
+            Method::GET,
+            &guarded,
+            &[("x-test-auth", "allowed")],
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "guarded {name}: {body}");
+
+        let validate = format!("/{name}/validate");
+        let (status, _, body) = request(
+            app.clone(),
+            Method::POST,
+            &validate,
+            &[("content-type", "application/json")],
+            r#"{"message":"works"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "valid DTO {name}: {body}");
+        let (status, _, _) = request(
+            app.clone(),
+            Method::POST,
+            &validate,
+            &[("content-type", "application/json")],
+            r#"{"message":"x"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let stream = format!("/{name}/stream");
+        let (status, _, body) = request(app.clone(), Method::GET, &stream, &[], "").await;
+        assert_eq!(status, StatusCode::OK, "stream {name}: {body}");
+        assert_eq!(body, format!("nest-{adapter}-stream"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs deno + npm network (cold cache); run explicitly"]
+async fn fastify_and_koa_cover_server_lifecycle_and_middleware() {
+    let app = build_pipeline(state(framework_test_root()));
+
+    for (name, framework, marker, stream_body) in [
+        (
+            "fastify-demo",
+            "fastify",
+            "x-fastify-hook",
+            "fastify-stream",
+        ),
+        ("koa-demo", "koa", "x-koa-middleware", "koa-stream"),
+    ] {
+        let uri = format!("/{name}");
+        let (status, headers, body) = request(app.clone(), Method::GET, &uri, &[], "").await;
+        assert_eq!(status, StatusCode::OK, "{name} root: {body}");
+        assert!(
+            body.contains(&format!("\"framework\":\"{framework}\"")),
+            "{body}"
+        );
+        assert_eq!(headers[marker], "active");
+        if framework == "koa" {
+            assert_eq!(headers["x-koa-upstream"], "resumed");
+        }
+
+        let (status, _, body) = request(app.clone(), Method::GET, &uri, &[], "").await;
+        assert_eq!(status, StatusCode::OK, "{name} warm root: {body}");
+        assert!(body.contains("\"requests\":2"), "warm state {name}: {body}");
+
+        let user = format!("/{name}/users/42");
+        let (status, _, body) = request(app.clone(), Method::GET, &user, &[], "").await;
+        assert_eq!(status, StatusCode::OK, "route param {name}: {body}");
+        assert!(body.contains("\"user\":\"42\""), "{body}");
+
+        let validate = format!("/{name}/validate");
+        let (status, _, body) = request(
+            app.clone(),
+            Method::POST,
+            &validate,
+            &[("content-type", "application/json")],
+            r#"{"message":"works"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "valid body {name}: {body}");
+        let (status, _, _) = request(
+            app.clone(),
+            Method::POST,
+            &validate,
+            &[("content-type", "application/json")],
+            r#"{"message":"x"}"#,
+        )
+        .await;
+        assert!(
+            status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid body {name}: {status}"
+        );
+
+        let stream = format!("/{name}/stream");
+        let (status, _, body) = request(app.clone(), Method::GET, &stream, &[], "").await;
+        assert_eq!(status, StatusCode::OK, "stream {name}: {body}");
+        assert_eq!(body, stream_body);
+    }
 }

@@ -67,12 +67,28 @@ async fn send(
     content_type: &str,
     body: Vec<u8>,
 ) -> (StatusCode, serde_json::Value, String) {
+    send_with_package_name(app, method, uri, api_key, content_type, body, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_with_package_name(
+    app: Router,
+    method: &str,
+    uri: &str,
+    api_key: Option<&str>,
+    content_type: &str,
+    body: Vec<u8>,
+    package_name: Option<&str>,
+) -> (StatusCode, serde_json::Value, String) {
     let mut request = Request::builder()
         .method(method)
         .uri(uri)
         .header("content-type", content_type);
     if let Some(key) = api_key {
         request = request.header("authorization", format!("Bearer {key}"));
+    }
+    if let Some(package_name) = package_name {
+        request = request.header("x-edger-package-name", package_name);
     }
     let res = app
         .oneshot(request.body(Body::from(body)).unwrap())
@@ -372,10 +388,46 @@ async fn install_rejects_zip_slip() {
     );
 }
 
-// Mutation captured: skipping `validate_package_manifest` accepts a package
-// with no identity/entrypoint and this test goes red.
 #[tokio::test]
-async fn install_rejects_package_without_manifest() {
+async fn install_infers_manifestless_package_defaults_from_archive_name() {
+    let root = tempfile::tempdir().unwrap();
+    let app = build_pipeline(state_with_root(root.path().to_path_buf()));
+
+    let (status, json, text) = send_with_package_name(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        zip_package(&[(
+            "index.ts",
+            "Deno.serve(() => new Response('manifestless-ok'));",
+        )]),
+        Some("manifestless-app.zip"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    assert_eq!(json["name"], "manifestless-app");
+    assert_eq!(json["version"], "latest");
+    assert_eq!(json["kind"], "FetchHandler");
+
+    let (status, _, text) = send(
+        app,
+        "GET",
+        "/manifestless-app",
+        None,
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(text, "manifestless-ok");
+}
+
+// Mutation captured: skipping entrypoint validation accepts arbitrary files
+// as an app package and this test goes red.
+#[tokio::test]
+async fn install_rejects_package_without_entrypoint() {
     let root = tempfile::tempdir().unwrap();
     let app = build_pipeline(state_with_root(root.path().to_path_buf()));
 

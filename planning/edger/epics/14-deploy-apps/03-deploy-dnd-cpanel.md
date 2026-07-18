@@ -8,7 +8,7 @@
 - **Objetivo:** deploy drag-and-drop de zip (e pasta via `webkitdirectory`/`DataTransferItem` empacotada em zip no cliente), preview do manifest inferido e confirmação → app no ar com URL clicável.
 - **Decisão de UX (revisão 2026-07-02):** o deploy vive **dentro da view Workers** (deploy produz workers — mesma área), com um único botão **"Deploy app"** que abre uma modal (`Dialog` shadcn) de upload. Não há item "Deploy" na sidebar. **Sem botão Rescan separado:** o reconcile disco↔índice foi dobrado no **Refresh** — cada Refresh reconcilia a pasta de workers (indexa apps copiados por fora do install, remove apagados) e recarrega; falha de rescan (ex.: manifest quebrado no disco) é ignorada para não travar a leitura do índice. A badge "root" do header foi removida (redundante com o rodapé da sidebar que já mostra principal/role).
 - **Valor:** paridade com o file manager DnD do Buntime, com UX de mini Vercel.
-- **Restrições:** stack CDN do cPanel (Preact/htm + shadcn `components/ui/`); zip no cliente via lib CDN (ex.: fflate); limite de 4 MiB comunicado na UI.
+- **Restrições:** stack React + shadcn `components/ui/`; zip no cliente via `fflate`; limite dedicado de 64 MiB comunicado na UI.
 
 ## Traceability
 
@@ -36,6 +36,7 @@
 - Modal (`Dialog` shadcn) só com o fluxo de upload: dropzone (zip/pasta), preview, install, Close.
 - Refresh (topo) reconcilia a pasta de workers e recarrega — um botão para "sincronizar com a realidade do disco".
 - Preview antes de confirmar: nome, versão, kind inferido, visibilidade, arquivos principais; erros de validação legíveis (traduzidos dos códigos `DEPLOY_*`).
+- O preview aceita manifesto opcional e exibe os mesmos defaults do backend: nome do ZIP, versão `latest`, autodiscovery de `index.*` e kind inferido.
 - Após confirmar: chamada `POST /api/admin/workers/install`; sucesso mostra URL clicável (`/<name>` ou `/@ns/<name>`) e "Deploy another"; a tabela de Workers por trás é atualizada. Rodapé da modal só com "Close" (o Rescan vive no header da listagem, não na modal).
 
 ### Scope
@@ -100,3 +101,7 @@ Badge "root" do header removida. Não há item "Deploy" na sidebar. Validado no
 preview builtin: deploy por modal → app live; worker copiado no disco aparece
 após Refresh; worker apagado do disco some após Refresh (404). Console/network
 sem erros. Evidência: `status/evidence/deploy-vertical-slice-2026-07-02.txt`.
+
+Revisão 2026-07-18: a modal deixou de exigir `manifest.yaml`, passou a enviar
+o nome do arquivo como hint estável e corrigiu a indicação do limite para
+64 MiB.

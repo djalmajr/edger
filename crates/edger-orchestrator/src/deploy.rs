@@ -15,7 +15,7 @@ use edger_worker::{WorkerError, WorkerPool};
 use serde::Serialize;
 
 use crate::manifest_index_stub::ManifestIndex;
-use crate::manifest_loader::{load_worker_manifest, scan_worker_manifests};
+use crate::manifest_loader::{load_worker_manifest_with_name_fallback, scan_worker_manifests};
 use crate::observability::{
     OperationalEventInput, OperationalEventLevel, OperationalEventSource, OperationalStore,
 };
@@ -57,7 +57,9 @@ pub fn install_worker_from_zip(
     index: &ManifestIndex,
     principal: &ApiKeyPrincipal,
     bytes: &[u8],
+    package_name_hint: Option<&str>,
 ) -> Result<InstalledWorker, CoreError> {
+    let package_name_hint = package_name_hint.and_then(package_name_from_hint);
     let inspection = tempfile::Builder::new()
         .prefix(".edger-install-")
         .tempdir()
@@ -65,7 +67,10 @@ pub fn install_worker_from_zip(
 
     extract_zip(bytes, inspection.path())?;
     let inspected_package_dir = package_root(inspection.path())?;
-    let inspected_manifest = load_worker_manifest(&inspected_package_dir)?;
+    let inspected_manifest = load_worker_manifest_with_name_fallback(
+        &inspected_package_dir,
+        package_name_hint.as_deref(),
+    )?;
     let inspected_worker = create_worker_ref(inspected_package_dir, inspected_manifest)?;
     let core = is_core_name(&inspected_worker.name);
     let root = install_root(index, core)?;
@@ -76,8 +81,14 @@ pub fn install_worker_from_zip(
     extract_zip(bytes, staging.path())?;
     let package_dir = package_root(staging.path())?;
 
-    let mut manifest = load_worker_manifest(&package_dir)?;
-    validate_package_manifest(&package_dir, &manifest)?;
+    let mut manifest =
+        load_worker_manifest_with_name_fallback(&package_dir, package_name_hint.as_deref())?;
+    validate_package_manifest(
+        &manifest,
+        package_dir != staging.path()
+            || package_name_hint.is_some()
+            || package_declares_name(&package_dir)?,
+    )?;
     if manifest.enabled == Some(false) {
         return Err(CoreError::new(
             "DEPLOY_INVALID_PACKAGE",
@@ -521,16 +532,14 @@ fn package_root(staging: &Path) -> Result<PathBuf, CoreError> {
     }
 }
 
-fn validate_package_manifest(dir: &Path, manifest: &WorkerManifest) -> Result<(), CoreError> {
-    // Without an explicit name the loader falls back to the (random) staging
-    // dir name — meaningless as an app identity.
-    let has_named_manifest = ["manifest.yaml", "manifest.yml", "package.json"]
-        .iter()
-        .any(|candidate| dir.join(candidate).is_file());
-    if !has_named_manifest || manifest.name.trim().is_empty() {
+fn validate_package_manifest(
+    manifest: &WorkerManifest,
+    has_stable_name: bool,
+) -> Result<(), CoreError> {
+    if !has_stable_name || manifest.name.trim().is_empty() {
         return Err(CoreError::new(
             "DEPLOY_INVALID_PACKAGE",
-            "package must include manifest.yaml (or package.json) with a worker name",
+            "package name could not be inferred; include a name in manifest.yaml or package.json, wrap the files in a named folder, or send x-edger-package-name",
         ));
     }
     if manifest.entrypoint.is_none() && manifest.ssr_entrypoint.is_none() {
@@ -540,6 +549,47 @@ fn validate_package_manifest(dir: &Path, manifest: &WorkerManifest) -> Result<()
         ));
     }
     Ok(())
+}
+
+fn package_declares_name(dir: &Path) -> Result<bool, CoreError> {
+    for candidate in ["manifest.yaml", "manifest.yml"] {
+        let path = dir.join(candidate);
+        if path.is_file() {
+            let text = fs::read_to_string(&path)
+                .map_err(|err| deploy_io(format!("failed to read {}: {err}", path.display())))?;
+            let value: serde_yaml::Value = serde_yaml::from_str(&text).map_err(|err| {
+                CoreError::parse(format!("failed to parse {}: {err}", path.display()))
+            })?;
+            if value
+                .get("name")
+                .and_then(serde_yaml::Value::as_str)
+                .is_some_and(|name| !name.trim().is_empty())
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    let path = dir.join("package.json");
+    if path.is_file() {
+        let text = fs::read_to_string(&path)
+            .map_err(|err| deploy_io(format!("failed to read {}: {err}", path.display())))?;
+        let value: serde_json::Value = serde_json::from_str(&text).map_err(|err| {
+            CoreError::parse(format!("failed to parse {}: {err}", path.display()))
+        })?;
+        return Ok(value
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| !name.trim().is_empty()));
+    }
+
+    Ok(false)
+}
+
+fn package_name_from_hint(hint: &str) -> Option<String> {
+    let stem = Path::new(hint).file_stem()?.to_str()?;
+    let name = sanitize_dir_name(stem);
+    (!name.is_empty()).then_some(name)
 }
 
 fn target_dir(root: &Path, name: &str, version: &str) -> Result<PathBuf, CoreError> {

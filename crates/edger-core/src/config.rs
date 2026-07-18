@@ -49,6 +49,9 @@ pub struct WorkerConfig {
     pub rate_limit_rps: Option<u32>,
     pub auto_install: bool,
     pub deno_cache_mode: DenoCacheMode,
+    /// Bind a genuine node:http server to a private Unix socket for frameworks
+    /// that require complete IncomingMessage/ServerResponse semantics.
+    pub node_http_proxy: bool,
     pub inject_base: bool,
     pub cron: Vec<crate::manifest::CronJob>,
     pub kind: Option<ExecutionKind>,
@@ -449,6 +452,7 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         rate_limit_rps: manifest.rate_limit_rps,
         auto_install: manifest.auto_install.unwrap_or(false),
         deno_cache_mode: manifest.deno_cache_mode.unwrap_or_default(),
+        node_http_proxy: manifest.node_http_proxy,
         inject_base: manifest.inject_base.unwrap_or(true),
         cron: manifest.cron.clone().unwrap_or_default(),
         kind: Some(kind),

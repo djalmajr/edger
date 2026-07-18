@@ -221,6 +221,37 @@ instalado e baixado novamente como ZIP válido. ISR, PPR, image optimization,
 websockets e outras combinações avançadas só devem ser marcadas como suportadas
 após uma prova específica.
 
+## Frameworks de servidor Node
+
+Frameworks que dependem de `IncomingMessage`/`ServerResponse` completos podem
+declarar o proxy HTTP privado no manifesto:
+
+```yaml
+kind: fetch
+entrypoint: index.ts
+nodeHttpProxy: true
+```
+
+O processo abre o servidor Node somente em um socket Unix temporário. O app não
+recebe uma porta TCP pública e o tráfego continua passando pelo router, limites,
+observabilidade e pool do EdgeR. Headers hop-by-hop e `Content-Length` do servidor
+interno não são encaminhados: o servidor HTTP externo controla o framing, consome
+o frame de término e mantém o processo reutilizável.
+
+A rodada de 2026-07-17 validou:
+
+- NestJS 11.1.6 com `ExpressAdapter` e `FastifyAdapter`: decorators,
+  `reflect-metadata`, DI com estado warm, guard, interceptor, `ValidationPipe`,
+  rota parametrizada, POST JSON e `StreamableFile`;
+- Fastify 5.6.1: hooks, schema JSON, rota parametrizada, POST e stream Node;
+- Koa 3.0.1: middleware em cascata, `AsyncLocalStorage`, router, body parser e
+  stream Node.
+
+Os quatro pacotes foram instalados por ZIP pela Admin API com HTTP 201. Após a
+prova live, cada app permaneceu `healthy` e `idle`, com um processo persistente e
+zero reciclagens por erro. WebSockets, Nest microservices e adapters de banco
+continuam fora desta prova HTTP.
+
 ## Referências oficiais
 
 - <https://docs.deno.com/deploy/reference/frameworks/>

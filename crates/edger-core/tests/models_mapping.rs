@@ -423,6 +423,7 @@ allow_net:
   - api.example.com
   - "cdn.example.com:443, jsr.io"
 deno_cache_mode: shared
+nodeHttpProxy: true
 "#,
     )
     .unwrap();
@@ -438,4 +439,5 @@ deno_cache_mode: shared
         ])
     );
     assert_eq!(config.deno_cache_mode, DenoCacheMode::Shared);
+    assert!(config.node_http_proxy);
 }

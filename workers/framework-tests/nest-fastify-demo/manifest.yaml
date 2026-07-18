@@ -1,0 +1,7 @@
+name: nest-fastify-demo
+version: "1.0.0"
+entrypoint: index.ts
+kind: fetch
+timeout: 60s
+memoryMb: 512
+nodeHttpProxy: true

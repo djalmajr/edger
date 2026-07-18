@@ -36,6 +36,7 @@ montada em `/<worker>` e sem abrir uma porta TCP privada por app.
 |---|---|---|---|
 | 24.01 Adapters e deploy real | `01-adapters-deploy-real.md` | Runtime, manifests, pacote administrativo e evidência dos quatro frameworks | completed |
 | 24.02 Lista oficial completa | `02-lista-oficial-completa.md` | Fresh, Lume, Remix e revalidação dos nove caminhos | completed |
+| 24.03 Frameworks Node de servidor | `03-frameworks-node-servidor.md` | NestJS, Fastify, Koa e proxy Node declarativo | completed |
 
 ## Epic acceptance criteria
 
@@ -50,6 +51,9 @@ montada em `/<worker>` e sem abrir uma porta TCP privada por app.
 - [x] Fresh responde SSR, API e island hidratável sem perder seus assets.
 - [x] Lume serve raiz, rota de diretório e asset do `_site` sem processo JS.
 - [x] Remix/React Router responde SSR, API e hidratação pelo socket Unix privado.
+- [x] NestJS funciona com Express e Fastify, preservando DI/state warm.
+- [x] Fastify e Koa funcionam como servidores persistentes sem porta TCP do app.
+- [x] Framing externo não recicla respostas Node finitas com `Content-Length`.
 
 ## Status
 
