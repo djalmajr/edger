@@ -1052,10 +1052,7 @@ fn sanitize_download_filename(value: &str) -> String {
 fn download_too_large() -> CoreError {
     CoreError::new(
         "DOWNLOAD_TOO_LARGE",
-        format!(
-            "download exceeds the {} byte limit",
-            MAX_DEPLOY_PACKAGE_BYTES
-        ),
+        format!("download exceeds the {MAX_DEPLOY_PACKAGE_BYTES} byte limit"),
     )
 }
 
