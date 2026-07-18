@@ -50,7 +50,7 @@ futures-util = { version = "0.3", default-features = false }
 tower-http.workspace = true
 http.workspace = true
 hyper.workspace = true
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 uuid.workspace = true
 semver.workspace = true
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
