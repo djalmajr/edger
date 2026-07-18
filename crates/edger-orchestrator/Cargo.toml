@@ -61,7 +61,7 @@ tempfile = "3"
 base64 = "0.22"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "multiproc"] }
-rand = "0.8"
+rand = "0.9"
 rsa = { version = "0.9", features = ["pem"] }
 serde_json.workspace = true
 tokio.workspace = true
