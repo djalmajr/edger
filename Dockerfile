@@ -4,6 +4,15 @@ WORKDIR /src
 COPY . .
 RUN cargo build --release -p edger-orchestrator --bin edger
 
+FROM oven/bun:1.3.14 AS frontend-builder
+
+WORKDIR /src/workers
+COPY workers/package.json workers/bun.lock ./
+COPY workers/ui ./ui
+COPY workers/core/cpanel ./core/cpanel
+COPY workers/core/webide ./core/webide
+RUN bun install --frozen-lockfile && bun run build
+
 FROM denoland/deno:debian
 
 LABEL org.opencontainers.image.source="https://github.com/djalmajr/edger" \
@@ -13,9 +22,10 @@ USER root
 WORKDIR /app
 
 COPY --from=builder /src/target/release/edger /usr/local/bin/edger
-COPY workers/core/cpanel /opt/edger/core-workers/cpanel
+COPY workers/core/cpanel/manifest.yaml /opt/edger/core-workers/cpanel/manifest.yaml
+COPY --from=frontend-builder /src/workers/core/cpanel/dist /opt/edger/core-workers/cpanel/dist
 COPY workers/core/webide/manifest.yaml /opt/edger/core-workers/webide/manifest.yaml
-COPY workers/core/webide/dist /opt/edger/core-workers/webide/dist
+COPY --from=frontend-builder /src/workers/core/webide/dist /opt/edger/core-workers/webide/dist
 
 RUN groupadd --system --gid 10001 edger \
     && useradd --system --uid 10001 --gid 10001 --home-dir /app --shell /usr/sbin/nologin edger \

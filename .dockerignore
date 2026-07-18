@@ -11,6 +11,7 @@ CLAUDE.md
 planning
 target
 .local
+**/node_modules
 *.log
 *.sqlite
 *.sqlite3

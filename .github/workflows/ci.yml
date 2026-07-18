@@ -49,6 +49,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
+      - name: Install core frontend dependencies
+        working-directory: workers
+        run: bun install --frozen-lockfile
       - run: planning/edger/scripts/cpanel-ui-gate.sh
       - name: Run planning gates
         shell: bash
