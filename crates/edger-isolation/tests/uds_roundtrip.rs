@@ -160,6 +160,109 @@ Deno.serve(async (req: Request) => {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deno_serve_handler_receives_connection_info() {
+    let dir = tempfile::tempdir().unwrap();
+    write_worker(
+        dir.path(),
+        r#"Deno.serve((_request, info) => Response.json({
+  hostname: info.remoteAddr.hostname,
+  transport: info.remoteAddr.transport,
+}));"#,
+    );
+
+    let mut worker = DenoWorkerProcess::spawn(
+        dir.path(),
+        Some("index.ts"),
+        Duration::from_secs(20),
+        &HashMap::new(),
+        None,
+    )
+    .await
+    .expect("Deno.serve worker should spawn");
+    let response = worker
+        .request(request("GET", "/", None))
+        .await
+        .expect("request with serve handler info");
+    let body: serde_json::Value =
+        serde_json::from_slice(response.body.as_deref().unwrap()).unwrap();
+    assert_eq!(body["hostname"], "127.0.0.1");
+    assert_eq!(body["transport"], "tcp");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exported_handle_entrypoint_serves_astro_style_builds() {
+    let dir = tempfile::tempdir().unwrap();
+    write_worker(
+        dir.path(),
+        r#"export function handle(request: Request) {
+  return new Response(`handled ${new URL(request.url).pathname}`);
+}"#,
+    );
+
+    let mut worker = DenoWorkerProcess::spawn(
+        dir.path(),
+        Some("index.ts"),
+        Duration::from_secs(20),
+        &HashMap::new(),
+        None,
+    )
+    .await
+    .expect("exported handle worker should spawn");
+    let response = worker
+        .request(request("GET", "/astro-demo", None))
+        .await
+        .expect("request through exported handle");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.unwrap().as_ref(), b"handled /astro-demo");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_http_proxy_preserves_real_request_and_response_semantics() {
+    let dir = tempfile::tempdir().unwrap();
+    write_worker(
+        dir.path(),
+        r#"import http from "node:http";
+
+http.createServer(async (request, response) => {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  const body = Buffer.concat(chunks).toString("utf8");
+  response.statusCode = 201;
+  response.setHeader("content-type", "application/json");
+  response.setHeader("x-real-node-http", String(typeof response._implicitHeader === "function"));
+  response._implicitHeader();
+  response.end(JSON.stringify({ method: request.method, url: request.url, body }));
+}).listen(3000);
+"#,
+    );
+
+    let mut worker = DenoWorkerProcess::spawn_with_node_http_proxy(
+        dir.path(),
+        Some("index.ts"),
+        Duration::from_secs(20),
+        &HashMap::new(),
+        None,
+    )
+    .await
+    .expect("node:http proxy worker should spawn");
+
+    let response = worker
+        .request(request("POST", "/ssr?framework=next", Some(b"payload")))
+        .await
+        .expect("request through private node:http socket");
+    assert_eq!(response.status, 201);
+    assert!(response
+        .headers
+        .iter()
+        .any(|(name, value)| name == "x-real-node-http" && value == "true"));
+    let body: serde_json::Value =
+        serde_json::from_slice(response.body.as_deref().unwrap()).unwrap();
+    assert_eq!(body["method"], "POST");
+    assert_eq!(body["url"], "/ssr?framework=next");
+    assert_eq!(body["body"], "payload");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handler_error_returns_opaque_public_body() {
     let dir = tempfile::tempdir().unwrap();
     write_worker(

@@ -22,12 +22,13 @@ use std::io::{Read, Seek, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::deploy::{extract_zip, install_worker_from_zip, run_worker_release_with_events};
+use crate::deploy::{
+    extract_zip, install_worker_from_zip, run_worker_release_with_events, MAX_DEPLOY_PACKAGE_BYTES,
+};
 use crate::operational_log::log_operational_error;
 use crate::pipeline::OrchestratorState;
 use crate::security::validate_admin_mutation_security;
 use crate::server::request_id_from_headers;
-use crate::wire::MAX_BODY_BYTES;
 
 pub fn router() -> Router<OrchestratorState> {
     Router::new()
@@ -36,7 +37,7 @@ pub fn router() -> Router<OrchestratorState> {
         .route("/api/admin/workers", get(list_workers))
         .route(
             "/api/admin/workers/install",
-            post(install_worker).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+            post(install_worker).layer(DefaultBodyLimit::max(MAX_DEPLOY_PACKAGE_BYTES)),
         )
         .route("/api/admin/workers/rescan", post(rescan_workers_route))
         .route(
@@ -60,7 +61,7 @@ pub fn router() -> Router<OrchestratorState> {
             "/api/admin/workers/{name}/files",
             get(worker_files)
                 .post(upload_worker_files)
-                .layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+                .layer(DefaultBodyLimit::max(MAX_DEPLOY_PACKAGE_BYTES)),
         )
         .route(
             "/api/admin/workers/{name}/files/download",
@@ -910,12 +911,12 @@ fn build_worker_file_download(
         .and_then(|value| value.to_str())
         .unwrap_or(&fallback);
     if metadata.is_file() {
-        if metadata.len() > MAX_BODY_BYTES as u64 {
+        if metadata.len() > MAX_DEPLOY_PACKAGE_BYTES as u64 {
             return Err(download_too_large());
         }
         let bytes = std::fs::read(&target)
             .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot read file: {err}")))?;
-        if bytes.len() > MAX_BODY_BYTES {
+        if bytes.len() > MAX_DEPLOY_PACKAGE_BYTES {
             return Err(download_too_large());
         }
         return Ok(WorkerFileDownload {
@@ -945,7 +946,7 @@ fn build_worker_file_download(
         .finish()
         .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot finish archive: {err}")))?
         .into_inner();
-    if archive.len() > MAX_BODY_BYTES {
+    if archive.len() > MAX_DEPLOY_PACKAGE_BYTES {
         return Err(download_too_large());
     }
     Ok(WorkerFileDownload {
@@ -1012,7 +1013,7 @@ fn append_directory_to_zip<W: Write + Seek>(
         *total_bytes = total_bytes
             .checked_add(length)
             .ok_or_else(download_too_large)?;
-        if *total_bytes > MAX_BODY_BYTES as u64 {
+        if *total_bytes > MAX_DEPLOY_PACKAGE_BYTES as u64 {
             return Err(download_too_large());
         }
         writer
@@ -1047,7 +1048,10 @@ fn sanitize_download_filename(value: &str) -> String {
 fn download_too_large() -> CoreError {
     CoreError::new(
         "DOWNLOAD_TOO_LARGE",
-        format!("download exceeds the {} byte limit", MAX_BODY_BYTES),
+        format!(
+            "download exceeds the {} byte limit",
+            MAX_DEPLOY_PACKAGE_BYTES
+        ),
     )
 }
 

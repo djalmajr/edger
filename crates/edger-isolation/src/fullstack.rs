@@ -72,11 +72,11 @@ pub fn try_serve_fullstack_asset(
     }
 
     let client_root = resolve_client_root(config, client_dir)?;
-    let candidate = client_root.join(relative);
-    let file_path = match candidate.canonicalize() {
-        Ok(path) if path.starts_with(&client_root) && path.is_file() => path,
-        _ => return Ok(Some(text_response(404, "not found"))),
-    };
+    let file_path = resolve_fullstack_asset(&client_root, relative, &fullstack.adapter)
+        .unwrap_or_else(|| client_root.join("__not_found__"));
+    if !file_path.is_file() {
+        return Ok(Some(text_response(404, "not found")));
+    }
     let mut body = fs::read(&file_path).map_err(|err| {
         IsolationError::new(
             "FULLSTACK_ASSET_READ_FAILED",
@@ -84,7 +84,9 @@ pub fn try_serve_fullstack_asset(
         )
     })?;
     let content_type = crate::static_spa::content_type_for(&file_path);
-    if content_type.starts_with("text/html") && is_client_index_html(&file_path, &client_root) {
+    if content_type.starts_with("text/html")
+        && (fullstack.adapter == "lume" || is_client_index_html(&file_path, &client_root))
+    {
         let base_path = resolve_base_path(req, &fullstack.base_path);
         let entry_base_href = base_href(&base_path);
         body = crate::static_spa::transform_entry_html(body, Some(&entry_base_href), config);
@@ -122,10 +124,21 @@ pub fn prepare_fullstack_request(
     req.base_href = Some(base_href(&base_path));
 
     match fullstack.adapter.as_str() {
-        "tanstack" | "sveltekit" => {
+        "astro" | "fresh" | "nextjs" | "nuxt" | "remix" | "solidstart" | "sveltekit"
+        | "tanstack" => {
             req.uri = prepend_base_path(&req.uri, &base_path);
+            if matches!(fullstack.adapter.as_str(), "sveltekit" | "tanstack")
+                && request_path(&req.uri) == base_path
+            {
+                let query = req.uri.split_once('?').map(|(_, query)| query.to_string());
+                req.uri = format!("{base_path}/");
+                if let Some(query) = query {
+                    req.uri.push('?');
+                    req.uri.push_str(&query);
+                }
+            }
         }
-        "hono" => {}
+        "hono" | "lume" => {}
         adapter => {
             return Err(IsolationError::new(
                 "FULLSTACK_ADAPTER_INVALID",
@@ -137,6 +150,25 @@ pub fn prepare_fullstack_request(
     let mut config = config.clone();
     config.entrypoint = Some(ssr_entrypoint.to_string());
     Ok((req, config))
+}
+
+fn resolve_fullstack_asset(client_root: &Path, relative: &str, adapter: &str) -> Option<PathBuf> {
+    let candidate = client_root.join(relative);
+    let candidates = if adapter == "lume" {
+        vec![
+            candidate.clone(),
+            candidate.join("index.html"),
+            client_root.join(format!("{}.html", relative.trim_end_matches('/'))),
+        ]
+    } else {
+        vec![candidate]
+    };
+    candidates.into_iter().find_map(|candidate| {
+        candidate
+            .canonicalize()
+            .ok()
+            .filter(|path| path.starts_with(client_root) && path.is_file())
+    })
 }
 
 fn resolve_client_root(config: &WorkerConfig, client_dir: &str) -> Result<PathBuf, IsolationError> {
@@ -293,7 +325,7 @@ fn prepend_base_path(uri: &str, base_path: &str) -> String {
     let next_path = if path == base_path || path.starts_with(&format!("{base_path}/")) {
         path.to_string()
     } else if path == "/" || path.is_empty() {
-        format!("{base_path}/")
+        base_path.to_string()
     } else if path.starts_with('/') {
         format!("{base_path}{path}")
     } else {
@@ -483,5 +515,100 @@ mod tests {
         assert_eq!(req.uri, "/tanstack-demo/about?tab=1");
         assert_eq!(req.base_href.as_deref(), Some("/tanstack-demo/"));
         assert_eq!(config.entrypoint.as_deref(), Some("server/server.js"));
+    }
+
+    #[test]
+    fn deno_framework_requests_receive_their_configured_base_path() {
+        let root = tempfile::tempdir().unwrap();
+        for adapter in ["astro", "fresh", "nextjs", "nuxt", "remix", "solidstart"] {
+            let config = config_from_manifest(
+                root.path(),
+                WorkerManifest {
+                    name: format!("{adapter}-demo"),
+                    adapter: Some(adapter.into()),
+                    base_path: Some(format!("/{adapter}-demo")),
+                    kind: Some("fullstack".into()),
+                    ssr_entrypoint: Some("server.js".into()),
+                    ..WorkerManifest::default()
+                },
+            );
+
+            let (root_request, _) = prepare_fullstack_request(req("/"), &config).unwrap();
+            assert_eq!(root_request.uri, format!("/{adapter}-demo"));
+
+            let (nested_request, runtime_config) =
+                prepare_fullstack_request(req("/about?tab=1"), &config).unwrap();
+            assert_eq!(nested_request.uri, format!("/{adapter}-demo/about?tab=1"));
+            assert_eq!(runtime_config.entrypoint.as_deref(), Some("server.js"));
+        }
+    }
+
+    #[test]
+    fn router_framework_roots_keep_their_expected_trailing_slash() {
+        let root = tempfile::tempdir().unwrap();
+        for adapter in ["sveltekit", "tanstack"] {
+            let config = config_from_manifest(
+                root.path(),
+                WorkerManifest {
+                    name: format!("{adapter}-demo"),
+                    adapter: Some(adapter.into()),
+                    base_path: Some(format!("/{adapter}-demo")),
+                    client_dir: Some("client".into()),
+                    kind: Some("fullstack".into()),
+                    ssr_entrypoint: Some("server.js".into()),
+                    ..WorkerManifest::default()
+                },
+            );
+            let request = req("/?preview=1");
+            let (request, _) = prepare_fullstack_request(request, &config).unwrap();
+
+            assert_eq!(request.uri, format!("/{adapter}-demo/?preview=1"));
+        }
+    }
+
+    #[test]
+    fn lume_serves_directory_indexes_and_clean_html_routes() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("_site/about")).unwrap();
+        fs::write(
+            root.path().join("_site/index.html"),
+            "<html><head></head><body>Lume home</body></html>",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("_site/about/index.html"),
+            "<html><head></head><body>Lume about</body></html>",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("_site/contact.html"),
+            "<html><head></head><body>Lume contact</body></html>",
+        )
+        .unwrap();
+        let config = config_from_manifest(
+            root.path(),
+            WorkerManifest {
+                name: "lume-demo".into(),
+                adapter: Some("lume".into()),
+                base_path: Some("/lume-demo".into()),
+                client_dir: Some("_site".into()),
+                entrypoint: Some("_site/index.html".into()),
+                kind: Some("fullstack".into()),
+                ..WorkerManifest::default()
+            },
+        );
+
+        for (path, expected) in [
+            ("/", "Lume home"),
+            ("/about", "Lume about"),
+            ("/about/", "Lume about"),
+            ("/contact", "Lume contact"),
+        ] {
+            let response = try_serve_fullstack_asset(&req(path), &config)
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.status, 200);
+            assert!(String::from_utf8_lossy(response.body.unwrap().as_ref()).contains(expected));
+        }
     }
 }

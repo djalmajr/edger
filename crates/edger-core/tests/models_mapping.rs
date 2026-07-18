@@ -234,15 +234,49 @@ fn fullstack_manifest_requires_supported_adapter() {
     let err = validate_worker_manifest(&missing).unwrap_err();
     assert_eq!(err.code, "VALIDATION_ERROR");
     assert!(err.message.contains("manifest.adapter"));
-    assert!(err.message.contains("hono, sveltekit, tanstack"));
+    assert!(err.message.contains(
+        "astro, fresh, hono, lume, nextjs, nuxt, remix, solidstart, sveltekit, tanstack"
+    ));
 
     let invalid = WorkerManifest {
-        adapter: Some("next".into()),
+        adapter: Some("unknown".into()),
         ..missing
     };
     let err = validate_worker_manifest(&invalid).unwrap_err();
     assert_eq!(err.code, "VALIDATION_ERROR");
     assert!(err.message.contains("unsupported adapter"));
+}
+
+#[test]
+fn fullstack_manifest_normalizes_deno_framework_aliases() {
+    for (input, normalized) in [
+        ("astro", "astro"),
+        ("fresh", "fresh"),
+        ("lume", "lume"),
+        ("next", "nextjs"),
+        ("nextjs", "nextjs"),
+        ("nuxtjs", "nuxt"),
+        ("react-router", "remix"),
+        ("remix", "remix"),
+        ("solid", "solidstart"),
+        ("svelte", "sveltekit"),
+        ("tanstack-start", "tanstack"),
+    ] {
+        let manifest = WorkerManifest {
+            adapter: Some(input.into()),
+            entrypoint: Some("server.js".into()),
+            kind: Some("fullstack".into()),
+            name: format!("{normalized}-app"),
+            ..Default::default()
+        };
+        validate_worker_manifest(&manifest).unwrap();
+        assert_eq!(
+            infer_execution_kind(&manifest),
+            ExecutionKind::Fullstack {
+                adapter: normalized.into()
+            }
+        );
+    }
 }
 
 #[test]
@@ -262,6 +296,25 @@ fn fullstack_manifest_accepts_entrypoint_as_ssr_alias() {
             adapter: "hono".into()
         }
     );
+}
+
+#[test]
+fn lume_fullstack_manifest_accepts_static_site_entrypoint() {
+    let manifest = WorkerManifest {
+        name: "lume-app".into(),
+        adapter: Some("lume".into()),
+        client_dir: Some("_site".into()),
+        entrypoint: Some("_site/index.html".into()),
+        kind: Some("fullstack".into()),
+        ..Default::default()
+    };
+
+    validate_worker_manifest(&manifest).unwrap();
+    let config = parse_worker_config(&manifest);
+    let fullstack = config.fullstack.unwrap();
+    assert_eq!(fullstack.adapter, "lume");
+    assert_eq!(fullstack.client_dir.as_deref(), Some("_site"));
+    assert_eq!(fullstack.asset_prefixes, vec!["/".to_string()]);
 }
 
 #[test]
@@ -303,6 +356,28 @@ basePath: auto
     assert_eq!(fullstack.base_path, FullstackBasePath::Auto);
     assert!(fullstack.asset_prefixes.contains(&"/assets/".into()));
     assert!(fullstack.asset_prefixes.contains(&"/favicon.ico".into()));
+}
+
+#[test]
+fn deno_frameworks_receive_static_asset_prefixes_when_client_dir_is_declared() {
+    for (adapter, prefix) in [
+        ("astro", "/_astro/"),
+        ("lume", "/"),
+        ("nuxt", "/_nuxt/"),
+        ("remix", "/assets/"),
+        ("solidstart", "/_build/"),
+    ] {
+        let config = parse_worker_config(&WorkerManifest {
+            adapter: Some(adapter.into()),
+            client_dir: Some("public".into()),
+            kind: Some("fullstack".into()),
+            name: format!("{adapter}-demo"),
+            ssr_entrypoint: Some("server.ts".into()),
+            ..Default::default()
+        });
+        let fullstack = config.fullstack.unwrap();
+        assert!(fullstack.asset_prefixes.contains(&prefix.into()));
+    }
 }
 
 #[test]

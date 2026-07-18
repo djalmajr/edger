@@ -52,3 +52,7 @@ cargo fmt -- --check
 como alias) para delegar ao backend fetch existente. TanStack Start serve
 `clientDir` estaticamente via Rust, restaura `x-base` antes do SSR e o fixture
 `workers/examples/tanstack-demo` não depende mais de wrapper manual.
+
+**Evolução posterior:** o Epic 24 ampliou o contrato para `astro`, `nextjs`,
+`nuxt` e `solidstart`, com builds e deploys reais; esta story mantém o registro
+do escopo entregue em 2026-07-03.
