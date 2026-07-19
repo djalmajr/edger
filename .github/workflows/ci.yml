@@ -74,8 +74,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
-      - run: helm lint charts/edger
-      - run: helm template edger charts/edger >/tmp/edger-default.yaml
+      - run: helm lint charts/edger --set-string rootKey.value=ci-test-root-key
+      - run: >-
+          helm template edger charts/edger
+          --set-string rootKey.value=ci-test-root-key
+          >/tmp/edger-default.yaml
       - name: Render optional OTLP and existing Secret
         run: >-
           helm template edger charts/edger
