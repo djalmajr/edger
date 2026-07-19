@@ -1,0 +1,588 @@
+[#eng-rancher-hpa-otel-lab]
+=== Laboratório Rancher: metodologia de HPA e OpenTelemetry
+
+Este capítulo descreve como validar o chart Helm do EdgeR em um cluster K3s
+gerenciado pelo Rancher. O objetivo é comprovar comportamento de runtime, e não
+apenas a renderização dos manifests: o HPA deve escalar para fora e retornar à
+réplica mínima; o EdgeR deve exportar logs e spans reais para um collector OTLP.
+
+Os resultados registrados abaixo foram obtidos em 18 de julho de 2026 no
+laboratório Multipass `k3s-lab`, com Rancher 2.14.3, chart `edger-0.2.0` e
+namespace `edger-rancher-lab`.
+
+[IMPORTANT]
+====
+A Root Key nunca deve ser impressa nos logs, incluída em evidências ou salva
+nos comandos deste documento. Ao inspecionar valores Helm em JSON, remova
+`.rootKey.value` com `jq`.
+====
+
+==== Topologia e estado-base
+
+O Rancher instala e acompanha o release Helm `edger`. Os testes usam o mesmo
+release por meio do Helm CLI, com o kubeconfig do laboratório, para permitir
+alterações precisas e repetíveis dos valores. Ao final, a interface do Rancher
+deve continuar mostrando o app como `Deployed`.
+
+[cols="1,3",options="header"]
+|===
+| Componente | Estado-base esperado
+
+| Deployment `edger`
+| Uma réplica Ready e sem reinícios.
+
+| HPA
+| Ausente; `hpa.enabled=false`.
+
+| OpenTelemetry Collector
+| Ausente. O collector descrito aqui existe somente durante o teste.
+
+| Exportação OTEL
+| Desabilitada; `otel.enabled=false` e `otel.required=false`.
+
+| Persistência
+| PVC `edger-user-workers` Bound.
+
+| Saúde
+| `/healthz` retorna HTTP 200.
+|===
+
+Defina os atalhos usados nas verificações:
+
+[source,bash]
+----
+export EDGER_LAB_KUBECONFIG="$HOME/.edger-rancher-lab/kubeconfig"
+export EDGER_LAB_NAMESPACE=edger-rancher-lab
+export KUBECONFIG="$EDGER_LAB_KUBECONFIG"
+----
+
+O setup, a verificação-base e o teardown do cluster pertencem ao repositório
+de infraestrutura:
+
+[source,bash]
+----
+../infra/scripts/setup-edger-rancher-lab.sh
+../infra/scripts/verify-edger-rancher-lab.sh
+# Destrutivo para o laboratório; execute somente quando desejado:
+../infra/scripts/teardown-edger-rancher-lab.sh
+----
+
+==== Acesso multitenant por hostname
+
+O laboratório mantém os planos de administração separados por hostname:
+
+[cols="1,2",options="header"]
+|===
+| Host | Backend
+
+| `rancher.home`
+| Ingress do Rancher. Entrega exclusivamente a interface e as APIs do Rancher.
+
+| `admin.home`
+| Ingress do release EdgeR. Encaminha o prefixo `/` inteiro para
+  `Service/edger`, porta 3000, incluindo cPanel, WebIDE e APIs administrativas.
+|===
+
+O roteamento é feito pelo cabeçalho HTTP `Host`; não há fallback por resposta
+404. O Traefik escolhe o backend antes de Rancher ou EdgeR processarem a
+requisição e preserva o hostname original. Isso permite que o EdgeR use o host
+como dimensão de tenant quando esse comportamento estiver habilitado, sem
+misturar rotas com o plano de administração do Rancher.
+
+O Ingress `edger` pertence ao release Helm e foi configurado em
+*Apps > Installed Apps > edger > Edit/Change Version*, seção *Networking*, com
+os seguintes valores:
+
+[source,yaml]
+----
+ingress:
+  enabled: true
+  className: traefik
+  host: admin.home
+  path: /
+  pathType: Prefix
+  tls:
+    enabled: true
+    secretName: edger-admin-home-tls
+----
+
+O `Certificate/edger-admin-home` é um recurso de infraestrutura separado do
+chart. Ele usa o `ClusterIssuer/edger-rancher-lab-ca` para emitir o Secret
+`edger-admin-home-tls` no namespace `edger-rancher-lab`. O DNS local deve
+resolver `admin.home` para o IP atual da VM; neste laboratório a entrada fica em
+`/opt/homebrew/etc/dnsmasq.d/edger-admin.conf`.
+
+[source,bash]
+----
+curl -I https://admin.home/cpanel/
+# 200 e content-type text/html
+
+curl -i https://admin.home/api/admin/session
+# 401 sem Root Key prova que a rota chegou ao EdgeR
+
+curl -i https://admin.home/healthz
+# 200
+----
+
+Os acessos validados são:
+
+* `https://admin.home/`
+* `https://admin.home/cpanel/`
+
+O chart atual configura um hostname por release. Outros hostnames podem ser
+atendidos por releases adicionais ou por Ingresses separados até que o chart
+ofereça uma lista de hosts.
+
+==== Metodologia do HPA
+
+===== Pré-requisitos
+
+O HPA deste chart usa utilização média de CPU (`autoscaling/v2`). Antes do
+teste, confirme que o Metrics Server responde e que o container possui
+`resources.requests.cpu`, pois a porcentagem é calculada sobre esse request.
+
+[source,bash]
+----
+kubectl get apiservice v1beta1.metrics.k8s.io
+kubectl top node
+kubectl -n "$EDGER_LAB_NAMESPACE" get deployment edger \
+  -o jsonpath='{.spec.template.spec.containers[0].resources.requests.cpu}{"\n"}'
+----
+
+===== Ativação controlada
+
+O cenário usa um alvo propositalmente baixo para produzir uma evidência rápida
+no laboratório. Não reutilize `10%` como recomendação de produção.
+
+[source,bash]
+----
+helm upgrade edger charts/edger \
+  --namespace "$EDGER_LAB_NAMESPACE" \
+  --reuse-values \
+  --set hpa.enabled=true \
+  --set hpa.minReplicas=1 \
+  --set hpa.maxReplicas=3 \
+  --set hpa.targetCPUUtilizationPercentage=10 \
+  --wait
+
+kubectl -n "$EDGER_LAB_NAMESPACE" get hpa edger
+----
+
+===== Geração de carga e observação
+
+O gerador é um pod descartável BusyBox. Quarenta loops concorrentes chamam o
+Service interno até o pod ser removido.
+
+[source,bash]
+----
+kubectl -n "$EDGER_LAB_NAMESPACE" run edger-load \
+  --image=busybox:1.36 \
+  --restart=Never -- \
+  sh -c 'for worker in $(seq 1 40); do
+    while true; do
+      wget -qO- http://edger:3000/healthz >/dev/null
+    done &
+  done; wait'
+
+kubectl -n "$EDGER_LAB_NAMESPACE" get hpa edger --watch
+kubectl -n "$EDGER_LAB_NAMESPACE" get deployment edger --watch
+kubectl -n "$EDGER_LAB_NAMESPACE" top pod -l app.kubernetes.io/instance=edger
+----
+
+O critério de scale-out é o Deployment alcançar três réplicas Ready. Para
+validar scale-in, remova apenas o gerador, confirme a queda da utilização e
+aguarde a janela de estabilização do HPA até retornar a uma réplica.
+
+[source,bash]
+----
+kubectl -n "$EDGER_LAB_NAMESPACE" delete pod edger-load
+kubectl -n "$EDGER_LAB_NAMESPACE" get hpa edger --watch
+----
+
+===== Resultado observado
+
+[cols="2,2,2",options="header"]
+|===
+| Fase | CPU observada pelo HPA | Réplicas Ready
+
+| Baseline
+| `1% / 10%`
+| `1/1`
+
+| Carga inicial
+| `42% / 10%`
+| Escalando
+
+| Carga sustentada
+| `393% / 10%`
+| `3/3`
+
+| Após remover a carga
+| `1% / 10%`
+| `3 -> 2 -> 1`
+|===
+
+O scale-in real ocorreu em duas etapas, após a estabilização padrão do
+controlador. O teste demonstrou tanto criação quanto remoção de réplicas; apenas
+ver o objeto HPA criado não seria evidência suficiente.
+
+===== Restauração do HPA
+
+[source,bash]
+----
+kubectl -n "$EDGER_LAB_NAMESPACE" delete pod edger-load --ignore-not-found
+
+helm upgrade edger charts/edger \
+  --namespace "$EDGER_LAB_NAMESPACE" \
+  --reuse-values \
+  --set hpa.enabled=false \
+  --set replicaCount=1 \
+  --wait
+
+kubectl -n "$EDGER_LAB_NAMESPACE" get deployment edger
+kubectl -n "$EDGER_LAB_NAMESPACE" get hpa edger --ignore-not-found
+----
+
+==== Metodologia OpenTelemetry
+
+===== Onde o collector é instalado
+
+O collector não faz parte do chart EdgeR. Durante o teste ele é instalado
+temporariamente no mesmo namespace do app, `edger-rancher-lab`, com três
+recursos chamados `otel-collector`:
+
+* `ConfigMap/otel-collector`: receiver OTLP gRPC/HTTP e exporter `debug`;
+* `Deployment/otel-collector`: uma réplica do collector;
+* `Service/otel-collector`: portas internas 4317 (gRPC) e 4318 (HTTP).
+
+Esses recursos são removidos ao final. Portanto, a ausência atual de um pod
+`otel-collector` é o estado esperado do laboratório, não uma falha.
+
+===== Imagem EdgeR com suporte OTEL
+
+O crate `edger-orchestrator` mantém OTEL atrás da feature Rust `otel`. A imagem
+usada neste teste foi construída pelo Dockerfile com:
+
+[source,bash]
+----
+cargo build --release -p edger-orchestrator --bin edger --features otel
+----
+
+Depois do build local `edger:lab`, a automação transfere a imagem para a VM,
+importa no containerd do K3s e cria a tag esperada pelo chart. Uma imagem
+compilada sem essa feature reconhece a configuração, mas não exporta OTLP.
+
+===== Collector descartável
+
+O teste validado usou OpenTelemetry Collector 0.156.0. O digest abaixo fixa a
+mesma lista de manifests usada na execução; atualizações futuras devem registrar
+a versão e o novo digest na evidência.
+
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector
+  namespace: edger-rancher-lab
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      batch: {}
+    exporters:
+      debug:
+        verbosity: detailed
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [debug]
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [debug]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: edger-rancher-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector@sha256:0beba82d63792511591522a8d582904b9a8ae81710357bfcab731607b8b0ffe2
+          args: ["--config=/etc/otelcol/config.yaml"]
+          ports:
+            - {name: otlp-grpc, containerPort: 4317}
+            - {name: otlp-http, containerPort: 4318}
+          volumeMounts:
+            - {name: config, mountPath: /etc/otelcol}
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: edger-rancher-lab
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - {name: otlp-grpc, port: 4317, targetPort: otlp-grpc}
+    - {name: otlp-http, port: 4318, targetPort: otlp-http}
+----
+
+Salve esse trecho em um arquivo temporário fora do repositório e aplique:
+
+[source,bash]
+----
+kubectl apply -f /tmp/edger-otel-collector.yaml
+kubectl -n "$EDGER_LAB_NAMESPACE" rollout status \
+  deployment/otel-collector --timeout=5m
+----
+
+===== Ativação da exportação
+
+[source,bash]
+----
+helm upgrade edger charts/edger \
+  --namespace "$EDGER_LAB_NAMESPACE" \
+  --reuse-values \
+  --set otel.enabled=true \
+  --set-string otel.endpoint=http://otel-collector.edger-rancher-lab.svc.cluster.local:4317 \
+  --set otel.protocol=grpc \
+  --set otel.tracesSampler=parentbased_always_on \
+  --set otel.required=true \
+  --wait
+
+kubectl -n "$EDGER_LAB_NAMESPACE" rollout status deployment/edger
+----
+
+O Deployment inclui um checksum do ConfigMap no pod template. Assim, mudar os
+valores OTEL em um upgrade Helm provoca rollout e evita que o pod continue com
+configuração anterior.
+
+===== Tráfego e critérios de evidência
+
+Use uma rota de worker, e não somente `/healthz`. O `TraceLayer` HTTP cria spans
+em nível debug; `/cpanel/` também atravessa `worker.dispatch`, instrumentado em
+nível info, e oferece uma prova estável com o filtro padrão.
+
+[source,bash]
+----
+kubectl -n "$EDGER_LAB_NAMESPACE" run otel-worker-probe \
+  --image=busybox:1.36 \
+  --restart=Never -- \
+  sh -c 'i=0; while [ "$i" -lt 12 ]; do
+    wget -qO- http://edger:3000/cpanel/ >/dev/null
+    i=$((i+1))
+  done'
+
+kubectl -n "$EDGER_LAB_NAMESPACE" wait \
+  --for=jsonpath='{.status.phase}'=Succeeded \
+  pod/otel-worker-probe --timeout=2m
+
+kubectl -n "$EDGER_LAB_NAMESPACE" logs deployment/otel-collector \
+  | grep -E 'Traces|ResourceSpans|Span #[0-9]+|service.name|worker.dispatch|worker.name'
+----
+
+O teste passa quando:
+
+* o EdgeR inicializa com `otel.required=true` sem fallback local;
+* o collector recebe logs com `service.name=edger`;
+* o collector recebe `ResourceSpans` do EdgeR;
+* existe span `worker.dispatch` com `worker.name=cpanel`;
+* Deployment e probes permanecem saudáveis.
+
+===== Resultado observado
+
+O collector registrou um lote com 24 spans produzidos por 12 chamadas ao
+cPanel. A evidência continha `service.name=edger`, spans `worker.dispatch` e o
+atributo `worker.name=cpanel`. Logs OTLP do startup também chegaram ao exporter
+`debug`. O pod EdgeR executava a imagem local com image ID
+`sha256:3e970a066bf22f635d9739ec377b7ea9bef878f4a49f795d7b3126f519c383b9`.
+
+===== Inspeção interativa com Jaeger
+
+Para acompanhar os traces em uma interface gráfica, o laboratório pode manter
+um Jaeger all-in-one no mesmo namespace. Essa variante foi validada em 19 de
+julho de 2026 com Jaeger 2.19.0 e armazenamento em memória. Ela é adequada para
+uma sessão de desenvolvimento, mas perde os traces quando o pod reinicia e não
+é uma topologia de produção.
+
+[cols="1,2",options="header"]
+|===
+| Recurso | Finalidade
+
+| `Deployment/jaeger`
+| Backend all-in-one e interface de consulta.
+
+| `Service/jaeger`
+| UI na porta 16686 e receivers OTLP nas portas 4317 e 4318.
+
+| `Ingress/jaeger`
+| Publica a UI em `https://otel.home/` por meio do Traefik.
+
+| `Certificate/jaeger-home`
+| Emite o Secret TLS `jaeger-home-tls` para `otel.home` usando a CA do lab.
+|===
+
+Configure o release EdgeR para exportar diretamente ao Service do Jaeger:
+
+[source,bash]
+----
+helm upgrade edger charts/edger \
+  --namespace "$EDGER_LAB_NAMESPACE" \
+  --reuse-values \
+  --set otel.enabled=true \
+  --set-string otel.endpoint=http://jaeger.edger-rancher-lab.svc.cluster.local:4317 \
+  --set otel.protocol=grpc \
+  --set otel.tracesSampler=always_on \
+  --set otel.required=true \
+  --wait
+----
+
+O DNS local de `otel.home` deve apontar para o IP atual de `k3s-lab`, assim
+como `rancher.home` e `admin.home`. Neste laboratório a entrada fica em
+`/opt/homebrew/etc/dnsmasq.d/edger-otel.conf`. Depois de mudar o arquivo,
+reinicie o dnsmasq e limpe o cache do macOS:
+
+[source,bash]
+----
+sudo brew services restart dnsmasq
+sudo dscacheutil -flushcache
+sudo killall -HUP mDNSResponder
+----
+
+Gere tráfego pela rota do worker e confirme tanto a descoberta do serviço
+quanto os traces antes de abrir a UI:
+
+[source,bash]
+----
+for i in $(seq 1 20); do
+  curl -fsS -o /dev/null https://admin.home/cpanel/
+done
+
+curl -fsS https://otel.home/api/services | jq .
+curl -fsS 'https://otel.home/api/traces?service=edger&limit=5' \
+  | jq '{trace_count: (.data | length), operations:
+      [.data[].spans[].operationName] | unique}'
+----
+
+O cenário validado retornou o serviço `edger` e cinco traces na consulta
+limitada, cada um contendo `worker.dispatch` e `pool.fetch_stream`. A interação
+pode então ser examinada em `https://otel.home/`, selecionando o serviço
+`edger` e executando *Find Traces*.
+
+===== Worker instrumentado no mesmo trace
+
+O exemplo `workers/examples/otel-demo` demonstra instrumentação dentro do
+worker, além dos spans produzidos pelo runtime. O EdgeR injeta o contexto W3C
+`traceparent` na requisição serializada; o worker extrai esse contexto, cria o
+span filho `otel-demo.handle` e o exporta por OTLP HTTP/protobuf para a porta
+4318 do Jaeger.
+
+O `manifest.yaml` restringe a rede externa a `jaeger:4318` e
+`registry.npmjs.org:443`. O segundo destino é necessário somente para preencher
+o cache frio dos imports `npm:`. O runtime adiciona separadamente a permissão do
+socket Unix interno usado pelo processo persistente, sem abrir outros destinos
+de rede ao worker.
+
+Empacote e instale o exemplo sem registrar a Root Key em arquivo ou saída:
+
+[source,bash]
+----
+cd workers/examples/otel-demo
+zip -r /tmp/otel-demo.zip index.ts manifest.yaml README.md
+
+ROOT_API_KEY="$(kubectl -n "$EDGER_LAB_NAMESPACE" get secret edger-root-key \
+  -o jsonpath='{.data.root-key}' | base64 --decode)"
+curl -fsS -X POST https://admin.home/api/admin/workers/install \
+  -H "Authorization: Bearer ${ROOT_API_KEY}" \
+  -H 'content-type: application/zip' \
+  -H 'x-edger-package-name: otel-demo.zip' \
+  --data-binary @/tmp/otel-demo.zip | jq .
+unset ROOT_API_KEY
+----
+
+Faça uma chamada, capture o `traceId` retornado e consulte o mesmo trace:
+
+[source,bash]
+----
+TRACE_ID="$(curl -fsS https://admin.home/otel-demo/ | jq -r .traceId)"
+curl -fsS "https://otel.home/api/traces/${TRACE_ID}" \
+  | jq '.data[0] | {
+      services: [.processes[].serviceName] | unique,
+      operations: [.spans[].operationName]
+    }'
+----
+
+Em 19 de julho de 2026, `otel-demo@1.0.0` retornou HTTP 200 e o trace
+`7b4ebacbbb0b7c55a6d4e3485e4c8d01` reuniu os serviços `edger` e `otel-demo`.
+Os spans observados foram `worker.dispatch`, `pool.fetch_stream` e
+`otel-demo.handle`; o último referenciava `worker.dispatch` como pai, comprovando
+a propagação distribuída em vez de dois traces independentes.
+
+===== Restauração do OTEL
+
+[source,bash]
+----
+helm upgrade edger charts/edger \
+  --namespace "$EDGER_LAB_NAMESPACE" \
+  --reuse-values \
+  --set otel.enabled=false \
+  --set otel.required=false \
+  --wait
+
+kubectl -n "$EDGER_LAB_NAMESPACE" delete pod \
+  otel-worker-probe otel-probe --ignore-not-found
+kubectl -n "$EDGER_LAB_NAMESPACE" delete \
+  deployment/otel-collector service/otel-collector \
+  configmap/otel-collector --ignore-not-found
+----
+
+==== Checklist final
+
+[source,bash]
+----
+kubectl -n "$EDGER_LAB_NAMESPACE" get deployment,pod,pvc,hpa
+kubectl -n "$EDGER_LAB_NAMESPACE" get all,configmap \
+  -l app=otel-collector --ignore-not-found
+helm get values edger -n "$EDGER_LAB_NAMESPACE" -o json \
+  | jq 'del(.rootKey.value)'
+../infra/scripts/verify-edger-rancher-lab.sh
+----
+
+Na execução registrada, o release terminou na revisão 5: Deployment `1/1`,
+PVC Bound, sem HPA, sem recursos `otel-collector`, OTEL desabilitado e
+`/healthz` retornando HTTP 200. O Rancher confirmou visualmente o app como
+`Deployed` e os cinco recursos do release como ativos.
+
+==== Limites da evidência
+
+* O alvo de CPU de 10% e a carga BusyBox são artificiais e servem somente ao
+  laboratório funcional.
+* O exporter `debug` prova a emissão OTLP, mas não substitui validação com o
+  backend observacional adotado em produção.
+* Os resultados são um snapshot datado. Uma mudança no runtime, chart, K3s,
+  Metrics Server ou collector exige nova execução e nova evidência.

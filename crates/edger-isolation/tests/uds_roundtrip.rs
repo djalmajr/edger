@@ -9,8 +9,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use edger_core::SerializedRequest;
-use edger_isolation::DenoWorkerProcess;
+use edger_core::{parse_worker_config, Isolate, SerializedRequest, WorkerManifest};
+use edger_isolation::{DenoProcessIsolate, DenoWorkerProcess};
 
 fn write_worker(dir: &Path, body: &str) {
     fs::write(dir.join("index.ts"), body).unwrap();
@@ -25,6 +25,31 @@ fn request(method: &str, uri: &str, body: Option<&[u8]>) -> SerializedRequest {
         request_id: "uds-test".into(),
         base_href: None,
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restricted_network_worker_still_connects_to_internal_uds() {
+    let dir = tempfile::tempdir().unwrap();
+    write_worker(
+        dir.path(),
+        r#"Deno.serve(() => new Response("restricted-network-ok"));"#,
+    );
+    let mut config = parse_worker_config(&WorkerManifest {
+        name: "restricted-network".into(),
+        entrypoint: Some("index.ts".into()),
+        allow_net: Some(vec![]),
+        ..WorkerManifest::default()
+    });
+    config.worker_dir = Some(dir.path().to_path_buf());
+
+    let mut isolate = DenoProcessIsolate::new();
+    let response = isolate
+        .execute_fetch(request("GET", "/", None), &config)
+        .await
+        .expect("internal UDS must remain reachable when external network is denied");
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.unwrap().as_ref(), b"restricted-network-ok");
 }
 
 #[cfg(unix)]

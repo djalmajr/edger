@@ -111,6 +111,7 @@ import {
 import {
   ActivityIcon,
   ArrowLeftIcon,
+  BoxIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
@@ -127,21 +128,25 @@ import {
   GaugeIcon,
   HeartPulseIcon,
   KeyRoundIcon,
+  Layers3Icon,
   LogInIcon,
   LogOutIcon,
   MonitorIcon,
   MoreVerticalIcon,
   MoonIcon,
+  PanelsTopLeftIcon,
   PowerOffIcon,
   RefreshCwIcon,
   RocketIcon,
   RotateCcwIcon,
+  RouteIcon,
   ScrollTextIcon,
   SearchIcon,
   ShieldCheckIcon,
   SunIcon,
   UploadCloudIcon,
   UploadIcon,
+  WebhookIcon,
 } from "@edger/ui/icons/lucide";
 import {
   ThemeProvider,
@@ -181,6 +186,25 @@ const SESSION_KEY = "edger.cpanel.apiKey";
 type View = "overview" | "workers" | "observability" | "logs" | "files";
 type Target = { name: string; version: string };
 type RouteState = { path: string; target?: Target; view: View };
+
+function workerKindIcon(kind: unknown) {
+  switch (kindLabel(kind).toLowerCase()) {
+    case "fetch":
+    case "fetchhandler":
+      return WebhookIcon;
+    case "fullstack":
+      return Layers3Icon;
+    case "routes":
+    case "routestable":
+      return RouteIcon;
+    case "staticspa":
+      return PanelsTopLeftIcon;
+    case "wasm":
+      return BoxIcon;
+    default:
+      return CpuIcon;
+  }
+}
 
 const NAVIGATION = [
   {
@@ -508,6 +532,7 @@ function Workers({
         {rows.map((group) => {
           const open = expanded.has(group.name);
           const defaultVersion = serving.get(group.name);
+          const KindIcon = workerKindIcon(group.versions[0].kind);
           const disabled = group.versions.filter(
             (worker) => worker.status === "disabled",
           ).length;
@@ -529,7 +554,7 @@ function Workers({
               >
                 {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
                 <span className="grid size-9 place-items-center rounded-lg bg-primary/15 text-primary">
-                  <CpuIcon className="size-5" />
+                  <KindIcon className="size-5" />
                 </span>
                 <span className="min-w-0 flex-1">
                   <strong className="block truncate">{group.name}</strong>
@@ -1602,13 +1627,14 @@ function LanguageMenu() {
         render={
           <Button
             aria-label={t("preferences.language")}
+            className="size-8"
             size="icon-sm"
             title={t("preferences.language")}
             variant="ghost"
           />
         }
       >
-        <span aria-hidden className="text-lg leading-none">
+        <span aria-hidden className="text-xl leading-none">
           {selected.flag}
         </span>
       </DropdownMenuTrigger>
@@ -1654,13 +1680,14 @@ function ThemeMenu() {
         render={
           <Button
             aria-label={label}
+            className="size-8"
             size="icon-sm"
             title={label}
             variant="ghost"
           />
         }
       >
-        <ThemeIcon />
+        <ThemeIcon className="size-[1.125rem]" />
       </DropdownMenuTrigger>
       <DropdownMenuContent className="min-w-32" side="bottom">
         <DropdownMenuRadioGroup
@@ -1695,7 +1722,7 @@ function AccountMenu({
         render={
           <button
             aria-label={t("account.label")}
-            className="grid size-8 shrink-0 place-items-center rounded-full bg-emerald-600 text-xs font-semibold text-white outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            className="grid size-7 shrink-0 place-items-center rounded-full bg-primary text-xs font-semibold text-primary-foreground outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             title={name}
             type="button"
           />
@@ -1707,7 +1734,7 @@ function AccountMenu({
         <DropdownMenuGroup>
           <DropdownMenuLabel className="font-normal">
             <div className="flex items-center gap-3 py-1">
-              <span className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-600 text-xs font-semibold text-white">
+              <span className="grid size-9 shrink-0 place-items-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
                 {initials}
               </span>
               <div className="min-w-0">

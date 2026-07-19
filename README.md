@@ -133,10 +133,10 @@ helm template edger charts/edger
 ```
 
 The container image contains only the release binary, the Deno base runtime,
-the runtime-ready cPanel and the compiled WebIDE. It runs as uid `10001` and
-declares separate volumes for user workers and core overlays. Persist
-`/app/core-worker-overlays` to keep cPanel/WebIDE updates across pod recreation;
-without that volume the bundled versions are restored naturally.
+the runtime-ready cPanel and the compiled WebIDE. It runs as uid `10001`. The
+Helm chart persists user workers, while `/app/core-worker-overlays` remains
+ephemeral so cPanel and WebIDE stay aligned with the EdgeR image after pod
+replacement.
 
 OTLP is optional. EdgeR remains operable with its bounded local event store
 when no collector is configured or when export is unavailable.

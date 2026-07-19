@@ -10,7 +10,8 @@ ambiente local, testes e decisões arquiteturais.
 ====
 `01 Arquitetura` -> `02 Modelo de domínio e manifests` ->
 `03 Contratos HTTP e workers` -> `04 Segurança e isolamento` ->
-`05 Ambiente local` -> `06 Operação e testes`.
+`05 Ambiente local` -> `06 Operação e testes` ->
+`08 Laboratório Rancher: metodologia de HPA e OpenTelemetry`.
 Os ADRs registram o porquê das decisões.
 ====
 
@@ -27,3 +28,5 @@ include::05-ambiente-local.adoc[]
 include::06-operacao-e-testes.adoc[]
 
 include::07-decisoes-arquiteturais.adoc[]
+
+include::08-rancher-hpa-otel-lab.adoc[]

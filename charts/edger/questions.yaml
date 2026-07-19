@@ -1,29 +1,4 @@
 questions:
-  - variable: image.repository
-    label: Image Repository
-    description: Container image repository for the EdgeR runtime.
-    type: string
-    default: ghcr.io/djalmajr/edger
-    group: Runtime
-
-  - variable: image.tag
-    label: Image Tag
-    description: Container image tag. Leave empty to use the chart appVersion.
-    type: string
-    default: ""
-    group: Runtime
-
-  - variable: image.pullPolicy
-    label: Image Pull Policy
-    description: When Kubernetes should pull the EdgeR image.
-    type: enum
-    default: IfNotPresent
-    options:
-      - IfNotPresent
-      - Always
-      - Never
-    group: Runtime
-
   - variable: runtime.workerDirs
     label: Worker Directories
     description: Colon-separated directories scanned by RUNTIME_WORKER_DIRS.
@@ -41,66 +16,35 @@ questions:
       - bridge
     group: Runtime
 
-  - variable: coreWorkerOverlay.persistence.enabled
-    label: Persist Core Worker Overlays
-    description: Mount a persistent volume for administrator-installed cPanel and WebIDE overlays. Disable to restore bundled versions whenever the pod is recreated.
-    type: boolean
-    default: true
-    group: Runtime
-
   - variable: userWorkers.persistence.enabled
-    label: Persist User Workers
+    label: Persist Workers
     description: Mount persistent storage for user workers installed through the cPanel or WebIDE. Disable only for intentionally ephemeral runtimes.
     type: boolean
     default: true
     group: Runtime
 
   - variable: userWorkers.persistence.existingClaim
-    label: Existing User Workers PVC
+    label: Workers PVC
     description: Optional existing PersistentVolumeClaim for user worker packages. Leave empty to create one.
-    type: string
+    type: pvc
     default: ""
     show_if: "userWorkers.persistence.enabled=true"
     group: Runtime
 
   - variable: userWorkers.persistence.storageClass
-    label: User Workers Storage Class
+    label: Workers Storage Class
     description: Optional storageClassName used when creating the user worker PersistentVolumeClaim.
-    type: string
+    type: storageclass
     default: ""
     show_if: "userWorkers.persistence.enabled=true&&userWorkers.persistence.existingClaim="
     group: Runtime
 
   - variable: userWorkers.persistence.size
-    label: User Workers Volume Size
+    label: Workers Volume Size
     description: Requested storage for installed user worker packages and versions.
     type: string
     default: 5Gi
     show_if: "userWorkers.persistence.enabled=true&&userWorkers.persistence.existingClaim="
-    group: Runtime
-
-  - variable: coreWorkerOverlay.persistence.existingClaim
-    label: Existing Overlay PVC
-    description: Optional existing PersistentVolumeClaim for core worker overlays. Leave empty to create one.
-    type: string
-    default: ""
-    show_if: "coreWorkerOverlay.persistence.enabled=true"
-    group: Runtime
-
-  - variable: coreWorkerOverlay.persistence.storageClass
-    label: Overlay Storage Class
-    description: Optional storageClassName used when creating the overlay PersistentVolumeClaim.
-    type: string
-    default: ""
-    show_if: "coreWorkerOverlay.persistence.enabled=true&&coreWorkerOverlay.persistence.existingClaim="
-    group: Runtime
-
-  - variable: coreWorkerOverlay.persistence.size
-    label: Overlay Volume Size
-    description: Requested storage for core worker overlay packages and versions.
-    type: string
-    default: 1Gi
-    show_if: "coreWorkerOverlay.persistence.enabled=true&&coreWorkerOverlay.persistence.existingClaim="
     group: Runtime
 
   - variable: cron.enabled
@@ -283,37 +227,13 @@ questions:
     show_if: "ingress.enabled=true&&ingress.tls.enabled=true"
     group: Networking
 
-  - variable: rootKey.source
-    label: Root Key Source
-    description: Provide a root key value for chart-generated Secret, or reference an existing Secret.
-    type: enum
-    default: generated
-    options:
-      - generated
-      - existing
-    group: Auth
-
   - variable: rootKey.value
-    label: Root Key Value
-    description: Break-glass root key stored in a chart-generated Secret and mounted as EDGER_ROOT_KEY_FILE.
+    label: Root Key
+    description: Required break-glass key stored in a release Secret and used to sign in to the EdgeR control plane.
     type: password
     default: ""
-    show_if: "rootKey.source=generated"
-    group: Auth
-
-  - variable: rootKey.existingSecret
-    label: Existing Root Key Secret
-    description: Existing Secret name mounted as EDGER_ROOT_KEY_FILE. The key name defaults to root-key.
-    type: string
-    default: ""
-    show_if: "rootKey.source=existing"
-    group: Auth
-
-  - variable: rootKey.secretKey
-    label: Root Key Secret Field
-    description: Secret data key containing the root key.
-    type: string
-    default: root-key
+    required: true
+    show_if: "rootKey.existingSecret="
     group: Auth
 
   - variable: oidc.enabled
@@ -384,7 +304,7 @@ questions:
     group: Resources
 
   - variable: extraEnv
-    label: Extra Environment Variables
+    label: Extra Env Vars
     description: Advanced YAML list of env entries appended to the EdgeR container env.
     type: multiline
     default: "[]"

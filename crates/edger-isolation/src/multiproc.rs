@@ -30,7 +30,9 @@ use tokio::sync::{mpsc, oneshot};
 use crate::deno_bundle::{
     default_deno_executable, entry_needs_bundle, DenoCliBundler, ModuleBundler,
 };
-use crate::deno_sandbox_policy::{deno_network_permission_args, read_allowlist, select_deno_dir};
+use crate::deno_sandbox_policy::{
+    deno_network_permission_args_with_uds, read_allowlist, select_deno_dir,
+};
 
 const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
 pub const CONSOLE_LINE_MAX_BYTES: usize = 4 * 1024;
@@ -385,9 +387,10 @@ impl DenoWorkerProcess {
             // node/npm frameworks (express etc.) may query os/sys info.
             .arg("--allow-sys")
             .env_clear();
-        for arg in deno_network_permission_args(
+        for arg in deno_network_permission_args_with_uds(
             allow_net,
             std::env::var("EDGER_DENO_ALLOW_NET").ok().as_deref(),
+            &socket_path,
         ) {
             command.arg(arg);
         }

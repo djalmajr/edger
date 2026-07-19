@@ -1,4 +1,4 @@
-{{- $hasRootKey := or (eq .Values.rootKey.source "generated") (and (eq .Values.rootKey.source "existing") .Values.rootKey.existingSecret) }}
+{{- $hasRootKey := or .Values.rootKey.value .Values.rootKey.existingSecret }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -14,6 +14,8 @@ spec:
       {{- include "edger.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
       labels:
         {{- include "edger.selectorLabels" . | nindent 8 }}
     spec:
@@ -96,12 +98,7 @@ spec:
           emptyDir: {}
           {{- end }}
         - name: core-worker-overlay
-          {{- if .Values.coreWorkerOverlay.persistence.enabled }}
-          persistentVolumeClaim:
-            claimName: {{ default (printf "%s-core-worker-overlay" (include "edger.fullname" .)) .Values.coreWorkerOverlay.persistence.existingClaim }}
-          {{- else }}
           emptyDir: {}
-          {{- end }}
         {{- if $hasRootKey }}
         - name: root-key
           secret:

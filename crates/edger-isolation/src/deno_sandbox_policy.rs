@@ -29,6 +29,27 @@ pub(crate) fn deno_network_permission_args(
     }
 }
 
+#[cfg(feature = "multiproc")]
+pub(crate) fn deno_network_permission_args_with_uds(
+    manifest_allow_net: Option<&[String]>,
+    env_allow_net: Option<&str>,
+    socket_path: &Path,
+) -> Vec<String> {
+    let args = deno_network_permission_args(manifest_allow_net, env_allow_net);
+    if args.iter().any(|arg| arg == "--allow-net") {
+        return args;
+    }
+
+    let socket_permission = format!("unix:{}", socket_path.display());
+    match args
+        .first()
+        .and_then(|arg| arg.strip_prefix("--allow-net="))
+    {
+        Some(hosts) => vec![format!("--allow-net={hosts},{socket_permission}")],
+        None => vec![format!("--allow-net={socket_permission}")],
+    }
+}
+
 pub(crate) fn select_deno_dir(
     worker_dir: &Path,
     mode: DenoCacheMode,
@@ -165,6 +186,25 @@ mod tests {
         let args = deno_network_permission_args(config.allow_net.as_deref(), None);
 
         assert_eq!(args, vec!["--allow-net"]);
+    }
+
+    #[cfg(feature = "multiproc")]
+    #[test]
+    fn spawn_args_keep_internal_socket_when_network_is_restricted() {
+        let socket = Path::new("/tmp/edger/worker.sock");
+
+        assert_eq!(
+            deno_network_permission_args_with_uds(Some(&["collector:4318".into()]), None, socket,),
+            vec!["--allow-net=collector:4318,unix:/tmp/edger/worker.sock"]
+        );
+        assert_eq!(
+            deno_network_permission_args_with_uds(Some(&[]), None, socket),
+            vec!["--allow-net=unix:/tmp/edger/worker.sock"]
+        );
+        assert_eq!(
+            deno_network_permission_args_with_uds(None, None, socket),
+            vec!["--allow-net"]
+        );
     }
 
     #[test]
