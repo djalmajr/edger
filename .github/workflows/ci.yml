@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
+      - uses: dtolnay/rust-toolchain@1.100
         with:
           components: clippy,rustfmt
       - uses: denoland/setup-deno@v2
@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
+      - uses: dtolnay/rust-toolchain@1.100
       - uses: denoland/setup-deno@v2
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p edger-orchestrator --features otel
@@ -47,7 +47,7 @@ jobs:
       - name: Install planning gate tools
         run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - uses: oven-sh/setup-bun@v2
-      - uses: dtolnay/rust-toolchain@1.88
+      - uses: dtolnay/rust-toolchain@1.100
       - uses: Swatinem/rust-cache@v2
       - name: Install core frontend dependencies
         working-directory: workers
