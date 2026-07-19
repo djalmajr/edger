@@ -75,11 +75,11 @@
   `edger_orchestrator=info,edger_worker=info,edger_isolation=info`.
 
 | `OTEL_EXPORTER_OTLP_ENDPOINT`
-| Endpoint OTLP opcional. O build atual reconhece a variável e continua com
-  tracing fmt sem falhar; o exporter OTLP real ainda não está linkado.
+| Endpoint OTLP opcional. A exportação real exige que o binário tenha sido
+  compilado com a feature Rust `otel`.
 
 | `OTEL_TRACES_SAMPLER`
-| Sampling OTEL opcional, reservado para o exporter OTLP futuro.
+| Estratégia de sampling usada quando a exportação OTLP está habilitada.
 |===
 
 ==== Gates locais
@@ -261,10 +261,11 @@ dispatch, permitindo correlação entre resposta, logs do orchestrator e logs do
 worker.
 
 Logs de dispatch incluem `request_id`, `worker_name`, versão e namespace sem
-serializar headers de autenticação, API keys ou body. Quando
-`OTEL_EXPORTER_OTLP_ENDPOINT` está configurado, o processo não falha no startup,
-mas registra que continua usando tracing fmt porque o exporter OTLP ainda não
-está linkado neste build.
+serializar headers de autenticação, API keys ou body. Builds com a feature
+`otel` exportam logs e spans por OTLP quando habilitados. Builds sem a feature
+continuam com tracing fmt local, exceto quando OTEL é marcado como obrigatório.
+O procedimento funcional de HPA e OTEL no K3s/Rancher está em
+<<eng-rancher-hpa-otel-lab>>.
 
 ==== Backup local
 

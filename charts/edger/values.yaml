@@ -33,15 +33,6 @@ runtime:
   coreWorkerDir: "/opt/edger/core-workers"
   coreWorkerOverlayDir: "/app/core-worker-overlays"
 
-coreWorkerOverlay:
-  persistence:
-    enabled: true
-    existingClaim: ""
-    storageClass: ""
-    accessModes:
-      - ReadWriteOnce
-    size: 1Gi
-
 userWorkers:
   persistence:
     enabled: true
@@ -66,7 +57,6 @@ otel:
     key: headers
 
 rootKey:
-  source: generated
   value: ""
   existingSecret: ""
   secretKey: root-key

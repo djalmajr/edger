@@ -282,6 +282,8 @@ async fn dispatch_worker(
     serialized.base_href = Some(base_href(&base_path));
     set_header(&mut serialized.headers, "x-request-id", &request_id);
     set_header(&mut serialized.headers, "x-base", &base_path);
+    #[cfg(feature = "otel")]
+    inject_current_trace_context(&mut serialized.headers);
 
     let retry_request = serialized.clone();
     let retry_kind_hint = kind_hint.clone();
@@ -447,6 +449,27 @@ fn attach_remote_trace_parent(headers: &axum::http::HeaderMap) {
     let _ = tracing::Span::current().set_parent(parent);
 }
 
+#[cfg(feature = "otel")]
+struct WorkerHeaderInjector<'a>(&'a mut Vec<(String, String)>);
+
+#[cfg(feature = "otel")]
+impl opentelemetry::propagation::Injector for WorkerHeaderInjector<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        set_header(self.0, key, &value);
+    }
+}
+
+#[cfg(feature = "otel")]
+fn inject_current_trace_context(headers: &mut Vec<(String, String)>) {
+    use opentelemetry::global;
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+    let context = tracing::Span::current().context();
+    global::get_text_map_propagator(|propagator| {
+        propagator.inject_context(&context, &mut WorkerHeaderInjector(headers));
+    });
+}
+
 fn should_retry_worker_transport(method: &str, err: &WorkerError) -> bool {
     let is_idempotent = method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD");
     is_idempotent
@@ -598,6 +621,9 @@ mod tests {
 
     use crate::auth::ControlAuth;
 
+    #[cfg(feature = "otel")]
+    use opentelemetry::propagation::Injector as _;
+
     struct StubFactory;
     impl IsolateFactory for StubFactory {
         fn create_isolate(
@@ -637,6 +663,23 @@ mod tests {
 
     fn auth_header() -> (&'static str, &'static str) {
         ("authorization", "Bearer test-root")
+    }
+
+    #[cfg(feature = "otel")]
+    #[test]
+    fn worker_header_injector_replaces_existing_trace_context() {
+        let mut headers = vec![("TraceParent".into(), "stale".into())];
+        WorkerHeaderInjector(&mut headers).set(
+            "traceparent",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into(),
+        );
+
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].0, "TraceParent");
+        assert_eq!(
+            headers[0].1,
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        );
     }
 
     #[tokio::test]

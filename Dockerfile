@@ -2,7 +2,7 @@ FROM rust:1.88-bookworm AS builder
 
 WORKDIR /src
 COPY . .
-RUN cargo build --release -p edger-orchestrator --bin edger
+RUN cargo build --release -p edger-orchestrator --bin edger --features otel
 
 FROM oven/bun:1.3.14 AS frontend-builder
 
