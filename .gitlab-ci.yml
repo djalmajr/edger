@@ -41,6 +41,7 @@ test:
   variables:
     CARGO_HOME: "$CI_PROJECT_DIR/.cargo-ci"
     CARGO_TERM_COLOR: always
+    DENO_INSTALL: "$CI_PROJECT_DIR/.deno-ci"
   cache:
     key:
       files:
@@ -49,12 +50,116 @@ test:
       - .cargo-ci/registry/index
       - .cargo-ci/registry/cache
       - .cargo-ci/git/db
+      - .deno-ci
       - target
   script:
     # Um único job mantém o gate enxuto sem baixar e compilar as dependências
-    # duas vezes em runners distintos.
-    - cargo check --workspace --all-targets --locked
+    # duas vezes em runners distintos. Deno é dependência de RUNTIME dos
+    # testes (o backend multiproc executa processos Deno de verdade) — sem
+    # ele o gate passaria em silêncio pulando exatamente o que importa.
+    - |
+      rustup component add rustfmt clippy
+      if [ ! -x "$DENO_INSTALL/bin/deno" ]; then
+        curl -fsSL https://deno.land/install.sh | sh -s -- -y
+      fi
+      export PATH="$DENO_INSTALL/bin:$PATH"
+      deno --version
+    - cargo fmt -- --check
+    - cargo clippy --workspace --all-targets --locked -- -D warnings
     - cargo test --workspace --locked
+
+# O chart é parte do contrato de deploy: lint + render do labdev + as
+# validações NEGATIVAS (réplicas>1 e HPA precisam FALHAR o render enquanto
+# não houver distribuição de workers) — regressão aqui já quebrou upgrade.
+helm:
+  stage: test
+  <<: *gates
+  image:
+    name: alpine/k8s:1.31.13@sha256:8bbc91da39ec2d230bbee9b17aa379ca5f33084f69659f7185adcdf971e6f596
+    entrypoint: [""]
+  before_script: []
+  cache: {}
+  script:
+    - helm lint charts/edger -f charts/edger/values-labdev.yaml
+    - helm template edger charts/edger -f charts/edger/values-labdev.yaml > /tmp/labdev.yaml
+    - grep -A1 "strategy:" /tmp/labdev.yaml | grep -q "type: Recreate"
+    - |
+      if helm template edger charts/edger -f charts/edger/values-labdev.yaml --set replicaCount=2 > /dev/null 2>&1; then
+        echo "replicaCount=2 deveria falhar o render (PVC RWO + índice em memória)" >&2; exit 1
+      fi
+    - |
+      if helm template edger charts/edger -f charts/edger/values-labdev.yaml --set hpa.enabled=true > /dev/null 2>&1; then
+        echo "hpa.enabled deveria falhar o render" >&2; exit 1
+      fi
+
+# O AGENTS deste repo exige o gate ágil de planning/refinement para mudança
+# de estado - o mesmo que o workflow do GitHub roda. Sem ele, uma pipeline
+# via API publicaria imagem de um commit que reprova o planning.
+project-gates:
+  stage: test
+  <<: *gates
+  image: rust:1.88-bookworm
+  variables:
+    CARGO_HOME: "$CI_PROJECT_DIR/.cargo-ci"
+    BUN_INSTALL: "$CI_PROJECT_DIR/.bun-ci"
+  cache:
+    key:
+      files:
+        - Cargo.lock
+    paths:
+      - .cargo-ci/registry/index
+      - .cargo-ci/registry/cache
+      - .cargo-ci/git/db
+      - .bun-ci
+      - target
+  script:
+    - |
+      # python3 e unzip EXPLÍCITOS: rust:bookworm não garante python3, e o
+      # installer do bun exige unzip - confiar no herdado quebraria só no CI.
+      apt-get update -qq && apt-get install -qq -y ripgrep zip unzip python3 >/dev/null
+      if [ ! -x "$BUN_INSTALL/bin/bun" ]; then
+        curl -fsSL https://bun.sh/install | bash >/dev/null
+      fi
+      export PATH="$BUN_INSTALL/bin:$PATH"
+      bun --version
+    - cd workers && bun install --frozen-lockfile && cd ..
+    - |
+      scratch="$CI_PROJECT_DIR/.planning-gates"
+      mkdir -p "$scratch"
+      set +e
+      python3 planning/edger/scripts/refinement-lint.py \
+        --scope planning/edger \
+        --round gitlab-ci >"$scratch/refinement-report.txt"
+      refinement_status=$?
+      set -e
+      cat "$scratch/refinement-report.txt"
+      test "$refinement_status" -eq 0
+      SCRATCH="$scratch" planning/edger/scripts/run-gates.sh
+
+# Mesma catraca do Studio: o que já entrou fica; só ADIÇÃO de segredo conta.
+secrets:
+  stage: test
+  <<: *gates
+  image:
+    name: zricethezav/gitleaks:v8.30.1
+    entrypoint: [""]
+  before_script: []
+  cache: {}
+  variables:
+    # `gitleaks git` percorre o range de verdade: com clone raso o commit-base
+    # do MR não existe localmente e o range sairia vazio - passaria calado.
+    GIT_DEPTH: 0
+  script:
+    - |
+      if [ -n "$CI_MERGE_REQUEST_DIFF_BASE_SHA" ]; then
+        RANGE="$CI_MERGE_REQUEST_DIFF_BASE_SHA..$CI_COMMIT_SHA"
+      elif [ -n "$CI_COMMIT_BEFORE_SHA" ] && [ "$CI_COMMIT_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+        RANGE="$CI_COMMIT_BEFORE_SHA..$CI_COMMIT_SHA"
+      else
+        RANGE="$CI_COMMIT_SHA~1..$CI_COMMIT_SHA"
+      fi
+      echo "varrendo $RANGE"
+      gitleaks git --log-opts="$RANGE" --redact --no-banner .
 
 build-image:
   stage: build
@@ -66,6 +171,9 @@ build-image:
     action: prepare
   needs:
     - job: test
+    - job: helm
+    - job: project-gates
+    - job: secrets
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG =~ /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.[1-9][0-9]*)?$/'
     - if: '$CI_PIPELINE_SOURCE == "web"'
