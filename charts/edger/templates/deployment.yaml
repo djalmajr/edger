@@ -7,6 +7,12 @@ metadata:
   labels:
     {{- include "edger.labels" . | nindent 4 }}
 spec:
+  {{- if .Values.userWorkers.persistence.enabled }}
+  # A single-writer RWO PVC cannot be attached safely to old and new pods
+  # during a rolling update, and each pod owns an independent in-memory index.
+  strategy:
+    type: Recreate
+  {{- end }}
   {{- if not .Values.hpa.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}

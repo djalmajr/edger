@@ -43,6 +43,8 @@ runtime:
 
 # Deve permanecer habilitado em ambientes que recebem workers pela Admin API:
 # o conteúdo sobrevive ao restart enquanto o índice é reconstruído em memória.
+# Com persistência, o Deployment usa Recreate para o PVC RWO nunca ser montado
+# simultaneamente pelo pod antigo e pelo novo.
 userWorkers:
   persistence:
     enabled: true
