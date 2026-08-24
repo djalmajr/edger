@@ -1,7 +1,14 @@
 pub mod contracts;
+pub mod control_plane;
 pub mod discovery;
 
 use anyhow::{anyhow, Result};
+use control_plane::{
+    delete_worker as delete_deployed_worker, disable_worker, enable_worker, install_worker,
+    invoke_worker, list_deployed_workers, list_observability_events, promote_worker,
+    DeleteWorkerArgs, InstallWorkerArgs, InvokeWorkerArgs, ListDeployedWorkersArgs,
+    ObservabilityEventsArgs, PromoteWorkerArgs, WorkerActionArgs,
+};
 use discovery::{
     inspect_worker, list_workers, prepare_commit, validate_local, write_worker_file,
     InspectWorkerArgs, McpContext, WorkerDiscoveryArgs, WriteWorkerFileArgs,
@@ -99,6 +106,38 @@ fn handle_tool_call(ctx: &McpContext, params: Option<Value>) -> Result<Value> {
                 .and_then(Value::as_str)
                 .map(str::to_string);
             prepare_commit(ctx, workspace_root)?
+        }
+        "edger.install_worker" => {
+            let args = parse_args::<InstallWorkerArgs>(call.arguments)?;
+            install_worker(ctx, args)?
+        }
+        "edger.list_deployed_workers" => {
+            let args = parse_args::<ListDeployedWorkersArgs>(call.arguments)?;
+            list_deployed_workers(ctx, args)?
+        }
+        "edger.enable_worker" => {
+            let args = parse_args::<WorkerActionArgs>(call.arguments)?;
+            enable_worker(ctx, args)?
+        }
+        "edger.disable_worker" => {
+            let args = parse_args::<WorkerActionArgs>(call.arguments)?;
+            disable_worker(ctx, args)?
+        }
+        "edger.delete_worker" => {
+            let args = parse_args::<DeleteWorkerArgs>(call.arguments)?;
+            delete_deployed_worker(ctx, args)?
+        }
+        "edger.promote_worker" => {
+            let args = parse_args::<PromoteWorkerArgs>(call.arguments)?;
+            promote_worker(ctx, args)?
+        }
+        "edger.invoke_worker" => {
+            let args = parse_args::<InvokeWorkerArgs>(call.arguments)?;
+            invoke_worker(ctx, args)?
+        }
+        "edger.list_observability_events" => {
+            let args = parse_args::<ObservabilityEventsArgs>(call.arguments)?;
+            list_observability_events(ctx, args)?
         }
         other => return Err(anyhow!("unknown tool: {other}")),
     };

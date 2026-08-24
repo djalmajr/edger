@@ -1,39 +1,86 @@
+use std::fmt;
 use std::fs;
+use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, Result};
 use edger_core::AdminWorkerInfo;
 use edger_orchestrator::load_manifests_from_dirs;
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::contracts::EDGER_SCHEMA_VERSION;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct McpContext {
     workspace_root: PathBuf,
+    control_plane: Option<ControlPlaneTarget>,
+}
+
+#[derive(Clone)]
+struct ControlPlaneTarget {
+    url: String,
+    root_key: String,
+}
+
+impl fmt::Debug for McpContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("McpContext")
+            .field("workspace_root", &self.workspace_root)
+            .field("control_plane_configured", &self.control_plane.is_some())
+            .finish()
+    }
 }
 
 impl McpContext {
     pub fn new(workspace_root: impl Into<PathBuf>) -> Result<Self> {
         let root = workspace_root.into();
         let workspace_root = canonicalize_existing_dir(&root)?;
-        Ok(Self { workspace_root })
+        Ok(Self {
+            workspace_root,
+            control_plane: None,
+        })
+    }
+
+    pub fn with_control_plane(
+        workspace_root: impl Into<PathBuf>,
+        url: impl Into<String>,
+        root_key: impl Into<String>,
+    ) -> Result<Self> {
+        let mut context = Self::new(workspace_root)?;
+        let url = validate_control_plane_url(&url.into())?;
+        let root_key = root_key.into();
+        if root_key.trim().is_empty() {
+            return Err(anyhow!("EdgeR root key must not be empty"));
+        }
+        context.control_plane = Some(ControlPlaneTarget { url, root_key });
+        Ok(context)
     }
 
     pub fn from_env() -> Result<Self> {
         let root = std::env::var_os("EDGER_MCP_WORKSPACE_ROOT")
             .map(PathBuf::from)
             .unwrap_or(std::env::current_dir()?);
-        Self::new(root)
+        match (
+            std::env::var("EDGER_URL").ok(),
+            std::env::var("EDGER_ROOT_KEY").ok(),
+        ) {
+            (None, None) => Self::new(root),
+            (Some(url), Some(root_key)) => Self::with_control_plane(root, url, root_key),
+            _ => Err(anyhow!(
+                "EDGER_URL and EDGER_ROOT_KEY must be configured together"
+            )),
+        }
     }
 
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
     }
 
-    fn resolve_workspace_root(&self, requested: Option<&str>) -> Result<PathBuf> {
+    pub(crate) fn resolve_workspace_root(&self, requested: Option<&str>) -> Result<PathBuf> {
         let Some(requested) = requested else {
             return Ok(self.workspace_root.clone());
         };
@@ -49,6 +96,67 @@ impl McpContext {
         }
         Ok(canonical)
     }
+
+    pub(crate) fn resolve_existing_file(
+        &self,
+        workspace_root: Option<&str>,
+        requested: &str,
+    ) -> Result<PathBuf> {
+        let workspace_root = self.resolve_workspace_root(workspace_root)?;
+        let requested = PathBuf::from(requested);
+        let candidate = if requested.is_absolute() {
+            requested
+        } else {
+            workspace_root.join(requested)
+        };
+        let canonical = candidate
+            .canonicalize()
+            .map_err(|error| anyhow!("file does not exist: {}: {error}", candidate.display()))?;
+        if !canonical.starts_with(&workspace_root) {
+            return Err(anyhow!("file path escapes configured workspace"));
+        }
+        if !canonical.is_file() {
+            return Err(anyhow!("path is not a file: {}", canonical.display()));
+        }
+        Ok(canonical)
+    }
+
+    pub(crate) fn control_plane(&self) -> Result<(&str, &str)> {
+        self.control_plane
+            .as_ref()
+            .map(|target| (target.url.as_str(), target.root_key.as_str()))
+            .ok_or_else(|| {
+                anyhow!("EdgeR control plane is not configured; set EDGER_URL and EDGER_ROOT_KEY")
+            })
+    }
+}
+
+fn validate_control_plane_url(raw: &str) -> Result<String> {
+    let mut url = Url::parse(raw).map_err(|error| anyhow!("invalid EDGER_URL: {error}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(anyhow!("EDGER_URL must use http or https"));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(anyhow!("EDGER_URL must not contain credentials"));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(anyhow!("EDGER_URL must not contain a query or fragment"));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("EDGER_URL must include a host"))?;
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if url.scheme() != "https" && !loopback {
+        return Err(anyhow!("non-loopback EDGER_URL must use https"));
+    }
+    if !url.path().ends_with('/') {
+        let path = format!("{}/", url.path());
+        url.set_path(&path);
+    }
+    Ok(url.to_string())
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -92,6 +200,7 @@ pub struct SafeWorkerInfo {
     pub source: String,
     pub status: String,
     pub version: String,
+    pub visibility: edger_core::WorkerVisibility,
 }
 
 pub fn list_workers(ctx: &McpContext, args: WorkerDiscoveryArgs) -> Result<serde_json::Value> {
@@ -253,6 +362,7 @@ fn safe_worker_info(workspace_root: &Path, worker: AdminWorkerInfo) -> SafeWorke
         source: display_relative(workspace_root, Path::new(&worker.source)),
         status: worker.status,
         version: worker.version,
+        visibility: worker.visibility,
     }
 }
 

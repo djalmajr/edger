@@ -1,5 +1,9 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::process::Command;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use edger_mcp::discovery::McpContext;
 use serde_json::{json, Value};
@@ -43,6 +47,82 @@ fn write_worker(root: &TempDir, name: &str, manifest: &str) {
     fs::write(worker_dir.join("index.ts"), "export default { fetch() {} }").unwrap();
 }
 
+fn mock_admin(expected: usize) -> (String, mpsc::Receiver<String>, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let (sender, receiver) = mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let started = Instant::now();
+        let mut served = 0;
+        while served < expected && started.elapsed() < Duration::from_secs(10) {
+            let (mut stream, _) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("mock admin accept failed: {error}"),
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let header_end = loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    panic!("mock admin request ended before headers");
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(position) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    break position + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("content-length: ")
+                        .or_else(|| line.strip_prefix("Content-Length: "))
+                })
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let request_text = String::from_utf8_lossy(&request).into_owned();
+            let request_line = request_text.lines().next().unwrap_or_default();
+            let (status, content_type, body) = if request_line.contains("/invoke") {
+                ("207 Multi-Status", "text/plain", "invoked")
+            } else if request_line.starts_with("GET /api/admin/workers ") {
+                (
+                    "200 OK",
+                    "application/json",
+                    r#"{"workers":[{"name":"release","visibility":"public"},{"name":"draft","visibility":"internal"}]}"#,
+                )
+            } else {
+                ("200 OK", "application/json", r#"{"ok":true}"#)
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            sender.send(request_text).unwrap();
+            served += 1;
+        }
+        assert_eq!(served, expected, "not all mock admin requests arrived");
+    });
+    (format!("http://{address}"), receiver, handle)
+}
+
 #[test]
 fn initialize_and_tools_list_expose_edger_discovery_tools() {
     let root = workspace();
@@ -65,6 +145,18 @@ fn initialize_and_tools_list_expose_edger_discovery_tools() {
     assert!(names.contains(&"edger.write_worker_file"));
     assert!(names.contains(&"edger.validate_local"));
     assert!(names.contains(&"edger.prepare_commit"));
+    for name in [
+        "edger.install_worker",
+        "edger.list_deployed_workers",
+        "edger.enable_worker",
+        "edger.disable_worker",
+        "edger.delete_worker",
+        "edger.promote_worker",
+        "edger.invoke_worker",
+        "edger.list_observability_events",
+    ] {
+        assert!(names.contains(&name), "missing control-plane tool {name}");
+    }
     assert!(tools
         .iter()
         .all(|tool| tool["inputSchema"]["type"].as_str() == Some("object")));
@@ -79,7 +171,7 @@ fn list_capabilities_returns_versioned_contract_without_secret_terms() {
     let body = content(&response);
 
     assert_eq!(body["schemaVersion"], "edger.ai.v1");
-    assert_eq!(body["safety"]["remoteDeploy"], false);
+    assert_eq!(body["safety"]["remoteDeploy"], true);
     assert_eq!(body["safety"]["workspaceBoundedWrites"], true);
     assert!(body["resourceTypes"]
         .as_array()
@@ -94,8 +186,24 @@ fn list_capabilities_returns_versioned_contract_without_secret_terms() {
     let serialized = serde_json::to_string(body).unwrap().to_lowercase();
     assert!(!serialized.contains("secret"));
     assert!(!serialized.contains("token"));
+    assert!(!serialized.contains("baseurl"));
+    assert!(!serialized.contains("apikey"));
+    assert!(!serialized.contains("rootkey"));
 }
 
+#[test]
+fn control_plane_target_is_bound_and_requires_https_off_loopback() {
+    let root = workspace();
+    let error = McpContext::with_control_plane(root.path(), "http://example.com", "must-not-leak")
+        .unwrap_err();
+    assert!(error.to_string().contains("must use https"));
+    let context =
+        McpContext::with_control_plane(root.path(), "https://example.com", "must-not-leak")
+            .unwrap();
+    let debug = format!("{context:?}");
+    assert!(!debug.contains("must-not-leak"));
+    assert!(!debug.contains("example.com"));
+}
 #[test]
 fn list_workers_loads_real_manifests_and_redacts_worker_env() {
     let root = workspace();
@@ -321,4 +429,121 @@ fn prepare_commit_summarizes_local_git_changes_without_committing() {
         .as_str()
         .unwrap()
         .contains("Remote deploy"));
+}
+
+#[test]
+fn control_plane_tools_emit_admin_http_contracts() {
+    let root = workspace();
+    fs::write(root.path().join("package.zip"), b"zip-path").unwrap();
+    let (base_url, requests, server) = mock_admin(9);
+    let ctx = McpContext::with_control_plane(root.path(), base_url, "control-key").unwrap();
+    let invalid_delete = tool_call(&ctx, "edger.delete_worker", json!({"name": "demo"}));
+    assert!(invalid_delete["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("version or explicit allVersions"));
+    // Force sem expectedRevision não é CAS: falha ANTES de abrir HTTP (o mock
+    // conta requests; nenhuma pode ser consumida por esta chamada inválida).
+    let invalid_force = tool_call(
+        &ctx,
+        "edger.install_worker",
+        json!({"zipPath": "package.zip", "force": true}),
+    );
+    assert!(invalid_force["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("expectedRevision"));
+    let call_success = |name: &str, arguments: Value| {
+        let response = tool_call(&ctx, name, arguments);
+        assert!(response.get("error").is_none(), "{name} failed: {response}");
+        response
+    };
+
+    call_success(
+        "edger.install_worker",
+        json!({
+            "zipPath": "package.zip",
+            "packageName": "draft.zip",
+            "force": true,
+            "expectedRevision": "rev-a",
+        }),
+    );
+    call_success(
+        "edger.install_worker",
+        json!({"zipBase64": "emlwLWJhc2U2NA=="}),
+    );
+    let listed = call_success("edger.list_deployed_workers", json!({}));
+    assert_eq!(content(&listed)["workers"][0]["visibility"], "public");
+    assert_eq!(content(&listed)["workers"][1]["visibility"], "internal");
+    call_success(
+        "edger.enable_worker",
+        json!({"name": "demo", "version": "1.0.0"}),
+    );
+    call_success(
+        "edger.disable_worker",
+        json!({"name": "demo", "version": "1.0.0"}),
+    );
+    call_success(
+        "edger.delete_worker",
+        json!({"name": "demo", "version": "1.0.0"}),
+    );
+    call_success(
+        "edger.promote_worker",
+        json!({"name": "demo", "version": "1.0.0"}),
+    );
+    let invoked = call_success(
+        "edger.invoke_worker",
+        json!({
+            "name": "demo",
+            "version": "0.0.0",
+            "path": "/probe",
+            "method": "POST",
+            "headers": {
+                "authorization": "Bearer app-token",
+                "x-api-key": "app-key",
+                "x-client": "studio"
+            },
+            "query": {"q": "7", "version": "abc"},
+            "body": "payload",
+        }),
+    );
+    assert_eq!(content(&invoked)["status"], 207);
+    assert_eq!(content(&invoked)["body"], "invoked");
+    call_success(
+        "edger.list_observability_events",
+        json!({"worker": "demo", "limit": 5}),
+    );
+
+    let requests = (0..9)
+        .map(|_| requests.recv_timeout(Duration::from_secs(2)).unwrap())
+        .collect::<Vec<_>>();
+    server.join().unwrap();
+    assert!(requests.iter().enumerate().all(|(index, request)| {
+        index == 7
+            || request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer control-key")
+    }));
+    assert!(requests[0].starts_with("POST /api/admin/workers/install?force=true "));
+    assert!(requests[0].contains("x-edger-package-name: draft.zip"));
+    assert!(requests[0].ends_with("zip-path"));
+    assert!(requests[1].starts_with("POST /api/admin/workers/install "));
+    assert!(requests[1].ends_with("zip-base64"));
+    assert!(requests[2].starts_with("GET /api/admin/workers "));
+    assert!(requests[3].starts_with("POST /api/admin/workers/demo/enable?version=1.0.0 "));
+    assert!(requests[4].starts_with("POST /api/admin/workers/demo/disable?version=1.0.0 "));
+    assert!(requests[5].starts_with("DELETE /api/admin/workers/demo?version=1.0.0 "));
+    assert!(requests[6].starts_with("POST /api/admin/workers/demo/promote?version=1.0.0 "));
+    assert!(requests[7].starts_with("POST /api/admin/workers/demo/invoke/probe?q=7&version=abc "));
+    assert!(requests[7].contains("x-client: studio"));
+    assert!(requests[7].contains("x-edger-worker-version: 0.0.0"));
+    let invoke_request = requests[7].to_ascii_lowercase();
+    assert!(invoke_request.contains("x-edger-control-authorization: bearer control-key"));
+    assert!(invoke_request.contains("authorization: bearer app-token"));
+    assert!(invoke_request.contains("x-api-key: app-key"));
+    assert!(!invoke_request
+        .lines()
+        .any(|line| line == "authorization: bearer control-key"));
+    assert!(requests[7].ends_with("payload"));
+    assert!(requests[8].starts_with("GET /api/admin/observability/events?limit=5&worker=demo "));
 }
