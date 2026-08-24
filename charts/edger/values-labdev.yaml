@@ -1,0 +1,68 @@
+# Overlay do labdev. A topologia é intencionalmente single-replica: a Admin API
+# persiste os workers no PVC, mas cada processo mantém seu próprio índice de
+# roteamento em memória. O chart rejeita réplicas adicionais e HPA até existir
+# distribuição/coordenação de workers.
+#
+# Drafts do Studio usam `visibility: internal`: nunca são invocados por rota
+# pública. O teste passa pelo control plane autenticado
+# (`/api/admin/workers/.../invoke`). O Ingress mantém `/api/admin/*` porque a
+# superfície exige ControlAuth; uma NetworkPolicy poderá restringi-la à rede do
+# Studio como defesa adicional, sem alterar o roteamento público de workers.
+#
+# Segredos ficam fora do chart. Pré-provisione no namespace `hyper`:
+#   - Secret `edger-root-key`, chave `root-key`;
+#   - Secret dockerconfigjson `harbor-cithyper` para o Harbor.
+#
+# O CI publica a imagem, captura o digest imutável e o injeta no deploy:
+#
+#   helm upgrade --install edger charts/edger \
+#     --namespace hyper \
+#     -f charts/edger/values-labdev.yaml \
+#     --set-string image.digest=sha256:...
+
+replicaCount: 1
+
+image:
+  repository: repositorio.cithyper.click/centralit/edger
+  # Sempre preenchido pelo CI via --set-string; vazio permite somente render e
+  # instalações locais usando a tag/appVersion do chart.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: harbor-cithyper
+
+ingress:
+  enabled: true
+  className: nginx
+  host: edger-labdev.cloud4biz.com
+  path: /
+  pathType: Prefix
+  tls:
+    enabled: false
+
+rootKey:
+  # Nunca coloque a root key neste arquivo. O Secret é provisionado pelo cofre
+  # do ambiente e apenas montado pelo chart.
+  existingSecret: edger-root-key
+  secretKey: root-key
+
+userWorkers:
+  persistence:
+    enabled: true
+    existingClaim: ""
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 5Gi
+
+hpa:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

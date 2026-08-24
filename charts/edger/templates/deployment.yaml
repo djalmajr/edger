@@ -1,3 +1,4 @@
+{{- include "edger.validate" . -}}
 {{- $hasRootKey := or .Values.rootKey.value .Values.rootKey.existingSecret }}
 apiVersion: apps/v1
 kind: Deployment
@@ -30,7 +31,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: edger
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: {{ include "edger.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http

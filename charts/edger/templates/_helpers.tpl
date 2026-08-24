@@ -22,6 +22,17 @@ Create a default fully qualified app name.
 {{- end }}
 
 {{/*
+Immutable image reference. A digest takes precedence over the mutable tag.
+*/}}
+{{- define "edger.image" -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Common labels.
 */}}
 {{- define "edger.labels" -}}
@@ -58,4 +69,17 @@ Absolute path passed to EDGER_ROOT_KEY_FILE.
 */}}
 {{- define "edger.rootKeyFilePath" -}}
 {{- printf "%s/%s" .Values.rootKey.mountPath .Values.rootKey.fileName -}}
+{{- end }}
+
+{{/*
+Workers are persisted on one PVC while the routing index remains process-local.
+Multiple replicas are therefore unsafe until worker distribution is coordinated.
+*/}}
+{{- define "edger.validate" -}}
+{{- if ne (int .Values.replicaCount) 1 -}}
+{{- fail "replicaCount deve ser 1: os workers ficam no PVC, mas o índice de roteamento é mantido em memória por processo; múltiplas réplicas são não determinísticas até existir distribuição/coordenação de workers" -}}
+{{- end -}}
+{{- if .Values.hpa.enabled -}}
+{{- fail "hpa.enabled deve ser false: o autoscaling criaria múltiplas réplicas com índices de workers independentes; habilite HPA somente após implementar distribuição/coordenação de workers" -}}
+{{- end -}}
 {{- end }}

@@ -127,48 +127,11 @@ questions:
 
   - variable: replicaCount
     label: Replica Count
-    description: Number of EdgeR pod replicas when HPA is disabled.
+    description: Fixed at one replica while worker packages live on a PVC and the routing index remains process-local.
     type: int
     default: 1
     min: 1
-    max: 20
-    group: Scaling
-
-  - variable: hpa.enabled
-    label: Enable HPA
-    description: Enable Horizontal Pod Autoscaler for the EdgeR Deployment.
-    type: boolean
-    default: false
-    group: Scaling
-
-  - variable: hpa.minReplicas
-    label: Minimum Replicas
-    description: Minimum replicas when HPA is enabled.
-    type: int
-    default: 1
-    min: 1
-    max: 20
-    show_if: "hpa.enabled=true"
-    group: Scaling
-
-  - variable: hpa.maxReplicas
-    label: Maximum Replicas
-    description: Maximum replicas when HPA is enabled.
-    type: int
-    default: 5
-    min: 1
-    max: 100
-    show_if: "hpa.enabled=true"
-    group: Scaling
-
-  - variable: hpa.targetCPUUtilizationPercentage
-    label: Target CPU Utilization
-    description: Average CPU utilization percentage used by the HPA.
-    type: int
-    default: 70
-    min: 1
-    max: 100
-    show_if: "hpa.enabled=true"
+    max: 1
     group: Scaling
 
   - variable: service.port

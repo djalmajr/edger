@@ -1,0 +1,259 @@
+spec:
+  inputs:
+    environment:
+      description: "Ambiente de deploy — o único alvo disponível é labdev e o deploy é manual."
+      options:
+        - labdev
+      default: labdev
+
+---
+# Este repositório é hospedado no GitHub. Esta pipeline só passa a executar
+# depois que o projeto for importado ou espelhado em gitlab.cithyper.click.
+# Push/MR da main apenas validam; imagem só é publicada em tag SemVer ou em
+# pipeline iniciada via web/API. O deploy do labdev é sempre manual.
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "api"'
+    - when: never
+
+stages:
+  - test
+  - build
+  - deploy
+
+.gates: &gates
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "api"'
+
+test:
+  stage: test
+  <<: *gates
+  image: rust:1.88-bookworm
+  variables:
+    CARGO_HOME: "$CI_PROJECT_DIR/.cargo-ci"
+    CARGO_TERM_COLOR: always
+  cache:
+    key:
+      files:
+        - Cargo.lock
+    paths:
+      - .cargo-ci/registry/index
+      - .cargo-ci/registry/cache
+      - .cargo-ci/git/db
+      - target
+  script:
+    # Um único job mantém o gate enxuto sem baixar e compilar as dependências
+    # duas vezes em runners distintos.
+    - cargo check --workspace --all-targets --locked
+    - cargo test --workspace --locked
+
+build-image:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:debug@sha256:2562c4fe551399514277ffff7dcca9a3b1628c4ea38cb017d7286dc6ea52f4cd
+    entrypoint: [""]
+  environment:
+    name: release-build
+    action: prepare
+  needs:
+    - job: test
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG =~ /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.[1-9][0-9]*)?$/'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "api"'
+    - when: never
+  before_script: []
+  cache: {}
+  script:
+    - |
+      [ "${HARBOR_REGISTRY:-}" = "repositorio.cithyper.click" ] || {
+        echo "HARBOR_REGISTRY deve ser repositorio.cithyper.click" >&2; exit 1; }
+      [ "${HARBOR_PROJECT:-}" = "centralit" ] || {
+        echo "HARBOR_PROJECT deve ser centralit" >&2; exit 1; }
+      [ -n "${HARBOR_USER:-}" ] || { echo "HARBOR_USER ausente" >&2; exit 1; }
+      [ -n "${HARBOR_PASSWORD:-}" ] || {
+        echo "HARBOR_PASSWORD ausente" >&2; exit 1; }
+    - mkdir -p /kaniko/.docker
+    - |
+      printf '{"auths":{"%s":{"auth":"%s"}}}' \
+        "$HARBOR_REGISTRY" \
+        "$(printf '%s:%s' "$HARBOR_USER" "$HARBOR_PASSWORD" | base64 | tr -d '\n')" \
+        > /kaniko/.docker/config.json
+    - |
+      if [ -n "${CI_COMMIT_TAG:-}" ]; then
+        dest_tag="$CI_COMMIT_TAG"
+      else
+        dest_tag="$CI_COMMIT_SHORT_SHA"
+      fi
+
+      set -- \
+        --context "$CI_PROJECT_DIR" \
+        --dockerfile "$CI_PROJECT_DIR/Dockerfile" \
+        --destination "$HARBOR_REGISTRY/$HARBOR_PROJECT/edger:$dest_tag" \
+        --digest-file "$CI_PROJECT_DIR/edger.digest" \
+        --image-name-with-digest-file "$CI_PROJECT_DIR/edger.image-ref" \
+        --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" \
+        --label "org.opencontainers.image.source=$CI_PROJECT_URL" \
+        --label "org.opencontainers.image.version=$dest_tag"
+
+      # `latest` só acompanha release final; pré-release e SHA nunca o movem.
+      if printf '%s\n' "${CI_COMMIT_TAG:-}" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+        set -- "$@" --destination "$HARBOR_REGISTRY/$HARBOR_PROJECT/edger:latest"
+      fi
+
+      /kaniko/executor "$@"
+  artifacts:
+    expire_in: never
+    paths:
+      - edger.digest
+      - edger.image-ref
+
+.deploy:
+  stage: deploy
+  image:
+    # helm e kubectl já vêm na imagem; o runner do labdev não precisa baixar
+    # binários durante o job.
+    name: alpine/k8s:1.31.13@sha256:8bbc91da39ec2d230bbee9b17aa379ca5f33084f69659f7185adcdf971e6f596
+    entrypoint: [""]
+  needs:
+    - job: build-image
+      artifacts: true
+  interruptible: false
+  allow_failure: false
+  before_script: []
+  script:
+    - |
+      set -eu
+      [ -n "${KUBECONFIG_FILE:-}" ] && [ -s "$KUBECONFIG_FILE" ] || {
+        echo "KUBECONFIG_LABDEV ausente (variável File compartilhada)" >&2
+        exit 1
+      }
+      [ "$K8S_NAMESPACE" = "hyper" ] || {
+        echo "K8S_NAMESPACE deve ser hyper" >&2
+        exit 1
+      }
+      [ "${HARBOR_REGISTRY:-}" = "repositorio.cithyper.click" ] || {
+        echo "HARBOR_REGISTRY deve ser repositorio.cithyper.click" >&2
+        exit 1
+      }
+      [ "${HARBOR_PROJECT:-}" = "centralit" ] || {
+        echo "HARBOR_PROJECT deve ser centralit" >&2
+        exit 1
+      }
+
+      umask 077
+      export KUBECONFIG=/tmp/edger-kubeconfig
+      cp "$KUBECONFIG_FILE" "$KUBECONFIG"
+      chmod 600 "$KUBECONFIG"
+    - |
+      set -eu
+      digest_file="$CI_PROJECT_DIR/edger.digest"
+      [ -f "$digest_file" ] || { echo "edger.digest ausente" >&2; exit 1; }
+      image_digest=$(tr -d '[:space:]' < "$digest_file")
+      case "$image_digest" in
+        sha256:?*) ;;
+        *) echo "digest inválido em edger.digest" >&2; exit 1 ;;
+      esac
+      image_repository="$HARBOR_REGISTRY/$HARBOR_PROJECT/edger"
+
+      helm upgrade --install edger charts/edger \
+        --namespace "$K8S_NAMESPACE" \
+        -f "$EDGER_VALUES" \
+        --set-string image.repository="$image_repository" \
+        --set-string image.digest="$image_digest" \
+        --history-max 5
+    - |
+      # Espera GET-only: a ServiceAccount compartilhada não precisa de watch.
+      set -eu
+      deployment=edger
+      timeout=300
+      poll=3
+      deadline=$(($(date +%s) + timeout))
+
+      report_failure() {
+        echo "--- evidência deployment/$deployment ---" >&2
+        kubectl -n "$K8S_NAMESPACE" get "deployment/$deployment" \
+          -o jsonpath='generation={.metadata.generation} observed={.status.observedGeneration} spec={.spec.replicas} status={.status.replicas} updated={.status.updatedReplicas} ready={.status.readyReplicas} available={.status.availableReplicas} unavailable={.status.unavailableReplicas}{"\n"}' \
+          --request-timeout=15s >&2 || true
+        kubectl -n "$K8S_NAMESPACE" get pods \
+          --selector=app.kubernetes.io/instance=edger \
+          -o jsonpath='{range .items[*]}{.metadata.name}{" phase="}{.status.phase}{" ready="}{.status.containerStatuses[0].ready}{" restarts="}{.status.containerStatuses[0].restartCount}{" state="}{.status.containerStatuses[0].state}{"\n"}{end}' \
+          --request-timeout=15s >&2 || true
+        echo "--- fim da evidência ---" >&2
+      }
+
+      while :; do
+        remaining=$((deadline - $(date +%s)))
+        if [ "$remaining" -le 0 ]; then
+          echo "timeout esperando deployment/$deployment" >&2
+          report_failure
+          exit 1
+        fi
+
+        state="$(
+          kubectl -n "$K8S_NAMESPACE" get "deployment/$deployment" \
+            -o jsonpath='{.metadata.generation}{"|"}{.status.observedGeneration}{"|"}{.spec.replicas}{"|"}{.status.replicas}{"|"}{.status.updatedReplicas}{"|"}{.status.availableReplicas}{"|"}{.status.readyReplicas}{"|"}{.status.unavailableReplicas}' \
+            --request-timeout="${remaining}s"
+        )" || {
+          echo "falha ao consultar deployment/$deployment" >&2
+          report_failure
+          exit 1
+        }
+
+        IFS='|' read -r generation observed desired reported updated available ready unavailable <<EOF
+      $state
+      EOF
+        observed=${observed:-0}
+        desired=${desired:-0}
+        reported=${reported:-0}
+        updated=${updated:-0}
+        available=${available:-0}
+        ready=${ready:-0}
+        unavailable=${unavailable:-0}
+
+        case "$generation:$observed:$desired:$reported:$updated:$available:$ready:$unavailable" in
+          *[!0-9:]* | :*)
+            echo "snapshot de readiness inválido para deployment/$deployment" >&2
+            report_failure
+            exit 1
+            ;;
+        esac
+
+        if [ "$observed" -ge "$generation" ] &&
+          [ "$reported" -eq "$desired" ] &&
+          [ "$updated" -eq "$desired" ] &&
+          [ "$available" -eq "$desired" ] &&
+          [ "$ready" -eq "$desired" ] &&
+          [ "$unavailable" -eq 0 ]; then
+          echo "deployment/$deployment pronto ($ready/$desired)"
+          break
+        fi
+
+        sleep "$poll"
+      done
+
+deploy:labdev:
+  extends: .deploy
+  resource_group: edger-labdev
+  environment:
+    name: labdev
+    url: https://edger-labdev.cloud4biz.com
+  variables:
+    KUBECONFIG_FILE: "$KUBECONFIG_LABDEV"
+    K8S_NAMESPACE: hyper
+    EDGER_VALUES: charts/edger/values-labdev.yaml
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG =~ /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.[1-9][0-9]*)?$/'
+      when: manual
+    - if: '$CI_PIPELINE_SOURCE =~ /^(web|api)$/'
+      when: manual
+    - when: never

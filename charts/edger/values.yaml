@@ -1,8 +1,16 @@
+# Topologia temporariamente single-replica. Os workers instalados ficam no PVC,
+# mas o índice de roteamento é mantido em memória por processo; até existir
+# distribuição/coordenação de workers, o chart rejeita replicaCount diferente
+# de 1 e HPA habilitado para evitar respostas não determinísticas.
+
 replicaCount: 1
 
 image:
   repository: ghcr.io/djalmajr/edger
   tag: ""
+  # Opcional e imutável. Quando preenchido tem precedência sobre tag; o CI
+  # publica a imagem, captura o sha256 e o injeta com --set-string.
+  digest: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -33,6 +41,8 @@ runtime:
   coreWorkerDir: "/opt/edger/core-workers"
   coreWorkerOverlayDir: "/app/core-worker-overlays"
 
+# Deve permanecer habilitado em ambientes que recebem workers pela Admin API:
+# o conteúdo sobrevive ao restart enquanto o índice é reconstruído em memória.
 userWorkers:
   persistence:
     enabled: true
@@ -94,6 +104,8 @@ securityContext:
 extraEnv: []
 extraEnvFrom: []
 
+# Bloqueado pela validação do chart enquanto a distribuição de workers não
+# coordenar o PVC e o índice em memória entre réplicas.
 hpa:
   enabled: false
   minReplicas: 1
