@@ -100,6 +100,8 @@ planning/edger/epics/14-deploy-apps/02-rescan-workers.md
 planning/edger/epics/14-deploy-apps/03-deploy-dnd-cpanel.md
 planning/edger/epics/14-deploy-apps/04-versoes-rollback.md
 planning/edger/epics/14-deploy-apps/05-transparencia-pos-deploy.md
+planning/edger/epics/14-deploy-apps/06-arquivos-seguros-cpanel.md
+planning/edger/epics/14-deploy-apps/07-studio-serverless-control-plane.md
 planning/edger/epics/15-runtime-js-duravel/00-overview.md
 planning/edger/epics/15-runtime-js-duravel/01-transporte-uds-minimo.md
 planning/edger/epics/15-runtime-js-duravel/02-modulo-quente-kinds.md
@@ -155,6 +157,9 @@ planning/edger/epics/21-observabilidade-workers-cpanel/09-operacao-deploy-otel.m
 planning/edger/epics/21-observabilidade-workers-cpanel/10-health-passivo-vocabulario.md
 planning/edger/epics/21-observabilidade-workers-cpanel/11-eventos-release-drain.md
 planning/edger/epics/21-observabilidade-workers-cpanel/12-health-check-opcional.md
+planning/edger/epics/21-observabilidade-workers-cpanel/13-overview-runtime-operacional.md
+planning/edger/epics/21-observabilidade-workers-cpanel/14-acoes-primarias-header.md
+planning/edger/epics/21-observabilidade-workers-cpanel/15-preferencias-conta-sidebar.md
 planning/edger/epics/22-core-workers-webide/00-overview.md
 planning/edger/epics/22-core-workers-webide/01-workspace-crates.md
 planning/edger/epics/22-core-workers-webide/02-worker-layout.md
@@ -164,5 +169,10 @@ planning/edger/epics/22-core-workers-webide/05-webide-editor-drafts.md
 planning/edger/epics/22-core-workers-webide/06-webide-deploy-preview.md
 planning/edger/epics/22-core-workers-webide/07-integrations-verification.md
 planning/edger/epics/22-core-workers-webide/08-reference-workbench-layout.md
+planning/edger/epics/22-core-workers-webide/09-settings-modernas.md
 planning/edger/epics/23-secrets-versionados/00-overview.md
 planning/edger/epics/23-secrets-versionados/01-contrato-provider-secrets.md
+planning/edger/epics/24-frameworks-deno-ssr/00-overview.md
+planning/edger/epics/24-frameworks-deno-ssr/01-adapters-deploy-real.md
+planning/edger/epics/24-frameworks-deno-ssr/02-lista-oficial-completa.md
+planning/edger/epics/24-frameworks-deno-ssr/03-frameworks-node-servidor.md

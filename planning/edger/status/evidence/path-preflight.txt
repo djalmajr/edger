@@ -1,18 +1,19 @@
 OK planning/edger/AGENTS.md
 OK planning/edger/analysis-synthesis.md
 OK planning/edger/design.md
-OK planning/edger/docs/README.md
 OK planning/edger/docs/adr-licensing-boundary.md
 OK planning/edger/docs/compat-matrix.md
 OK planning/edger/docs/deployment-api-gateway.md
 OK planning/edger/docs/deployment-k8s.md
 OK planning/edger/docs/durable-provider-contract.md
 OK planning/edger/docs/extensions.md
+OK planning/edger/docs/frameworks-deno-ssr.md
 OK planning/edger/docs/js-runtime-durable-design.md
 OK planning/edger/docs/licensing-and-sustainability.md
 OK planning/edger/docs/observability.md
 OK planning/edger/docs/pendencies-epic-07.md
 OK planning/edger/docs/performance-baselines.md
+OK planning/edger/docs/README.md
 OK planning/edger/docs/scaling.md
 OK planning/edger/docs/shell-protocol.md
 OK planning/edger/docs/value-parity-matrix.md
@@ -119,6 +120,8 @@ OK planning/edger/epics/14-deploy-apps/02-rescan-workers.md
 OK planning/edger/epics/14-deploy-apps/03-deploy-dnd-cpanel.md
 OK planning/edger/epics/14-deploy-apps/04-versoes-rollback.md
 OK planning/edger/epics/14-deploy-apps/05-transparencia-pos-deploy.md
+OK planning/edger/epics/14-deploy-apps/06-arquivos-seguros-cpanel.md
+OK planning/edger/epics/14-deploy-apps/07-studio-serverless-control-plane.md
 OK planning/edger/epics/15-runtime-js-duravel/00-overview.md
 OK planning/edger/epics/15-runtime-js-duravel/01-transporte-uds-minimo.md
 OK planning/edger/epics/15-runtime-js-duravel/02-modulo-quente-kinds.md
@@ -174,6 +177,9 @@ OK planning/edger/epics/21-observabilidade-workers-cpanel/09-operacao-deploy-ote
 OK planning/edger/epics/21-observabilidade-workers-cpanel/10-health-passivo-vocabulario.md
 OK planning/edger/epics/21-observabilidade-workers-cpanel/11-eventos-release-drain.md
 OK planning/edger/epics/21-observabilidade-workers-cpanel/12-health-check-opcional.md
+OK planning/edger/epics/21-observabilidade-workers-cpanel/13-overview-runtime-operacional.md
+OK planning/edger/epics/21-observabilidade-workers-cpanel/14-acoes-primarias-header.md
+OK planning/edger/epics/21-observabilidade-workers-cpanel/15-preferencias-conta-sidebar.md
 OK planning/edger/epics/22-core-workers-webide/00-overview.md
 OK planning/edger/epics/22-core-workers-webide/01-workspace-crates.md
 OK planning/edger/epics/22-core-workers-webide/02-worker-layout.md
@@ -183,8 +189,13 @@ OK planning/edger/epics/22-core-workers-webide/05-webide-editor-drafts.md
 OK planning/edger/epics/22-core-workers-webide/06-webide-deploy-preview.md
 OK planning/edger/epics/22-core-workers-webide/07-integrations-verification.md
 OK planning/edger/epics/22-core-workers-webide/08-reference-workbench-layout.md
+OK planning/edger/epics/22-core-workers-webide/09-settings-modernas.md
 OK planning/edger/epics/23-secrets-versionados/00-overview.md
 OK planning/edger/epics/23-secrets-versionados/01-contrato-provider-secrets.md
+OK planning/edger/epics/24-frameworks-deno-ssr/00-overview.md
+OK planning/edger/epics/24-frameworks-deno-ssr/01-adapters-deploy-real.md
+OK planning/edger/epics/24-frameworks-deno-ssr/02-lista-oficial-completa.md
+OK planning/edger/epics/24-frameworks-deno-ssr/03-frameworks-node-servidor.md
 OK planning/edger/intake.md
 OK planning/edger/roadmap.md
 OK planning/edger/runtime-functional-plan.md
@@ -223,6 +234,8 @@ OK planning/edger/status/checkpoint-2026-06-29-story-07-05-wip.md
 OK planning/edger/status/checkpoint-2026-06-29-story-09-03-provider-turso-remote-wip.md
 OK planning/edger/status/checkpoint-2026-06-30-modular-ai-native-delivery.md
 OK planning/edger/status/checkpoint-2026-07-11-epic-21-observability-plan.md
+OK planning/edger/status/checkpoint-2026-07-17-frameworks-deno-ssr.md
+OK planning/edger/status/checkpoint-2026-07-17-frameworks-node-servidor.md
 OK planning/edger/status/closure-2026-06-28-edger-func.md
 OK planning/edger/status/closure-2026-06-29-story-08-01-value-parity.md
 OK planning/edger/status/closure-2026-06-29-story-08-02-admin-api.md
@@ -268,11 +281,14 @@ OK planning/edger/status/closure-2026-07-01-story-11-04-vhosts-host-routing.md
 OK planning/edger/status/closure-2026-07-01-story-12-02-shell-catalog.md
 OK planning/edger/status/closure-2026-07-02-runtime-functional-mvp.md
 OK planning/edger/status/closure-2026-07-12-epic-21-observability.md
+OK planning/edger/status/closure-2026-08-24-story-14-07-studio-serverless-control-plane.md
 OK planning/edger/status/consolidation-2026-06-28.md
 OK planning/edger/status/consolidation-2026-06-29-backlog-ready.md
 OK planning/edger/status/evidence/browser-preview-2026-07-02.md
 OK planning/edger/status/evidence/cpanel-browser-2026-06-30.md
+OK planning/edger/status/evidence/cpanel-header-actions-2026-07-15.md
 OK planning/edger/status/evidence/cpanel-responsive-2026-07-11.md
+OK planning/edger/status/evidence/cpanel-sidebar-preferences-2026-07-15.md
 OK planning/edger/status/evidence/cpanel-workers-scenarios.md
 OK planning/edger/status/evidence/epic-21-observability-browser-runtime-2026-07-12.md
 OK planning/edger/status/evidence/epic-22-core-webide-2026-07-13.md
@@ -280,6 +296,7 @@ OK planning/edger/status/evidence/js-runtime-perf-2026-07-02.md
 OK planning/edger/status/evidence/logs-explorer-live-tail-2026-07-11.md
 OK planning/edger/status/evidence/mcp-stdio-2026-06-30.md
 OK planning/edger/status/evidence/operational-events-store-2026-07-11.md
+OK planning/edger/status/evidence/overview-runtime-operacional-2026-07-15.md
 OK planning/edger/status/evidence/public-readiness-2026-07-12.md
 OK planning/edger/status/evidence/refresh-stream-resilience-2026-07-11.md
 OK planning/edger/status/evidence/release-0.2.0-rehearsal-2026-07-12.md
@@ -287,5 +304,5 @@ OK planning/edger/status/evidence/release-drain-events-2026-07-11.md
 OK planning/edger/status/evidence/worker-console-capture-2026-07-11.md
 OK planning/edger/status/evidence/worker-passive-health-2026-07-11.md
 ---
-Total refs: 288
+Total refs: 305
 Missing: 0

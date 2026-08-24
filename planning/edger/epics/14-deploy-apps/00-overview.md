@@ -55,6 +55,7 @@ Hoje o deploy de um worker no EdgeR é filesystem puro: copiar um diretório par
 | 14.04 Versões e rollback | `04-versoes-rollback.md` | `name@semver` coexistindo; rollback via enable/disable de versão | medium | **completed** | 14.01 |
 | 14.05 Transparência pós-deploy | `05-transparencia-pos-deploy.md` | Resposta de deploy com URL/kind/visibilidade + erros por worker na listagem | small | **completed** | 14.01, 14.03 |
 | 14.06 Arquivos seguros no cPanel | `06-arquivos-seguros-cpanel.md` | Download de arquivo/pasta sem mutar versões ativas; bloquear escrita em core | medium | **completed** | 14.01, 14.03 |
+| 14.07 Control plane serverless para o Studio | `07-studio-serverless-control-plane.md` | Draft interno mutável, release pública imutável, promote durável, invoke e MCP seguro | large | **completed** | 14.01, 14.04, 14.06 |
 
 ## Roadmap
 
@@ -68,6 +69,8 @@ flowchart LR
     E12[Epic 12 cPanel] --> S03
     S01 --> S05[14.05 Transparência]
     S03 --> S05
+    S04 --> S07[14.07 Studio serverless]
+    S06[14.06 Arquivos seguros] --> S07
 ```
 
 ### Fases sugeridas
@@ -77,6 +80,7 @@ flowchart LR
 | A — Fatia vertical (autorizada) | 14.01 → 14.02 | Deploy de worker novo via `curl` zip → responde sem restart; rescan detecta worker copiado manualmente |
 | B — Produto | 14.03 | DnD no Browser: drop de zip → preview → app no ar com URL |
 | C — Operação madura | 14.04 + 14.05 | Duas versões coexistem, rollback observável; resposta de deploy mostra URL/kind/logs |
+| D — Studio serverless | 14.07 | Draft interno não é público; live reload recicla o pool; promote sobrevive a restart; MCP não recebe URL/chave em argumentos |
 
 ### Paralelismo
 
@@ -112,4 +116,4 @@ flowchart LR
 
 ## Status
 
-**completed** (2026-07-02) — epic criado a partir da decisão de produto do operador: o EdgeR como "mini Vercel/Cloudflare" local onde o desenvolvedor sobe apps sem se preocupar com infraestrutura (paridade com o file manager DnD do Buntime). Todas as 5 stories entregues e validadas no preview: 14.01 install API (zip, zip-slip, escrita atômica, sem restart), 14.02 rescan disco↔índice (dobrado no Refresh do cPanel), 14.03 deploy drag-and-drop na modal de Workers, 14.04 versões coexistentes + rollback por versão, 14.05 transparência pós-deploy (erros por worker na listagem). Prova live e E2E em `status/evidence/deploy-vertical-slice-2026-07-02.txt`. Gate Rust: 342 testes verdes.
+**completed** (2026-08-24) — sete stories entregues. Além da fatia original de install, rescan, DnD, versões/rollback, transparência e arquivos seguros, a 14.07 fecha o contrato serverless do Studio: drafts internos mutáveis, releases públicas imutáveis, promoção durável, invocação autenticada, remoção completa, reciclagem de pool e tools MCP com alvo/credencial ligados ao contexto. Prova da fatia original em `status/evidence/deploy-vertical-slice-2026-07-02.txt`; fechamento da 14.07 em `status/closure-2026-08-24-story-14-07-studio-serverless-control-plane.md`.

@@ -3,7 +3,8 @@ extension-validation module=gateway
 extension-validation current boundary files: ok
 extension-validation removed runtime surfaces: absent
 extension-validation command: cargo test -p edger-orchestrator --test compat_matrix known_removed_rows_remain_explicit -- --exact
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.92s
+   Compiling edger-orchestrator v0.2.0 (/Users/djalmajr/Developer/djalmajr/edger/crates/edger-orchestrator)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.45s
      Running tests/compat_matrix.rs (target/debug/deps/compat_matrix-20af3be6af463d58)
 
 running 1 test

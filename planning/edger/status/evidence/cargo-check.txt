@@ -1,1 +1,3 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.19s
+    Checking edger-orchestrator v0.2.0 (/Users/djalmajr/Developer/djalmajr/edger/crates/edger-orchestrator)
+    Checking edger-mcp v0.2.0 (/Users/djalmajr/Developer/djalmajr/edger/crates/edger-mcp)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.45s
