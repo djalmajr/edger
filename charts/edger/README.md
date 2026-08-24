@@ -14,7 +14,7 @@ install it into the target namespace.
 4. Configure persistent storage for user worker packages to meet the cluster
    policy. cPanel and WebIDE are versioned with the EdgeR image and are restored
    from it whenever the pod is replaced.
-5. Enable and configure Ingress, OpenTelemetry, HPA, or OIDC only when their
+5. Enable and configure Ingress, OpenTelemetry, or OIDC only when their
    required infrastructure is available.
 6. Install the release and wait for the Deployment and enabled PVCs to become
    ready.
@@ -30,6 +30,35 @@ echo
 
 For direct Helm installations, set `rootKey.existingSecret` through a values
 file when the cluster already manages this credential in a Secret.
+
+## Topology: single replica by design
+
+Workers live on the pod filesystem and the manifest index is in-memory, so a
+second replica would install/serve different state per pod. Until worker
+distribution exists, the chart **enforces** this: any render with
+`replicaCount` greater than 1 or `hpa.enabled=true` **fails on purpose**, and
+enabling worker persistence switches the Deployment to `strategy: Recreate`
+(a RollingUpdate would multi-attach the RWO PVC or race two indices on the
+same node). Do not try to scale by replicas; scale vertically or wait for
+worker distribution.
+
+## labdev overlay
+
+The `values-labdev.yaml` overlay pins that topology (1 replica, PVC, HPA off,
+Recreate) and expects the root key in the pre-provisioned `edger-root-key`
+Secret. The CI deploy job runs exactly:
+
+```bash
+helm upgrade --install edger charts/edger \
+  --namespace hyper \
+  -f charts/edger/values-labdev.yaml \
+  --set-string image.repository=repositorio.cithyper.click/centralit/edger \
+  --set-string image.digest=sha256:<digest-do-build> \
+  --history-max 5
+```
+
+The image is addressed by **digest** (immutable reference produced by the
+build job), never by mutable tag.
 
 ## Access and validation
 
