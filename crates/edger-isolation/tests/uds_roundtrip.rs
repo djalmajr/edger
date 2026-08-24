@@ -185,6 +185,57 @@ Deno.serve(async (req: Request) => {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn routes_method_map_dispatches_and_reports_allow_on_405() {
+    let dir = tempfile::tempdir().unwrap();
+    write_worker(
+        dir.path(),
+        r#"export const routes = {
+  "/method": {
+    GET: () => new Response("get"),
+    POST: async (request) => new Response(`post:${await request.text()}`),
+  },
+};"#,
+    );
+
+    let mut worker = DenoWorkerProcess::spawn(
+        dir.path(),
+        Some("index.ts"),
+        Duration::from_secs(20),
+        &HashMap::new(),
+        None,
+    )
+    .await
+    .expect("routes worker should spawn");
+
+    let get = worker
+        .request(request("GET", "/method", None))
+        .await
+        .expect("GET method route");
+    assert_eq!(get.status, 200);
+    assert_eq!(get.body.unwrap().as_ref(), b"get");
+
+    let post = worker
+        .request(request("POST", "/method", Some(b"payload")))
+        .await
+        .expect("POST method route");
+    assert_eq!(post.status, 200);
+    assert_eq!(post.body.unwrap().as_ref(), b"post:payload");
+
+    let missing = worker
+        .request(request("DELETE", "/method", None))
+        .await
+        .expect("missing method response");
+    assert_eq!(missing.status, 405);
+    assert_eq!(missing.body.unwrap().as_ref(), b"method not allowed");
+    let allow = missing
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("allow"))
+        .map(|(_, value)| value.as_str());
+    assert_eq!(allow, Some("GET, POST"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deno_serve_handler_receives_connection_info() {
     let dir = tempfile::tempdir().unwrap();
     write_worker(

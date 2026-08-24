@@ -1,12 +1,15 @@
 //! Normalized worker configuration and parsers.
 
 use crate::execution::{normalize_fullstack_adapter, ExecutionKind};
-use crate::manifest::{DenoCacheMode, WorkerHealthCheckMode, WorkerIsolation, WorkerManifest};
+use crate::manifest::{
+    DenoCacheMode, WorkerHealthCheckMode, WorkerIsolation, WorkerManifest, WorkerVisibility,
+};
 
 /// Runtime-normalized worker configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerConfig {
     pub enabled: bool,
+    pub visibility: WorkerVisibility,
     /// Worker directory on disk (set by pool at fetch time; pure path metadata).
     pub worker_dir: Option<std::path::PathBuf>,
     pub entrypoint: Option<String>,
@@ -400,6 +403,7 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
 
     WorkerConfig {
         enabled: manifest.enabled.unwrap_or(true),
+        visibility: manifest.visibility,
         worker_dir: None,
         entrypoint,
         release_command: manifest.release.clone(),

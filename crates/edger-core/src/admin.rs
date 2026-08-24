@@ -1,5 +1,6 @@
 //! Admin API vocabulary. Pure response/request shapes only.
 
+use crate::manifest::WorkerVisibility;
 use crate::{ApiKeyPrincipal, ExecutionKind};
 use serde::{Deserialize, Serialize};
 
@@ -62,6 +63,9 @@ pub struct AdminWorkerInfo {
     pub source: String,
     pub status: String,
     pub version: String,
+    pub visibility: WorkerVisibility,
+    /// Revisão CAS do diretório instalado; None para instalações pré-rastreio.
+    pub revision: Option<String>,
     pub health_check: Option<AdminWorkerHealthCheckInfo>,
 }
 

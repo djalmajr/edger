@@ -1001,6 +1001,47 @@ impl WorkerPool {
         );
     }
 
+    /// Evict and gracefully terminate every cached process for one worker
+    /// identity. Removing the groups first guarantees that the next dispatch
+    /// cold-starts from the current files while in-flight work drains.
+    pub async fn recycle_worker(&self, name: &str, version: Option<&str>) -> usize {
+        let removed = self.inner.cache.remove_worker_groups(name, version);
+        for (_, group) in &removed {
+            group.close_queue();
+        }
+        let instances = removed
+            .iter()
+            .flat_map(|(_, group)| group.instances_snapshot())
+            .collect::<Vec<_>>();
+        self.inner
+            .evicted
+            .lock()
+            .expect("evicted lock")
+            .retain(|key| {
+                key.name != name || version.is_some_and(|version| key.version != version)
+            });
+        self.inner
+            .circuit_breakers
+            .lock()
+            .expect("breaker lock")
+            .retain(|key, _| {
+                key.name != name || version.is_some_and(|version| key.version != version)
+            });
+        for instance in &instances {
+            self.inner.metrics.record_terminated();
+            instance.cancel_ttl_timer();
+        }
+        let recycled = instances.len();
+        self.sync_worker_counts();
+        shutdown_instances_after_drain(
+            instances,
+            self.inner.lifecycle_events.clone(),
+            "worker_recycle",
+        )
+        .await;
+        recycled
+    }
+
     /// Begins graceful shutdown and returns the drain task handle (when a Tokio
     /// runtime is present) so the caller can AWAIT the beforeunload/waitUntil drain
     /// before exiting. Fire-and-forget would let the process exit mid-drain.
@@ -1036,6 +1077,7 @@ impl WorkerPool {
             Some(handle.spawn(shutdown_instances_after_drain(
                 instances,
                 self.inner.lifecycle_events.clone(),
+                "shutdown",
             )))
         } else {
             for instance in instances {
@@ -1393,6 +1435,7 @@ const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 async fn shutdown_instances_after_drain(
     instances: Vec<Arc<WorkerInstance>>,
     lifecycle_events: Option<LifecycleEventSender>,
+    reason: &'static str,
 ) {
     for instance in instances {
         instance.cancel_ttl_timer();
@@ -1404,7 +1447,7 @@ async fn shutdown_instances_after_drain(
                 process_id: None,
                 drained_count: None,
                 duration_ms: None,
-                reason: "shutdown",
+                reason,
             },
         );
         let started = Instant::now();
@@ -1420,6 +1463,7 @@ async fn shutdown_instances_after_drain(
             lifecycle_events.as_ref(),
             started,
             dispatch_timed_out,
+            reason,
         )
         .await;
     }
@@ -1430,6 +1474,7 @@ async fn terminate_shutdown_instance(
     lifecycle_events: Option<&LifecycleEventSender>,
     started: Instant,
     dispatch_timed_out: bool,
+    reason: &'static str,
 ) {
     if instance.state() == WorkerState::Terminated {
         return;
@@ -1460,7 +1505,7 @@ async fn terminate_shutdown_instance(
             process_id: report.as_ref().and_then(|report| report.process_id.clone()),
             drained_count: report.as_ref().and_then(|report| report.drained_count),
             duration_ms: Some(duration_ms),
-            reason: "shutdown",
+            reason,
         },
     );
     emit_lifecycle(
@@ -1471,11 +1516,7 @@ async fn terminate_shutdown_instance(
             process_id: report.and_then(|report| report.process_id),
             drained_count: None,
             duration_ms: Some(duration_ms),
-            reason: if timed_out {
-                "drain_timeout"
-            } else {
-                "shutdown"
-            },
+            reason: if timed_out { "drain_timeout" } else { reason },
         },
     );
 }

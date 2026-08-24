@@ -32,7 +32,7 @@ pub use execution::{normalize_fullstack_adapter, ExecutionKind, SUPPORTED_FULLST
 pub use isolate::{Isolate, TerminationOutcome, TerminationReport};
 pub use manifest::{
     CronJob, DenoCacheMode, WorkerHealthCheck, WorkerHealthCheckMode, WorkerIsolation,
-    WorkerManifest,
+    WorkerManifest, WorkerVisibility,
 };
 pub use principal::{principal_can_access_namespace, root_principal, ApiKeyPrincipal};
 pub use security::{

@@ -111,7 +111,12 @@ async fn send(
 ) -> (StatusCode, Value, String) {
     let mut request = Request::builder().method(method).uri(uri);
     if let Some(key) = api_key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        let header = if uri.contains("/invoke") {
+            "x-edger-control-authorization"
+        } else {
+            "authorization"
+        };
+        request = request.header(header, format!("Bearer {key}"));
     }
 
     let response = app.oneshot(request.body(body).unwrap()).await.unwrap();
@@ -174,6 +179,28 @@ async fn admin_auth_matrix_covers_read_and_mutation_routes() {
         let open_app = build_pipeline(open_state());
         let (status, _json, text) = send(open_app, method, uri, None, Body::empty()).await;
         assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    }
+}
+
+#[tokio::test]
+async fn delete_promote_and_invoke_authenticate_before_worker_lookup() {
+    for (method, uri) in [
+        ("DELETE", "/api/admin/workers/missing"),
+        ("POST", "/api/admin/workers/missing/promote?version=1.0.0"),
+        ("GET", "/api/admin/workers/missing/invoke?version=1.0.0"),
+    ] {
+        for api_key in [None, Some("wrong")] {
+            let (status, json, _) = send(
+                build_pipeline(root_state()),
+                method,
+                uri,
+                api_key,
+                Body::empty(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
+            assert_eq!(json["code"], "UNAUTHORIZED");
+        }
     }
 }
 

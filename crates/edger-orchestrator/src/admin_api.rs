@@ -2,31 +2,33 @@
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::header::{AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, delete, get, post};
 use axum::{Json, Router};
 use edger_core::{
     principal_has_permission, root_principal, AdminCatalogItem, AdminCatalogResponse,
     AdminErrorResponse, AdminMutationResponse, AdminSessionResponse, AdminWorkerInfo,
     AdminWorkersResponse, ApiKeyPrincipal, CoreError, SerializedRequest, WorkerOrigin,
+    WorkerVisibility,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::convert::Infallible;
-use std::fs;
 use std::io::{Read, Seek, Write};
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::deploy::{
-    extract_zip, install_worker_from_zip, run_worker_release_with_events, MAX_DEPLOY_PACKAGE_BYTES,
+    commit_install, delete_worker as delete_worker_deployment, extract_zip,
+    install_worker_from_zip, rollback_install, run_worker_release_with_events,
+    MAX_DEPLOY_PACKAGE_BYTES,
 };
+use crate::manifest_loader::persist_default_version;
 use crate::operational_log::log_operational_error;
-use crate::pipeline::OrchestratorState;
+use crate::pipeline::{OrchestratorState, ADMIN_CONTROL_AUTH_HEADER, ADMIN_WORKER_VERSION_HEADER};
 use crate::security::validate_admin_mutation_security;
 use crate::server::request_id_from_headers;
 
@@ -35,6 +37,7 @@ pub fn router() -> Router<OrchestratorState> {
         .route("/api/admin/session", get(session))
         .route("/api/admin/catalog", get(catalog))
         .route("/api/admin/workers", get(list_workers))
+        .route("/api/admin/workers/{name}", delete(delete_worker_route))
         .route(
             "/api/admin/workers/install",
             post(install_worker).layer(DefaultBodyLimit::max(MAX_DEPLOY_PACKAGE_BYTES)),
@@ -53,6 +56,12 @@ pub fn router() -> Router<OrchestratorState> {
         )
         .route("/api/admin/workers/{name}/enable", post(enable_worker))
         .route("/api/admin/workers/{name}/disable", post(disable_worker))
+        .route("/api/admin/workers/{name}/promote", post(promote_worker))
+        .route("/api/admin/workers/{name}/invoke", any(invoke_worker_root))
+        .route(
+            "/api/admin/workers/{name}/invoke/{*path}",
+            any(invoke_worker_path),
+        )
         .route(
             "/api/admin/workers/{name}/health-check",
             post(run_health_check),
@@ -129,9 +138,16 @@ fn worker_catalog_item(worker: &AdminWorkerInfo) -> AdminCatalogItem {
     }
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct InstallWorkerQuery {
+    #[serde(default)]
+    force: bool,
+}
+
 async fn install_worker(
     State(state): State<OrchestratorState>,
     headers: HeaderMap,
+    Query(query): Query<InstallWorkerQuery>,
     body: Bytes,
 ) -> Response {
     let result = async {
@@ -141,21 +157,35 @@ async fn install_worker(
         let package_name_hint = headers
             .get("x-edger-package-name")
             .and_then(|value| value.to_str().ok());
-        let mut installed =
-            install_worker_from_zip(&state.index, &principal, &body, package_name_hint)?;
+        // CAS do canal draft: o autosave manda a revisão da qual partiu.
+        let expected_revision = headers
+            .get("x-edger-expected-revision")
+            .and_then(|value| value.to_str().ok());
+        let mut transaction = install_worker_from_zip(
+            &state.index,
+            &principal,
+            &body,
+            package_name_hint,
+            query.force,
+            expected_revision,
+        )?;
+        let replaced_existing = transaction.replaced_existing();
         let candidate = state
             .index
             .worker_refs()
             .into_iter()
-            .find(|worker| worker.name == installed.name && worker.version == installed.version)
+            .find(|worker| {
+                worker.name == transaction.installed.name
+                    && worker.version == transaction.installed.version
+            })
             .ok_or_else(|| CoreError::new("DEPLOY_INTERNAL", "installed worker was not indexed"))?;
         if let Err(error) =
             run_worker_release_with_events(&candidate, &state.server.operational_events()).await
         {
-            rollback_failed_install(&state, &installed)?;
+            rollback_failed_install(&state, &transaction).await?;
             return Err(error);
         }
-        installed.release = if candidate.config.release_command.is_some() {
+        transaction.installed.release = if candidate.config.release_command.is_some() {
             "completed"
         } else {
             "not_configured"
@@ -169,70 +199,78 @@ async fn install_worker(
         {
             let check = match execute_worker_health_check(
                 &state,
-                &installed.name,
-                &installed.version,
+                &transaction.installed.name,
+                &transaction.installed.version,
                 "on-deploy",
             )
             .await
             {
                 Ok(check) => check,
                 Err(error) => {
-                    rollback_failed_install(&state, &installed)?;
+                    rollback_failed_install(&state, &transaction).await?;
                     return Err(error);
                 }
             };
             if !check.healthy {
-                rollback_failed_install(&state, &installed)?;
+                rollback_failed_install(&state, &transaction).await?;
                 return Err(CoreError::new(
                     "DEPLOY_HEALTH_CHECK_FAILED",
                     format!(
                         "health check failed for {}@{}: {}",
-                        installed.name, installed.version, check.message
+                        transaction.installed.name, transaction.installed.version, check.message
                     ),
                 ));
             }
-            installed.health = "passed".into();
+            transaction.installed.health = "passed".into();
         } else {
-            installed.health = "not_configured".into();
+            transaction.installed.health = "not_configured".into();
         }
-        if let Err(error) =
-            state
-                .index
-                .set_worker_enabled(&installed.name, Some(&installed.version), true)
-        {
-            rollback_failed_install(&state, &installed)?;
+        if let Err(error) = state.index.set_worker_enabled(
+            &transaction.installed.name,
+            Some(&transaction.installed.version),
+            true,
+        ) {
+            rollback_failed_install(&state, &transaction).await?;
             return Err(error);
         }
-        installed.activation = "active".into();
-        installed.default_version = state.index.resolve_worker(&installed.name, None)?.version;
-        Ok(installed)
+        transaction.installed.activation = "active".into();
+        if replaced_existing {
+            state
+                .pool
+                .recycle_worker(
+                    &transaction.installed.name,
+                    Some(&transaction.installed.version),
+                )
+                .await;
+        }
+        transaction.installed.default_version = state
+            .index
+            .resolve_worker(&transaction.installed.name, None)?
+            .version;
+        let installed = commit_install(transaction)?;
+        Ok((installed, replaced_existing))
     }
     .await;
     match result {
-        Ok(installed) => (StatusCode::CREATED, Json(installed)).into_response(),
+        Ok((installed, true)) => (StatusCode::OK, Json(installed)).into_response(),
+        Ok((installed, false)) => (StatusCode::CREATED, Json(installed)).into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
 }
 
-fn rollback_failed_install(
+async fn rollback_failed_install(
     state: &OrchestratorState,
-    installed: &crate::deploy::InstalledWorker,
+    transaction: &crate::deploy::InstallTransaction,
 ) -> Result<(), CoreError> {
+    rollback_install(&state.index, transaction)?;
     state
-        .index
-        .remove_worker(&installed.name, &installed.version)?;
-    let source = PathBuf::from(&installed.source);
-    fs::remove_dir_all(&source).map_err(|error| {
-        CoreError::new(
-            "DEPLOY_ROLLBACK_FAILED",
-            format!(
-                "failed to remove rejected candidate {}@{} from {}: {error}",
-                installed.name,
-                installed.version,
-                source.display()
-            ),
+        .pool
+        .recycle_worker(
+            &transaction.installed.name,
+            Some(&transaction.installed.version),
         )
-    })
+        .await;
+    Ok(())
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -273,6 +311,196 @@ async fn rescan_workers_route(
 #[serde(rename_all = "camelCase")]
 struct WorkerVersionQuery {
     version: Option<String>,
+}
+
+async fn delete_worker_route(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(query): Query<WorkerVersionQuery>,
+) -> Response {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "workers:delete")?;
+        validate_admin_mutation_security("DELETE", &headers, &principal)?;
+        require_visible_worker(&state, &principal, &name, query.version.as_deref())?;
+        let deleted = delete_worker_deployment(&state.index, &name, query.version.as_deref())?;
+        let recycled = state
+            .pool
+            .recycle_worker(&name, query.version.as_deref())
+            .await;
+        Ok(json!({
+            "name": deleted.name,
+            "versions": deleted.versions,
+            "recycledProcesses": recycled,
+            "status": "deleted",
+        }))
+    }
+    .await;
+    match result {
+        Ok(result) => Json(result).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn promote_worker(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(query): Query<WorkerVersionQuery>,
+) -> Response {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "workers:promote")?;
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        require_visible_worker(&state, &principal, &name, None)?;
+        let eligible = public_versions(&state, &name)?;
+        let version = query.version.ok_or_else(|| {
+            CoreError::new(
+                "PROMOTE_VERSION_REQUIRED",
+                format!(
+                    "version query parameter is required; eligible public versions: {}",
+                    format_versions(&eligible)
+                ),
+            )
+        })?;
+        let worker = persist_default_version(&state.index, &name, &version)?;
+        Ok(json!({
+            "name": worker.name,
+            "version": worker.version,
+            "defaultVersion": worker.version,
+            "eligibleVersions": eligible,
+            "status": "promoted",
+        }))
+    }
+    .await;
+    match result {
+        Ok(result) => Json(result).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn invoke_worker_root(
+    State(state): State<OrchestratorState>,
+    Path(name): Path<String>,
+    req: Request<axum::body::Body>,
+) -> Response {
+    invoke_worker_route(state, name, "/".into(), req).await
+}
+
+async fn invoke_worker_path(
+    State(state): State<OrchestratorState>,
+    Path((name, path)): Path<(String, String)>,
+    req: Request<axum::body::Body>,
+) -> Response {
+    let path = format!("/{}", path.trim_start_matches('/'));
+    invoke_worker_route(state, name, path, req).await
+}
+
+async fn invoke_worker_route(
+    state: OrchestratorState,
+    name: String,
+    rewritten_path: String,
+    req: Request<axum::body::Body>,
+) -> Response {
+    let headers = req.headers().clone();
+    let request_id =
+        request_id_from_headers(&headers).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let result = async {
+        let principal = authenticate_invoke(&state, &headers).await?;
+        require_permission(&principal, "workers:invoke")?;
+        validate_admin_mutation_security(req.method().as_str(), &headers, &principal)?;
+        let version = invocation_worker_version(&headers)?;
+        require_visible_worker(&state, &principal, &name, version.as_deref())?;
+        crate::pipeline::invoke_worker(
+            &state,
+            req,
+            request_id,
+            &name,
+            version.as_deref(),
+            rewritten_path,
+            principal,
+        )
+        .await
+    }
+    .await;
+    match result {
+        Ok(response) => response,
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+fn invocation_worker_version(headers: &HeaderMap) -> Result<Option<String>, CoreError> {
+    let Some(value) = headers.get(ADMIN_WORKER_VERSION_HEADER) else {
+        return Ok(None);
+    };
+    let version = value
+        .to_str()
+        .map_err(|_| CoreError::new("BAD_REQUEST", "worker version header is not valid UTF-8"))?
+        .trim();
+    if version.is_empty() {
+        return Err(CoreError::new(
+            "BAD_REQUEST",
+            "worker version header must not be empty",
+        ));
+    }
+    Ok(Some(version.to_string()))
+}
+
+fn require_visible_worker(
+    state: &OrchestratorState,
+    principal: &ApiKeyPrincipal,
+    name: &str,
+    version: Option<&str>,
+) -> Result<(), CoreError> {
+    if state
+        .index
+        .admin_workers_for_principal(principal)
+        .into_iter()
+        .any(|worker| {
+            worker.name == name && version.is_none_or(|version| worker.version == version)
+        })
+    {
+        Ok(())
+    } else {
+        let target = version
+            .map(|version| format!("{name}@{version}"))
+            .unwrap_or_else(|| name.to_string());
+        Err(CoreError::new(
+            "NOT_FOUND",
+            format!("worker not found: {target}"),
+        ))
+    }
+}
+
+fn public_versions(state: &OrchestratorState, name: &str) -> Result<Vec<String>, CoreError> {
+    let workers = state
+        .index
+        .worker_refs()
+        .into_iter()
+        .filter(|worker| worker.name == name)
+        .collect::<Vec<_>>();
+    if workers.is_empty() {
+        return Err(CoreError::new(
+            "NOT_FOUND",
+            format!("worker not found: {name}"),
+        ));
+    }
+    let mut versions = workers
+        .into_iter()
+        .filter(|worker| worker.config.visibility == WorkerVisibility::Public)
+        .map(|worker| worker.version)
+        .collect::<Vec<_>>();
+    versions.sort();
+    Ok(versions)
+}
+
+fn format_versions(versions: &[String]) -> String {
+    if versions.is_empty() {
+        "(none)".into()
+    } else {
+        versions.join(", ")
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -747,9 +975,8 @@ async fn download_worker_files(
     }
 }
 
-// Drop-to-publish: extracts an uploaded zip (client-zipped files/folders) into
-// the version's directory at `path`, overwriting in place. Same gate as
-// install; `extract_zip` rejects zip-slip on every entry name.
+// Draft file upload: only internal versions are mutable. The changed worker is
+// recycled before the response so the next invocation observes the new files.
 async fn upload_worker_files(
     State(state): State<OrchestratorState>,
     headers: HeaderMap,
@@ -757,18 +984,27 @@ async fn upload_worker_files(
     Query(query): Query<WorkerFilesQuery>,
     body: Bytes,
 ) -> Response {
-    match authenticate(&state, &headers).await.and_then(|principal| {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
         require_permission(&principal, "workers:install")?;
         validate_admin_mutation_security("POST", &headers, &principal)?;
-        write_worker_files(
+        let payload = write_worker_files(
             &state,
             &principal,
             &name,
             query.version.as_deref(),
             query.path.as_deref(),
             &body,
-        )
-    }) {
+        )?;
+        let version = payload
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CoreError::new("DEPLOY_INTERNAL", "worker version is missing"))?;
+        state.pool.recycle_worker(&name, Some(version)).await;
+        Ok(payload)
+    }
+    .await;
+    match result {
         Ok(payload) => Json(payload).into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
@@ -825,6 +1061,20 @@ fn write_worker_files(
             "core worker files are read-only; publish a new core overlay version instead",
         ));
     }
+    let mutable = state.index.worker_refs().into_iter().any(|candidate| {
+        candidate.name == worker.name
+            && candidate.version == worker.version
+            && candidate.config.visibility == WorkerVisibility::Internal
+    });
+    if !mutable {
+        return Err(CoreError::new(
+            "DEPLOY_PUBLIC_VERSION_IMMUTABLE",
+            format!(
+                "public worker {}@{} is immutable; edit an internal draft or deploy a new version",
+                worker.name, worker.version
+            ),
+        ));
+    }
     let rel = sub_path.unwrap_or("").trim_matches('/');
     if rel.split('/').any(|segment| segment == "..") {
         return Err(CoreError::new(
@@ -832,6 +1082,15 @@ fn write_worker_files(
             "path escapes the worker directory",
         ));
     }
+    // Mesmo slot do install/delete, e ANTES de qualquer mutação (inclusive o
+    // create_dir_all de subpasta nova): um upload no meio da transação de um
+    // force mutaria o candidato e o rollback desfaria o upload em silêncio.
+    // Segura até o fim da escrita + bump.
+    let mutation_root = base
+        .parent()
+        .ok_or_else(|| CoreError::new("DEPLOY_INTERNAL", "worker directory has no parent"))?;
+    let _slot =
+        crate::deploy::claim_worker_mutation_slot(mutation_root, &worker.name, &worker.version)?;
     let requested = if rel.is_empty() {
         base.clone()
     } else {
@@ -841,7 +1100,14 @@ fn write_worker_files(
         .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot create path: {err}")))?;
     let dest = resolve_within(&base, rel)?;
     extract_zip(zip_bytes, &dest)?;
-    list_worker_files(state, principal, name, version, sub_path)
+    // Arquivos mudaram: a revisão CAS avança, senão um autosave force com a
+    // revisão antiga passaria por cima da edição sem conflito.
+    let revision = crate::deploy::bump_worker_revision(&base)?;
+    let mut payload = list_worker_files(state, principal, name, version, sub_path)?;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("revision".into(), serde_json::Value::String(revision));
+    }
+    Ok(payload)
 }
 
 // Read-only browse of a deployed version's directory. The dir comes from the
@@ -1049,6 +1315,28 @@ fn sanitize_download_filename(value: &str) -> String {
     }
 }
 
+async fn authenticate_invoke(
+    state: &OrchestratorState,
+    headers: &HeaderMap,
+) -> Result<ApiKeyPrincipal, CoreError> {
+    if state.auth.is_open() {
+        return Ok(root_principal());
+    }
+    let credential = headers.get(ADMIN_CONTROL_AUTH_HEADER).ok_or_else(|| {
+        CoreError::new(
+            "UNAUTHORIZED",
+            format!("missing {ADMIN_CONTROL_AUTH_HEADER}"),
+        )
+    })?;
+    let mut control_headers = HeaderMap::new();
+    control_headers.insert(AUTHORIZATION, credential.clone());
+    state
+        .auth
+        .authenticate_headers(&control_headers)
+        .await
+        .ok_or_else(|| CoreError::new("UNAUTHORIZED", "invalid control authorization"))
+}
+
 fn download_too_large() -> CoreError {
     CoreError::new(
         "DOWNLOAD_TOO_LARGE",
@@ -1099,16 +1387,29 @@ fn require_permission(principal: &ApiKeyPrincipal, permission: &str) -> Result<(
 
 fn map_error_status(err: &CoreError) -> StatusCode {
     match err.code.as_str() {
-        "BAD_REQUEST" | "VALIDATION_ERROR" | "DEPLOY_INVALID_PACKAGE" | "DEPLOY_PATH_DENIED" => {
-            StatusCode::BAD_REQUEST
-        }
+        "BAD_REQUEST"
+        | "VALIDATION_ERROR"
+        | "DEPLOY_INVALID_PACKAGE"
+        | "DEPLOY_PATH_DENIED"
+        | "DEPLOY_VISIBILITY_IMMUTABLE"
+        | "PROMOTE_VERSION_REQUIRED"
+        | "PROMOTE_INVALID_VERSION"
+        | "PROMOTE_INTERNAL_VERSION" => StatusCode::BAD_REQUEST,
         "UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
         "CSRF_DENIED" | "FORBIDDEN" => StatusCode::FORBIDDEN,
         "DOWNLOAD_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
         "COLLISION"
+        | "DEPLOY_REVISION_REQUIRED"
+        | "DEPLOY_IN_PROGRESS"
+        | "DEPLOY_REVISION_UNKNOWN"
+        | "DEPLOY_REVISION_STALE"
+        | "DEPLOY_FORCE_TARGET_REQUIRED"
+        | "CORE_BUNDLED_IMMUTABLE"
         | "CORE_DEFAULT_REQUIRED"
+        | "CORE_WORKER_IMMUTABLE"
         | "DEPLOY_TARGET_EXISTS"
+        | "DEPLOY_PUBLIC_VERSION_IMMUTABLE"
         | "DEPLOY_HEALTH_CHECK_FAILED"
         | "HEALTH_CHECK_NOT_CONFIGURED" => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,

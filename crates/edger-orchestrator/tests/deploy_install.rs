@@ -7,7 +7,9 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use edger_core::ExecutionKind;
+use edger_core::{
+    ExecutionKind, Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig,
+};
 use edger_isolation::{DenoFacade, DenoIsolate, WasmIsolate};
 use edger_orchestrator::{
     build_pipeline, load_manifests_from_dirs, load_manifests_from_roots, ControlAuth,
@@ -26,6 +28,165 @@ impl IsolateFactory for RuntimeFactory {
             }
             _ => Box::new(DenoIsolate::new(DenoFacade::new())),
         }
+    }
+}
+
+struct SnapshotFactory;
+
+impl IsolateFactory for SnapshotFactory {
+    fn create_isolate(&self, worker_ref: &edger_core::WorkerRef) -> Box<dyn Isolate> {
+        let marker = fs::read_to_string(worker_ref.dir.join("marker.txt"))
+            .unwrap_or_else(|_| "missing-marker".into());
+        Box::new(SnapshotIsolate { marker })
+    }
+}
+
+struct SnapshotIsolate {
+    marker: String,
+}
+
+#[async_trait::async_trait]
+impl Isolate for SnapshotIsolate {
+    async fn execute_fetch(
+        &mut self,
+        _req: SerializedRequest,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        Ok(SerializedResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: Some(bytes::Bytes::copy_from_slice(self.marker.as_bytes())),
+        })
+    }
+
+    async fn execute_routes(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+
+    async fn serve_static_spa(
+        &mut self,
+        _path: &str,
+        _base_href: Option<&str>,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(
+            SerializedRequest {
+                method: "GET".into(),
+                uri: "/".into(),
+                headers: Vec::new(),
+                body: None,
+                request_id: "snapshot".into(),
+                base_href: None,
+            },
+            config,
+        )
+        .await
+    }
+
+    async fn execute_wasm(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+}
+
+struct EchoFactory;
+
+impl IsolateFactory for EchoFactory {
+    fn create_isolate(&self, worker_ref: &edger_core::WorkerRef) -> Box<dyn Isolate> {
+        let marker = fs::read_to_string(worker_ref.dir.join("marker.txt"))
+            .unwrap_or_else(|_| "missing-marker".into());
+        Box::new(EchoIsolate { marker })
+    }
+}
+
+struct EchoIsolate {
+    marker: String,
+}
+
+#[async_trait::async_trait]
+impl Isolate for EchoIsolate {
+    async fn execute_fetch(
+        &mut self,
+        req: SerializedRequest,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        let body = req
+            .body
+            .as_deref()
+            .map(String::from_utf8_lossy)
+            .map(|body| body.into_owned())
+            .unwrap_or_default();
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "method": req.method,
+            "uri": req.uri,
+            "headers": req.headers,
+            "body": body,
+            "marker": self.marker,
+        }))
+        .unwrap();
+        Ok(SerializedResponse {
+            status: 207,
+            headers: vec![("x-worker-response".into(), "echo".into())],
+            body: Some(bytes::Bytes::from(payload)),
+        })
+    }
+
+    async fn execute_routes(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+
+    async fn serve_static_spa(
+        &mut self,
+        _path: &str,
+        _base_href: Option<&str>,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(
+            SerializedRequest {
+                method: "GET".into(),
+                uri: "/".into(),
+                headers: Vec::new(),
+                body: None,
+                request_id: "echo".into(),
+                base_href: None,
+            },
+            config,
+        )
+        .await
+    }
+
+    async fn execute_wasm(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+}
+
+fn state_with_factory(
+    root: std::path::PathBuf,
+    factory: Arc<dyn IsolateFactory>,
+) -> OrchestratorState {
+    let server = ServerState::new_unready();
+    let pool = WorkerPool::with_factory(PoolConfig::default(), factory);
+    server.mark_ready(pool.clone());
+    OrchestratorState {
+        server,
+        pool,
+        index: load_manifests_from_dirs(&[root]).unwrap(),
+        auth: ControlAuth::with_static_key("test-root"),
     }
 }
 
@@ -70,6 +231,33 @@ async fn send(
     send_with_package_name(app, method, uri, api_key, content_type, body, None).await
 }
 
+/// Install force com o CAS do draft: manda x-edger-expected-revision.
+async fn send_force_install(
+    app: Router,
+    body: Vec<u8>,
+    expected_revision: Option<&str>,
+) -> (StatusCode, serde_json::Value, String) {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/api/admin/workers/install?force=true")
+        .header("content-type", "application/zip")
+        .header("authorization", "Bearer test-root");
+    if let Some(revision) = expected_revision {
+        request = request.header("x-edger-expected-revision", revision);
+    }
+    let res = app
+        .oneshot(request.body(Body::from(body)).unwrap())
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json, text)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn send_with_package_name(
     app: Router,
@@ -85,7 +273,12 @@ async fn send_with_package_name(
         .uri(uri)
         .header("content-type", content_type);
     if let Some(key) = api_key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        let header = if uri.contains("/invoke") {
+            "x-edger-control-authorization"
+        } else {
+            "authorization"
+        };
+        request = request.header(header, format!("Bearer {key}"));
     }
     if let Some(package_name) = package_name {
         request = request.header("x-edger-package-name", package_name);
@@ -1098,4 +1291,657 @@ async fn worker_first_request_error_is_visible_via_admin_api() {
         json["summary"]["boom-app"]["latest"]["code"],
         "WORKER_ERROR"
     );
+}
+
+fn worker_zip(name: &str, version: &str, visibility: &str, marker: &str) -> Vec<u8> {
+    zip_package(&[
+        (
+            "manifest.yaml",
+            &format!(
+                "name: {name}\nversion: \"{version}\"\nvisibility: {visibility}\nentrypoint: index.ts\nkind: fetch\n"
+            ),
+        ),
+        ("index.ts", "Deno.serve(() => new Response('unused'));"),
+        ("marker.txt", marker),
+    ])
+}
+
+#[tokio::test]
+async fn force_install_replaces_internal_draft_and_rejects_public_release() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state_with_factory(root.path().to_path_buf(), Arc::new(SnapshotFactory));
+    let pool = state.pool.clone();
+    let app = build_pipeline(state);
+
+    let (status, install_json, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        worker_zip("live-draft", "0.0.0", "internal", "before"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    let revision = install_json["revision"].as_str().unwrap().to_string();
+    assert!(!revision.is_empty(), "install must return the CAS revision");
+    let (status, _, text) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/live-draft/invoke",
+        Some("test-root"),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(text, "before");
+    assert_eq!(pool.len(), 1, "first invocation should warm one process");
+
+    // Autosave stale (revisão inventada) é recusado ANTES do swap.
+    let (status, stale_json, _) = send_force_install(
+        app.clone(),
+        worker_zip("live-draft", "0.0.0", "internal", "after"),
+        Some("not-the-current-revision"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(stale_json["code"], "DEPLOY_REVISION_STALE");
+
+    // Force sem a revisão esperada não é CAS - recusado.
+    let (status, missing_json, _) = send_force_install(
+        app.clone(),
+        worker_zip("live-draft", "0.0.0", "internal", "after"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(missing_json["code"], "DEPLOY_REVISION_REQUIRED");
+
+    let (status, json, text) = send_force_install(
+        app.clone(),
+        worker_zip("live-draft", "0.0.0", "internal", "after"),
+        Some(&revision),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(json["name"], "live-draft");
+    let next_revision = json["revision"].as_str().unwrap();
+    assert_ne!(
+        next_revision, revision,
+        "a replaced draft must advance its revision"
+    );
+    let (status, _, text) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/live-draft/invoke",
+        Some("test-root"),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        text, "after",
+        "the warm draft isolate must be recycled after the atomic swap"
+    );
+
+    let (status, _, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        worker_zip("release-app", "1.0.0", "public", "release"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    let (status, json, _) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install?force=true",
+        Some("test-root"),
+        "application/zip",
+        worker_zip("release-app", "1.0.0", "public", "mutated"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json["code"], "DEPLOY_PUBLIC_VERSION_IMMUTABLE");
+
+    let (status, json, _) = send(
+        app,
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        worker_zip("live-draft", "0.0.0", "internal", "duplicate"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json["code"], "COLLISION");
+}
+
+/// O arquivo de revisão sozinho não é CAS: dois forces concorrentes podiam
+/// ler a revisão A antes de qualquer swap e AMBOS vencerem, com o código mais
+/// velho publicado por último. O lock por name@version serializa check→swap;
+/// aqui as duas requisições partem da MESMA revisão e exatamente uma entra.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_force_installs_with_same_revision_admit_exactly_one() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state_with_factory(root.path().to_path_buf(), Arc::new(SnapshotFactory));
+    let app = build_pipeline(state);
+
+    let (status, install_json, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        worker_zip("cas-draft", "0.0.0", "internal", "seed"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    let revision = install_json["revision"].as_str().unwrap().to_string();
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let mut tasks = Vec::new();
+    for marker in ["writer-a", "writer-b"] {
+        let app = app.clone();
+        let revision = revision.clone();
+        let barrier = barrier.clone();
+        tasks.push(tokio::spawn(async move {
+            barrier.wait().await;
+            send_force_install(
+                app,
+                worker_zip("cas-draft", "0.0.0", "internal", marker),
+                Some(&revision),
+            )
+            .await
+        }));
+    }
+
+    let mut ok = 0;
+    let mut conflicts = 0;
+    for task in tasks {
+        let (status, json, text) = task.await.unwrap();
+        match status {
+            StatusCode::OK => ok += 1,
+            StatusCode::CONFLICT => {
+                // O perdedor cai no slot (transação em andamento) ou, se
+                // chegou depois do commit, na revisão que já avançou.
+                let code = json["code"].as_str().unwrap_or_default().to_string();
+                assert!(
+                    code == "DEPLOY_REVISION_STALE" || code == "DEPLOY_IN_PROGRESS",
+                    "{text}"
+                );
+                conflicts += 1;
+            }
+            other => panic!("unexpected status {other}: {text}"),
+        }
+    }
+    assert_eq!(
+        (ok, conflicts),
+        (1, 1),
+        "exactly one writer may win the CAS"
+    );
+}
+
+/// A reserva precisa durar a TRANSAÇÃO inteira: req A troca o diretório e
+/// fica preso no release; req B não pode forçar por cima nesse meio-tempo,
+/// senão o ROLLBACK de A (release falhou) clobberaria o que B publicou.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn force_install_in_flight_blocks_second_writer_and_rollback_restores_draft() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state_with_factory(root.path().to_path_buf(), Arc::new(SnapshotFactory));
+    let app = build_pipeline(state);
+
+    let (status, install_json, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        worker_zip("slot-draft", "0.0.0", "internal", "seed"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    let revision = install_json["revision"].as_str().unwrap().to_string();
+
+    // Writer A: swap + release QUE FALHA, sinalizando a entrada com um marker
+    // no próprio diretório do worker - o teste sincroniza pelo marker, não
+    // por sleep cego, e o `sleep 1` só SEGURA a janela já comprovada.
+    let slow_failing = zip_package(&[
+        (
+            "manifest.yaml",
+            "name: slot-draft\nversion: \"0.0.0\"\nvisibility: internal\nentrypoint: index.ts\nkind: fetch\nrelease: \"touch .release-started && sleep 1 && false\"\n",
+        ),
+        ("index.ts", "Deno.serve(() => new Response('unused'));"),
+        ("marker.txt", "writer-a"),
+    ]);
+    let writer_a = tokio::spawn({
+        let app = app.clone();
+        let revision = revision.clone();
+        async move { send_force_install(app, slow_failing, Some(&revision)).await }
+    });
+
+    // Espera COMPROVADA de A dentro do release (marker no dir do worker, com
+    // timeout): num runner ocupado um sleep fixo deixaria B chegar primeiro
+    // e inverter a asserção. Só então B (force), DELETE e files entram - o
+    // slot recusa os três: delete "bem-sucedido" seria ressuscitado pelo
+    // rollback de A, e o upload mutaria o candidato de A.
+    let marker_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let started = std::fs::read_dir(root.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("slot-draft")
+            })
+            .any(|entry| entry.path().join(".release-started").exists());
+        if started {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < marker_deadline,
+            "writer A never reached its release command"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let (status, json, text) = send_force_install(
+        app.clone(),
+        worker_zip("slot-draft", "0.0.0", "internal", "writer-b"),
+        Some(&revision),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{text}");
+    assert_eq!(json["code"], "DEPLOY_IN_PROGRESS");
+    let (status, json, _) = send(
+        app.clone(),
+        "DELETE",
+        "/api/admin/workers/slot-draft?version=0.0.0",
+        Some("test-root"),
+        "application/json",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json["code"], "DEPLOY_IN_PROGRESS");
+    let (status, json, _) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/slot-draft/files?version=0.0.0",
+        Some("test-root"),
+        "application/zip",
+        zip_package(&[("marker.txt", "mid-flight-edit")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json["code"], "DEPLOY_IN_PROGRESS");
+    // Upload em SUBPASTA nova na mesma janela: além do 409, o diretório não
+    // pode ter sido criado - o claim vem antes de QUALQUER mutação.
+    let (status, json, _) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/slot-draft/files?version=0.0.0&path=nova-pasta",
+        Some("test-root"),
+        "application/zip",
+        zip_package(&[("f.txt", "x")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json["code"], "DEPLOY_IN_PROGRESS");
+    let leaked = std::fs::read_dir(root.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("slot-draft")
+        })
+        .any(|entry| entry.path().join("nova-pasta").exists());
+    assert!(!leaked, "409 must not leave the new subdirectory behind");
+
+    // A termina em falha de release -> rollback restaura o SEED do draft.
+    let (status, _, _) = writer_a.await.unwrap();
+    assert_ne!(status, StatusCode::OK, "writer A release must fail");
+    let (status, _, text) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/slot-draft/invoke",
+        Some("test-root"),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(text, "seed", "rollback must restore the pre-force draft");
+
+    // Upload de files avança a revisão CAS: o force com a revisão ANTIGA vira
+    // stale, e só a revisão devolvida pelo upload entra.
+    let (status, files_json, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/slot-draft/files?version=0.0.0",
+        Some("test-root"),
+        "application/zip",
+        zip_package(&[("marker.txt", "edited")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let bumped = files_json["revision"].as_str().unwrap().to_string();
+    assert_ne!(
+        bumped, revision,
+        "file upload must advance the CAS revision"
+    );
+
+    let (status, json, _) = send_force_install(
+        app.clone(),
+        worker_zip("slot-draft", "0.0.0", "internal", "writer-b"),
+        Some(&revision),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json["code"], "DEPLOY_REVISION_STALE");
+
+    let (status, json, text) = send_force_install(
+        app,
+        worker_zip("slot-draft", "0.0.0", "internal", "writer-b"),
+        Some(&bumped),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(json["name"], "slot-draft");
+}
+
+#[tokio::test]
+async fn delete_worker_removes_exact_or_all_versions_from_disk_index_and_pool() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state_with_factory(root.path().to_path_buf(), Arc::new(SnapshotFactory));
+    let pool = state.pool.clone();
+    let app = build_pipeline(state);
+
+    for (version, marker) in [("1.0.0", "one"), ("2.0.0", "two")] {
+        let (status, _, text) = send(
+            app.clone(),
+            "POST",
+            "/api/admin/workers/install",
+            Some("test-root"),
+            "application/zip",
+            worker_zip("remove-app", version, "public", marker),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{text}");
+    }
+    assert_eq!(
+        body_of(app.clone(), "/remove-app").await,
+        (StatusCode::OK, "two".into())
+    );
+    assert_eq!(pool.len(), 1);
+
+    let (status, json, text) = send(
+        app.clone(),
+        "DELETE",
+        "/api/admin/workers/remove-app?version=2.0.0",
+        Some("test-root"),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(json["versions"], serde_json::json!(["2.0.0"]));
+    assert!(!root.path().join("remove-app@2.0.0").exists());
+    assert_eq!(
+        body_of(app.clone(), "/remove-app").await,
+        (StatusCode::OK, "one".into())
+    );
+
+    let (status, json, text) = send(
+        app.clone(),
+        "DELETE",
+        "/api/admin/workers/remove-app",
+        Some("test-root"),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(json["versions"], serde_json::json!(["1.0.0"]));
+    assert!(!root.path().join("remove-app").exists());
+    assert_eq!(pool.len(), 0);
+    assert_eq!(
+        body_of(app.clone(), "/remove-app").await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    let (status, json, _) = send(
+        app,
+        "DELETE",
+        "/api/admin/workers/remove-app",
+        Some("test-root"),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json["code"], "NOT_FOUND");
+}
+
+#[tokio::test]
+async fn internal_draft_is_private_invokable_and_never_promotable() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state_with_factory(root.path().to_path_buf(), Arc::new(EchoFactory));
+    let app = build_pipeline(state);
+
+    for (version, visibility, marker) in [
+        ("1.0.0", "public", "public-one"),
+        ("2.0.0", "public", "public-two"),
+        ("3.0.0", "internal", "draft-three"),
+    ] {
+        let (status, json, text) = send(
+            app.clone(),
+            "POST",
+            "/api/admin/workers/install",
+            Some("test-root"),
+            "application/zip",
+            worker_zip("studio-app", version, visibility, marker),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{text}");
+        assert_eq!(json["visibility"], visibility);
+    }
+
+    let (status, inventory, text) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers",
+        Some("test-root"),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let visibilities = inventory["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|worker| worker["name"] == "studio-app")
+        .map(|worker| worker["visibility"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(visibilities, vec!["public", "public", "internal"]);
+
+    let (status, body) = body_of(app.clone(), "/studio-app").await;
+    assert_eq!(status, StatusCode::MULTI_STATUS);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["marker"],
+        "public-two",
+        "an internal draft must not shadow the latest public release"
+    );
+    assert_eq!(
+        body_of(app.clone(), "/studio-app@3.0.0").await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    let forged = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/studio-app@3.0.0")
+                .header("x-edger-internal", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(forged.status(), StatusCode::NOT_FOUND);
+
+    let (status, json, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/studio-app/promote?version=3.0.0",
+        Some("test-root"),
+        "application/json",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert_eq!(json["code"], "PROMOTE_INTERNAL_VERSION");
+    assert!(json["message"].as_str().unwrap().contains("1.0.0, 2.0.0"));
+
+    let (status, json, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/studio-app/promote?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(json["defaultVersion"], "1.0.0");
+    let (_, body) = body_of(app.clone(), "/studio-app").await;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["marker"],
+        "public-one"
+    );
+    let (_, body) = body_of(app.clone(), "/studio-app@2.0.0").await;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["marker"],
+        "public-two",
+        "promote must not disable immutable pinned releases"
+    );
+
+    let restarted = build_pipeline(state_with_factory(
+        root.path().to_path_buf(),
+        Arc::new(EchoFactory),
+    ));
+    let (_, body) = body_of(restarted, "/studio-app").await;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["marker"],
+        "public-one",
+        "the promoted default must survive rebuilding the manifest index"
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/workers/studio-app/invoke/probe?version=abc&q=7")
+                .header("x-edger-control-authorization", "Bearer test-root")
+                .header("authorization", "Bearer app-token")
+                .header("x-api-key", "app-key")
+                .header("content-type", "text/plain")
+                .header("x-client", "studio")
+                .header("x-edger-worker-version", "3.0.0")
+                .body(Body::from("payload"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::MULTI_STATUS);
+    assert_eq!(response.headers()["x-worker-response"], "echo");
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let echo: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(echo["marker"], "draft-three");
+    assert_eq!(echo["method"], "POST");
+    assert_eq!(echo["uri"], "/probe?version=abc&q=7");
+    assert_eq!(echo["body"], "payload");
+    let headers = echo["headers"].as_array().unwrap();
+    assert!(headers
+        .iter()
+        .any(|header| { header[0] == "x-client" && header[1] == "studio" }));
+    assert!(headers
+        .iter()
+        .any(|header| { header[0] == "authorization" && header[1] == "Bearer app-token" }));
+    assert!(headers
+        .iter()
+        .any(|header| header[0] == "x-api-key" && header[1] == "app-key"));
+    assert!(headers.iter().all(|header| {
+        header[0] != "x-edger-control-authorization"
+            && header[0] != "x-edger-worker-version"
+            && header[0] != "x-edger-internal"
+            && header[1] != "Bearer test-root"
+            && header[1] != "test-root"
+    }));
+
+    let (status, json, _) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/studio-app/files?version=1.0.0",
+        Some("test-root"),
+        "application/zip",
+        zip_package(&[("marker.txt", "mutated-release")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json["code"], "DEPLOY_PUBLIC_VERSION_IMMUTABLE");
+
+    let (status, _, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/studio-app/files?version=3.0.0",
+        Some("test-root"),
+        "application/zip",
+        zip_package(&[("marker.txt", "edited-draft")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/admin/workers/studio-app/invoke")
+                .header("x-edger-control-authorization", "Bearer test-root")
+                .header("x-edger-worker-version", "3.0.0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::MULTI_STATUS);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["marker"], "edited-draft");
+
+    let (status, json, _) = send(
+        app,
+        "POST",
+        "/api/admin/workers/install?force=true",
+        Some("test-root"),
+        "application/zip",
+        worker_zip("studio-app", "3.0.0", "public", "visibility-flip"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["code"], "DEPLOY_VISIBILITY_IMMUTABLE");
 }

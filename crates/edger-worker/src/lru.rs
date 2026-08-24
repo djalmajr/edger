@@ -330,6 +330,24 @@ impl WorkerLru {
         }
     }
 
+    pub fn remove_worker_groups(
+        &self,
+        name: &str,
+        version: Option<&str>,
+    ) -> Vec<(WorkerCacheKey, Arc<WorkerGroup>)> {
+        let mut cache = self.inner.lock().expect("lru lock");
+        let keys = cache
+            .iter()
+            .filter(|(key, _)| {
+                key.name == name && version.is_none_or(|version| key.version == version)
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .filter_map(|key| cache.pop(&key).map(|group| (key, group)))
+            .collect()
+    }
+
     pub fn groups_snapshot(&self) -> Vec<Arc<WorkerGroup>> {
         self.inner
             .lock()

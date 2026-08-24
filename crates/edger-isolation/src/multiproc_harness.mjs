@@ -454,8 +454,19 @@ function makeRoutesHandler(routes, fallback) {
       return new Response("route not found", { status: 404 });
     }
     if (target && typeof target === "object" && !(target instanceof Response)) {
-      target = target[request.method.toUpperCase()];
-      if (target === undefined) return new Response("method not allowed", { status: 405 });
+      const methodMap = target;
+      target = methodMap[request.method.toUpperCase()];
+      if (target === undefined) {
+        const allowed = Object.entries(methodMap)
+          .filter(([, handler]) =>
+            typeof handler === "function" || handler instanceof Response
+          )
+          .map(([method]) => method.toUpperCase())
+          .sort()
+          .join(", ");
+        const headers = allowed ? { Allow: allowed } : undefined;
+        return new Response("method not allowed", { status: 405, headers });
+      }
     }
     if (target instanceof Response) return target.clone();
     if (typeof target !== "function") {

@@ -8,7 +8,7 @@
 //! - `/name`, `/name@ver`, `/@scope/name`, `/@scope/name@ver` -> `Worker`
 //! - `/` or unknown path -> `HomepageFallback` when configured
 
-use edger_core::{CoreError, ExecutionKind, WorkerRef};
+use edger_core::{CoreError, ExecutionKind, WorkerRef, WorkerVisibility};
 
 use crate::manifest_index_stub::ManifestIndex;
 
@@ -144,8 +144,19 @@ fn reserved_kind(path: &str) -> Option<ReservedPath> {
 /// Resolve an HTTP path against manifests and Buntime routing rules.
 pub fn resolve_route(
     path: &str,
+    base_href: Option<&str>,
+    index: &ManifestIndex,
+) -> Result<ResolvedRoute, CoreError> {
+    resolve_route_with_internal(path, base_href, index, false)
+}
+
+/// Resolve a path while optionally admitting workers marked for trusted
+/// internal/control-plane dispatch only.
+pub(crate) fn resolve_route_with_internal(
+    path: &str,
     _base_href: Option<&str>,
     index: &ManifestIndex,
+    allow_internal: bool,
 ) -> Result<ResolvedRoute, CoreError> {
     let normalized = normalize_path(path);
 
@@ -154,6 +165,8 @@ pub fn resolve_route(
     }
 
     if let Some((plugin, remainder)) = index.plugin_for_path(&normalized) {
+        let worker = index.resolve_plugin_worker(&plugin)?;
+        require_data_plane_visibility(&worker, allow_internal)?;
         return Ok(ResolvedRoute::PluginBase {
             plugin: Box::new(plugin),
             remainder,
@@ -162,7 +175,12 @@ pub fn resolve_route(
 
     match PathParser::parse(&normalized) {
         Ok(parsed) => {
-            let worker = index.resolve_worker(&parsed.name, parsed.version.as_deref())?;
+            let worker = if allow_internal {
+                index.resolve_worker(&parsed.name, parsed.version.as_deref())?
+            } else {
+                index.resolve_public_worker(&parsed.name, parsed.version.as_deref())?
+            };
+            require_data_plane_visibility(&worker, allow_internal)?;
             Ok(ResolvedRoute::Worker {
                 kind_hint: worker.kind.clone(),
                 rewritten_path: parsed.remainder,
@@ -170,7 +188,10 @@ pub fn resolve_route(
             })
         }
         Err(err) if err.code == "HOMEPAGE" => match index.homepage() {
-            Some(worker) => Ok(ResolvedRoute::HomepageFallback { worker }),
+            Some(worker) => {
+                require_data_plane_visibility(&worker, allow_internal)?;
+                Ok(ResolvedRoute::HomepageFallback { worker })
+            }
             None => Err(CoreError::new("NOT_FOUND", "no homepage configured")),
         },
         Err(err) => Err(err),
@@ -182,6 +203,15 @@ pub fn resolve_host_route(
     path: &str,
     host: Option<&str>,
     index: &ManifestIndex,
+) -> Result<Option<ResolvedRoute>, CoreError> {
+    resolve_host_route_with_internal(path, host, index, false)
+}
+
+pub(crate) fn resolve_host_route_with_internal(
+    path: &str,
+    host: Option<&str>,
+    index: &ManifestIndex,
+    allow_internal: bool,
 ) -> Result<Option<ResolvedRoute>, CoreError> {
     let normalized = normalize_path(path);
 
@@ -195,12 +225,27 @@ pub fn resolve_host_route(
     let Some(worker) = index.worker_for_host(host) else {
         return Ok(None);
     };
+    require_data_plane_visibility(&worker, allow_internal)?;
 
     Ok(Some(ResolvedRoute::Worker {
         kind_hint: worker.kind.clone(),
         rewritten_path: normalized,
         worker,
     }))
+}
+
+fn require_data_plane_visibility(
+    worker: &WorkerRef,
+    allow_internal: bool,
+) -> Result<(), CoreError> {
+    if allow_internal || worker.config.visibility == WorkerVisibility::Public {
+        Ok(())
+    } else {
+        Err(CoreError::new(
+            "NOT_FOUND",
+            format!("worker not found: {}", worker.name),
+        ))
+    }
 }
 
 #[cfg(test)]

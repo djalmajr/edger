@@ -1,21 +1,25 @@
 //! Worker deploy: zip install + disk/index rescan (Epic 14, stories 14.01/14.02).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use edger_core::{
     create_worker_ref, principal_can_access_optional_namespace, ApiKeyPrincipal, CoreError,
-    WorkerConfig, WorkerManifest, WorkerOrigin, WorkerRef,
+    WorkerConfig, WorkerManifest, WorkerOrigin, WorkerRef, WorkerVisibility,
 };
 use edger_worker::{WorkerError, WorkerPool};
 use serde::Serialize;
 
 use crate::manifest_index_stub::ManifestIndex;
-use crate::manifest_loader::{load_worker_manifest_with_name_fallback, scan_worker_manifests};
+use crate::manifest_loader::{
+    clear_persisted_default_version, load_worker_manifest_with_name_fallback,
+    reload_persisted_default_versions, scan_worker_manifests,
+};
 use crate::observability::{
     OperationalEventInput, OperationalEventLevel, OperationalEventSource, OperationalStore,
 };
@@ -26,12 +30,89 @@ use crate::observability::{
 pub const MAX_DEPLOY_PACKAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DEPLOY_EXPANDED_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_DEPLOY_ENTRIES: usize = 50_000;
+/// Revision marker persisted INSIDE the worker version directory, so it
+/// travels with the atomic swap, survives restart/rescan on the PVC and needs
+/// no side registry. It is the compare side of the draft CAS below.
+pub(crate) const REVISION_FILE: &str = ".edger-revision";
+
+/// Current revision of an installed worker version, if it was installed by a
+/// revision-aware deploy. Missing/empty means the target predates tracking.
+pub(crate) fn worker_revision(dir: &Path) -> Option<String> {
+    fs::read_to_string(dir.join(REVISION_FILE))
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|revision| !revision.is_empty())
+}
+
+/// Marca `name@version` como "mutação em andamento" durante a TRANSAÇÃO
+/// inteira da operação que mexe no diretório do worker — install
+/// (check→swap→release→health→commit/rollback), delete e upload de files.
+/// O arquivo de revisão sozinho não é CAS, e um lock só até o swap também
+/// não basta: o req A pode trocar o diretório, liberar, e — enquanto roda
+/// release/health — um DELETE responder sucesso ou um upload mutar o
+/// candidato; o ROLLBACK de A então ressuscitaria/clobberia o resultado.
+/// O slot vive na operação (RAII) e cobre todos os desfechos.
+#[derive(Debug)]
+pub(crate) struct WorkerMutationSlot {
+    key: String,
+}
+
+static MUTATIONS_IN_FLIGHT: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+pub(crate) fn claim_worker_mutation_slot(
+    root: &Path,
+    name: &str,
+    version: &str,
+) -> Result<WorkerMutationSlot, CoreError> {
+    // O root entra na chave (stores diferentes não competem) e é
+    // CANONICALIZADO: quem chama ora traz o caminho cru do install_root, ora
+    // o canônico do resolve — em macOS /var e /private/var são o mesmo lugar
+    // e chaves distintas quebrariam a exclusão mútua.
+    let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let key = format!("{}|{name}@{version}", root.display());
+    let mut in_flight = MUTATIONS_IN_FLIGHT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !in_flight.insert(key.clone()) {
+        return Err(CoreError::new(
+            "DEPLOY_IN_PROGRESS",
+            format!("another mutation of {name}@{version} is in flight; retry after it settles"),
+        ));
+    }
+    Ok(WorkerMutationSlot { key })
+}
+
+impl Drop for WorkerMutationSlot {
+    fn drop(&mut self) {
+        MUTATIONS_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.key);
+    }
+}
+
+/// Avança a revisão CAS de um diretório de worker já instalado (upload de
+/// files): sem o bump, um force com a revisão antiga passaria por cima da
+/// edição sem conflito. Escrita temp+rename, como o resto da persistência.
+pub(crate) fn bump_worker_revision(dir: &Path) -> Result<String, CoreError> {
+    let revision = uuid::Uuid::new_v4().to_string();
+    let temporary = dir.join(format!(".edger-revision-{}.tmp", uuid::Uuid::new_v4()));
+    fs::write(&temporary, format!("{revision}\n"))
+        .map_err(|err| deploy_io(format!("failed to stage revision bump: {err}")))?;
+    fs::rename(&temporary, dir.join(REVISION_FILE)).map_err(|err| {
+        let _ = fs::remove_file(&temporary);
+        deploy_io(format!("failed to publish revision bump: {err}"))
+    })?;
+    Ok(revision)
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstalledWorker {
     pub name: String,
     pub version: String,
+    pub visibility: WorkerVisibility,
     pub url: String,
     pub kind: String,
     pub source: String,
@@ -40,6 +121,35 @@ pub struct InstalledWorker {
     pub health: String,
     pub activation: String,
     pub default_version: String,
+    pub revision: String,
+}
+
+#[derive(Debug)]
+pub struct InstallTransaction {
+    pub installed: InstalledWorker,
+    replacement: Option<ReplacementBackup>,
+    /// Mantém o name@version reservado até commit/rollback (RAII).
+    _slot: WorkerMutationSlot,
+}
+
+#[derive(Debug)]
+struct ReplacementBackup {
+    path: PathBuf,
+    manifest: WorkerManifest,
+    origin: WorkerOrigin,
+}
+
+impl InstallTransaction {
+    pub fn replaced_existing(&self) -> bool {
+        self.replacement.is_some()
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedWorker {
+    pub name: String,
+    pub versions: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,14 +161,16 @@ pub struct RescanReport {
     pub unchanged: usize,
 }
 
-/// Extract a zip package into the first worker root, validate it with the
-/// same rules as boot loading, move it atomically into place and index it.
+/// Extract a zip package into the configured worker root, validate it with the
+/// same rules as boot loading, then atomically install or replace it.
 pub fn install_worker_from_zip(
     index: &ManifestIndex,
     principal: &ApiKeyPrincipal,
     bytes: &[u8],
     package_name_hint: Option<&str>,
-) -> Result<InstalledWorker, CoreError> {
+    force: bool,
+    expected_revision: Option<&str>,
+) -> Result<InstallTransaction, CoreError> {
     let package_name_hint = package_name_hint.and_then(package_name_from_hint);
     let inspection = tempfile::Builder::new()
         .prefix(".edger-install-")
@@ -96,7 +208,6 @@ pub fn install_worker_from_zip(
         ));
     }
 
-    // Resolve canonical identity before committing anything.
     let worker = create_worker_ref(package_dir.clone(), manifest.clone())?;
     if !principal_can_access_optional_namespace(principal, worker.namespace.as_deref()) {
         return Err(CoreError::new(
@@ -108,37 +219,382 @@ pub fn install_worker_from_zip(
         ));
     }
 
-    let target = target_dir(&root, &worker.name, &worker.version)?;
-    fs::rename(&package_dir, &target)
-        .map_err(|err| deploy_io(format!("failed to move package into place: {err}")))?;
+    // Grava a revisão nova DENTRO do pacote antes do swap: ela viaja junto na
+    // troca atômica e passa a ser a verdade da versão instalada.
+    let revision = uuid::Uuid::new_v4().to_string();
+    fs::write(package_dir.join(REVISION_FILE), format!("{revision}\n"))
+        .map_err(|err| deploy_io(format!("failed to stamp package revision: {err}")))?;
 
-    // Every candidate stays unroutable until release and health gates finish.
-    // The manifest on disk is unchanged; this is a runtime promotion gate,
-    // not a mutation of the uploaded package.
-    manifest.enabled = Some(false);
-    let mut index = index.clone();
+    // Daqui até o swap/index é seção crítica por name@version: a comparação de
+    // revisão só vale se nenhum outro install do mesmo alvo entrelaçar — e a
+    // reserva precisa durar até o commit/rollback lá no handler (via RAII).
+    let slot = claim_worker_mutation_slot(&root, &worker.name, &worker.version)?;
+
+    let existing = index
+        .worker_refs()
+        .into_iter()
+        .find(|candidate| candidate.name == worker.name && candidate.version == worker.version);
+    if existing.is_some() && !force {
+        return Err(CoreError::new(
+            "COLLISION",
+            format!("duplicate worker {}@{}", worker.name, worker.version),
+        ));
+    }
+    if force && existing.is_none() {
+        return Err(CoreError::new(
+            "DEPLOY_FORCE_TARGET_REQUIRED",
+            format!(
+                "force install requires an existing internal worker {}@{}",
+                worker.name, worker.version
+            ),
+        ));
+    }
+
     let origin = if core {
         WorkerOrigin::CoreOverlay
     } else {
         WorkerOrigin::User
     };
-    if let Err(err) = index.insert_with_origin(target.clone(), manifest, origin) {
-        let _ = fs::remove_dir_all(&target);
-        return Err(err);
+    let mut replacement = None;
+    let target = if let Some(existing) = existing {
+        let info = index
+            .admin_workers()
+            .into_iter()
+            .find(|candidate| {
+                candidate.name == existing.name
+                    && candidate.version == existing.version
+                    && Path::new(&candidate.source) == existing.dir
+            })
+            .ok_or_else(|| {
+                CoreError::new("DEPLOY_INTERNAL", "replacement worker metadata is missing")
+            })?;
+        if info.origin == WorkerOrigin::CoreBundled {
+            return Err(CoreError::new(
+                "CORE_BUNDLED_IMMUTABLE",
+                format!(
+                    "bundled core worker {}@{} cannot be replaced",
+                    worker.name, worker.version
+                ),
+            ));
+        }
+        if existing.config.visibility != WorkerVisibility::Internal {
+            return Err(CoreError::new(
+                "DEPLOY_PUBLIC_VERSION_IMMUTABLE",
+                format!(
+                    "public worker {}@{} is immutable; install a new public version and promote it",
+                    worker.name, worker.version
+                ),
+            ));
+        }
+        if existing.config.visibility != worker.config.visibility {
+            return Err(CoreError::new(
+                "DEPLOY_VISIBILITY_IMMUTABLE",
+                format!(
+                    "worker {}@{} visibility cannot change during force install",
+                    worker.name, worker.version
+                ),
+            ));
+        }
+        // CAS do canal draft, DEPOIS das imutabilidades: só chega aqui alvo
+        // internal legítimo. Sem revisão esperada não é compare-and-swap, e
+        // dois autosaves concorrentes publicariam o mais velho por último.
+        let Some(expected) = expected_revision else {
+            return Err(CoreError::new(
+                "DEPLOY_REVISION_REQUIRED",
+                format!(
+                    "force install is a compare-and-swap: send x-edger-expected-revision; the current revision of {}@{} is {}",
+                    worker.name,
+                    worker.version,
+                    worker_revision(&existing.dir).unwrap_or_else(|| "unknown".into()),
+                ),
+            ));
+        };
+        let Some(current_revision) = worker_revision(&existing.dir) else {
+            return Err(CoreError::new(
+                "DEPLOY_REVISION_UNKNOWN",
+                format!(
+                    "worker {}@{} predates revision tracking; delete it and install the draft again",
+                    worker.name, worker.version
+                ),
+            ));
+        };
+        if expected != current_revision {
+            return Err(CoreError::new(
+                "DEPLOY_REVISION_STALE",
+                format!(
+                    "stale draft write for {}@{}: expected revision {expected}, current is {current_revision}",
+                    worker.name, worker.version
+                ),
+            ));
+        }
+        let target = existing.dir.clone();
+        if !target.starts_with(&root) {
+            return Err(CoreError::new(
+                "DEPLOY_TARGET_MISMATCH",
+                "replacement target is outside the configured worker root",
+            ));
+        }
+        let mut previous_manifest =
+            load_worker_manifest_with_name_fallback(&target, Some(&worker.name))?;
+        previous_manifest.enabled = Some(existing.config.enabled);
+        let backup = replacement_backup_path(&target)?;
+        fs::rename(&target, &backup)
+            .map_err(|err| deploy_io(format!("failed to stage current deployment: {err}")))?;
+        if let Err(error) = fs::rename(&package_dir, &target) {
+            let _ = fs::rename(&backup, &target);
+            return Err(deploy_io(format!(
+                "failed to swap replacement package into place: {error}"
+            )));
+        }
+        manifest.enabled = Some(false);
+        if let Err(error) = index.replace_with_origin(target.clone(), manifest.clone(), info.origin)
+        {
+            let _ = fs::remove_dir_all(&target);
+            let _ = fs::rename(&backup, &target);
+            return Err(error);
+        }
+        replacement = Some(ReplacementBackup {
+            path: backup,
+            manifest: previous_manifest,
+            origin: info.origin,
+        });
+        target
+    } else {
+        let target = target_dir(&root, &worker.name, &worker.version)?;
+        fs::rename(&package_dir, &target)
+            .map_err(|err| deploy_io(format!("failed to move package into place: {err}")))?;
+        manifest.enabled = Some(false);
+        let mut mutable_index = index.clone();
+        if let Err(error) =
+            mutable_index.insert_with_origin(target.clone(), manifest.clone(), origin)
+        {
+            let _ = fs::remove_dir_all(&target);
+            return Err(error);
+        }
+        target
+    };
+
+    Ok(InstallTransaction {
+        installed: InstalledWorker {
+            url: format!("/{}", worker.name),
+            kind: kind_label(&worker.kind),
+            visibility: worker.config.visibility,
+            name: worker.name,
+            version: worker.version,
+            source: target.display().to_string(),
+            origin,
+            release: "pending".into(),
+            health: "pending".into(),
+            activation: "indexed".into(),
+            default_version: String::new(),
+            revision,
+        },
+        replacement,
+        _slot: slot,
+    })
+}
+
+pub fn commit_install(transaction: InstallTransaction) -> Result<InstalledWorker, CoreError> {
+    if let Some(replacement) = &transaction.replacement {
+        fs::remove_dir_all(&replacement.path).map_err(|error| {
+            deploy_io(format!(
+                "failed to remove replacement backup {}: {error}",
+                replacement.path.display()
+            ))
+        })?;
+    }
+    Ok(transaction.installed)
+}
+
+pub fn rollback_install(
+    index: &ManifestIndex,
+    transaction: &InstallTransaction,
+) -> Result<(), CoreError> {
+    let target = PathBuf::from(&transaction.installed.source);
+    let Some(replacement) = &transaction.replacement else {
+        index.remove_worker(&transaction.installed.name, &transaction.installed.version)?;
+        fs::remove_dir_all(&target).map_err(|error| {
+            CoreError::new(
+                "DEPLOY_ROLLBACK_FAILED",
+                format!(
+                    "failed to remove rejected candidate {}@{} from {}: {error}",
+                    transaction.installed.name,
+                    transaction.installed.version,
+                    target.display()
+                ),
+            )
+        })?;
+        return Ok(());
+    };
+
+    let rejected = replacement_backup_path(&target)?;
+    fs::rename(&target, &rejected).map_err(|error| {
+        deploy_io(format!(
+            "failed to stage rejected replacement {}: {error}",
+            target.display()
+        ))
+    })?;
+    if let Err(error) = fs::rename(&replacement.path, &target) {
+        let _ = fs::rename(&rejected, &target);
+        return Err(deploy_io(format!(
+            "failed to restore previous deployment {}: {error}",
+            target.display()
+        )));
+    }
+    if let Err(error) = index.replace_with_origin(
+        target.clone(),
+        replacement.manifest.clone(),
+        replacement.origin,
+    ) {
+        let _ = fs::rename(&target, &replacement.path);
+        let _ = fs::rename(&rejected, &target);
+        return Err(error);
+    }
+    fs::remove_dir_all(&rejected).map_err(|error| {
+        deploy_io(format!(
+            "failed to remove rejected replacement {}: {error}",
+            rejected.display()
+        ))
+    })
+}
+
+pub fn delete_worker(
+    index: &ManifestIndex,
+    name: &str,
+    version: Option<&str>,
+) -> Result<DeletedWorker, CoreError> {
+    let mut candidates = index
+        .admin_workers()
+        .into_iter()
+        .filter(|worker| {
+            worker.name == name && version.is_none_or(|version| worker.version == version)
+        })
+        .collect::<Vec<_>>();
+    let promoted_version = index.default_version(name);
+    if candidates.is_empty() {
+        let target = version
+            .map(|version| format!("{name}@{version}"))
+            .unwrap_or_else(|| name.to_string());
+        return Err(CoreError::new(
+            "NOT_FOUND",
+            format!("worker not found: {target}"),
+        ));
+    }
+    if candidates
+        .iter()
+        .any(|worker| worker.origin != WorkerOrigin::User)
+    {
+        return Err(CoreError::new(
+            "CORE_WORKER_IMMUTABLE",
+            format!("core worker {name} cannot be deleted through the admin API"),
+        ));
+    }
+    candidates.sort_by(|left, right| left.version.cmp(&right.version));
+
+    struct Candidate {
+        info: edger_core::AdminWorkerInfo,
+        manifest: WorkerManifest,
+        source: PathBuf,
+        tombstone: PathBuf,
     }
 
-    Ok(InstalledWorker {
-        url: format!("/{}", worker.name),
-        kind: kind_label(&worker.kind),
-        name: worker.name,
-        version: worker.version,
-        source: target.display().to_string(),
-        origin,
-        release: "pending".into(),
-        health: "pending".into(),
-        activation: "indexed".into(),
-        default_version: String::new(),
+    let mut prepared = Vec::with_capacity(candidates.len());
+    for info in candidates {
+        let source = PathBuf::from(&info.source);
+        let mut manifest = load_worker_manifest_with_name_fallback(&source, Some(&info.name))?;
+        manifest.enabled = Some(info.status != "disabled");
+        prepared.push(Candidate {
+            tombstone: replacement_backup_path(&source)?,
+            info,
+            manifest,
+            source,
+        });
+    }
+
+    // Delete disputa o MESMO slot do install/files, por candidato e em ordem
+    // estável (já ordenado por versão acima): deletar no meio da transação de
+    // um force responderia sucesso e o rollback do force ressuscitaria o
+    // worker. Os slots vivem até o fim da função (RAII); falha em qualquer
+    // claim solta os anteriores.
+    let mut _slots = Vec::with_capacity(prepared.len());
+    for candidate in &prepared {
+        let root = candidate
+            .source
+            .parent()
+            .ok_or_else(|| CoreError::new("DEPLOY_INTERNAL", "worker directory has no parent"))?;
+        _slots.push(claim_worker_mutation_slot(
+            root,
+            &candidate.info.name,
+            &candidate.info.version,
+        )?);
+    }
+
+    for index in 0..prepared.len() {
+        if let Err(error) = fs::rename(&prepared[index].source, &prepared[index].tombstone) {
+            for candidate in prepared[..index].iter().rev() {
+                let _ = fs::rename(&candidate.tombstone, &candidate.source);
+            }
+            return Err(deploy_io(format!(
+                "failed to stage worker deletion {}: {error}",
+                prepared[index].source.display()
+            )));
+        }
+    }
+
+    for (removed_count, candidate) in prepared.iter().enumerate() {
+        if let Err(error) = index.remove_worker(&candidate.info.name, &candidate.info.version) {
+            for candidate in prepared.iter().rev() {
+                let _ = fs::rename(&candidate.tombstone, &candidate.source);
+            }
+            let mut mutable_index = index.clone();
+            for removed in &prepared[..removed_count] {
+                let _ = mutable_index.insert_with_origin(
+                    removed.source.clone(),
+                    removed.manifest.clone(),
+                    removed.info.origin,
+                );
+            }
+            return Err(error);
+        }
+    }
+
+    for candidate in &prepared {
+        fs::remove_dir_all(&candidate.tombstone).map_err(|error| {
+            deploy_io(format!(
+                "failed to remove deleted worker files {}: {error}",
+                candidate.tombstone.display()
+            ))
+        })?;
+    }
+    if let Some(promoted_version) = promoted_version {
+        if let Some(candidate) = prepared
+            .iter()
+            .find(|candidate| candidate.info.version == promoted_version)
+        {
+            clear_persisted_default_version(index, name, &candidate.source)?;
+        }
+    }
+    Ok(DeletedWorker {
+        name: name.to_string(),
+        versions: prepared
+            .iter()
+            .map(|candidate| candidate.info.version.clone())
+            .collect(),
     })
+}
+
+fn replacement_backup_path(target: &Path) -> Result<PathBuf, CoreError> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| deploy_io("worker target has no parent directory".into()))?;
+    let swap_root = parent.join(".edger-swaps");
+    fs::create_dir_all(&swap_root)
+        .map_err(|error| deploy_io(format!("failed to create swap directory: {error}")))?;
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("worker");
+    Ok(swap_root.join(format!("{name}-{}", uuid::Uuid::new_v4())))
 }
 
 /// Diff workers on disk against the index; optionally apply the difference.
@@ -187,6 +643,7 @@ pub fn rescan_workers(index: &ManifestIndex, dry_run: bool) -> Result<RescanRepo
                 .ok_or_else(|| CoreError::new("DEPLOY_INTERNAL", "malformed worker key"))?;
             index.remove_worker(name, version)?;
         }
+        reload_persisted_default_versions(&index);
     }
 
     Ok(RescanReport {

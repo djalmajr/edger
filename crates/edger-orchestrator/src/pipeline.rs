@@ -20,7 +20,9 @@ use crate::manifest_index_stub::ManifestIndex;
 use crate::metrics::{cron_metrics_prometheus, metrics_stats_response, pool_metrics_prometheus};
 use crate::observability::{OperationalEventInput, OperationalEventLevel, OperationalEventSource};
 use crate::operational_log::log_operational_error;
-use crate::router::{resolve_host_route, resolve_route, ReservedPath, ResolvedRoute};
+use crate::router::{
+    resolve_host_route_with_internal, resolve_route_with_internal, ReservedPath, ResolvedRoute,
+};
 use crate::server::{
     request_id_from_headers, request_id_middleware, request_metrics_middleware, ServerState,
 };
@@ -32,8 +34,12 @@ pub struct OrchestratorState {
     pub server: ServerState,
     pub pool: WorkerPool,
     pub index: ManifestIndex,
+
     pub auth: ControlAuth,
 }
+
+pub(crate) const ADMIN_WORKER_VERSION_HEADER: &str = "x-edger-worker-version";
+pub(crate) const ADMIN_CONTROL_AUTH_HEADER: &str = "x-edger-control-authorization";
 
 /// Build the full axum application (health + readiness + pipeline fallback).
 pub fn build_pipeline(state: OrchestratorState) -> Router {
@@ -132,15 +138,26 @@ async fn handle_request(
 ) -> Result<Response<Body>, CoreError> {
     let path = req.uri().path().to_string();
     tracing::debug!(request_id = %request_id, path = %path, method = %req.method(), "http request pipeline");
+    let allow_internal = if header_is_true(req.headers(), INTERNAL_REQUEST_HEADER) {
+        state
+            .auth
+            .authenticate_headers(req.headers())
+            .await
+            .is_some_and(|principal| principal.is_root)
+    } else {
+        false
+    };
     let host = req
         .headers()
         .get(header::HOST)
         .and_then(|value| value.to_str().ok());
-    if let Some(route) = resolve_host_route(&path, host, &state.index)? {
+    if let Some(route) =
+        resolve_host_route_with_internal(&path, host, &state.index, allow_internal)?
+    {
         return dispatch_resolved_route(state, req, request_id, &path, route).await;
     }
 
-    let route = resolve_route(&path, None, &state.index)?;
+    let route = resolve_route_with_internal(&path, None, &state.index, allow_internal)?;
 
     dispatch_resolved_route(state, req, request_id, &path, route).await
 }
@@ -220,6 +237,35 @@ struct DispatchParams {
     base_path: Option<String>,
 }
 
+pub(crate) async fn invoke_worker(
+    state: &OrchestratorState,
+    mut req: Request<Body>,
+    request_id: String,
+    name: &str,
+    version: Option<&str>,
+    rewritten_path: String,
+    principal: ApiKeyPrincipal,
+) -> Result<Response<Body>, CoreError> {
+    let worker = state.index.resolve_worker(name, version)?;
+    let kind_hint = worker.kind.clone();
+    req.headers_mut().remove(ADMIN_CONTROL_AUTH_HEADER);
+    req.headers_mut().remove(ADMIN_WORKER_VERSION_HEADER);
+    req.headers_mut().remove(INTERNAL_REQUEST_HEADER);
+    dispatch_worker(
+        state,
+        req,
+        DispatchParams {
+            request_id,
+            worker,
+            rewritten_path,
+            kind_hint: Some(kind_hint),
+            principal: Some(principal),
+            base_path: Some(format!("/{}", name.trim_end_matches('/'))),
+        },
+    )
+    .await
+}
+
 #[tracing::instrument(
     name = "worker.dispatch",
     skip_all,
@@ -243,7 +289,7 @@ async fn dispatch_worker(
         worker,
         rewritten_path,
         kind_hint,
-        principal: _principal,
+        principal,
         base_path,
     } = params;
 
@@ -267,11 +313,13 @@ async fn dispatch_worker(
         worker_namespace = worker.namespace.as_deref().unwrap_or(""),
         "worker dispatch"
     );
-    // Data plane is open, but the `x-edger-internal` marker (used by cron) must
-    // stay trustworthy: validate it against the root key so an external client
-    // cannot forge it. This authenticates ONLY to gate the internal header — it
-    // never blocks access to the worker.
-    let internal_principal = state.auth.authenticate_headers(req.headers()).await;
+    // Data plane is open, but the `x-edger-internal` marker (used by cron and
+    // authenticated control-plane invocation) must stay trustworthy. External
+    // callers can present the header only when their control credential is root.
+    let internal_principal = match principal {
+        Some(principal) => Some(principal),
+        None => state.auth.authenticate_headers(req.headers()).await,
+    };
     sanitize_internal_headers(&mut req, internal_principal.as_ref());
     let max_body_bytes = effective_max_body_size_bytes_usize(&worker.config);
     let mut serialized =

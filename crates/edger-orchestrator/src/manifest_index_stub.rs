@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 use edger_core::{
     create_worker_ref, principal_can_access_optional_namespace, AdminWorkerHealthCheckInfo,
     AdminWorkerInfo, ApiKeyPrincipal, CoreError, CronJob, WorkerHealthCheckMode, WorkerManifest,
-    WorkerOrigin, WorkerRef,
+    WorkerOrigin, WorkerRef, WorkerVisibility,
 };
 
 use crate::router::PluginRef;
@@ -30,6 +30,7 @@ pub struct ManifestIndex {
 #[derive(Clone, Debug, Default)]
 struct ManifestIndexState {
     entries: HashMap<String, Vec<ManifestEntry>>,
+    default_versions: HashMap<String, String>,
     host_routes: HashMap<String, WorkerRef>,
     plugins: Vec<PluginRef>,
     homepage: Option<WorkerRef>,
@@ -119,6 +120,81 @@ impl ManifestIndex {
         Ok(())
     }
 
+    /// Atomically replace the indexed manifest for one existing version while
+    /// preserving its explicit default-version pointer.
+    pub fn replace_with_origin(
+        &self,
+        dir: PathBuf,
+        manifest: WorkerManifest,
+        origin: WorkerOrigin,
+    ) -> Result<ManifestEntry, CoreError> {
+        let worker = create_worker_ref(dir, manifest.clone())?;
+        validate_origin_identity(&worker.name, manifest.base.as_deref(), origin)?;
+        let key = worker.name.clone();
+        let host_aliases = normalize_host_aliases(&manifest.hosts)?;
+        let plugin_base = manifest.base.as_deref().and_then(normalize_base);
+        let mut state = self.inner.write().map_err(|_| lock_err())?;
+        let (position, previous) = {
+            let bucket = state
+                .entries
+                .get(&key)
+                .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {key}")))?;
+            let position = bucket
+                .iter()
+                .position(|entry| entry.worker.version == worker.version)
+                .ok_or_else(|| {
+                    CoreError::new(
+                        "NOT_FOUND",
+                        format!("worker {}@{} not found", worker.name, worker.version),
+                    )
+                })?;
+            (position, bucket[position].clone())
+        };
+        if previous.origin == WorkerOrigin::CoreBundled {
+            return Err(CoreError::new(
+                "CORE_BUNDLED_IMMUTABLE",
+                format!(
+                    "bundled core worker {}@{} cannot be replaced",
+                    worker.name, worker.version
+                ),
+            ));
+        }
+        if previous.origin != origin || previous.worker.dir != worker.dir {
+            return Err(CoreError::new(
+                "DEPLOY_TARGET_MISMATCH",
+                format!(
+                    "replacement target for {}@{} does not match the indexed deployment",
+                    worker.name, worker.version
+                ),
+            ));
+        }
+        for host in &host_aliases {
+            if state.host_routes.get(host).is_some_and(|existing| {
+                existing.name != previous.worker.name
+                    || existing.version != previous.worker.version
+                    || existing.dir != previous.worker.dir
+            }) {
+                return Err(CoreError::new(
+                    "COLLISION",
+                    format!("duplicate host route: {host}"),
+                ));
+            }
+        }
+
+        unregister_entry_routes(&mut state, &previous);
+        let replacement = ManifestEntry {
+            worker,
+            plugin_base,
+            origin,
+        };
+        state
+            .entries
+            .get_mut(&key)
+            .expect("replacement bucket exists")[position] = replacement.clone();
+        register_entry_routes(&mut state, &replacement, &manifest, host_aliases);
+        Ok(previous)
+    }
+
     pub fn resolve_worker(
         &self,
         name: &str,
@@ -140,15 +216,96 @@ impl ManifestIndex {
             ));
         }
 
-        let resolved_version = resolve_semver(
-            enabled.iter().map(|e| e.worker.version.as_str()).collect(),
-            version,
-        )?;
+        let resolved_version = match version {
+            Some(version) => resolve_semver(
+                enabled
+                    .iter()
+                    .map(|entry| entry.worker.version.as_str())
+                    .collect(),
+                Some(version),
+            )?,
+            None => state
+                .default_versions
+                .get(name)
+                .filter(|version| {
+                    enabled
+                        .iter()
+                        .any(|entry| entry.worker.version == version.as_str())
+                })
+                .cloned()
+                .unwrap_or(resolve_semver(
+                    enabled
+                        .iter()
+                        .map(|entry| entry.worker.version.as_str())
+                        .collect(),
+                    None,
+                )?),
+        };
 
         enabled
             .iter()
-            .find(|e| e.worker.version == resolved_version)
-            .map(|e| e.worker.clone())
+            .find(|entry| entry.worker.version == resolved_version)
+            .map(|entry| entry.worker.clone())
+            .ok_or_else(|| {
+                CoreError::new(
+                    "NOT_FOUND",
+                    format!("worker {name}@{resolved_version} not found"),
+                )
+            })
+    }
+
+    pub fn resolve_public_worker(
+        &self,
+        name: &str,
+        version: Option<&str>,
+    ) -> Result<WorkerRef, CoreError> {
+        let state = self.inner.read().map_err(|_| lock_err())?;
+        let bucket = state
+            .entries
+            .get(name)
+            .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
+        let enabled = bucket
+            .iter()
+            .filter(|entry| {
+                entry.worker.config.enabled
+                    && entry.worker.config.visibility == WorkerVisibility::Public
+            })
+            .collect::<Vec<_>>();
+        if enabled.is_empty() {
+            return Err(CoreError::new(
+                "NOT_FOUND",
+                format!("worker not found: {name}"),
+            ));
+        }
+        let resolved_version = match version {
+            Some(version) => resolve_semver(
+                enabled
+                    .iter()
+                    .map(|entry| entry.worker.version.as_str())
+                    .collect(),
+                Some(version),
+            )?,
+            None => state
+                .default_versions
+                .get(name)
+                .filter(|version| {
+                    enabled
+                        .iter()
+                        .any(|entry| entry.worker.version == version.as_str())
+                })
+                .cloned()
+                .unwrap_or(resolve_semver(
+                    enabled
+                        .iter()
+                        .map(|entry| entry.worker.version.as_str())
+                        .collect(),
+                    None,
+                )?),
+        };
+        enabled
+            .iter()
+            .find(|entry| entry.worker.version == resolved_version)
+            .map(|entry| entry.worker.clone())
             .ok_or_else(|| {
                 CoreError::new(
                     "NOT_FOUND",
@@ -376,6 +533,13 @@ impl ManifestIndex {
         if bucket.is_empty() {
             state.entries.remove(name);
         }
+        if state
+            .default_versions
+            .get(name)
+            .is_some_and(|default| default == version)
+        {
+            state.default_versions.remove(name);
+        }
         let removed_dir = removed.worker.dir.clone();
         state.host_routes.retain(|_, worker| {
             !(worker.name == name && worker.version == version && worker.dir == removed_dir)
@@ -443,17 +607,159 @@ impl ManifestIndex {
                 entry.worker.config.enabled = entry.worker.version == target_version;
             }
         }
-        let entry = bucket
-            .iter_mut()
-            .find(|entry| entry.worker.version == target_version)
-            .ok_or_else(|| {
-                CoreError::new(
-                    "NOT_FOUND",
-                    format!("worker {name}@{target_version} not found"),
-                )
-            })?;
-        entry.worker.config.enabled = enabled;
-        Ok(admin_worker_info(entry))
+        let info = {
+            let entry = bucket
+                .iter_mut()
+                .find(|entry| entry.worker.version == target_version)
+                .ok_or_else(|| {
+                    CoreError::new(
+                        "NOT_FOUND",
+                        format!("worker {name}@{target_version} not found"),
+                    )
+                })?;
+            entry.worker.config.enabled = enabled;
+            admin_worker_info(entry)
+        };
+        if !enabled
+            && state
+                .default_versions
+                .get(name)
+                .is_some_and(|default| default == &target_version)
+        {
+            state.default_versions.remove(name);
+        }
+        Ok(info)
+    }
+
+    pub fn validate_promotion(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<AdminWorkerInfo, CoreError> {
+        let state = self.inner.read().map_err(|_| lock_err())?;
+        let bucket = state
+            .entries
+            .get(name)
+            .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
+        let position = validate_promotion_entry(bucket, name, version)?;
+        Ok(admin_worker_info(&bucket[position]))
+    }
+
+    /// Select the public version served by an unversioned worker route.
+    pub fn promote_worker(&self, name: &str, version: &str) -> Result<AdminWorkerInfo, CoreError> {
+        let mut state = self.inner.write().map_err(|_| lock_err())?;
+        let bucket = state
+            .entries
+            .get_mut(name)
+            .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
+        let position = validate_promotion_entry(bucket, name, version)?;
+        bucket[position].worker.config.enabled = true;
+        let info = admin_worker_info(&bucket[position]);
+        state
+            .default_versions
+            .insert(name.to_string(), version.to_string());
+        Ok(info)
+    }
+
+    pub fn default_version(&self, name: &str) -> Option<String> {
+        self.inner
+            .read()
+            .ok()
+            .and_then(|state| state.default_versions.get(name).cloned())
+    }
+
+    pub fn clear_default_versions(&self) {
+        if let Ok(mut state) = self.inner.write() {
+            state.default_versions.clear();
+        }
+    }
+}
+
+fn validate_promotion_entry(
+    bucket: &[ManifestEntry],
+    name: &str,
+    version: &str,
+) -> Result<usize, CoreError> {
+    let mut eligible = bucket
+        .iter()
+        .filter(|entry| entry.worker.config.visibility == WorkerVisibility::Public)
+        .map(|entry| entry.worker.version.clone())
+        .collect::<Vec<_>>();
+    eligible.sort();
+    let eligible_text = if eligible.is_empty() {
+        "(none)".to_string()
+    } else {
+        eligible.join(", ")
+    };
+    let Some(position) = bucket
+        .iter()
+        .position(|entry| entry.worker.version == version)
+    else {
+        return Err(CoreError::new(
+            "PROMOTE_INVALID_VERSION",
+            format!(
+                "worker {name}@{version} does not exist; eligible public versions: {eligible_text}"
+            ),
+        ));
+    };
+    if bucket[position].worker.config.visibility == WorkerVisibility::Internal {
+        return Err(CoreError::new(
+            "PROMOTE_INTERNAL_VERSION",
+            format!(
+                "worker {name}@{version} is internal and cannot be promoted; eligible public versions: {eligible_text}"
+            ),
+        ));
+    }
+    Ok(position)
+}
+
+fn unregister_entry_routes(state: &mut ManifestIndexState, entry: &ManifestEntry) {
+    state.host_routes.retain(|_, worker| {
+        worker.name != entry.worker.name
+            || worker.version != entry.worker.version
+            || worker.dir != entry.worker.dir
+    });
+    state
+        .plugins
+        .retain(|plugin| plugin.name != entry.worker.name || plugin.dir != entry.worker.dir);
+    if state
+        .homepage
+        .as_ref()
+        .is_some_and(|worker| worker.name == entry.worker.name && worker.dir == entry.worker.dir)
+    {
+        state.homepage = None;
+    }
+    if state
+        .shell
+        .as_ref()
+        .is_some_and(|worker| worker.name == entry.worker.name && worker.dir == entry.worker.dir)
+    {
+        state.shell = None;
+    }
+}
+
+fn register_entry_routes(
+    state: &mut ManifestIndexState,
+    entry: &ManifestEntry,
+    manifest: &WorkerManifest,
+    host_aliases: Vec<String>,
+) {
+    if entry.plugin_base.as_deref() == Some("/") {
+        state.homepage = Some(entry.worker.clone());
+        state.shell = Some(entry.worker.clone());
+    } else if let Some(base) = entry.plugin_base.clone() {
+        state.plugins.push(PluginRef {
+            name: entry.worker.name.clone(),
+            base,
+            dir: entry.worker.dir.clone(),
+            manifest: manifest.clone(),
+        });
+        state
+            .plugins
+            .sort_by(|left, right| right.base.len().cmp(&left.base.len()));
+    }
+    for host in host_aliases {
+        state.host_routes.insert(host, entry.worker.clone());
     }
 }
 
@@ -494,6 +800,8 @@ fn admin_worker_info(entry: &ManifestEntry) -> AdminWorkerInfo {
         }
         .into(),
         version: entry.worker.version.clone(),
+        visibility: entry.worker.config.visibility,
+        revision: crate::deploy::worker_revision(&entry.worker.dir),
         health_check: entry.worker.config.health_check.as_ref().map(|check| {
             AdminWorkerHealthCheckInfo {
                 path: check.path.clone(),

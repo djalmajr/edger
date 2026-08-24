@@ -1,10 +1,11 @@
 //! Filesystem manifest discovery for worker directories (story 07.01).
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use edger_core::{CoreError, WorkerManifest, WorkerOrigin};
-use serde::Deserialize;
+use edger_core::{AdminWorkerInfo, CoreError, WorkerManifest, WorkerOrigin, WorkerVisibility};
+use serde::{Deserialize, Serialize};
 
 use crate::manifest_index_stub::ManifestIndex;
 
@@ -69,7 +70,233 @@ pub fn load_manifests_from_roots(
         core_overlay_root.cloned(),
         user_roots.to_vec(),
     );
+    reload_persisted_default_versions(&index);
     Ok(index)
+}
+
+const DEFAULT_VERSIONS_DIR: &str = ".edger-defaults";
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedDefaultVersion {
+    name: String,
+    version: String,
+}
+
+pub(crate) fn persist_default_version(
+    index: &ManifestIndex,
+    name: &str,
+    version: &str,
+) -> Result<AdminWorkerInfo, CoreError> {
+    let candidate = index.validate_promotion(name, version)?;
+    let source = PathBuf::from(&candidate.source);
+    let path = default_version_path(index, name, &source)?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| CoreError::new("DEPLOY_IO", "default version path has no parent"))?;
+    fs::create_dir_all(directory).map_err(|error| {
+        CoreError::new(
+            "DEPLOY_IO",
+            format!(
+                "failed to create default version directory {}: {error}",
+                directory.display()
+            ),
+        )
+    })?;
+    let temporary = directory.join(format!(
+        ".{}-{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("default"),
+        uuid::Uuid::new_v4()
+    ));
+    let mut file = fs::File::create(&temporary).map_err(|error| {
+        CoreError::new(
+            "DEPLOY_IO",
+            format!(
+                "failed to create default version temp file {}: {error}",
+                temporary.display()
+            ),
+        )
+    })?;
+    serde_json::to_writer(
+        &mut file,
+        &PersistedDefaultVersion {
+            name: name.to_string(),
+            version: version.to_string(),
+        },
+    )
+    .map_err(|error| {
+        CoreError::new(
+            "DEPLOY_IO",
+            format!("failed to encode default version pointer: {error}"),
+        )
+    })?;
+    file.write_all(b"\n")
+        .and_then(|_| file.sync_all())
+        .map_err(|error| {
+            CoreError::new(
+                "DEPLOY_IO",
+                format!(
+                    "failed to persist default version temp file {}: {error}",
+                    temporary.display()
+                ),
+            )
+        })?;
+    fs::rename(&temporary, &path).map_err(|error| {
+        let _ = fs::remove_file(&temporary);
+        CoreError::new(
+            "DEPLOY_IO",
+            format!(
+                "failed to atomically publish default version {}: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    sync_directory(directory);
+    index.promote_worker(name, version)
+}
+
+pub(crate) fn clear_persisted_default_version(
+    index: &ManifestIndex,
+    name: &str,
+    source: &Path,
+) -> Result<(), CoreError> {
+    let path = default_version_path(index, name, source)?;
+    match fs::remove_file(&path) {
+        Ok(()) => {
+            if let Some(directory) = path.parent() {
+                sync_directory(directory);
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(CoreError::new(
+            "DEPLOY_IO",
+            format!(
+                "failed to remove default version pointer {}: {error}",
+                path.display()
+            ),
+        )),
+    }
+}
+
+pub(crate) fn reload_persisted_default_versions(index: &ManifestIndex) {
+    index.clear_default_versions();
+    let mut directories = index
+        .all_roots()
+        .into_iter()
+        .filter_map(|(root, _)| pointer_root_for_configured_root(&root))
+        .map(|root| root.join(DEFAULT_VERSIONS_DIR))
+        .collect::<Vec<_>>();
+    directories.sort();
+    directories.dedup();
+    for directory in directories {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        let mut paths = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .collect::<Vec<_>>();
+        paths.sort();
+        for path in paths {
+            let pointer = fs::read(&path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<PersistedDefaultVersion>(&bytes).ok());
+            let Some(pointer) = pointer else {
+                tracing::warn!(
+                    path = %path.display(),
+                    "ignoring malformed persisted worker default version"
+                );
+                continue;
+            };
+            if path.file_name().and_then(|name| name.to_str())
+                != Some(pointer_file_name(&pointer.name).as_str())
+            {
+                tracing::warn!(
+                    path = %path.display(),
+                    worker = %pointer.name,
+                    "ignoring mismatched persisted worker default version filename"
+                );
+                continue;
+            }
+            let valid_source = index.worker_refs().into_iter().any(|worker| {
+                worker.name == pointer.name
+                    && worker.version == pointer.version
+                    && worker.config.visibility == WorkerVisibility::Public
+                    && default_version_path(index, &worker.name, &worker.dir)
+                        .ok()
+                        .as_ref()
+                        == Some(&path)
+            });
+            if !valid_source {
+                tracing::warn!(
+                    worker = %pointer.name,
+                    version = %pointer.version,
+                    "persisted default version is unavailable or non-public; using semver fallback"
+                );
+                continue;
+            }
+            if let Err(error) = index.promote_worker(&pointer.name, &pointer.version) {
+                tracing::warn!(
+                    worker = %pointer.name,
+                    version = %pointer.version,
+                    error = %error,
+                    "failed to restore persisted worker default version; using semver fallback"
+                );
+            }
+        }
+    }
+}
+
+fn default_version_path(
+    index: &ManifestIndex,
+    name: &str,
+    source: &Path,
+) -> Result<PathBuf, CoreError> {
+    let root = index
+        .all_roots()
+        .into_iter()
+        .map(|(root, _)| root)
+        .filter(|root| source == root || source.starts_with(root))
+        .max_by_key(|root| root.components().count())
+        .and_then(|root| pointer_root_for_configured_root(&root))
+        .or_else(|| source.parent().map(Path::to_path_buf))
+        .ok_or_else(|| {
+            CoreError::new(
+                "DEPLOY_IO",
+                format!("cannot locate worker root for {}", source.display()),
+            )
+        })?;
+    Ok(root
+        .join(DEFAULT_VERSIONS_DIR)
+        .join(pointer_file_name(name)))
+}
+
+fn pointer_root_for_configured_root(root: &Path) -> Option<PathBuf> {
+    if is_worker_dir(root) {
+        root.parent().map(Path::to_path_buf)
+    } else {
+        Some(root.to_path_buf())
+    }
+}
+
+fn pointer_file_name(name: &str) -> String {
+    let mut encoded = String::with_capacity(name.len() * 2 + 5);
+    for byte in name.bytes() {
+        use std::fmt::Write as _;
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded.push_str(".json");
+    encoded
+}
+
+fn sync_directory(directory: &Path) {
+    if let Ok(file) = fs::File::open(directory) {
+        let _ = file.sync_all();
+    }
 }
 
 /// Scan worker roots and parse every enabled worker manifest, without

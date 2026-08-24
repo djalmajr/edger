@@ -13,6 +13,17 @@ pub enum WorkerIsolation {
     Oneshot,
 }
 
+/// Data-plane exposure policy for a worker.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkerVisibility {
+    /// Routable through the open worker data plane.
+    #[default]
+    Public,
+    /// Routable only through authenticated internal/control-plane dispatch.
+    Internal,
+}
+
 /// Deno module-cache isolation mode for persistent JS/TS workers.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -63,6 +74,8 @@ pub struct WorkerManifest {
     pub name: String,
     pub version: Option<String>,
     pub enabled: Option<bool>,
+    #[serde(default)]
+    pub visibility: WorkerVisibility,
     pub entrypoint: Option<String>,
     /// Command run once per deployed version before the worker serves (migrations, etc.).
     pub release: Option<String>,
