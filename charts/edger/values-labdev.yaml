@@ -34,22 +34,30 @@ imagePullSecrets:
 
 ingress:
   enabled: true
-  className: nginx
+  # Kong, não nginx: o rke2-ingress-nginx normaliza QUALQUER pathType para a
+  # semântica de segmento (`location "/p-/"` + `location = "/p-"`), então um
+  # prefixo de STRING como /p- nunca casa /p-<id> lá. Já o Kong — que recebe
+  # tudo que não casa nenhuma location, pelo catch-all `/` do
+  # frontmanager — faz prefix de string nativo: com ImplementationSpecific o
+  # KIC passa o path cru para a rota. Mesmo padrão do hyper/agility.
+  className: kong
   # Sem DNS próprio no labdev (só itsm-labdev/admin-labdev existem): os
-  # workers são servidos no host WILDCARD, como o edge-runtime legado (/a,
-  # /s) e o próprio Studio (/lwc-studio). Um host exato aqui criaria um
-  # server block nginx que passa a vencer o wildcard e derruba os paths dos
-  # outros ingresses nesse host — não use admin-labdev literal.
+  # workers são servidos no host WILDCARD, como os demais paths da
+  # plataforma. Um host exato criaria um server block nginx que passa a
+  # vencer o wildcard e derruba os paths dos outros ingresses nesse host.
   host: "*.cloud4biz.com"
   # Todos os workers do Studio nascem com prefixo `p-` (p-<id> e p-<id>-api,
-  # com e sem @versão): uma location de PREFIXO DE STRING do nginx
-  # (ImplementationSpecific) cobre a família inteira, sem rewrite — o
-  # base_href que o Edger emite (`/{worker}/`) continua valendo tal qual.
-  # A Admin API fica FORA do ingress de propósito: o Studio fala com ela
-  # pelo service interno, e superfície de controle não precisa de rota
-  # pública.
+  # com e sem @versão): um prefixo de string cobre a família inteira, sem
+  # rewrite — o base_href que o Edger emite (`/{worker}/`) vale tal qual
+  # (strip-path desligado). A Admin API fica FORA do ingress de propósito:
+  # o Studio fala com ela pelo service interno, e superfície de controle
+  # não precisa de rota pública.
   path: /p-
   pathType: ImplementationSpecific
+  annotations:
+    konghq.com/preserve-host: "true"
+    konghq.com/protocols: https
+    konghq.com/strip-path: "false"
   tls:
     enabled: false
 
