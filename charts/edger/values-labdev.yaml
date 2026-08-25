@@ -5,9 +5,9 @@
 #
 # Drafts do Studio usam `visibility: internal`: nunca são invocados por rota
 # pública. O teste passa pelo control plane autenticado
-# (`/api/admin/workers/.../invoke`). O Ingress mantém `/api/admin/*` porque a
-# superfície exige ControlAuth; uma NetworkPolicy poderá restringi-la à rede do
-# Studio como defesa adicional, sem alterar o roteamento público de workers.
+# (`/api/admin/workers/.../invoke`) — que o Studio alcança pelo SERVICE
+# interno do cluster. O Ingress expõe somente os workers públicos (/p-*);
+# a Admin API não tem rota pública nenhuma.
 #
 # Segredos ficam fora do chart. Pré-provisione no namespace `hyper`:
 #   - Secret `edger-root-key`, chave `root-key`;
@@ -35,9 +35,21 @@ imagePullSecrets:
 ingress:
   enabled: true
   className: nginx
-  host: edger-labdev.cloud4biz.com
-  path: /
-  pathType: Prefix
+  # Sem DNS próprio no labdev (só itsm-labdev/admin-labdev existem): os
+  # workers são servidos no host WILDCARD, como o edge-runtime legado (/a,
+  # /s) e o próprio Studio (/lwc-studio). Um host exato aqui criaria um
+  # server block nginx que passa a vencer o wildcard e derruba os paths dos
+  # outros ingresses nesse host — não use admin-labdev literal.
+  host: "*.cloud4biz.com"
+  # Todos os workers do Studio nascem com prefixo `p-` (p-<id> e p-<id>-api,
+  # com e sem @versão): uma location de PREFIXO DE STRING do nginx
+  # (ImplementationSpecific) cobre a família inteira, sem rewrite — o
+  # base_href que o Edger emite (`/{worker}/`) continua valendo tal qual.
+  # A Admin API fica FORA do ingress de propósito: o Studio fala com ela
+  # pelo service interno, e superfície de controle não precisa de rota
+  # pública.
+  path: /p-
+  pathType: ImplementationSpecific
   tls:
     enabled: false
 
