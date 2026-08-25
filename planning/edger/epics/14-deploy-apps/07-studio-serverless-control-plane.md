@@ -47,8 +47,9 @@
 - Force é compare-and-swap: todo install grava `.edger-revision` dentro do diretório da versão (viaja no swap, sobrevive a restart/rescan) e devolve `revision`; `force` exige `x-edger-expected-revision` e responde `409 DEPLOY_REVISION_STALE` para revisão defasada — dois autosaves sobrepostos nunca publicam o mais velho por último. Upload de arquivos também avança a revisão.
 - Um `WorkerMutationSlot` (RAII, chave `root|name@version` canonicalizada) reserva o alvo pela transação INTEIRA — install (check→swap→release→health→commit/rollback), delete (todas as versões em ordem estável) e upload de files (antes de qualquer mutação, inclusive `create_dir_all`) — e o concorrente recebe `409 DEPLOY_IN_PROGRESS`; sem isso o rollback de um force ressuscitaria um delete ou clobberaria um upload.
 - Promote aceita somente versão pública, persiste o ponteiro por escrita temp + rename e o recarrega em startup/rescan.
+- `staged=true` instala uma versão pública imutável somente no pathname versionado; o marker `staged=true` em `.edger-revision` sobrevive a rescan/restart e a exclui do fallback sem versão até promote, que limpa o marker antes de ativar o ponteiro.
 - Delete remove versão específica ou worker inteiro do disco, índice e pool.
-- MCP instala, lista, habilita, desabilita, remove, promove, invoca e consulta eventos; URL/chave vêm exclusivamente do `McpContext`.
+- MCP instala (inclusive staged), lista, habilita, desabilita, remove, promove, invoca e consulta eventos; URL/chave vêm exclusivamente do `McpContext`.
 
 ### Scope
 
@@ -69,6 +70,8 @@
 - [x] Tools MCP espelham o control plane sem aceitar URL ou chave em argumentos; HTTP externo exige HTTPS.
 - [x] Delete MCP exige `version` ou `allVersions: true` explícito.
 - [x] Method-map do harness mantém função direta e devolve 405 com `Allow`.
+- [x] Install staged preserva a rota sem versão, mantém `name@version` health-checkável, sobrevive a rescan/restart e assenta no promote; install/list expõem `staged`.
+- [x] Tabela `routes` do processo persistente respeita exato > parâmetro > wildcard e casa tanto `/prefix/*` quanto `/*`.
 
 ### Dependencies
 
@@ -95,22 +98,24 @@
 - [x] Implementar invoke autenticado com versão em `x-edger-worker-version` e query da aplicação intacta.
 - [x] Gravar/comparar `.edger-revision` (CAS do force com `x-edger-expected-revision`) e reservar `name@version` por `WorkerMutationSlot` até commit/rollback, compartilhado com delete e files.
 - [x] Expor visibilidade nos payloads administrativos.
+- [x] Persistir e remover o marker staged dentro da revisão, excluindo-o do fallback sem versão em runtime e reload.
 
 ### Fase 3 — MCP e compatibilidade
 - [x] Adicionar tools do control plane e filtro de eventos por worker.
 - [x] Fixar URL/chave no contexto MCP e exigir HTTPS fora de loopback.
 - [x] Exigir seletor destrutivo explícito na tool de delete.
-- [x] Cobrir method-map + 405/Allow no processo Deno persistente.
+- [x] Expor `staged` na tool MCP de install.
+- [x] Cobrir method-map + 405/Allow e precedência exato > parâmetro > wildcard no processo Deno persistente.
 
 ## Verification
 
 ```bash
 cargo test -p edger-orchestrator
-cargo test -p edger-isolation --features multiproc --test uds_roundtrip routes_method_map_dispatches_and_reports_allow_on_405 -- --exact
+cargo test -p edger-isolation --features multiproc
 cargo test -p edger-mcp --test protocol
 planning/edger/scripts/run-gates.sh
 ```
 
 ## Status
 
-**completed** (2026-08-24) — ciclo serverless do Studio implementado com draft interno mutável, release pública imutável, promoção durável, invocação autenticada, remoção completa, reciclagem de pool e tools MCP com alvo seguro.
+**completed** (2026-08-24) — ciclo serverless do Studio implementado com draft interno mutável, release pública imutável, candidata pública staged fora do fallback até promote, promoção durável, invocação autenticada, remoção completa, reciclagem de pool, wildcard determinístico e tools MCP com alvo seguro.

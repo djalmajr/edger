@@ -969,7 +969,7 @@ Resposta (`201`):
 
 [source,json]
 ----
-{"name":"meu-app","version":"1.0.0","url":"/meu-app","kind":"FetchHandler","source":"/app/workers/meu-app","origin":"user","release":"not_configured","health":"not_configured","activation":"active","defaultVersion":"1.0.0"}
+{"name":"meu-app","version":"1.0.0","url":"/meu-app","kind":"FetchHandler","source":"/app/workers/meu-app","origin":"user","release":"not_configured","health":"not_configured","activation":"active","defaultVersion":"1.0.0","staged":false}
 ----
 
 Regras:
@@ -981,6 +981,12 @@ Regras:
 * Zip-slip (`../`, paths absolutos) é rejeitado com `400 DEPLOY_PATH_DENIED`.
 * `name@version` já indexado responde `409 COLLISION`; instale uma nova
   versão para coexistir (`latest` passa a resolver a maior habilitada).
+* `?staged=true` exige uma versão `public` imutável. A versão continua
+  acessível em `/meu-app@1.1.0` para probe/health, mas não participa do fallback
+  sem versão (maior SemVer pública) antes de promote.
+* O estado staged viaja no `.edger-revision` da própria versão e sobrevive a
+  rescan/restart. `POST /api/admin/workers/meu-app/promote?version=1.1.0`
+  limpa o marker e grava o ponteiro default persistente.
 * Body acima de 4 MiB responde `413` (cap global v1).
 * Workers comuns são instalados no primeiro root de `RUNTIME_WORKER_DIRS`.
   Pacotes chamados `cpanel` ou `webide` são instalados exclusivamente em
