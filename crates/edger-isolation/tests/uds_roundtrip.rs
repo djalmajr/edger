@@ -235,6 +235,50 @@ async fn routes_method_map_dispatches_and_reports_allow_on_405() {
     assert_eq!(allow, Some("GET, POST"));
 }
 
+// Mutation captured: a single insertion-ordered pattern pass lets the leading
+// `/*` route shadow parameter and prefix-wildcard routes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn routes_prefer_exact_then_parameter_then_most_specific_wildcard() {
+    let dir = tempfile::tempdir().unwrap();
+    write_worker(
+        dir.path(),
+        r#"export const routes = {
+  "/*": () => new Response("global-wildcard"),
+  "/prefix/*": () => new Response("prefix-wildcard"),
+  "/prefix/:id": (request) => new Response(`parameter:${request.params.id}`),
+  "/prefix/exact": () => new Response("exact"),
+};"#,
+    );
+
+    let mut worker = DenoWorkerProcess::spawn(
+        dir.path(),
+        Some("index.ts"),
+        Duration::from_secs(20),
+        &HashMap::new(),
+        None,
+    )
+    .await
+    .expect("routes worker should spawn");
+
+    for (uri, expected) in [
+        ("/prefix/exact", "exact"),
+        ("/prefix/value", "parameter:value"),
+        ("/prefix/value/deeper", "prefix-wildcard"),
+        ("/outside", "global-wildcard"),
+    ] {
+        let response = worker
+            .request(request("GET", uri, None))
+            .await
+            .unwrap_or_else(|error| panic!("{uri} request failed: {error}"));
+        assert_eq!(response.status, 200, "{uri}");
+        assert_eq!(
+            response.body.unwrap().as_ref(),
+            expected.as_bytes(),
+            "{uri}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deno_serve_handler_receives_connection_info() {
     let dir = tempfile::tempdir().unwrap();

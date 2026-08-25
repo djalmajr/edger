@@ -427,20 +427,43 @@ function matchRoutePattern(pattern, pathname) {
 
 function makeRoutesHandler(routes, fallback) {
   const entries = Object.entries(routes);
+  const exactRoutes = new Map();
+  const parameterRoutes = [];
+  const wildcardRoutes = [];
+  for (const entry of entries) {
+    const pattern = entry[0];
+    if (pattern.includes("*")) {
+      wildcardRoutes.push(entry);
+    } else if (pattern.includes(":")) {
+      parameterRoutes.push(entry);
+    } else {
+      exactRoutes.set(pattern, entry[1]);
+    }
+  }
+  wildcardRoutes.sort(([left], [right]) =>
+    right.indexOf("*") - left.indexOf("*")
+  );
+
   return async (request) => {
     const pathname = new URL(request.url).pathname;
     let target = null;
     let params = null;
-    for (const [pattern, value] of entries) {
-      if (pattern === pathname) {
-        target = value;
-        params = {};
-        break;
+    if (exactRoutes.has(pathname)) {
+      target = exactRoutes.get(pathname);
+      params = {};
+    }
+    if (target === null) {
+      for (const [pattern, value] of parameterRoutes) {
+        const matched = matchRoutePattern(pattern, pathname);
+        if (matched) {
+          target = value;
+          params = matched;
+          break;
+        }
       }
     }
     if (target === null) {
-      for (const [pattern, value] of entries) {
-        if (!pattern.includes(":") && !pattern.includes("*")) continue;
+      for (const [pattern, value] of wildcardRoutes) {
         const matched = matchRoutePattern(pattern, pathname);
         if (matched) {
           target = value;
