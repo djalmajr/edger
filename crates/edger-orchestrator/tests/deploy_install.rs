@@ -2166,3 +2166,60 @@ async fn staged_public_release_stays_pinned_until_promoted_across_rescan_and_res
         "promoted default did not survive restart"
     );
 }
+
+/// Replacement de draft precisa funcionar quando o root configurado NÃO é o
+/// path canônico (RUNTIME_WORKER_DIRS relativo ou atrás de symlink): o scan
+/// indexa o dir como configurado, install_root() canonicaliza, e a guarda de
+/// root comparava cru contra canônico — recusando todo autosave legítimo com
+/// DEPLOY_TARGET_MISMATCH.
+#[cfg(unix)]
+#[tokio::test]
+async fn force_install_replaces_draft_scanned_through_symlinked_root() {
+    let real_root = tempfile::tempdir().unwrap();
+    let worker_dir = real_root.path().join("live-draft");
+    std::fs::create_dir_all(&worker_dir).unwrap();
+    std::fs::write(
+        worker_dir.join("manifest.yaml"),
+        "name: live-draft\nversion: \"0.0.0\"\nvisibility: internal\nentrypoint: index.ts\nkind: fetch\n",
+    )
+    .unwrap();
+    std::fs::write(
+        worker_dir.join("index.ts"),
+        "Deno.serve(() => new Response('unused'));",
+    )
+    .unwrap();
+    std::fs::write(worker_dir.join("marker.txt"), "before").unwrap();
+    std::fs::write(worker_dir.join(".edger-revision"), "seed-revision\n").unwrap();
+
+    let holder = tempfile::tempdir().unwrap();
+    let linked_root = holder.path().join("linked-root");
+    std::os::unix::fs::symlink(real_root.path(), &linked_root).unwrap();
+
+    let state = state_with_factory(linked_root.clone(), Arc::new(SnapshotFactory));
+    let app = build_pipeline(state);
+
+    let (status, json, text) = send_force_install(
+        app.clone(),
+        worker_zip("live-draft", "0.0.0", "internal", "after"),
+        Some("seed-revision"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_ne!(
+        json["revision"].as_str().unwrap(),
+        "seed-revision",
+        "a replaced draft must advance its revision"
+    );
+
+    let (status, _, text) = send(
+        app,
+        "GET",
+        "/api/admin/workers/live-draft/invoke",
+        Some("test-root"),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(text, "after");
+}

@@ -405,7 +405,12 @@ pub fn install_worker_from_zip(
             ));
         }
         let target = existing.dir.clone();
-        if !target.starts_with(&root) {
+        // O índice guarda o dir como o scan o viu (RUNTIME_WORKER_DIRS aceita
+        // path relativo ou com symlink), mas `root` chega canonicalizado —
+        // comparar cru contra canônico recusava TODO replacement legítimo.
+        let canonical_target = fs::canonicalize(&target)
+            .map_err(|err| deploy_io(format!("replacement target unavailable: {err}")))?;
+        if !canonical_target.starts_with(&root) {
             return Err(CoreError::new(
                 "DEPLOY_TARGET_MISMATCH",
                 "replacement target is outside the configured worker root",
