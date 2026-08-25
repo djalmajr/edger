@@ -30,18 +30,86 @@ use crate::observability::{
 pub const MAX_DEPLOY_PACKAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DEPLOY_EXPANDED_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_DEPLOY_ENTRIES: usize = 50_000;
-/// Revision marker persisted INSIDE the worker version directory, so it
-/// travels with the atomic swap, survives restart/rescan on the PVC and needs
-/// no side registry. It is the compare side of the draft CAS below.
+/// Revision state persisted INSIDE the worker version directory, so it travels
+/// with the atomic swap and survives restart/rescan on the PVC. The first line
+/// remains the draft CAS revision; an optional second line marks a public
+/// version as staged until promote.
 pub(crate) const REVISION_FILE: &str = ".edger-revision";
+const STAGED_REVISION_LINE: &str = "staged=true";
+
+#[derive(Debug)]
+struct RevisionMarker {
+    revision: String,
+    staged: bool,
+}
+
+fn read_revision_marker(dir: &Path) -> Result<Option<RevisionMarker>, CoreError> {
+    let path = dir.join(REVISION_FILE);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(deploy_io(format!(
+                "failed to read revision marker {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    let mut lines = raw.lines().map(str::trim).filter(|line| !line.is_empty());
+    let Some(revision) = lines.next() else {
+        return Ok(None);
+    };
+    if revision == STAGED_REVISION_LINE {
+        return Err(CoreError::new(
+            "DEPLOY_REVISION_INVALID",
+            format!("revision marker {} has no revision", path.display()),
+        ));
+    }
+    Ok(Some(RevisionMarker {
+        revision: revision.to_string(),
+        staged: lines.any(|line| line == STAGED_REVISION_LINE),
+    }))
+}
+
+fn revision_marker_contents(revision: &str, staged: bool) -> String {
+    if staged {
+        format!("{revision}\n{STAGED_REVISION_LINE}\n")
+    } else {
+        format!("{revision}\n")
+    }
+}
+
+fn publish_revision_marker(dir: &Path, revision: &str, staged: bool) -> Result<(), CoreError> {
+    let temporary = dir.join(format!(".edger-revision-{}.tmp", uuid::Uuid::new_v4()));
+    fs::write(&temporary, revision_marker_contents(revision, staged))
+        .map_err(|err| deploy_io(format!("failed to stage revision marker: {err}")))?;
+    fs::rename(&temporary, dir.join(REVISION_FILE)).map_err(|err| {
+        let _ = fs::remove_file(&temporary);
+        deploy_io(format!("failed to publish revision marker: {err}"))
+    })
+}
 
 /// Current revision of an installed worker version, if it was installed by a
 /// revision-aware deploy. Missing/empty means the target predates tracking.
 pub(crate) fn worker_revision(dir: &Path) -> Option<String> {
-    fs::read_to_string(dir.join(REVISION_FILE))
+    read_revision_marker(dir)
         .ok()
-        .map(|raw| raw.trim().to_string())
-        .filter(|revision| !revision.is_empty())
+        .flatten()
+        .map(|marker| marker.revision)
+}
+
+pub(crate) fn worker_is_staged(dir: &Path) -> Result<bool, CoreError> {
+    read_revision_marker(dir).map(|marker| marker.is_some_and(|marker| marker.staged))
+}
+
+pub(crate) fn clear_worker_staged(dir: &Path) -> Result<(), CoreError> {
+    let Some(marker) = read_revision_marker(dir)? else {
+        return Ok(());
+    };
+    if !marker.staged {
+        return Ok(());
+    }
+    publish_revision_marker(dir, &marker.revision, false)
 }
 
 /// Marca `name@version` como "mutação em andamento" durante a TRANSAÇÃO
@@ -97,13 +165,8 @@ impl Drop for WorkerMutationSlot {
 /// edição sem conflito. Escrita temp+rename, como o resto da persistência.
 pub(crate) fn bump_worker_revision(dir: &Path) -> Result<String, CoreError> {
     let revision = uuid::Uuid::new_v4().to_string();
-    let temporary = dir.join(format!(".edger-revision-{}.tmp", uuid::Uuid::new_v4()));
-    fs::write(&temporary, format!("{revision}\n"))
-        .map_err(|err| deploy_io(format!("failed to stage revision bump: {err}")))?;
-    fs::rename(&temporary, dir.join(REVISION_FILE)).map_err(|err| {
-        let _ = fs::remove_file(&temporary);
-        deploy_io(format!("failed to publish revision bump: {err}"))
-    })?;
+    let staged = worker_is_staged(dir)?;
+    publish_revision_marker(dir, &revision, staged)?;
     Ok(revision)
 }
 
@@ -122,6 +185,7 @@ pub struct InstalledWorker {
     pub activation: String,
     pub default_version: String,
     pub revision: String,
+    pub staged: bool,
 }
 
 #[derive(Debug)]
@@ -169,6 +233,7 @@ pub fn install_worker_from_zip(
     bytes: &[u8],
     package_name_hint: Option<&str>,
     force: bool,
+    staged: bool,
     expected_revision: Option<&str>,
 ) -> Result<InstallTransaction, CoreError> {
     let package_name_hint = package_name_hint.and_then(package_name_from_hint);
@@ -209,6 +274,15 @@ pub fn install_worker_from_zip(
     }
 
     let worker = create_worker_ref(package_dir.clone(), manifest.clone())?;
+    if staged && worker.config.visibility != WorkerVisibility::Public {
+        return Err(CoreError::new(
+            "DEPLOY_STAGED_REQUIRES_PUBLIC",
+            format!(
+                "worker {}@{} must be public when installed with staged=true",
+                worker.name, worker.version
+            ),
+        ));
+    }
     if !principal_can_access_optional_namespace(principal, worker.namespace.as_deref()) {
         return Err(CoreError::new(
             "FORBIDDEN",
@@ -222,8 +296,11 @@ pub fn install_worker_from_zip(
     // Grava a revisão nova DENTRO do pacote antes do swap: ela viaja junto na
     // troca atômica e passa a ser a verdade da versão instalada.
     let revision = uuid::Uuid::new_v4().to_string();
-    fs::write(package_dir.join(REVISION_FILE), format!("{revision}\n"))
-        .map_err(|err| deploy_io(format!("failed to stamp package revision: {err}")))?;
+    fs::write(
+        package_dir.join(REVISION_FILE),
+        revision_marker_contents(&revision, staged),
+    )
+    .map_err(|err| deploy_io(format!("failed to stamp package revision: {err}")))?;
 
     // Daqui até o swap/index é seção crítica por name@version: a comparação de
     // revisão só vale se nenhum outro install do mesmo alvo entrelaçar — e a
@@ -388,6 +465,7 @@ pub fn install_worker_from_zip(
             activation: "indexed".into(),
             default_version: String::new(),
             revision,
+            staged,
         },
         replacement,
         _slot: slot,

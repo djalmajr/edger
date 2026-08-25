@@ -19,6 +19,7 @@ pub struct ManifestEntry {
     pub worker: WorkerRef,
     pub plugin_base: Option<String>,
     pub origin: WorkerOrigin,
+    pub staged: bool,
 }
 
 /// Minimal manifest index used by `resolve_route`.
@@ -61,6 +62,7 @@ impl ManifestIndex {
         origin: WorkerOrigin,
     ) -> Result<(), CoreError> {
         let worker = create_worker_ref(dir, manifest.clone())?;
+        let staged = crate::deploy::worker_is_staged(&worker.dir)?;
         validate_origin_identity(&worker.name, manifest.base.as_deref(), origin)?;
         let key = worker.name.clone();
         let mut state = self.inner.write().map_err(|_| lock_err())?;
@@ -87,8 +89,10 @@ impl ManifestIndex {
 
         let plugin_base = manifest.base.as_deref().and_then(normalize_base);
         if plugin_base.as_deref() == Some("/") {
-            state.homepage = Some(worker.clone());
-            state.shell = Some(worker.clone());
+            if !staged {
+                state.homepage = Some(worker.clone());
+                state.shell = Some(worker.clone());
+            }
         } else if let Some(base) = plugin_base.clone() {
             state.plugins.push(PluginRef {
                 name: worker.name.clone(),
@@ -104,7 +108,7 @@ impl ManifestIndex {
             state.host_routes.insert(host, worker.clone());
         }
 
-        if key == "cpanel" && worker.config.enabled {
+        if key == "cpanel" && worker.config.enabled && !staged {
             if let Some(entries) = state.entries.get_mut(&key) {
                 for entry in entries {
                     entry.worker.config.enabled = false;
@@ -116,6 +120,7 @@ impl ManifestIndex {
             plugin_base,
             origin,
             worker,
+            staged,
         });
         Ok(())
     }
@@ -129,6 +134,7 @@ impl ManifestIndex {
         origin: WorkerOrigin,
     ) -> Result<ManifestEntry, CoreError> {
         let worker = create_worker_ref(dir, manifest.clone())?;
+        let staged = crate::deploy::worker_is_staged(&worker.dir)?;
         validate_origin_identity(&worker.name, manifest.base.as_deref(), origin)?;
         let key = worker.name.clone();
         let host_aliases = normalize_host_aliases(&manifest.hosts)?;
@@ -186,6 +192,7 @@ impl ManifestIndex {
             worker,
             plugin_base,
             origin,
+            staged,
         };
         state
             .entries
@@ -207,7 +214,7 @@ impl ManifestIndex {
             .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
         let enabled = bucket
             .iter()
-            .filter(|entry| entry.worker.config.enabled)
+            .filter(|entry| entry.worker.config.enabled && (version.is_some() || !entry.staged))
             .collect::<Vec<_>>();
         if enabled.is_empty() {
             return Err(CoreError::new(
@@ -269,6 +276,7 @@ impl ManifestIndex {
             .filter(|entry| {
                 entry.worker.config.enabled
                     && entry.worker.config.visibility == WorkerVisibility::Public
+                    && (version.is_some() || !entry.staged)
             })
             .collect::<Vec<_>>();
         if enabled.is_empty() {
@@ -322,6 +330,7 @@ impl ManifestIndex {
             .and_then(|entries| {
                 entries.iter().find(|entry| {
                     entry.worker.config.enabled
+                        && !entry.staged
                         && entry.worker.dir == plugin.dir
                         && entry.plugin_base.as_deref() == Some(plugin.base.as_str())
                 })
@@ -650,16 +659,61 @@ impl ManifestIndex {
         Ok(admin_worker_info(&bucket[position]))
     }
 
-    /// Select the public version served by an unversioned worker route.
-    pub fn promote_worker(&self, name: &str, version: &str) -> Result<AdminWorkerInfo, CoreError> {
+    /// Select the public version served by an unversioned worker route after
+    /// its durable staged marker has been cleared.
+    pub(crate) fn promote_worker(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<AdminWorkerInfo, CoreError> {
+        self.set_default_version(name, version, true)
+    }
+
+    /// Restore a persisted pointer only when the version is not still staged.
+    pub(crate) fn restore_promoted_worker(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<AdminWorkerInfo, CoreError> {
+        self.set_default_version(name, version, false)
+    }
+
+    fn set_default_version(
+        &self,
+        name: &str,
+        version: &str,
+        clear_staged: bool,
+    ) -> Result<AdminWorkerInfo, CoreError> {
         let mut state = self.inner.write().map_err(|_| lock_err())?;
-        let bucket = state
-            .entries
-            .get_mut(name)
-            .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
-        let position = validate_promotion_entry(bucket, name, version)?;
-        bucket[position].worker.config.enabled = true;
-        let info = admin_worker_info(&bucket[position]);
+        let (info, activated_entry) = {
+            let bucket = state
+                .entries
+                .get_mut(name)
+                .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
+            let position = validate_promotion_entry(bucket, name, version)?;
+            if bucket[position].staged && !clear_staged {
+                return Err(CoreError::new(
+                    "PROMOTE_STAGED_MARKER_PRESENT",
+                    format!("worker {name}@{version} is still staged"),
+                ));
+            }
+            let activate_routes = bucket[position].staged;
+            if name == "cpanel" {
+                for (index, entry) in bucket.iter_mut().enumerate() {
+                    entry.worker.config.enabled = index == position;
+                }
+            } else {
+                bucket[position].worker.config.enabled = true;
+            }
+            bucket[position].staged = false;
+            (
+                admin_worker_info(&bucket[position]),
+                activate_routes.then(|| bucket[position].clone()),
+            )
+        };
+        if let Some(entry) = activated_entry {
+            activate_staged_entry_routes(&mut state, &entry);
+        }
         state
             .default_versions
             .insert(name.to_string(), version.to_string());
@@ -768,11 +822,32 @@ fn register_entry_routes(
     }
 }
 
+fn activate_staged_entry_routes(state: &mut ManifestIndexState, entry: &ManifestEntry) {
+    if entry.plugin_base.as_deref() == Some("/") {
+        state.homepage = Some(entry.worker.clone());
+        state.shell = Some(entry.worker.clone());
+        return;
+    }
+    let Some(position) = state
+        .plugins
+        .iter()
+        .position(|plugin| plugin.name == entry.worker.name && plugin.dir == entry.worker.dir)
+    else {
+        return;
+    };
+    let plugin = state.plugins.remove(position);
+    state.plugins.insert(0, plugin);
+    state
+        .plugins
+        .sort_by(|left, right| right.base.len().cmp(&left.base.len()));
+}
+
 impl ManifestIndexState {
     fn plugin_is_enabled(&self, plugin: &PluginRef) -> bool {
         self.entries.get(&plugin.name).is_some_and(|entries| {
             entries.iter().any(|entry| {
                 entry.worker.config.enabled
+                    && !entry.staged
                     && entry.worker.dir == plugin.dir
                     && entry.plugin_base.as_deref() == Some(plugin.base.as_str())
             })
@@ -783,6 +858,7 @@ impl ManifestIndexState {
         self.entries.get(&worker.name).is_some_and(|entries| {
             entries.iter().any(|entry| {
                 entry.worker.config.enabled
+                    && !entry.staged
                     && entry.worker.version == worker.version
                     && entry.worker.dir == worker.dir
             })
@@ -807,6 +883,7 @@ fn admin_worker_info(entry: &ManifestEntry) -> AdminWorkerInfo {
         version: entry.worker.version.clone(),
         visibility: entry.worker.config.visibility,
         revision: crate::deploy::worker_revision(&entry.worker.dir),
+        staged: entry.staged,
         // Preenchido pelo admin_workers(), que enxerga o mapa de promoções.
         default_version: None,
         health_check: entry.worker.config.health_check.as_ref().map(|check| {
@@ -1263,5 +1340,54 @@ mod tests {
         assert_eq!(shell.name, "shell-demo");
         assert!(index.plugin_for_path("/todos").is_none());
         assert!(index.homepage().is_some());
+    }
+
+    // Mutation captured: clearing only the name-route staged flag leaves a
+    // promoted `base: /` worker absent from homepage and shell routing.
+    #[test]
+    fn promoting_staged_root_activates_homepage_and_shell_routes() {
+        let root = tempfile::tempdir().unwrap();
+        let active_dir = root.path().join("shell-v1");
+        let staged_dir = root.path().join("shell-v2");
+        std::fs::create_dir_all(&active_dir).unwrap();
+        std::fs::create_dir_all(&staged_dir).unwrap();
+        std::fs::write(
+            staged_dir.join(crate::deploy::REVISION_FILE),
+            "revision-v2\nstaged=true\n",
+        )
+        .unwrap();
+
+        let mut active = manifest("shell-demo", "1.0.0");
+        active.base = Some("/".into());
+        let mut staged = manifest("shell-demo", "2.0.0");
+        staged.base = Some("/".into());
+        let mut index = ManifestIndex::new();
+        index.insert(active_dir, active).unwrap();
+        index.insert(staged_dir.clone(), staged).unwrap();
+
+        assert_eq!(index.homepage().unwrap().version, "1.0.0");
+        assert_eq!(index.shell().unwrap().version, "1.0.0");
+
+        crate::deploy::clear_worker_staged(&staged_dir).unwrap();
+        index.promote_worker("shell-demo", "2.0.0").unwrap();
+
+        assert_eq!(index.homepage().unwrap().version, "2.0.0");
+        assert_eq!(index.shell().unwrap().version, "2.0.0");
+    }
+
+    // Mutation captured: collapsing every marker read error into "not staged"
+    // indexes an unreadable staged version as ordinary public traffic.
+    #[test]
+    fn unreadable_revision_marker_fails_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let worker_dir = root.path().join("worker");
+        std::fs::create_dir_all(worker_dir.join(crate::deploy::REVISION_FILE)).unwrap();
+        let mut index = ManifestIndex::new();
+
+        let error = index
+            .insert(worker_dir, manifest("worker", "1.0.0"))
+            .unwrap_err();
+
+        assert_eq!(error.code, "DEPLOY_IO");
     }
 }

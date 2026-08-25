@@ -1965,3 +1965,204 @@ async fn internal_draft_is_private_invokable_and_never_promotable() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json["code"], "DEPLOY_VISIBILITY_IMMUTABLE");
 }
+
+// Mutation captured: admitting staged entries into the unversioned SemVer
+// fallback makes the second install take traffic before promote.
+#[tokio::test]
+async fn staged_public_release_stays_pinned_until_promoted_across_rescan_and_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let marker = |body: &str| {
+        serde_json::from_str::<serde_json::Value>(body).unwrap()["marker"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let app = build_pipeline(state_with_factory(
+        root.path().to_path_buf(),
+        Arc::new(EchoFactory),
+    ));
+
+    let (status, installed_v1, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        worker_zip("staged-app", "1.0.0", "public", "public-one"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    assert_eq!(installed_v1["staged"], false);
+    assert_eq!(installed_v1["defaultVersion"], "1.0.0");
+
+    let (status, installed_v2, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install?staged=true",
+        Some("test-root"),
+        "application/zip",
+        zip_package(&[
+            (
+                "manifest.yaml",
+                "name: staged-app\nversion: \"2.0.0\"\nvisibility: public\nentrypoint: index.ts\nkind: fetch\nbase: /staged-plugin\nhosts:\n  - staged.example\nhealthCheck:\n  path: /health\n  mode: on-deploy\n  timeout: 2s\n",
+            ),
+            ("index.ts", "export default () => new Response('ok');"),
+            ("marker.txt", "public-two"),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    assert_eq!(installed_v2["staged"], true);
+    assert_eq!(installed_v2["health"], "passed");
+    assert_eq!(installed_v2["defaultVersion"], "1.0.0");
+    let revision_path =
+        std::path::Path::new(installed_v2["source"].as_str().unwrap()).join(".edger-revision");
+    assert!(
+        fs::read_to_string(&revision_path)
+            .unwrap()
+            .lines()
+            .any(|line| line == "staged=true"),
+        "staged marker must travel inside the immutable version directory"
+    );
+
+    let (status, body) = body_of(app.clone(), "/staged-app").await;
+    assert_eq!(status, StatusCode::MULTI_STATUS);
+    assert_eq!(marker(&body), "public-one");
+    let (status, body) = body_of(app.clone(), "/staged-app@2.0.0").await;
+    assert_eq!(status, StatusCode::MULTI_STATUS);
+    assert_eq!(marker(&body), "public-two");
+    assert_eq!(
+        body_of(app.clone(), "/staged-plugin/probe").await.0,
+        StatusCode::NOT_FOUND,
+        "staged plugin base received unversioned traffic"
+    );
+    let staged_host = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/probe")
+                .header("host", "staged.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        staged_host.status(),
+        StatusCode::NOT_FOUND,
+        "staged host alias received unversioned traffic"
+    );
+
+    let (status, inventory, text) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers",
+        Some("test-root"),
+        "application/json",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let staged_v2 = inventory["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|worker| worker["name"] == "staged-app" && worker["version"] == "2.0.0")
+        .unwrap();
+    assert_eq!(staged_v2["staged"], true);
+    assert_eq!(staged_v2["revision"], installed_v2["revision"]);
+
+    let (status, _, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/rescan",
+        Some("test-root"),
+        "application/json",
+        br#"{"dryRun":false}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (_, body) = body_of(app, "/staged-app").await;
+    assert_eq!(marker(&body), "public-one", "rescan admitted staged v2");
+
+    let restarted = build_pipeline(state_with_factory(
+        root.path().to_path_buf(),
+        Arc::new(EchoFactory),
+    ));
+    let (_, body) = body_of(restarted.clone(), "/staged-app").await;
+    assert_eq!(marker(&body), "public-one", "restart admitted staged v2");
+    let (_, body) = body_of(restarted.clone(), "/staged-app@2.0.0").await;
+    assert_eq!(marker(&body), "public-two");
+
+    let (status, promoted, text) = send(
+        restarted.clone(),
+        "POST",
+        "/api/admin/workers/staged-app/promote?version=2.0.0",
+        Some("test-root"),
+        "application/json",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(promoted["defaultVersion"], "2.0.0");
+    assert!(
+        !fs::read_to_string(&revision_path)
+            .unwrap()
+            .lines()
+            .any(|line| line == "staged=true"),
+        "promote must clear the durable staged marker"
+    );
+    let (_, body) = body_of(restarted.clone(), "/staged-app").await;
+    assert_eq!(marker(&body), "public-two");
+    let (status, body) = body_of(restarted.clone(), "/staged-plugin/probe").await;
+    assert_eq!(status, StatusCode::MULTI_STATUS);
+    assert_eq!(marker(&body), "public-two");
+    let promoted_host = restarted
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/probe")
+                .header("host", "staged.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(promoted_host.status(), StatusCode::MULTI_STATUS);
+    let promoted_host_body = axum::body::to_bytes(promoted_host.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        marker(std::str::from_utf8(&promoted_host_body).unwrap()),
+        "public-two"
+    );
+
+    let (status, inventory, text) = send(
+        restarted,
+        "GET",
+        "/api/admin/workers",
+        Some("test-root"),
+        "application/json",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let promoted_v2 = inventory["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|worker| worker["name"] == "staged-app" && worker["version"] == "2.0.0")
+        .unwrap();
+    assert_eq!(promoted_v2["staged"], false);
+
+    let restarted_after_promote = build_pipeline(state_with_factory(
+        root.path().to_path_buf(),
+        Arc::new(EchoFactory),
+    ));
+    let (_, body) = body_of(restarted_after_promote, "/staged-app").await;
+    assert_eq!(
+        marker(&body),
+        "public-two",
+        "promoted default did not survive restart"
+    );
+}

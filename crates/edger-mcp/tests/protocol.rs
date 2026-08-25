@@ -160,6 +160,14 @@ fn initialize_and_tools_list_expose_edger_discovery_tools() {
     assert!(tools
         .iter()
         .all(|tool| tool["inputSchema"]["type"].as_str() == Some("object")));
+    let install = tools
+        .iter()
+        .find(|tool| tool["name"] == "edger.install_worker")
+        .unwrap();
+    assert_eq!(
+        install["inputSchema"]["properties"]["staged"]["default"],
+        false
+    );
 }
 
 #[test]
@@ -470,7 +478,7 @@ fn control_plane_tools_emit_admin_http_contracts() {
     );
     call_success(
         "edger.install_worker",
-        json!({"zipBase64": "emlwLWJhc2U2NA=="}),
+        json!({"zipBase64": "emlwLWJhc2U2NA==", "staged": true}),
     );
     let listed = call_success("edger.list_deployed_workers", json!({}));
     assert_eq!(content(&listed)["workers"][0]["visibility"], "public");
@@ -527,7 +535,7 @@ fn control_plane_tools_emit_admin_http_contracts() {
     assert!(requests[0].starts_with("POST /api/admin/workers/install?force=true "));
     assert!(requests[0].contains("x-edger-package-name: draft.zip"));
     assert!(requests[0].ends_with("zip-path"));
-    assert!(requests[1].starts_with("POST /api/admin/workers/install "));
+    assert!(requests[1].starts_with("POST /api/admin/workers/install?staged=true "));
     assert!(requests[1].ends_with("zip-base64"));
     assert!(requests[2].starts_with("GET /api/admin/workers "));
     assert!(requests[3].starts_with("POST /api/admin/workers/demo/enable?version=1.0.0 "));

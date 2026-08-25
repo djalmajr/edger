@@ -66,6 +66,8 @@ pub struct AdminWorkerInfo {
     pub visibility: WorkerVisibility,
     /// Revisão CAS do diretório instalado; None para instalações pré-rastreio.
     pub revision: Option<String>,
+    /// Versão pública instalada apenas para acesso versionado até promote.
+    pub staged: bool,
     /// Ponteiro de promoção EXPLÍCITO do worker (mesmo valor em todas as
     /// versões do name; None = sem promote, o roteador cai na maior semver
     /// pública). É o que permite ao control plane de quem consome (Studio)

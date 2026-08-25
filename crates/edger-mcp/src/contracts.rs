@@ -236,6 +236,14 @@ fn install_worker_schema() -> Value {
             }),
         ),
         (
+            "staged",
+            json!({
+                "type": "boolean",
+                "default": false,
+                "description": "Install an immutable public version for version-pinned traffic and health checks without changing the unversioned route until promote."
+            }),
+        ),
+        (
             "expectedRevision",
             json!({
                 "type": "string",

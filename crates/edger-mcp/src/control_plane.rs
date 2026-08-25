@@ -29,6 +29,8 @@ pub struct InstallWorkerArgs {
     pub workspace_root: Option<String>,
     #[serde(default)]
     pub force: bool,
+    #[serde(default)]
+    pub staged: bool,
     pub expected_revision: Option<String>,
 }
 
@@ -167,6 +169,9 @@ pub fn install_worker(ctx: &McpContext, args: InstallWorkerArgs) -> Result<Value
     let mut url = admin.endpoint(["api", "admin", "workers", "install"])?;
     if args.force {
         url.query_pairs_mut().append_pair("force", "true");
+    }
+    if args.staged {
+        url.query_pairs_mut().append_pair("staged", "true");
     }
     let mut request = admin
         .request(Method::POST, url)

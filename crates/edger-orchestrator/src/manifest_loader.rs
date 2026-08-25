@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use edger_core::{AdminWorkerInfo, CoreError, WorkerManifest, WorkerOrigin, WorkerVisibility};
 use serde::{Deserialize, Serialize};
 
+use crate::deploy::clear_worker_staged;
 use crate::manifest_index_stub::ManifestIndex;
 
 const ENTRYPOINT_CANDIDATES: [&str; 6] = [
@@ -154,6 +155,7 @@ pub(crate) fn persist_default_version(
         )
     })?;
     sync_directory(directory);
+    clear_worker_staged(&source)?;
     index.promote_worker(name, version)
 }
 
@@ -239,7 +241,7 @@ pub(crate) fn reload_persisted_default_versions(index: &ManifestIndex) {
                 );
                 continue;
             }
-            if let Err(error) = index.promote_worker(&pointer.name, &pointer.version) {
+            if let Err(error) = index.restore_promoted_worker(&pointer.name, &pointer.version) {
                 tracing::warn!(
                     worker = %pointer.name,
                     version = %pointer.version,

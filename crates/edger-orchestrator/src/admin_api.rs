@@ -142,6 +142,8 @@ fn worker_catalog_item(worker: &AdminWorkerInfo) -> AdminCatalogItem {
 struct InstallWorkerQuery {
     #[serde(default)]
     force: bool,
+    #[serde(default)]
+    staged: bool,
 }
 
 async fn install_worker(
@@ -167,6 +169,7 @@ async fn install_worker(
             &body,
             package_name_hint,
             query.force,
+            query.staged,
             expected_revision,
         )?;
         let replaced_existing = transaction.replaced_existing();
@@ -245,8 +248,9 @@ async fn install_worker(
         }
         transaction.installed.default_version = state
             .index
-            .resolve_worker(&transaction.installed.name, None)?
-            .version;
+            .resolve_public_worker(&transaction.installed.name, None)
+            .map(|worker| worker.version)
+            .unwrap_or_default();
         let installed = commit_install(transaction)?;
         Ok((installed, replaced_existing))
     }
@@ -1390,6 +1394,7 @@ fn map_error_status(err: &CoreError) -> StatusCode {
         "BAD_REQUEST"
         | "VALIDATION_ERROR"
         | "DEPLOY_INVALID_PACKAGE"
+        | "DEPLOY_STAGED_REQUIRES_PUBLIC"
         | "DEPLOY_PATH_DENIED"
         | "DEPLOY_VISIBILITY_IMMUTABLE"
         | "PROMOTE_VERSION_REQUIRED"

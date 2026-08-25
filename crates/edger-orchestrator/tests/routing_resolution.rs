@@ -1,5 +1,6 @@
 //! Routing resolution tests — Buntime path table (story 05.02).
 
+use std::fs;
 use std::path::PathBuf;
 
 use edger_core::WorkerManifest;
@@ -383,6 +384,38 @@ fn homepage_fallback_for_root() {
     match route {
         ResolvedRoute::HomepageFallback { worker } => assert_eq!(worker.name, "home"),
         other => panic!("expected homepage, got {other:?}"),
+    }
+}
+
+// Mutation captured: registering a staged `base: /` worker immediately
+// replaces the active homepage before promote.
+#[test]
+fn staged_homepage_does_not_replace_active_homepage() {
+    let root = tempfile::tempdir().unwrap();
+    let active_dir = root.path().join("homepage-v1");
+    let staged_dir = root.path().join("homepage-v2");
+    fs::create_dir_all(&active_dir).unwrap();
+    fs::create_dir_all(&staged_dir).unwrap();
+    fs::write(
+        staged_dir.join(".edger-revision"),
+        "revision-v2\nstaged=true\n",
+    )
+    .unwrap();
+
+    let mut active = manifest("homepage", "1.0.0");
+    active.base = Some("/".into());
+    let mut staged = manifest("homepage", "2.0.0");
+    staged.base = Some("/".into());
+    let mut index = ManifestIndex::new();
+    index.insert(active_dir, active).unwrap();
+    index.insert(staged_dir, staged).unwrap();
+
+    let route = resolve_route("/", None, &index).unwrap();
+    match route {
+        ResolvedRoute::HomepageFallback { worker } => {
+            assert_eq!(worker.version, "1.0.0");
+        }
+        other => panic!("expected active homepage, got {other:?}"),
     }
 }
 
