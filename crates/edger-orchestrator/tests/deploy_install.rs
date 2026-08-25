@@ -1835,6 +1835,26 @@ async fn internal_draft_is_private_invokable_and_never_promotable() {
         "promote must not disable immutable pinned releases"
     );
 
+    // O LIST também carrega o ponteiro (é o que permite ao consumidor
+    // detectar drift de default sem depender da resposta de uma mutação).
+    let (status, json, _) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers",
+        Some("test-root"),
+        "application/json",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let listado = json["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|worker| worker["name"] == "studio-app")
+        .unwrap();
+    assert_eq!(listado["defaultVersion"], "1.0.0");
+
     let restarted = build_pipeline(state_with_factory(
         root.path().to_path_buf(),
         Arc::new(EchoFactory),

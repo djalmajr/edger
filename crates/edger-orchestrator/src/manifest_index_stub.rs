@@ -384,6 +384,11 @@ impl ManifestIndex {
             .values()
             .flat_map(|entries| entries.iter().map(admin_worker_info))
             .collect::<Vec<_>>();
+        // O ponteiro de promoção é por NAME e vive fora das entries; anexado
+        // aqui para o list carregar o default explícito corrente.
+        for worker in &mut workers {
+            worker.default_version = state.default_versions.get(&worker.name).cloned();
+        }
         workers.sort_by(|a, b| {
             a.name
                 .cmp(&b.name)
@@ -802,6 +807,8 @@ fn admin_worker_info(entry: &ManifestEntry) -> AdminWorkerInfo {
         version: entry.worker.version.clone(),
         visibility: entry.worker.config.visibility,
         revision: crate::deploy::worker_revision(&entry.worker.dir),
+        // Preenchido pelo admin_workers(), que enxerga o mapa de promoções.
+        default_version: None,
         health_check: entry.worker.config.health_check.as_ref().map(|check| {
             AdminWorkerHealthCheckInfo {
                 path: check.path.clone(),
