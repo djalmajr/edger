@@ -247,6 +247,9 @@ impl OidcValidator {
                 Vec::new()
             },
             namespaces,
+            // OIDC não escopa por worker: o boundary dele é o namespace do
+            // claim. "*" preserva o comportamento anterior ao campo.
+            workers: vec!["*".into()],
             is_root,
             expires_at: None,
         })
