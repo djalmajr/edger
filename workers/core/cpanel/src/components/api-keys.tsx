@@ -25,7 +25,6 @@ import {
   TooltipTrigger,
 } from "@edger/ui/components/ui/tooltip";
 import {
-  BanIcon,
   CheckIcon,
   CopyIcon,
   PlusIcon,
@@ -90,14 +89,19 @@ export function ApiKeys({
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["cpanel", "keys"] });
 
-  const revoke = useMutation({
-    mutationFn: (id: number) =>
-      apiJson(apiKey, `/api/admin/keys/${id}/revoke`, { method: "POST" }),
-    onSettled: invalidate,
-  });
+  // Uma ação só na UI: deletar revoga primeiro (o servidor exige — revoke é
+  // terminal e delete só remove key revogada) e então remove o registro. O
+  // revoke isolado continua existindo na API/MCP para quem quer matar a
+  // credencial mantendo a linha de auditoria.
   const remove = useMutation({
-    mutationFn: (id: number) =>
-      apiJson(apiKey, `/api/admin/keys/${id}`, { method: "DELETE" }),
+    mutationFn: async (key: ApiKey) => {
+      if (!key.revokedAt) {
+        await apiJson(apiKey, `/api/admin/keys/${key.id}/revoke`, {
+          method: "POST",
+        });
+      }
+      await apiJson(apiKey, `/api/admin/keys/${key.id}`, { method: "DELETE" });
+    },
     onSettled: invalidate,
   });
 
@@ -175,39 +179,21 @@ export function ApiKeys({
                   </TableCell>
                   <TableCell>
                     <div className="flex justify-end gap-1">
-                      {status !== "revoked" ? (
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={
-                              <Button
-                                aria-label={`Revoke ${key.name}`}
-                                onClick={() => revoke.mutate(key.id)}
-                                size="icon"
-                                variant="ghost"
-                              />
-                            }
-                          >
-                            <BanIcon />
-                          </TooltipTrigger>
-                          <TooltipContent>Revoke (permanent)</TooltipContent>
-                        </Tooltip>
-                      ) : (
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={
-                              <Button
-                                aria-label={`Delete ${key.name}`}
-                                onClick={() => setConfirmDelete(key)}
-                                size="icon"
-                                variant="ghost"
-                              />
-                            }
-                          >
-                            <Trash2Icon />
-                          </TooltipTrigger>
-                          <TooltipContent>Delete</TooltipContent>
-                        </Tooltip>
-                      )}
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <Button
+                              aria-label={`Delete ${key.name}`}
+                              onClick={() => setConfirmDelete(key)}
+                              size="icon"
+                              variant="ghost"
+                            />
+                          }
+                        >
+                          <Trash2Icon />
+                        </TooltipTrigger>
+                        <TooltipContent>Delete (cannot be undone)</TooltipContent>
+                      </Tooltip>
                     </div>
                   </TableCell>
                 </TableRow>
@@ -249,8 +235,8 @@ export function ApiKeys({
           <DialogHeader>
             <DialogTitle>Delete key</DialogTitle>
             <DialogDescription>
-              Permanently remove “{confirmDelete?.name}” from the store? The
-              key is already revoked; this only clears the record.
+              Delete “{confirmDelete?.name}”? The credential stops working
+              immediately and this cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -259,7 +245,7 @@ export function ApiKeys({
             </Button>
             <Button
               onClick={() => {
-                if (confirmDelete) remove.mutate(confirmDelete.id);
+                if (confirmDelete) remove.mutate(confirmDelete);
                 setConfirmDelete(null);
               }}
               variant="destructive"
