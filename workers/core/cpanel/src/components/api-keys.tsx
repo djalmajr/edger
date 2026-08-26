@@ -19,7 +19,11 @@ import {
   TableHeader,
   TableRow,
 } from "@edger/ui/components/ui/table";
-import { Tooltip, TooltipTrigger } from "@edger/ui/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@edger/ui/components/ui/tooltip";
 import {
   BanIcon,
   CheckIcon,
@@ -180,12 +184,12 @@ export function ApiKeys({
                                 onClick={() => revoke.mutate(key.id)}
                                 size="icon"
                                 variant="ghost"
-                              >
-                                <BanIcon />
-                              </Button>
+                              />
                             }
-                          />
-                          Revoke (permanent)
+                          >
+                            <BanIcon />
+                          </TooltipTrigger>
+                          <TooltipContent>Revoke (permanent)</TooltipContent>
                         </Tooltip>
                       ) : (
                         <Tooltip>
@@ -196,12 +200,12 @@ export function ApiKeys({
                                 onClick={() => setConfirmDelete(key)}
                                 size="icon"
                                 variant="ghost"
-                              >
-                                <Trash2Icon />
-                              </Button>
+                              />
                             }
-                          />
-                          Delete
+                          >
+                            <Trash2Icon />
+                          </TooltipTrigger>
+                          <TooltipContent>Delete</TooltipContent>
                         </Tooltip>
                       )}
                     </div>
