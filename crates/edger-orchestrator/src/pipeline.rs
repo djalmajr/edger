@@ -53,6 +53,13 @@ pub fn build_pipeline(state: OrchestratorState) -> Router {
         .route("/metrics/stats", get(metrics_stats_handler))
         .route("/ready", get(ready_handler))
         .route("/readyz", get(ready_handler))
+        // MCP por HTTP: o corpo carrega zipBase64 de deploy (64 MiB de ZIP
+        // viram ~86 MiB de base64 + envelope JSON).
+        .route(
+            "/api/mcp",
+            axum::routing::post(crate::mcp_http::handle)
+                .layer(axum::extract::DefaultBodyLimit::max(96 * 1024 * 1024)),
+        )
         .merge(admin_api::router())
         .fallback(any(pipeline_handler))
         .layer(axum::middleware::from_fn_with_state(

@@ -7,6 +7,7 @@ pub mod cron;
 pub mod deploy;
 pub mod manifest_index_stub;
 pub mod manifest_loader;
+pub mod mcp_http;
 pub mod metrics;
 pub mod observability;
 pub mod oidc;
