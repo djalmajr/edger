@@ -35,6 +35,13 @@ ingress:
     enabled: false
     secretName: ""
 
+# Persistência das api-keys do control plane (egk_). Vazio = derivado de
+# runtime.workerDirs (<workerDirs>/.edger/api-keys.db) — o PVC RWO existente;
+# o diretório .edger é invisível ao scan de workers. Só inicializa quando a
+# auth está configurada (root key ou OIDC).
+apiKeys:
+  dbPath: ""
+
 runtime:
   workerDirs: "/app/workers"
   jsRuntime: "process"
