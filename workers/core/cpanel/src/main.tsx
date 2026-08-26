@@ -161,6 +161,7 @@ import {
   DEFAULT_PAGE_SIZE,
   PaginationControls,
 } from "./components/data-grid";
+import { ApiKeys } from "./components/api-keys";
 import { Overview } from "./components/overview";
 import {
   I18nProvider,
@@ -178,13 +179,14 @@ import {
   type RuntimeData,
   type RuntimeWorker,
   type Worker,
+  canManageKeys,
   workerBasePath,
   workerUrl,
 } from "./lib/api";
 
 const SESSION_KEY = "edger.cpanel.apiKey";
 
-type View = "overview" | "workers" | "observability" | "logs" | "files";
+type View = "overview" | "workers" | "observability" | "logs" | "files" | "keys";
 type Target = { name: string; version: string };
 type RouteState = { path: string; target?: Target; view: View };
 
@@ -226,11 +228,18 @@ const NAVIGATION = [
     id: "observability" as const,
     titleKey: "nav.observability" as TranslationKey,
   },
+  {
+    descriptionKey: "nav.keys.description" as TranslationKey,
+    icon: KeyRoundIcon,
+    id: "keys" as const,
+    titleKey: "nav.keys" as TranslationKey,
+  },
 ];
 
 function readRoute(): RouteState {
   const parts = location.pathname.split("/").filter(Boolean);
   if (parts[0] !== "cpanel") return { path: "", view: "overview" };
+  if (parts[1] === "keys") return { path: "", view: "keys" };
   if (parts[1] === "observability")
     return { path: "", view: parts[2] === "logs" ? "logs" : "observability" };
   if (parts[1] !== "workers") return { path: "", view: "overview" };
@@ -255,6 +264,7 @@ function readRoute(): RouteState {
 function routePath(route: RouteState) {
   if (route.view === "overview") return "/cpanel/";
   if (route.view === "workers" && !route.target) return "/cpanel/workers";
+  if (route.view === "keys") return "/cpanel/keys";
   if (route.view === "observability" && !route.target)
     return "/cpanel/observability";
   if (route.view === "logs" && !route.target)
@@ -1823,7 +1833,9 @@ function Shell({
         <SidebarContent>
           <SidebarGroup>
             <SidebarMenu>
-              {NAVIGATION.map((entry) => (
+              {NAVIGATION.filter(
+                (entry) => entry.id !== "keys" || canManageKeys(data.principal),
+              ).map((entry) => (
                 <SidebarMenuItem key={entry.id}>
                   <SidebarMenuButton
                     isActive={
@@ -1953,6 +1965,9 @@ function Shell({
                 }
                 onRefresh={refresh}
               />
+            )}
+            {route.view === "keys" && (
+              <ApiKeys apiKey={apiKey} principal={data.principal} />
             )}
             {route.view === "observability" && (
               <Observability

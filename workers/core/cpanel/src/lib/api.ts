@@ -1,4 +1,56 @@
-export type Principal = { name?: string; namespaces?: string[]; role?: string };
+export type Principal = {
+  name?: string;
+  namespaces?: string[];
+  role?: string;
+  isRoot?: boolean;
+  permissions?: string[];
+  workers?: string[];
+};
+
+// Espelho do catálogo do servidor (edger-core PERMISSION_CATALOG) para a UI
+// de criação de keys — o servidor é a fonte da verdade e recusa o que não
+// conhece; isto aqui só desenha os checkboxes.
+export const PERMISSION_CATALOG = [
+  "workers:read",
+  "workers:install",
+  "workers:delete",
+  "workers:promote",
+  "workers:invoke",
+  "observability:read",
+  "keys:manage",
+] as const;
+
+export function canManageKeys(principal: Principal): boolean {
+  return Boolean(
+    principal.isRoot ||
+      principal.permissions?.includes("keys:manage") ||
+      principal.permissions?.includes("*"),
+  );
+}
+
+export type ApiKey = {
+  id: number;
+  name: string;
+  keyPrefix: string;
+  role: string;
+  permissions: string[];
+  namespaces: string[];
+  workers: string[];
+  createdAt: number;
+  lastUsedAt?: number | null;
+  expiresAt?: number | null;
+  revokedAt?: number | null;
+};
+
+export type CreateKeyRequest = {
+  name: string;
+  permissions: string[];
+  namespaces: string[];
+  workers: string[];
+  expiresAt?: number;
+};
+
+export type CreatedKey = { key: ApiKey; rawKey: string };
 export type Worker = {
   healthCheck?: {
     method?: string;
