@@ -2,6 +2,14 @@
 
 All notable changes to EdgeR will be documented here.
 
+## [0.2.4] - 2026-08-26
+
+### Fixed
+
+- Digit-less Vite asset hashes (e.g. `index-DgsWFCcn.js`) are now recognized
+  as fingerprints and pinned immutable — case mixing beyond a leading capital
+  marks a hash; plain words never qualify.
+
 ## [0.2.3] - 2026-08-26
 
 ### Fixed

@@ -72,9 +72,14 @@ fn cache_control_for(path: &Path) -> &'static str {
         .and_then(|stem| stem.to_str())
         .and_then(|stem| stem.rsplit('-').next())
         .is_some_and(|tail| {
+            // A digit OR case mixing beyond a leading capital marks a hash:
+            // Vite emits base64ish tails like "DgsWFCcn" that carry no digit,
+            // while words ("controller", "Controller") never mix case inside.
+            let mixed_case = tail.chars().skip(1).any(|c| c.is_ascii_uppercase())
+                && tail.chars().any(|c| c.is_ascii_lowercase());
             tail.len() >= 8
                 && tail.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                && tail.chars().any(|c| c.is_ascii_digit())
+                && (tail.chars().any(|c| c.is_ascii_digit()) || mixed_case)
         });
     if under_assets && hashed_stem {
         "public, max-age=31536000, immutable"
@@ -364,9 +369,19 @@ mod tests {
             cache_control_for(Path::new("/w/app-a1b2c3d4.js")),
             "public, max-age=300"
         );
-        // Under assets/ but no digit in the tail — a word, not a hash.
+        // Digit-less Vite hash (seen live: index-DgsWFCcn.js served as
+        // max-age=300) — case mixing marks it as a hash.
+        assert_eq!(
+            cache_control_for(Path::new("/w/assets/index-DgsWFCcn.js")),
+            "public, max-age=31536000, immutable"
+        );
+        // Words never mix case inside — not hashes, never pinned.
         assert_eq!(
             cache_control_for(Path::new("/w/assets/component-controller.js")),
+            "public, max-age=300"
+        );
+        assert_eq!(
+            cache_control_for(Path::new("/w/assets/component-Controller.js")),
             "public, max-age=300"
         );
     }
