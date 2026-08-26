@@ -61,6 +61,9 @@ pub struct ControlAuth {
     pub config: ControlAuthConfig,
     file_state: Arc<RwLock<FileRootKeyState>>,
     oidc: Option<OidcValidator>,
+    /// Store de api-keys persistentes (`egk_`). `None` = instância sem
+    /// store (open mode, ou boot sem EDGER_API_KEYS_DB utilizável).
+    keys: Option<Arc<crate::api_keys::ApiKeyService>>,
 }
 
 impl ControlAuthConfig {
@@ -98,7 +101,18 @@ impl ControlAuth {
             config,
             file_state: Arc::default(),
             oidc,
+            keys: None,
         }
+    }
+
+    /// Liga o store de api-keys — chamado no boot, depois do from_env.
+    pub fn with_key_service(mut self, keys: Arc<crate::api_keys::ApiKeyService>) -> Self {
+        self.keys = Some(keys);
+        self
+    }
+
+    pub fn key_service(&self) -> Option<&Arc<crate::api_keys::ApiKeyService>> {
+        self.keys.as_ref()
     }
 
     pub fn from_env() -> Result<Self, ControlAuthConfigError> {
@@ -118,6 +132,7 @@ impl ControlAuth {
             },
             file_state: Arc::default(),
             oidc: Some(OidcValidator::new(config, source)),
+            keys: None,
         }
     }
 
@@ -127,6 +142,15 @@ impl ControlAuth {
         {
             if credential == root_key {
                 return Some(root_principal());
+            }
+        }
+
+        // Keys persistentes: o prefixo discriminante decide — um egk_ que
+        // não autentica NÃO cai no OIDC (não é JWT), falha aqui mesmo.
+        if let Some(credential) = extract_api_key(headers) {
+            if credential.starts_with(crate::api_keys::API_KEY_PREFIX) {
+                let keys = self.keys.as_ref()?;
+                return keys.authenticate(&credential);
             }
         }
 
