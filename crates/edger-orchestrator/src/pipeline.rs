@@ -321,15 +321,35 @@ async fn dispatch_worker(
         None => state.auth.authenticate_headers(req.headers()).await,
     };
     sanitize_internal_headers(&mut req, internal_principal.as_ref());
+    // Behind a stripping proxy (Kong route with strip_path) the public URL
+    // carries a prefix this process never sees in the request path. Honoring
+    // X-Forwarded-Prefix keeps the emitted <base href> — and x-base — aligned
+    // with the URL the browser actually used; the value is charset-checked
+    // because it lands inside served HTML.
+    let forwarded_prefix = req
+        .headers()
+        .get("x-forwarded-prefix")
+        .and_then(|value| value.to_str().ok())
+        .and_then(normalized_forwarded_prefix)
+        .unwrap_or_default();
     let max_body_bytes = effective_max_body_size_bytes_usize(&worker.config);
     let mut serialized =
         axum_to_serialized_with_limit(req, request_id.clone(), max_body_bytes).await?;
     let (original_path, query) = split_path_query(&serialized.uri);
     let base_path = base_path.unwrap_or_else(|| worker_base_path(&worker, original_path));
+    let public_base_path = if base_path == "/" {
+        if forwarded_prefix.is_empty() {
+            base_path.clone()
+        } else {
+            forwarded_prefix.clone()
+        }
+    } else {
+        format!("{forwarded_prefix}{base_path}")
+    };
     serialized.uri = append_query(rewritten_path, query);
-    serialized.base_href = Some(base_href(&base_path));
+    serialized.base_href = Some(base_href(&public_base_path));
     set_header(&mut serialized.headers, "x-request-id", &request_id);
-    set_header(&mut serialized.headers, "x-base", &base_path);
+    set_header(&mut serialized.headers, "x-base", &public_base_path);
     #[cfg(feature = "otel")]
     inject_current_trace_context(&mut serialized.headers);
 
@@ -614,6 +634,23 @@ fn base_href(base_path: &str) -> String {
     }
 }
 
+// Only a proxy of ours sets this header, but the data plane is open: a forged
+// value would otherwise flow verbatim into the <base href> of served HTML.
+// Reject anything that is not a plain absolute path with a tame charset.
+fn normalized_forwarded_prefix(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_end_matches('/');
+    if trimmed.is_empty() || !trimmed.starts_with('/') || trimmed.contains("..") {
+        return None;
+    }
+    let safe = trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '@'));
+    if !safe {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 fn set_header(headers: &mut Vec<(String, String)>, name: &str, value: &str) {
     if let Some((_, existing)) = headers
         .iter_mut()
@@ -658,6 +695,21 @@ fn error_response(status: StatusCode, err: &CoreError) -> Response<Body> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn forwarded_prefix_is_normalized_and_charset_checked() {
+        assert_eq!(normalized_forwarded_prefix("/apps"), Some("/apps".into()));
+        assert_eq!(normalized_forwarded_prefix("/apps/"), Some("/apps".into()));
+        assert_eq!(normalized_forwarded_prefix(" /apps "), Some("/apps".into()));
+        assert_eq!(normalized_forwarded_prefix("/"), None);
+        assert_eq!(normalized_forwarded_prefix(""), None);
+        assert_eq!(normalized_forwarded_prefix("apps"), None);
+        // The value lands inside served HTML: anything that could break out
+        // of the <base href> attribute must be rejected, not escaped.
+        assert_eq!(normalized_forwarded_prefix("/a\">x"), None);
+        assert_eq!(normalized_forwarded_prefix("/../etc"), None);
+    }
+
     use std::sync::Arc;
 
     use axum::body::Body;

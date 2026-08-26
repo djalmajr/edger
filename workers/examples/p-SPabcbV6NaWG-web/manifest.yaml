@@ -1,0 +1,10 @@
+name: "p-SPabcbV6NaWG-web"
+version: "0.0.0-draft"
+visibility: internal
+entrypoint: index.html
+kind: static
+injectBase: true
+env:
+  VITE_PROJECT_API_URL: "http://127.0.0.1:8080/api/projects/SPabcbV6NaWG/api/invoke"
+publicEnv:
+  - VITE_PROJECT_API_URL

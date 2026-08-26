@@ -1,0 +1,10 @@
+name: "p-FbuZCNp2Uvib-web"
+version: "0.0.1-r.1"
+visibility: public
+entrypoint: index.html
+kind: static
+injectBase: true
+env:
+  VITE_PROJECT_API_URL: "http://127.0.0.1:19080/p-FbuZCNp2Uvib-api@0.0.1-r.1"
+publicEnv:
+  - VITE_PROJECT_API_URL

@@ -46,18 +46,19 @@ ingress:
   # plataforma. Um host exato criaria um server block nginx que passa a
   # vencer o wildcard e derruba os paths dos outros ingresses nesse host.
   host: "*.cloud4biz.com"
-  # Todos os workers do Studio nascem com prefixo `p-` (p-<id> e p-<id>-api,
-  # com e sem @versão): um prefixo de string cobre a família inteira, sem
-  # rewrite — o base_href que o Edger emite (`/{worker}/`) vale tal qual
-  # (strip-path desligado). A Admin API fica FORA do ingress de propósito:
-  # o Studio fala com ela pelo service interno, e superfície de controle
-  # não precisa de rota pública.
-  path: /p-
+  # TODO worker público vive sob /apps/: o Kong faz o strip
+  # (/apps/meu-crm → /meu-crm chega ao Edger, qualquer que seja o nome —
+  # basename escolhido no Studio ou legado p-<id>) e envia
+  # X-Forwarded-Prefix, que o Edger ≥0.2.1 honra ao compor o base_href.
+  # A Admin API fica FORA do ingress de propósito: o Studio fala com ela
+  # pelo service interno, e superfície de controle não precisa de rota
+  # pública.
+  path: /apps/
   pathType: ImplementationSpecific
   annotations:
     konghq.com/preserve-host: "true"
     konghq.com/protocols: https
-    konghq.com/strip-path: "false"
+    konghq.com/strip-path: "true"
   tls:
     enabled: false
 

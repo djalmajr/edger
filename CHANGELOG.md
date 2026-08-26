@@ -2,7 +2,29 @@
 
 All notable changes to EdgeR will be documented here.
 
-## [0.2.0] - Unreleased
+## [0.2.1] - 2026-08-25
+
+### Added
+
+- The dispatch honors `X-Forwarded-Prefix` (charset-checked — the value lands
+  inside served HTML) when composing `base_href` and `x-base`, so workers
+  behind a stripping proxy (e.g. a Kong route with `strip_path`) emit a
+  `<base href>` aligned with the public URL.
+
+### Fixed
+
+- Cross-builds from arm64 hosts: the frontend stage runs on the build
+  platform (static output; the x86_64 bun requires AVX2 and dies under
+  emulation) and `Dockerfile.cross` cross-compiles the orchestrator with the
+  cross GCC as linker instead of emulating rustc, which segfaults under
+  Rosetta.
+- The labdev chart overlay routes public workers through Kong on the shared
+  wildcard host (`/p-` as a string prefix, no strip): the rke2 ingress-nginx
+  normalizes every pathType to segment semantics, so a string prefix never
+  matches there; the Admin API has no public route at all. The image now
+  comes from the public ghcr (SemVer tag, digest-pinned), like tenancit.
+
+## [0.2.0] - 2026-08-25
 
 ### Changed
 
