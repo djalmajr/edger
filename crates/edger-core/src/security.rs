@@ -4,6 +4,82 @@ use crate::{ApiKeyPrincipal, CoreError};
 
 pub const INTERNAL_REQUEST_HEADER: &str = "x-edger-internal";
 
+/// O catálogo INTEIRO de permissions atribuíveis a uma key. `"*"` não é
+/// armazenável de propósito: root já é tudo por construção, e manter keys
+/// sempre enumeradas deixa a matemática de subconjunto da anti-escalada
+/// trivial (nada de "glob concede glob").
+pub const PERMISSION_CATALOG: &[&str] = &[
+    "workers:read",
+    "workers:install",
+    "workers:delete",
+    "workers:promote",
+    "workers:invoke",
+    "observability:read",
+    "keys:manage",
+];
+
+/// Anti-escalada da criação/edição de keys: quem concede não dá o que não
+/// tem. Permissions precisam pertencer ao catálogo E (criador não-root) ao
+/// conjunto do criador; namespaces e workers concedidos exigem `"*"` do
+/// criador ou pertinência LITERAL na lista dele — sem subsunção de glob
+/// (decidir se "p-abc*" contém "p-abc-api*" é convite a bug de segurança).
+pub fn validate_key_grant(
+    creator: &ApiKeyPrincipal,
+    permissions: &[String],
+    namespaces: &[String],
+    workers: &[String],
+) -> Result<(), CoreError> {
+    if permissions.is_empty() {
+        return Err(CoreError::new(
+            "VALIDATION_ERROR",
+            "at least one permission is required",
+        ));
+    }
+    for permission in permissions {
+        if !PERMISSION_CATALOG.contains(&permission.as_str()) {
+            return Err(CoreError::new(
+                "VALIDATION_ERROR",
+                format!("unknown permission: {permission}"),
+            ));
+        }
+        if !principal_has_permission(creator, permission) {
+            return Err(CoreError::new(
+                "KEY_GRANT_DENIED",
+                format!("creator lacks permission being granted: {permission}"),
+            ));
+        }
+    }
+    validate_scope_grant(creator, "namespace", namespaces, &creator.namespaces)?;
+    validate_scope_grant(creator, "worker", workers, &creator.workers)?;
+    Ok(())
+}
+
+fn validate_scope_grant(
+    creator: &ApiKeyPrincipal,
+    kind: &str,
+    granted: &[String],
+    owned: &[String],
+) -> Result<(), CoreError> {
+    if granted.is_empty() {
+        return Err(CoreError::new(
+            "VALIDATION_ERROR",
+            format!("at least one {kind} entry is required (use \"*\")"),
+        ));
+    }
+    if creator.is_root || owned.iter().any(|entry| entry == "*") {
+        return Ok(());
+    }
+    for entry in granted {
+        if !owned.contains(entry) {
+            return Err(CoreError::new(
+                "KEY_GRANT_DENIED",
+                format!("creator cannot grant {kind} scope: {entry}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn is_mutating_method(method: &str) -> bool {
     matches!(
         method.to_ascii_uppercase().as_str(),
@@ -95,9 +171,14 @@ mod tests {
             role: "operator".into(),
             permissions: permissions.into_iter().map(str::to_string).collect(),
             namespaces: namespaces.into_iter().map(str::to_string).collect(),
+            workers: vec!["*".into()],
             is_root: false,
             expires_at: None,
         }
+    }
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
     }
 
     #[test]
@@ -126,6 +207,98 @@ mod tests {
 
         let wildcard = scoped_principal(vec!["*"], vec!["workers:read"]);
         assert!(principal_can_access_optional_namespace(&wildcard, None));
+    }
+
+    #[test]
+    fn key_grant_requires_subset_of_creator() {
+        use crate::principal::root_principal;
+
+        let creator = scoped_principal(vec!["@acme"], vec!["keys:manage", "workers:read"]);
+
+        // Subconjunto literal passa.
+        assert!(validate_key_grant(
+            &creator,
+            &strings(&["workers:read"]),
+            &strings(&["@acme"]),
+            &strings(&["*"]), // criador tem workers ["*"]
+        )
+        .is_ok());
+
+        // Permission que o criador não tem é negada.
+        let err = validate_key_grant(
+            &creator,
+            &strings(&["workers:install"]),
+            &strings(&["@acme"]),
+            &strings(&["*"]),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "KEY_GRANT_DENIED");
+
+        // Namespace fora da lista do criador é negado.
+        let err = validate_key_grant(
+            &creator,
+            &strings(&["workers:read"]),
+            &strings(&["@other"]),
+            &strings(&["*"]),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "KEY_GRANT_DENIED");
+
+        // "*" não é permission armazenável nem para root.
+        let err = validate_key_grant(
+            &root_principal(),
+            &strings(&["*"]),
+            &strings(&["*"]),
+            &strings(&["*"]),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "VALIDATION_ERROR");
+
+        // Root concede qualquer entrada do catálogo em qualquer escopo.
+        assert!(validate_key_grant(
+            &root_principal(),
+            &strings(&["workers:install", "keys:manage"]),
+            &strings(&["@qualquer"]),
+            &strings(&["p-abc*"]),
+        )
+        .is_ok());
+
+        // Listas vazias são inválidas.
+        let err =
+            validate_key_grant(&creator, &[], &strings(&["*"]), &strings(&["*"])).unwrap_err();
+        assert_eq!(err.code, "VALIDATION_ERROR");
+    }
+
+    #[test]
+    fn key_grant_worker_scope_is_literal_membership() {
+        let mut creator = scoped_principal(vec!["*"], vec!["keys:manage", "workers:invoke"]);
+        creator.workers = strings(&["p-abc*", "hello"]);
+
+        // Entrada literal da lista do criador passa (mesmo sendo glob).
+        assert!(validate_key_grant(
+            &creator,
+            &strings(&["workers:invoke"]),
+            &strings(&["*"]),
+            &strings(&["hello"]),
+        )
+        .is_ok());
+        assert!(validate_key_grant(
+            &creator,
+            &strings(&["workers:invoke"]),
+            &strings(&["*"]),
+            &strings(&["p-abc*"]),
+        )
+        .is_ok());
+
+        // SEM subsunção de glob: "p-abc-api" não está literalmente na lista.
+        let err = validate_key_grant(
+            &creator,
+            &strings(&["workers:invoke"]),
+            &strings(&["*"]),
+            &strings(&["p-abc-api"]),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "KEY_GRANT_DENIED");
     }
 
     #[test]

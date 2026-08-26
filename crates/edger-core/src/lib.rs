@@ -4,22 +4,26 @@
 //! Higher crates (`edger-worker`, `edger-isolation`, `edger-orchestrator`) depend on this.
 
 pub mod admin;
+pub mod api_key_store;
 pub mod auth;
 pub mod config;
 pub mod error;
 pub mod execution;
 pub mod isolate;
 pub mod manifest;
+pub mod mcp;
 pub mod principal;
 pub mod security;
 pub mod wire;
 pub mod worker_ref;
 
 pub use admin::{
-    AdminCatalogItem, AdminCatalogResponse, AdminErrorResponse, AdminMutationResponse,
-    AdminSessionResponse, AdminWorkerHealthCheckInfo, AdminWorkerInfo, AdminWorkersResponse,
+    AdminApiKeyCreatedResponse, AdminApiKeyInfo, AdminApiKeysResponse, AdminCatalogItem,
+    AdminCatalogResponse, AdminErrorResponse, AdminMutationResponse, AdminSessionResponse,
+    AdminWorkerHealthCheckInfo, AdminWorkerInfo, AdminWorkersResponse, CreateApiKeyRequest,
     WorkerOrigin,
 };
+pub use api_key_store::{ApiKeyStore, NewApiKey};
 pub use auth::{extract_api_key_from_pairs, HeaderPairs};
 pub use config::{
     effective_max_body_size_bytes, effective_max_body_size_bytes_usize, infer_execution_kind,
@@ -34,10 +38,13 @@ pub use manifest::{
     CronJob, DenoCacheMode, WorkerHealthCheck, WorkerHealthCheckMode, WorkerIsolation,
     WorkerManifest, WorkerVisibility,
 };
-pub use principal::{principal_can_access_namespace, root_principal, ApiKeyPrincipal};
+pub use principal::{
+    principal_can_access_namespace, principal_can_access_worker, root_principal, ApiKeyPrincipal,
+};
 pub use security::{
     is_mutating_method, is_sensitive_env_key, principal_can_access_optional_namespace,
-    principal_has_permission, require_same_origin, INTERNAL_REQUEST_HEADER,
+    principal_has_permission, require_same_origin, validate_key_grant, INTERNAL_REQUEST_HEADER,
+    PERMISSION_CATALOG,
 };
 pub use wire::{
     validate_headers, BodyStream, SerializedRequest, SerializedResponse, StreamedResponse,

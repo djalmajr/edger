@@ -90,3 +90,54 @@ pub struct AdminWorkerHealthCheckInfo {
 pub struct AdminWorkersResponse {
     pub workers: Vec<AdminWorkerInfo>,
 }
+
+/// Uma API key como o admin a enxerga: preview, nunca o segredo.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminApiKeyInfo {
+    pub id: u64,
+    pub name: String,
+    pub key_prefix: String,
+    pub role: String,
+    pub permissions: Vec<String>,
+    pub namespaces: Vec<String>,
+    pub workers: Vec<String>,
+    /// Epoch em segundos, como o resto do vocabulário do store.
+    pub created_at: u64,
+    pub last_used_at: Option<u64>,
+    pub expires_at: Option<u64>,
+    pub revoked_at: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminApiKeysResponse {
+    pub keys: Vec<AdminApiKeyInfo>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateApiKeyRequest {
+    pub name: String,
+    pub permissions: Vec<String>,
+    #[serde(default = "star_scope")]
+    pub namespaces: Vec<String>,
+    #[serde(default = "star_scope")]
+    pub workers: Vec<String>,
+    pub expires_at: Option<u64>,
+    /// Rótulo informativo (`operator` por default); autorização real vem das
+    /// permissions.
+    pub role: Option<String>,
+}
+
+fn star_scope() -> Vec<String> {
+    vec!["*".into()]
+}
+
+/// Resposta do create: a ÚNICA vez que `raw_key` existe fora do hash.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminApiKeyCreatedResponse {
+    pub key: AdminApiKeyInfo,
+    pub raw_key: String,
+}
