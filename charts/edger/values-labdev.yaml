@@ -9,11 +9,11 @@
 # interno do cluster. O Ingress expõe somente os workers públicos (/p-*);
 # a Admin API não tem rota pública nenhuma.
 #
-# Segredos ficam fora do chart. Pré-provisione no namespace `hyper`:
-#   - Secret `edger-root-key`, chave `root-key`;
-#   - Secret dockerconfigjson `harbor-cithyper` para o Harbor.
+# Segredos ficam fora do chart. Pré-provisione no namespace `hyper` o
+# Secret `edger-root-key`, chave `root-key`. A imagem vem do ghcr público —
+# nenhum pull secret.
 #
-# O CI publica a imagem, captura o digest imutável e o injeta no deploy:
+# O CI do GitHub publica a imagem em tag SemVer; instale com o digest:
 #
 #   helm upgrade --install edger charts/edger \
 #     --namespace hyper \
@@ -23,14 +23,14 @@
 replicaCount: 1
 
 image:
-  repository: repositorio.cithyper.click/centralit/edger
-  # Sempre preenchido pelo CI via --set-string; vazio permite somente render e
-  # instalações locais usando a tag/appVersion do chart.
+  # Publicada pelo workflow do GitHub em tag SemVer, como o tenancit — o
+  # labdev puxa o ghcr público direto, sem pull secret. Instale sempre por
+  # digest (--set-string image.digest=sha256:…), nunca por tag móvel.
+  repository: ghcr.io/djalmajr/edger
   digest: ""
   pullPolicy: IfNotPresent
 
-imagePullSecrets:
-  - name: harbor-cithyper
+imagePullSecrets: []
 
 ingress:
   enabled: true
