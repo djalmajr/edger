@@ -204,14 +204,17 @@ async fn delete_promote_and_invoke_authenticate_before_worker_lookup() {
     }
 }
 
-// Mutation captured: accidentally re-registering the removed keys API makes
-// either route return a non-404 response.
+// O Epic 17.A removeu a keys API e este teste era o tripwire da remoção.
+// A reintrodução é DELIBERADA (keys persistentes com permissions); o contrato
+// agora é o inverso: as rotas existem, e sem store configurado respondem 503
+// explícito — nunca o 404 de rota inexistente. O ciclo completo com store
+// vive em tests/api_keys_admin.rs.
 #[tokio::test]
-async fn removed_admin_keys_routes_stay_unregistered() {
+async fn admin_keys_routes_are_registered_again() {
     let app = build_pipeline(root_state());
 
     for method in ["GET", "POST"] {
-        let (status, _json, text) = send(
+        let (status, json, text) = send(
             app.clone(),
             method,
             "/api/admin/keys",
@@ -219,7 +222,12 @@ async fn removed_admin_keys_routes_stay_unregistered() {
             Body::empty(),
         )
         .await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "unexpected body: {text}");
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unexpected body: {text}"
+        );
+        assert_eq!(json["code"], "KEYS_STORE_UNAVAILABLE");
     }
 }
 

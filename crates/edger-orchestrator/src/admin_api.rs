@@ -9,10 +9,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, delete, get, post};
 use axum::{Json, Router};
 use edger_core::{
-    principal_has_permission, root_principal, AdminCatalogItem, AdminCatalogResponse,
-    AdminErrorResponse, AdminMutationResponse, AdminSessionResponse, AdminWorkerInfo,
-    AdminWorkersResponse, ApiKeyPrincipal, CoreError, SerializedRequest, WorkerOrigin,
-    WorkerVisibility,
+    principal_has_permission, root_principal, AdminApiKeysResponse, AdminCatalogItem,
+    AdminCatalogResponse, AdminErrorResponse, AdminMutationResponse, AdminSessionResponse,
+    AdminWorkerInfo, AdminWorkersResponse, ApiKeyPrincipal, CoreError, CreateApiKeyRequest,
+    SerializedRequest, WorkerOrigin, WorkerVisibility,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -76,6 +76,109 @@ pub fn router() -> Router<OrchestratorState> {
             "/api/admin/workers/{name}/files/download",
             get(download_worker_files),
         )
+        .route("/api/admin/keys", get(list_api_keys).post(create_api_key))
+        .route("/api/admin/keys/{id}/revoke", post(revoke_api_key))
+        .route("/api/admin/keys/{id}", delete(delete_api_key))
+}
+
+/// O store de keys — 503 quando a instância subiu sem ele (open mode, ou
+/// EDGER_API_KEYS_DB inutilizável): a gestão indisponível é um estado
+/// operacional explícito, não um 404 mentiroso.
+fn key_service(
+    state: &OrchestratorState,
+) -> Result<&std::sync::Arc<crate::api_keys::ApiKeyService>, CoreError> {
+    state.auth.key_service().ok_or_else(|| {
+        CoreError::new(
+            "KEYS_STORE_UNAVAILABLE",
+            "api key store is not configured on this instance",
+        )
+    })
+}
+
+async fn list_api_keys(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "keys:manage")?;
+        key_service(&state)?.list()
+    }
+    .await;
+    match result {
+        Ok(keys) => Json(AdminApiKeysResponse { keys }).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn create_api_key(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "keys:manage")?;
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        // Store antes do body: sem ele o endpoint é inutilizável qualquer
+        // que seja o payload — 503 domina 400.
+        let service = key_service(&state)?;
+        let request: CreateApiKeyRequest = serde_json::from_slice(&body)
+            .map_err(|err| CoreError::new("VALIDATION_ERROR", format!("invalid body: {err}")))?;
+        // A anti-escalada mora no validate_key_grant do create: o principal
+        // criador só concede subconjunto do que TEM.
+        service.create(&principal, request)
+    }
+    .await;
+    match result {
+        Ok(created) => (StatusCode::CREATED, Json(created)).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn revoke_api_key(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+) -> Response {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "keys:manage")?;
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        if !key_service(&state)?.revoke(id)? {
+            return Err(CoreError::new(
+                "NOT_FOUND",
+                format!("api key {id} not found"),
+            ));
+        }
+        Ok(json!({ "id": id, "revoked": true }))
+    }
+    .await;
+    match result {
+        Ok(result) => Json(result).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn delete_api_key(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+) -> Response {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "keys:manage")?;
+        validate_admin_mutation_security("DELETE", &headers, &principal)?;
+        if !key_service(&state)?.delete(id)? {
+            return Err(CoreError::new(
+                "NOT_FOUND",
+                format!("api key {id} not found"),
+            ));
+        }
+        Ok(json!({ "id": id, "deleted": true }))
+    }
+    .await;
+    match result {
+        Ok(result) => Json(result).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
 }
 
 async fn session(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
@@ -627,8 +730,11 @@ async fn observability_events(
     headers: HeaderMap,
     Query(query): Query<ObservabilityEventsQuery>,
 ) -> Response {
-    match require_root(&state, &headers).await {
-        Ok(_) => Json(state.server.operational_events().query(query.into())).into_response(),
+    match authenticate(&state, &headers)
+        .await
+        .and_then(|principal| require_permission(&principal, "observability:read"))
+    {
+        Ok(()) => Json(state.server.operational_events().query(query.into())).into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
 }
@@ -638,7 +744,10 @@ async fn observability_series(
     headers: HeaderMap,
     Query(query): Query<ObservabilitySeriesQuery>,
 ) -> Response {
-    if let Err(err) = require_root(&state, &headers).await {
+    if let Err(err) = authenticate(&state, &headers)
+        .await
+        .and_then(|principal| require_permission(&principal, "observability:read"))
+    {
         return admin_error(map_error_status(&err), &err, &headers);
     }
     let event_query = crate::observability::OperationalEventQuery {
@@ -660,7 +769,10 @@ async fn observability_events_stream(
     headers: HeaderMap,
     Query(query): Query<ObservabilityEventsQuery>,
 ) -> Response {
-    if let Err(err) = require_root(&state, &headers).await {
+    if let Err(err) = authenticate(&state, &headers)
+        .await
+        .and_then(|principal| require_permission(&principal, "observability:read"))
+    {
         return admin_error(map_error_status(&err), &err, &headers);
     }
     let cursor = query.cursor.or_else(|| {
@@ -891,8 +1003,17 @@ async fn worker_mutation(
     version: Option<String>,
     enabled: bool,
 ) -> Response {
-    match require_root(&state, &headers).await.and_then(|principal| {
+    // workers:promote, não root: ligar/desligar versões é a mesma família de
+    // decisão de "quais versões servem tráfego" que o promote.
+    let auth = async {
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "workers:promote")?;
         validate_admin_mutation_security("POST", &headers, &principal)?;
+        require_visible_worker(&state, &principal, &name, version.as_deref())?;
+        Ok(principal)
+    }
+    .await;
+    match auth.and_then(|_| {
         state
             .index
             .set_worker_enabled(&name, version.as_deref(), enabled)
@@ -1348,7 +1469,7 @@ fn download_too_large() -> CoreError {
     )
 }
 
-async fn authenticate(
+pub(crate) async fn authenticate(
     state: &OrchestratorState,
     headers: &HeaderMap,
 ) -> Result<ApiKeyPrincipal, CoreError> {
@@ -1402,7 +1523,8 @@ fn map_error_status(err: &CoreError) -> StatusCode {
         | "PROMOTE_INTERNAL_VERSION" => StatusCode::BAD_REQUEST,
         "UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
-        "CSRF_DENIED" | "FORBIDDEN" => StatusCode::FORBIDDEN,
+        "CSRF_DENIED" | "FORBIDDEN" | "KEY_GRANT_DENIED" => StatusCode::FORBIDDEN,
+        "KEYS_STORE_UNAVAILABLE" => StatusCode::SERVICE_UNAVAILABLE,
         "DOWNLOAD_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
         "COLLISION"
         | "DEPLOY_REVISION_REQUIRED"
@@ -1416,7 +1538,8 @@ fn map_error_status(err: &CoreError) -> StatusCode {
         | "DEPLOY_TARGET_EXISTS"
         | "DEPLOY_PUBLIC_VERSION_IMMUTABLE"
         | "DEPLOY_HEALTH_CHECK_FAILED"
-        | "HEALTH_CHECK_NOT_CONFIGURED" => StatusCode::CONFLICT,
+        | "HEALTH_CHECK_NOT_CONFIGURED"
+        | "KEY_NOT_REVOKED" => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

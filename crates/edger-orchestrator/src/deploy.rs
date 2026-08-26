@@ -249,6 +249,14 @@ pub fn install_worker_from_zip(
         package_name_hint.as_deref(),
     )?;
     let inspected_worker = create_worker_ref(inspected_package_dir, inspected_manifest)?;
+    // Escopo por worker da key, ANTES de qualquer efeito no root de install:
+    // o nome definitivo só existe depois de inspecionar o manifest do ZIP.
+    if !edger_core::principal_can_access_worker(principal, &inspected_worker.name) {
+        return Err(CoreError::new(
+            "FORBIDDEN",
+            format!("api key is not scoped to worker: {}", inspected_worker.name),
+        ));
+    }
     let core = is_core_name(&inspected_worker.name);
     let root = install_root(index, core)?;
     let staging = tempfile::Builder::new()

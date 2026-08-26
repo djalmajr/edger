@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use edger_core::{
-    create_worker_ref, principal_can_access_optional_namespace, AdminWorkerHealthCheckInfo,
-    AdminWorkerInfo, ApiKeyPrincipal, CoreError, CronJob, WorkerHealthCheckMode, WorkerManifest,
-    WorkerOrigin, WorkerRef, WorkerVisibility,
+    create_worker_ref, principal_can_access_optional_namespace, principal_can_access_worker,
+    AdminWorkerHealthCheckInfo, AdminWorkerInfo, ApiKeyPrincipal, CoreError, CronJob,
+    WorkerHealthCheckMode, WorkerManifest, WorkerOrigin, WorkerRef, WorkerVisibility,
 };
 
 use crate::router::PluginRef;
@@ -412,6 +412,9 @@ impl ManifestIndex {
             .into_iter()
             .filter(|worker| {
                 principal_can_access_optional_namespace(principal, worker.namespace.as_deref())
+                    // Escopo de RECURSO da key: este é o choke point — delete,
+                    // promote, invoke e files enxergam via require_visible_worker.
+                    && principal_can_access_worker(principal, &worker.name)
             })
             .collect()
     }
