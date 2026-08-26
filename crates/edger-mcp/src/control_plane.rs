@@ -310,6 +310,59 @@ pub fn list_observability_events(ctx: &McpContext, args: ObservabilityEventsArgs
     admin.json(admin.request(Method::GET, url))
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateApiKeyArgs {
+    pub name: String,
+    pub permissions: Vec<String>,
+    #[serde(default = "star_scope")]
+    pub namespaces: Vec<String>,
+    #[serde(default = "star_scope")]
+    pub workers: Vec<String>,
+    pub expires_at: Option<u64>,
+}
+
+fn star_scope() -> Vec<String> {
+    vec!["*".into()]
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeApiKeyArgs {
+    pub id: u64,
+}
+
+pub fn list_api_keys(ctx: &McpContext) -> Result<Value> {
+    let admin = AdminClient::new(ctx)?;
+    let url = admin.endpoint(["api", "admin", "keys"])?;
+    admin.json(admin.request(Method::GET, url))
+}
+
+pub fn create_api_key(ctx: &McpContext, args: CreateApiKeyArgs) -> Result<Value> {
+    let admin = AdminClient::new(ctx)?;
+    let url = admin.endpoint(["api", "admin", "keys"])?;
+    let body = json!({
+        "name": args.name,
+        "permissions": args.permissions,
+        "namespaces": args.namespaces,
+        "workers": args.workers,
+        "expiresAt": args.expires_at,
+    });
+    admin.json(
+        admin
+            .request(Method::POST, url)
+            .header(CONTENT_TYPE, "application/json")
+            .body(body.to_string()),
+    )
+}
+
+pub fn revoke_api_key(ctx: &McpContext, args: RevokeApiKeyArgs) -> Result<Value> {
+    let admin = AdminClient::new(ctx)?;
+    let id = args.id.to_string();
+    let url = admin.endpoint(["api", "admin", "keys", id.as_str(), "revoke"])?;
+    admin.json(admin.request(Method::POST, url))
+}
+
 fn mutate_worker(
     ctx: &McpContext,
     args: WorkerActionArgs,
