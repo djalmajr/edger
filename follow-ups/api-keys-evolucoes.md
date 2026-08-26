@@ -11,6 +11,3 @@
 - **Migração do Studio para key escopada**: trocar EDGER_ROOT_KEY do chart
   do lowcode-studio por uma key `workers:*` + `keys` do namespace/prefixo
   `p-*` dele (decisão do usuário: rodada separada, deploy próprio).
-- **Suíte dos workers**: `ui/badge.test.tsx` já quebrava antes desta rodada
-  (falta `@testing-library/react` no workspace ui) — consertar dep ou
-  aposentar o teste.
