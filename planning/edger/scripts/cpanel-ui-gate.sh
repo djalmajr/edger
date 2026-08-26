@@ -59,6 +59,13 @@ require 'Workers at a glance' "$SOURCE/components/overview.tsx"
 require '/api/admin/observability/events\?limit=5' "$SOURCE/components/overview.tsx"
 require 'apiDownload' "$SOURCE/lib/api.ts"
 reject '(Open Observability|Updated |Live · 5 seconds|worker versions in the metrics snapshot)' "$SOURCE/components/overview.tsx"
+# API keys screen: management endpoints, permission gating and the one-time
+# secret panel must stay wired.
+require '/api/admin/keys' "$SOURCE/components/api-keys.tsx"
+require 'canManageKeys' "$SOURCE/main.tsx"
+require 'keys:manage' "$SOURCE/lib/api.ts"
+require 'PERMISSION_CATALOG' "$SOURCE/lib/api.ts"
+require 'will never be shown' "$SOURCE/components/api-keys.tsx"
 reject '(lucide-react|iconify-icon|htm/preact|NativeSelect)' "$SOURCE"
 
 (cd "$ROOT/workers" && bun run --filter '@edger/cpanel' build)

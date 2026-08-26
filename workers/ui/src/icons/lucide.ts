@@ -19,6 +19,7 @@ import TriangleAlert from "~icons/lucide/triangle-alert";
 import X from "~icons/lucide/x";
 import Asterisk from "~icons/lucide/asterisk";
 import Atom from "~icons/lucide/atom";
+import Ban from "~icons/lucide/ban";
 import Boxes from "~icons/lucide/boxes";
 import Braces from "~icons/lucide/braces";
 import Component from "~icons/lucide/component";
@@ -73,6 +74,7 @@ import UploadCloud from "~icons/lucide/upload-cloud";
 import Webhook from "~icons/lucide/webhook";
 
 export {
+  Ban as BanIcon,
   Check,
   Check as CheckIcon,
   ChevronDown as ChevronDownIcon,
