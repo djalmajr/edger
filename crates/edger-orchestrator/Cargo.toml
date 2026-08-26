@@ -56,6 +56,7 @@ rusqlite.workspace = true
 sha2.workspace = true
 semver.workspace = true
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tempfile = "3"
 
