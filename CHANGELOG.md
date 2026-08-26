@@ -2,6 +2,22 @@
 
 All notable changes to EdgeR will be documented here.
 
+## [0.2.3] - 2026-08-26
+
+### Fixed
+
+- The root redirect (`/` → cPanel) uses a RELATIVE Location: behind a
+  stripping proxy the browser now resolves it inside the public prefix
+  instead of escaping to whatever owns `/cpanel/` on the shared host.
+
+### Changed
+
+- StaticSpa responses carry a cache policy: HTML is `no-cache` (a stale SPA
+  shell kept old code running across deploys), Vite-shaped fingerprinted
+  assets (`assets/name-<hash>`) are immutable for a year, and everything
+  else revalidates after five minutes. The cPanel and WebIDE builds now emit
+  fingerprinted filenames under `assets/` to match.
+
 ## [0.2.2] - 2026-08-26
 
 ### Fixed

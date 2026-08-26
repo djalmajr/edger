@@ -46,9 +46,41 @@ pub fn serve_static_spa(
 
     Ok(SerializedResponse {
         status: 200,
-        headers: vec![("content-type".into(), content_type.into())],
+        headers: vec![
+            ("content-type".into(), content_type.into()),
+            ("cache-control".into(), cache_control_for(&file_path).into()),
+        ],
         body: Some(Bytes::from(body)),
     })
+}
+
+// HTML is the pointer to everything else and must never stick — a stale SPA
+// shell keeps running old code long after a deploy. Fingerprinted assets
+// (Vite's `assets/name-<hash>` shape) are immutable by construction; both
+// gates are required so an un-hashed user file named e.g. `controller.js`
+// never gets pinned for a year. Everything else lives short and revalidates.
+fn cache_control_for(path: &Path) -> &'static str {
+    if content_type_for(path).starts_with("text/html") {
+        return "no-cache";
+    }
+    let under_assets = path
+        .parent()
+        .and_then(|dir| dir.file_name())
+        .is_some_and(|name| name == "assets");
+    let hashed_stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.rsplit('-').next())
+        .is_some_and(|tail| {
+            tail.len() >= 8
+                && tail.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && tail.chars().any(|c| c.is_ascii_digit())
+        });
+    if under_assets && hashed_stem {
+        "public, max-age=31536000, immutable"
+    } else {
+        "public, max-age=300"
+    }
 }
 
 fn resolve_spa_entrypoint(config: &WorkerConfig) -> Result<PathBuf, IsolationError> {
@@ -302,9 +334,39 @@ mod tests {
         let css = serve_static_spa("/index.css", Some("/todos/"), &config).unwrap();
         assert_eq!(
             css.headers,
-            vec![("content-type".into(), "text/css; charset=utf-8".into())]
+            vec![
+                ("content-type".into(), "text/css; charset=utf-8".into()),
+                ("cache-control".into(), "public, max-age=300".into()),
+            ]
         );
         assert_eq!(css.body.unwrap().as_ref(), b"body{}");
+    }
+
+    #[test]
+    fn cache_policy_pins_only_fingerprinted_assets_and_never_html() {
+        // A stale SPA shell keeps running old code after a deploy (seen live:
+        // the cPanel kept rewriting URLs out of its proxy prefix). HTML never
+        // sticks; only Vite-shaped assets/name-<hash> files are immutable —
+        // an un-hashed "controller.js" must not be pinned for a year.
+        assert_eq!(cache_control_for(Path::new("/w/index.html")), "no-cache");
+        assert_eq!(
+            cache_control_for(Path::new("/w/assets/app-a1b2c3d4.js")),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_control_for(Path::new("/w/assets/noto-sans-latin-wght-normal-Bx2K9zM1.woff2")),
+            "public, max-age=31536000, immutable"
+        );
+        // Hash-like tail but outside assets/ — short-lived.
+        assert_eq!(
+            cache_control_for(Path::new("/w/app-a1b2c3d4.js")),
+            "public, max-age=300"
+        );
+        // Under assets/ but no digit in the tail — a word, not a hash.
+        assert_eq!(
+            cache_control_for(Path::new("/w/assets/component-controller.js")),
+            "public, max-age=300"
+        );
     }
 
     #[test]

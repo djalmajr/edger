@@ -21,12 +21,12 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       output: {
-        entryFileNames: "app.js",
-        chunkFileNames: "[name].js",
-        assetFileNames: (asset) =>
-          asset.names?.some((name) => name.endsWith(".css"))
-            ? "styles.css"
-            : "[name][extname]",
+        // Fingerprinted under assets/: the runtime pins these as immutable
+        // while the HTML shell stays no-cache — a stale shell once kept the
+        // old SPA (and its bugs) alive across deploys.
+        entryFileNames: "assets/[name]-[hash].js",
+        chunkFileNames: "assets/[name]-[hash].js",
+        assetFileNames: "assets/[name]-[hash][extname]",
       },
     },
   },

@@ -69,8 +69,12 @@ pub fn build_pipeline(state: OrchestratorState) -> Router {
 /// (instead of serving the SPA at `/`) means the cPanel has one canonical URL
 /// with a stable base path — swappable/client-routed frontends stay correct —
 /// while app workers keep the bare `/<worker>` namespace and unknown paths 404.
+/// The Location is RELATIVE on purpose: the browser resolves it against the
+/// PUBLIC URL, so behind a stripping proxy `/apps/` becomes `/apps/cpanel/`
+/// instead of escaping the prefix (an absolute `/cpanel/` landed on whatever
+/// owned that path on the shared host).
 async fn root_redirect() -> impl IntoResponse {
-    axum::response::Redirect::temporary("/cpanel/")
+    axum::response::Redirect::temporary("cpanel/")
 }
 
 async fn health_handler() -> impl IntoResponse {

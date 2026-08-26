@@ -2,8 +2,8 @@ apiVersion: v2
 name: edger
 description: Helm chart for EdgeR, a Rust runtime for JS and WASM workers
 type: application
-version: 0.2.3
-appVersion: "0.2.2"
+version: 0.2.4
+appVersion: "0.2.3"
 keywords:
   - edger
   - edge-runtime
