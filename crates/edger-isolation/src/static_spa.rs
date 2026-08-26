@@ -354,7 +354,9 @@ mod tests {
             "public, max-age=31536000, immutable"
         );
         assert_eq!(
-            cache_control_for(Path::new("/w/assets/noto-sans-latin-wght-normal-Bx2K9zM1.woff2")),
+            cache_control_for(Path::new(
+                "/w/assets/noto-sans-latin-wght-normal-Bx2K9zM1.woff2"
+            )),
             "public, max-age=31536000, immutable"
         );
         // Hash-like tail but outside assets/ — short-lived.

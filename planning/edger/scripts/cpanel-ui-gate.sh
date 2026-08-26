@@ -62,8 +62,10 @@ reject '(Open Observability|Updated |Live · 5 seconds|worker versions in the me
 reject '(lucide-react|iconify-icon|htm/preact|NativeSelect)' "$SOURCE"
 
 (cd "$ROOT/workers" && bun run --filter '@edger/cpanel' build)
-require 'src="\./app.js"' "$DIST/index.html"
-require 'href="\./styles.css"' "$DIST/index.html"
+# Fingerprinted since 0.2.3: assets/<name>-<hash>.<ext> — the runtime pins
+# these as immutable while the HTML shell stays no-cache.
+require 'src="\./assets/index-[A-Za-z0-9_-]*\.js"' "$DIST/index.html"
+require 'href="\./assets/index-[A-Za-z0-9_-]*\.css"' "$DIST/index.html"
 test -s "$DIST/noto-sans-latin-wght-normal.woff2"
 
 echo "cpanel-ui-gate ok"
