@@ -12,5 +12,8 @@
     "build:watch": "bun run --parallel --filter '@edger/*' build:watch",
     "typecheck": "bun run --parallel --filter '@edger/*' typecheck",
     "test": "bun run --parallel --filter '@edger/*' test"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^20.11.6"
   }
 }
