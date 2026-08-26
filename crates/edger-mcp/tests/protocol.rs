@@ -300,8 +300,10 @@ fn write_worker_file_defaults_to_dry_run_and_blocks_path_escape() {
         }),
     );
 
-    assert_eq!(escape["error"]["code"], -32603);
-    assert!(escape["error"]["message"]
+    // Falha de TOOL é resultado isError (contrato unificado com /api/mcp),
+    // não erro JSON-RPC — erro de protocolo fica para parse/método/tool.
+    assert_eq!(escape["result"]["isError"], true);
+    assert!(escape["result"]["content"][0]["text"]
         .as_str()
         .unwrap()
         .contains("parent traversal"));
@@ -443,10 +445,11 @@ fn prepare_commit_summarizes_local_git_changes_without_committing() {
 fn control_plane_tools_emit_admin_http_contracts() {
     let root = workspace();
     fs::write(root.path().join("package.zip"), b"zip-path").unwrap();
-    let (base_url, requests, server) = mock_admin(9);
+    let (base_url, requests, server) = mock_admin(12);
     let ctx = McpContext::with_control_plane(root.path(), base_url, "control-key").unwrap();
     let invalid_delete = tool_call(&ctx, "edger.delete_worker", json!({"name": "demo"}));
-    assert!(invalid_delete["error"]["message"]
+    assert_eq!(invalid_delete["result"]["isError"], true);
+    assert!(invalid_delete["result"]["content"][0]["text"]
         .as_str()
         .unwrap()
         .contains("version or explicit allVersions"));
@@ -457,13 +460,18 @@ fn control_plane_tools_emit_admin_http_contracts() {
         "edger.install_worker",
         json!({"zipPath": "package.zip", "force": true}),
     );
-    assert!(invalid_force["error"]["message"]
+    assert_eq!(invalid_force["result"]["isError"], true);
+    assert!(invalid_force["result"]["content"][0]["text"]
         .as_str()
         .unwrap()
         .contains("expectedRevision"));
     let call_success = |name: &str, arguments: Value| {
         let response = tool_call(&ctx, name, arguments);
         assert!(response.get("error").is_none(), "{name} failed: {response}");
+        assert_eq!(
+            response["result"]["isError"], false,
+            "{name} refused: {response}"
+        );
         response
     };
 
@@ -521,8 +529,14 @@ fn control_plane_tools_emit_admin_http_contracts() {
         "edger.list_observability_events",
         json!({"worker": "demo", "limit": 5}),
     );
+    call_success("edger.list_api_keys", json!({}));
+    call_success(
+        "edger.create_api_key",
+        json!({"name": "ci", "permissions": ["workers:read"], "workers": ["demo"]}),
+    );
+    call_success("edger.revoke_api_key", json!({"id": 7}));
 
-    let requests = (0..9)
+    let requests = (0..12)
         .map(|_| requests.recv_timeout(Duration::from_secs(2)).unwrap())
         .collect::<Vec<_>>();
     server.join().unwrap();
@@ -554,4 +568,8 @@ fn control_plane_tools_emit_admin_http_contracts() {
         .any(|line| line == "authorization: bearer control-key"));
     assert!(requests[7].ends_with("payload"));
     assert!(requests[8].starts_with("GET /api/admin/observability/events?limit=5&worker=demo "));
+    assert!(requests[9].starts_with("GET /api/admin/keys "));
+    assert!(requests[10].starts_with("POST /api/admin/keys "));
+    assert!(requests[10].contains("\"permissions\":[\"workers:read\"]"));
+    assert!(requests[11].starts_with("POST /api/admin/keys/7/revoke "));
 }

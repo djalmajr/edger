@@ -11,7 +11,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::contracts::EDGER_SCHEMA_VERSION;
+use edger_core::mcp::EDGER_SCHEMA_VERSION;
 
 #[derive(Clone)]
 pub struct McpContext {
