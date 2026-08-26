@@ -113,6 +113,37 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Keys persistentes (egk_): só fazem sentido com auth configurada — em
+    // open mode tudo já é root e o store nem inicializa. Falha de open vira
+    // warn, não crash: uma instância sem o PVC continua servindo com root.
+    let auth = if auth.is_open() {
+        auth
+    } else {
+        let db_path = std::env::var("EDGER_API_KEYS_DB")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(".edger/api-keys.db"));
+        if let Some(parent) = db_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                tracing::warn!(path = %parent.display(), error = %err, "api keys dir not creatable");
+            }
+        }
+        match edger_orchestrator::api_keys::ApiKeyService::open(&db_path) {
+            Ok(service) => {
+                tracing::info!(path = %db_path.display(), "api key store ready");
+                auth.with_key_service(std::sync::Arc::new(service))
+            }
+            Err(err) => {
+                tracing::warn!(path = %db_path.display(), code = %err.code, "api key store unavailable: {}", err.message);
+                auth
+            }
+        }
+    };
+
     let state = OrchestratorState {
         server: server.clone(),
         pool,

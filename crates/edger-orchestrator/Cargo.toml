@@ -52,6 +52,8 @@ http.workspace = true
 hyper.workspace = true
 jsonwebtoken = "9"
 uuid.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
 semver.workspace = true
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

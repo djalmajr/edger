@@ -1,6 +1,7 @@
 //! edger-orchestrator — HTTP server, routing, auth, and worker dispatch.
 
 pub mod admin_api;
+pub mod api_keys;
 pub mod auth;
 pub mod cron;
 pub mod deploy;
