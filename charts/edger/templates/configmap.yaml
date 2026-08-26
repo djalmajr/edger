@@ -10,6 +10,9 @@ data:
   EDGER_CORE_WORKER_DIR: {{ .Values.runtime.coreWorkerDir | quote }}
   EDGER_CORE_WORKER_OVERLAY_DIR: {{ .Values.runtime.coreWorkerOverlayDir | quote }}
   EDGER_CRON_ENABLED: {{ .Values.cron.enabled | quote }}
+  # SQLite das api-keys no PVC de user workers (RWO + Recreate = single
+  # writer garantido). Backup = snapshot do PVC.
+  EDGER_API_KEYS_DB: {{ .Values.apiKeys.dbPath | default (printf "%s/.edger/api-keys.db" .Values.runtime.workerDirs) | quote }}
   EDGER_JS_RUNTIME: {{ .Values.runtime.jsRuntime | quote }}
   {{- if .Values.otel.enabled }}
   EDGER_OTEL_ENABLED: "true"

@@ -2,6 +2,42 @@
 
 All notable changes to EdgeR will be documented here.
 
+## [0.3.0] - 2026-08-26
+
+### Added
+
+- `/api/mcp`: the control-plane MCP over HTTP — POST-only stateless JSON-RPC
+  (native batch; tool failures are `isError` results carrying `_meta.status`).
+  Tools self-dispatch through the Admin API router with the caller's own
+  credential, so permissions, CSRF, worker scope and deploy contracts are
+  identical to REST. Remote subset only: no local filesystem/authoring tools,
+  and install takes `zipBase64` (96 MiB body limit).
+- Persistent API keys with permissions: SQLite store (`EDGER_API_KEYS_DB`,
+  default `<workerDirs>/.edger/api-keys.db` on the existing PVC), `egk_`
+  prefixed secrets hashed with the historical `edger-auth-v1` salt, per-key
+  permission catalog (`workers:read|install|delete|promote|invoke`,
+  `observability:read`, `keys:manage`), tenant `namespaces` and a new
+  per-worker resource scope (`workers`: exact name or suffix glob). Auth
+  order: root key, then `egk_` store, then OIDC.
+- Key management everywhere: REST (`GET/POST /api/admin/keys`,
+  `POST /api/admin/keys/{id}/revoke`, `DELETE /api/admin/keys/{id}` — 201
+  returns the raw key ONCE; revoke is terminal; delete requires prior revoke),
+  MCP tools (`edger.list_api_keys`/`create_api_key`/`revoke_api_key` on both
+  transports) and a cPanel screen (scope checkboxes, one-time secret panel,
+  revoke/delete) gated by `keys:manage`. Anti-escalation everywhere: a
+  non-root creator only grants a subset of its own permissions/scopes, with
+  no glob subsumption.
+
+### Changed
+
+- Observability endpoints (`events`, `series`, `events/stream`) moved from
+  root-only to the `observability:read` permission; worker enable/disable
+  moved from root-only to `workers:promote` (same which-versions-serve-traffic
+  family). Root keeps everything — the change is purely additive for keys.
+- BREAKING (stdio MCP): tool failures now come back as `isError` results
+  instead of JSON-RPC `-32603` errors, unifying the failure contract with
+  `/api/mcp`. JSON-RPC errors remain for parse/unknown-method/unknown-tool.
+
 ## [0.2.4] - 2026-08-26
 
 ### Fixed

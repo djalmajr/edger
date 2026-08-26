@@ -8,6 +8,7 @@
 //!   (default `.edger/core-worker-overlays`)
 //! - `ROOT_API_KEY` — control-plane root key (optional)
 //! - `EDGER_ROOT_KEY_FILE` — file-backed control-plane root key (takes precedence over `ROOT_API_KEY`)
+//! - `EDGER_API_KEYS_DB` — SQLite das api-keys persistentes (default `.edger/api-keys.db`; só inicializa com auth configurada)
 //! - `EDGER_OIDC_ISSUER` — opt-in control-plane OIDC issuer; unset disables OIDC
 //! - `EDGER_OIDC_AUDIENCE` — required audience when `EDGER_OIDC_ISSUER` is set
 //! - `EDGER_OIDC_NAMESPACES_CLAIM` — optional dotted namespace claim path (default `namespaces`)
