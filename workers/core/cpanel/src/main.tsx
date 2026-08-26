@@ -178,6 +178,7 @@ import {
   type RuntimeData,
   type RuntimeWorker,
   type Worker,
+  workerBasePath,
   workerUrl,
 } from "./lib/api";
 
@@ -2016,7 +2017,10 @@ function CpanelApp() {
 }
 
 const rootRoute = createRootRoute({ component: CpanelApp });
-const router = createRouter({ routeTree: rootRoute, basepath: "/cpanel" });
+// The mount comes from the runtime-injected <base href> — "/apps/cpanel"
+// behind a stripping proxy, "/cpanel" bare. Hardcoding the latter made the
+// router rewrite URLs out of the proxy prefix on navigation.
+const router = createRouter({ routeTree: rootRoute, basepath: workerBasePath || "/cpanel" });
 declare module "@tanstack/react-router" {
   interface Register {
     router: typeof router;

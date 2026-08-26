@@ -2,6 +2,16 @@
 
 All notable changes to EdgeR will be documented here.
 
+## [0.2.2] - 2026-08-26
+
+### Fixed
+
+- The cPanel and WebIDE are proxy-prefix-aware: router basepath, admin/metrics
+  calls and worker links now derive from the runtime-injected `<base href>`
+  instead of hardcoded absolute paths — behind a stripping proxy the SPA no
+  longer escapes its prefix (logins hit whatever owned `/api` out there and
+  navigation rewrote URLs out of the mount).
+
 ## [0.2.1] - 2026-08-25
 
 ### Added

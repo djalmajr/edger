@@ -36,7 +36,10 @@ function WebIdeApp() {
 }
 
 const rootRoute = createRootRoute({ component: WebIdeApp });
-const router = createRouter({ routeTree: rootRoute, basepath: "/webide" });
+// The mount comes from the runtime-injected <base href> — "/apps/webide"
+// behind a stripping proxy, "/webide" bare.
+const workerBasePath = new URL(document.baseURI).pathname.replace(/\/+$/, "");
+const router = createRouter({ routeTree: rootRoute, basepath: workerBasePath || "/webide" });
 
 declare module "@tanstack/react-router" {
   interface Register {

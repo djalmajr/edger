@@ -87,6 +87,20 @@ export type OperationalEvent = {
   worker?: string;
 };
 
+// The runtime serves this worker under the injected <base href> — behind a
+// stripping proxy that is e.g. "/apps/cpanel/", not "/cpanel/". Absolute
+// paths would escape the proxy prefix and land on whatever owns "/" out
+// there, so the SPA derives everything from the base: its own mount for the
+// router, and the base's PARENT as the runtime root for admin/metrics calls.
+// Guarded for non-DOM test runs — the SPA always has a document.
+const baseURI = typeof document === "undefined" ? "http://localhost/" : document.baseURI;
+export const workerBasePath = new URL(baseURI).pathname.replace(/\/+$/, "");
+const runtimeRoot = new URL("..", baseURI);
+
+export function runtimeUrl(path: string): string {
+  return new URL(path.replace(/^\/+/, ""), runtimeRoot).toString();
+}
+
 export async function apiJson<T>(
   apiKey: string,
   path: string,
@@ -94,7 +108,7 @@ export async function apiJson<T>(
 ): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("x-api-key", apiKey);
-  const response = await fetch(path, { ...init, headers });
+  const response = await fetch(runtimeUrl(path), { ...init, headers });
   const text = await response.text();
   const data = text ? (JSON.parse(text) as unknown) : {};
   if (!response.ok) {
@@ -114,7 +128,7 @@ export async function apiDownload(
   apiKey: string,
   path: string,
 ): Promise<{ blob: Blob; filename: string }> {
-  const response = await fetch(path, { headers: { "x-api-key": apiKey } });
+  const response = await fetch(runtimeUrl(path), { headers: { "x-api-key": apiKey } });
   if (!response.ok) {
     const data = (await response.json().catch(() => ({}))) as {
       message?: string;
@@ -160,7 +174,9 @@ export function workerUrl(worker: Worker, latest = false) {
   const scoped = worker.namespace
     ? `@${worker.namespace}/${worker.name}`
     : worker.name;
-  return latest ? `/${scoped}` : `/${scoped}@${worker.version}`;
+  // Workers live at the runtime root — which behind a stripping proxy is
+  // the base's parent, not "/".
+  return runtimeUrl(latest ? scoped : `${scoped}@${worker.version}`);
 }
 
 export function compareSemver(a: string, b: string) {

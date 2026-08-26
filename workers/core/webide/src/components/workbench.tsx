@@ -513,7 +513,9 @@ function LoadedWorkbench({
           status: index < 2 ? "done" : index === 2 ? "active" : "pending",
         })),
       );
-      const response = await fetch("/api/admin/workers/install", {
+      // Resolve from the base href's parent: behind a stripping proxy the
+      // runtime root is not "/" (an absolute path would escape the prefix).
+      const response = await fetch(new URL("api/admin/workers/install", new URL("..", document.baseURI)), {
         method: "POST",
         headers: {
           "x-api-key": sessionStorage.getItem("edger.cpanel.apiKey") ?? "",
