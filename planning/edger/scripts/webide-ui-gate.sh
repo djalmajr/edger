@@ -34,9 +34,12 @@ require 'SortableItemHandle' "$SOURCE/components/workbench.tsx"
 reject '(lucide-react|iconify-icon|htm/preact|prompt\()' "$SOURCE"
 
 (cd "$ROOT/workers" && bun run --filter '@edger/webide' build)
-require 'src="\./app.js"' "$DIST/index.html"
-require 'href="\./styles.css"' "$DIST/index.html"
-test -s "$DIST/noto-sans-latin-wght-normal.woff2"
+# Fingerprinted since 0.2.3: assets/<name>-<hash>.<ext> — the runtime pins
+# these as immutable while the HTML shell stays no-cache.
+require 'src="\./assets/index-[A-Za-z0-9_-]*\.js"' "$DIST/index.html"
+require 'href="\./assets/index-[A-Za-z0-9_-]*\.css"' "$DIST/index.html"
+ls "$DIST"/assets/noto-sans-latin-wght-normal-*.woff2 >/dev/null 2>&1 \
+  || { echo "missing fingerprinted noto-sans woff2 in dist/assets" >&2; exit 1; }
 
 bash "$APP/e2e/validate-flows.sh"
 

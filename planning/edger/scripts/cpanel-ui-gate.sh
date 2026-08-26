@@ -66,6 +66,9 @@ reject '(lucide-react|iconify-icon|htm/preact|NativeSelect)' "$SOURCE"
 # these as immutable while the HTML shell stays no-cache.
 require 'src="\./assets/index-[A-Za-z0-9_-]*\.js"' "$DIST/index.html"
 require 'href="\./assets/index-[A-Za-z0-9_-]*\.css"' "$DIST/index.html"
-test -s "$DIST/noto-sans-latin-wght-normal.woff2"
+# The font is fingerprinted under assets/ too — and this check must FAIL
+# LOUDLY: a bare `test -s` under set -e died silently and hid the cause.
+ls "$DIST"/assets/noto-sans-latin-wght-normal-*.woff2 >/dev/null 2>&1 \
+  || { echo "missing fingerprinted noto-sans woff2 in dist/assets" >&2; exit 1; }
 
 echo "cpanel-ui-gate ok"
