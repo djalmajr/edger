@@ -308,7 +308,11 @@ function CreateKeyDialog({
 
   return (
     <Dialog onOpenChange={(next) => !next && onClose()} open={open}>
-      <DialogContent>
+      {/* O default do DialogContent é `sm:max-w-sm`, e nele o rótulo do campo
+          de workers quebra em duas linhas: o input desce e desalinha do par ao
+          lado. Este formulário tem duas colunas de verdade — sete permissions
+          e os dois escopos —, então pede a largura maior. */}
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>New API key</DialogTitle>
           <DialogDescription>
@@ -358,7 +362,9 @@ function CreateKeyDialog({
               })}
             </div>
           </fieldset>
-          <div className="grid grid-cols-2 gap-3">
+          {/* `items-end` mantém os dois inputs na mesma linha de base mesmo se
+              um rótulo quebrar — em tela estreita a largura acima não salva. */}
+          <div className="grid grid-cols-2 items-end gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="key-namespaces">Namespaces (CSV)</Label>
               <Input
@@ -369,11 +375,11 @@ function CreateKeyDialog({
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="key-workers">Workers (CSV, glob de sufixo)</Label>
+              <Label htmlFor="key-workers">Workers (CSV, suffix glob)</Label>
               <Input
                 id="key-workers"
                 onChange={(event) => setWorkers(event.target.value)}
-                placeholder="* ou p-abc*"
+                placeholder="* or p-abc*"
                 value={workers}
               />
             </div>
