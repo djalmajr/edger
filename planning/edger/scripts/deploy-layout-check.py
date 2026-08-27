@@ -30,7 +30,7 @@ CHECKS = (
         name="local state and auth files",
         path="docs/developers/06-operacao-e-testes.adoc",
         tokens=(
-            "EDGER_AUTH_DB",
+            "EDGER_API_KEYS_DB",
             "EDGER_STATE_DIR",
             "EDGER_EXTENSION_STATUS_FILE",
             "$EDGER_STATE_DIR/extension-status.json",
@@ -62,7 +62,7 @@ CHECKS = (
         path="docs/developers/06-operacao-e-testes.adoc",
         tokens=(
             "Backup local",
-            'cp "$EDGER_AUTH_DB"',
+            'cp "$EDGER_API_KEYS_DB"',
             'cp -R "$EDGER_STATE_DIR"',
             'cp "$EDGER_EXTENSION_STATUS_FILE"',
             "Restauração local",
