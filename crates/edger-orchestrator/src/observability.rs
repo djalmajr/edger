@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use edger_core::{principal_can_access_namespace, principal_can_access_worker, ApiKeyPrincipal};
 use serde::Serialize;
 use tokio::sync::broadcast;
 
@@ -148,6 +149,12 @@ pub struct OperationalEventQuery {
     pub status: Option<u16>,
     pub request_id: Option<String>,
     pub trace_id: Option<String>,
+    /// Escopo de QUEM pergunta, que é diferente dos filtros acima: aqueles o
+    /// chamador escolhe, este ele não pode afrouxar. Sem isso, uma key com
+    /// `observability:read` — permission que deixou de ser root-only — leria
+    /// os eventos de qualquer worker, inclusive de outro tenant. `None` é o
+    /// uso interno do runtime, que enxerga tudo.
+    pub scope: Option<ApiKeyPrincipal>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]
@@ -492,8 +499,30 @@ fn emit_operational_event(event: &OperationalEvent) {
     }
 }
 
+/// O evento pertence a quem pergunta? Root e uso interno passam direto. Para o
+/// resto, um evento que nomeia worker ou namespace só aparece se aquele nome
+/// estiver no escopo da key. Evento sem nenhum dos dois é do runtime, não de
+/// um tenant, e segue visível para quem tem a permission.
+fn event_in_scope(event: &OperationalEvent, query: &OperationalEventQuery) -> bool {
+    let Some(principal) = query.scope.as_ref() else {
+        return true;
+    };
+    if principal.is_root {
+        return true;
+    }
+    event
+        .worker
+        .as_deref()
+        .is_none_or(|worker| principal_can_access_worker(principal, worker))
+        && event
+            .namespace
+            .as_deref()
+            .is_none_or(|namespace| principal_can_access_namespace(principal, namespace))
+}
+
 fn event_matches(event: &OperationalEvent, query: &OperationalEventQuery) -> bool {
-    query.before.is_none_or(|before| event.id < before)
+    event_in_scope(event, query)
+        && query.before.is_none_or(|before| event.id < before)
         && query.since_ms.is_none_or(|since| event.at_ms >= since)
         && query.until_ms.is_none_or(|until| event.at_ms <= until)
         && option_matches(&query.namespace, &event.namespace)
