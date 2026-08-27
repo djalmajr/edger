@@ -29,4 +29,8 @@ isolamento Wasm, auth, extensões ou contratos de worker.
 | Wasm standalone com `wasmtime` e ABI HTTP v1 como base histórica; ABI atual em
   `planning/edger/docs/wasm-abi.md`
 | Aceito / Evoluído
+
+| link:../adr/0006-mcp-dois-transportes-vocabulario-no-core.md[0006]
+| MCP em dois transportes com vocabulário no `edger-core`
+| Aceito
 |===

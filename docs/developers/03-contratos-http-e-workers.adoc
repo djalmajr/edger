@@ -83,7 +83,9 @@ Antes de enviar ao isolate, o pipeline:
 | Probes do runtime, sem dispatch para worker.
 
 | `/api`, `/api/*`
-| Reservado; atualmente retorna `404` com `API_STUB`.
+| Prefixo reservado do control plane, nunca despachado para worker.
+  `/api/mcp` e `/api/admin/*` são rotas reais; o que não casa nenhuma delas
+  cai no fallback e retorna `404` com `API_STUB`.
 
 | `/.well-known/*`
 | Reservado; atualmente retorna `404` com `WELL_KNOWN`.
@@ -92,6 +94,195 @@ Antes de enviar ao isolate, o pipeline:
 | Resolver reconhece base de plugin; dispatch ainda retorna `501` com
   `PLUGIN_BASE`.
 |===
+
+==== Gestão de api-keys
+
+O control plane emite api-keys persistentes sob `/api/admin/keys`. As quatro
+rotas exigem a permission `keys:manage`, e as três mutações passam pela
+validação de segurança de mutação do Admin API: requisição vinda de browser
+(com `Origin`, `Sec-Fetch-Mode` ou `Sec-Fetch-Site`) precisa de `Origin`
+compatível com `Host`. Instância sem store de keys responde `503` com
+`KEYS_STORE_UNAVAILABLE` antes de validar o corpo — gestão indisponível é
+estado operacional explícito, não um `404` mentiroso.
+
+[cols="1,2,3",options="header"]
+|===
+| Método | Path | Contrato
+
+| `GET`
+| `/api/admin/keys`
+| Metadata de todas as keys: id, nome, preview, role, permissions,
+  namespaces, workers e os epochs de criação, último uso, expiração e
+  revogação. Nunca devolve segredo nem hash.
+
+| `POST`
+| `/api/admin/keys`
+| Cria a key e responde `201` com a metadata e o `rawKey`.
+
+| `POST`
+| `/api/admin/keys/{id}/revoke`
+| Revogação terminal: carimba `revokedAt` e derruba o cache de lookup, sem
+  contrapartida de reativação. Repetir não reescreve o timestamp original;
+  id inexistente responde `404`.
+
+| `DELETE`
+| `/api/admin/keys/{id}`
+| Apaga a linha. Exige revogação prévia: key ainda viva responde `409` com
+  `KEY_NOT_REVOKED`.
+|===
+
+Corpo do create:
+
+[source,json]
+----
+{
+  "name": "ci-deploy",
+  "permissions": ["workers:install", "workers:promote"],
+  "namespaces": ["@acme"],
+  "workers": ["p-abc*"],
+  "expiresAt": 1893456000,
+  "role": "operator"
+}
+----
+
+`name` (1 a 80 caracteres) e `permissions` são obrigatórios; `namespaces` e
+`workers` default para `["*"]`; `expiresAt` é epoch em segundos e precisa
+estar no futuro, e omiti-lo deixa a key sem expiração; `role` é rótulo,
+`operator` por default, e a autorização vem das permissions — a exceção é
+`POST /api/admin/workers/{name}/health-check`, que exige `role` igual a
+`admin` além de `workers:read`. Permission fora do catálogo do runtime
+responde `400` com `VALIDATION_ERROR`. O escopo `workers` é ortogonal ao de
+`namespaces`: casa `"*"`, o nome exato ou um glob de sufixo como `p-abc*`.
+
+O `201` é a única vez que o segredo existe fora do hash. A key crua é `egk_`
+seguido de 64 hex; o store guarda `sha256("edger-auth-v1:" || raw)` em hex e
+um preview de 12 caracteres para exibição. Nenhuma rota relê ou reexibe o
+valor, e não há rotate na v1 — perder a resposta significa criar outra key.
+
+Resposta do create, com a metadata da key abreviada:
+
+[source,json]
+----
+{
+  "key": { "id": 7, "name": "ci-deploy", "keyPrefix": "egk_<8 hex>" },
+  "rawKey": "egk_<64 hex>"
+}
+----
+
+Quem cria só concede o que tem. As permissions pedidas precisam pertencer ao
+catálogo e ao conjunto do criador, e cada namespace ou worker concedido exige
+`"*"` no criador ou pertinência literal na lista dele — não há subsunção de
+glob, então um criador restrito a `p-abc*` não emite key para `p-abc-api`.
+Concessão acima do próprio escopo responde `403` com `KEY_GRANT_DENIED`.
+`"*"` não é permission armazenável: a key sai sempre com o conjunto
+enumerado.
+
+Na autenticação o prefixo decide o caminho: a root key vem primeiro, depois a
+credencial `egk_` consultada no store e só então o bearer OIDC. Uma `egk_`
+inexistente, revogada ou expirada falha ali mesmo com `401`, sem cair no
+OIDC. A root key nunca está no store, e portanto não é revogável por esta
+via.
+
+==== MCP por HTTP
+
+`/api/mcp` é a superfície MCP do control plane. Aceita apenas `POST` —
+qualquer outro método para no router com `405` —, fala JSON-RPC 2.0 na versão
+de protocolo `2025-06-18` e é stateless: cada requisição autentica do zero,
+sem sessão nem handshake persistido. Um array no corpo é batch nativo, e
+requisição só de notificações responde `202` sem corpo. O limite de corpo é
+de 96 MiB, dimensionado pelo `zipBase64` do install.
+
+A autenticação acontece na porta, com a mesma função do Admin API, e o CSRF é
+avaliado com os headers originais da requisição. Um `401` ou `403` aqui é de
+transporte: o chamador não entrou.
+
+[cols="1,3",options="header"]
+|===
+| Método | Resposta
+
+| `initialize`
+| Versão de protocolo, capabilities, nome e versão do servidor e
+  instruções de uso.
+
+| `ping`
+| Objeto vazio.
+
+| `tools/list`
+| Descritores das tools deste transporte.
+
+| `tools/call`
+| Resultado da tool.
+
+| `notifications/*`
+| Nenhuma — notificação não gera resposta.
+|===
+
+As tools não reimplementam regra. Cada uma que toca o control plane monta um
+`Request` e o entrega ao próprio router do Admin API em processo, carregando
+a credencial de quem chamou; o invoke usa `x-edger-control-authorization`,
+porque o `Authorization` comum viaja para o worker. Permissão, escopo por
+worker, contrato de deploy e auditoria acontecem uma vez só, no admin.
+
+[cols="2,3",options="header"]
+|===
+| Tool | Rota admin despachada
+
+| `edger.list_capabilities`
+| Não despacha: devolve o contrato de capabilities com os descritores deste
+  transporte.
+
+| `edger.list_deployed_workers`
+| `GET /api/admin/workers`
+
+| `edger.install_worker`
+| `POST /api/admin/workers/install`
+
+| `edger.enable_worker`, `edger.disable_worker`
+| `POST /api/admin/workers/{name}/enable` e `.../disable`
+
+| `edger.delete_worker`
+| `DELETE /api/admin/workers/{name}`
+
+| `edger.promote_worker`
+| `POST /api/admin/workers/{name}/promote`
+
+| `edger.invoke_worker`
+| `/api/admin/workers/{name}/invoke[/{path}]` com o método pedido
+
+| `edger.list_observability_events`
+| `GET /api/admin/observability/events`
+
+| `edger.list_api_keys`
+| `GET /api/admin/keys`
+
+| `edger.create_api_key`
+| `POST /api/admin/keys`
+
+| `edger.revoke_api_key`
+| `POST /api/admin/keys/{id}/revoke`
+|===
+
+O conjunto é um subconjunto do transporte stdio: as tools locais de
+filesystem e autoria ficam de fora, porque o trust domain do servidor não é o
+da máquina de quem chama, e `edger.install_worker` aceita apenas `zipBase64`
+— `zipPath` é argumento do transporte local e volta como erro de argumento.
+Apagar key não tem tool: `DELETE /api/admin/keys/{id}` é só REST.
+
+Falha de tool não é erro de protocolo. Tool recusada volta como `result` com
+`isError: true` e `_meta.status` carregando o status HTTP da recusa — o do
+admin quando o dispatch chegou lá, `404` quando o nome da tool não existe.
+Erro JSON-RPC fica para o corpo não parseável (`-32700`), a mensagem que não
+é objeto ou não traz `method` (`-32600`) e o método desconhecido (`-32601`).
+
+[source,http]
+----
+POST /api/mcp
+authorization: Bearer <api-key>
+content-type: application/json
+
+{"jsonrpc":"2.0","id":1,"method":"tools/call",
+ "params":{"name":"edger.list_deployed_workers","arguments":{}}}
+----
 
 ==== Contrato JS/TS
 
@@ -164,22 +355,33 @@ default.
 | Payload/body inválido ou erro de parsing.
 
 | `401`
-| API key ausente, inválida ou expirada.
+| API key ausente, inválida, revogada ou expirada.
 
 | `403`
-| Principal sem acesso ao namespace do worker.
+| Principal sem acesso ao namespace do worker, principal sem a permission
+  exigida pela rota, `CSRF_DENIED` em mutação de browser com `Origin`
+  divergente do `Host`, ou `KEY_GRANT_DENIED` na criação de key acima do
+  escopo do criador.
 
 | `404`
 | Worker, versão, `/api` stub ou `/.well-known` stub não encontrado.
 
+| `405`
+| Método fora do contrato da rota; `/api/mcp` aceita apenas `POST`.
+
 | `409`
-| Colisão de manifest `(name, version)`.
+| Colisão de manifest `(name, version)`, ou `KEY_NOT_REVOKED` ao apagar key
+  que ainda não foi revogada.
 
 | `500`
 | Erro inesperado de pipeline, worker, isolate, store ou filesystem.
 
 | `501`
 | Base de plugin resolvida, mas dispatch de plugin ainda não implementado.
+
+| `503`
+| `KEYS_STORE_UNAVAILABLE`: a instância subiu sem store de api-keys e a
+  gestão de keys fica indisponível.
 |===
 
 Formato de erro:

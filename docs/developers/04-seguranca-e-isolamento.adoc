@@ -3,19 +3,198 @@
 
 ==== Fronteiras de autenticação
 
-O `AuthGate` roda antes do dispatch do worker:
+O data plane é aberto: o runtime não autentica request de worker e entrega o
+`Authorization` intacto para o worker resolver a própria auth. A fronteira
+gateada é o control plane — `/api/admin/*` e `/api/mcp` — mais o header
+`x-edger-internal`, que só destrava rotas internas para um principal root. O
+cPanel não é fronteira: é um worker servido pelo data plane aberto, que
+carrega a credencial do operador nas chamadas ao control plane.
 
-* `publicRoutes` globais ou do worker podem permitir bypass explícito.
-* Caso contrário, o runtime extrai API key de `Authorization: Bearer` ou
-  `X-API-Key`.
-* `ROOT_API_KEY` cria um principal root sintético, com `namespaces = ["*"]`.
-* API keys persistidas usam `edger-ext-auth` e `EDGER_AUTH_DB`.
-* O store SQLite guarda hash SHA-256 prefixado por `edger-auth-v1:` e nunca
-  precisa armazenar a key bruta.
-* Namespace é validado por `principal_can_access_namespace`.
+`ControlAuth::authenticate_headers` extrai a credencial de
+`Authorization: Bearer` ou `X-API-Key` e resolve em ordem fixa:
 
-Pendências conhecidas: backend Turso/libsql, hash argon2 e hardening adicional
-de autenticação estão no escopo da Fase 7.
+[cols="1,2,3",options="header"]
+|===
+| Ordem | Credencial | Resultado
+
+| 1
+| Valor idêntico à root key de `EDGER_ROOT_KEY_FILE` ou `ROOT_API_KEY`
+| Principal root sintético, com `permissions`, `namespaces` e `workers` em
+  `"*"`. O arquivo é relido por mtime, sem restart.
+
+| 2
+| Credencial com prefixo `egk_`
+| Lookup da key no store; devolve o principal escopado ou falha ali mesmo.
+  Uma `egk_` inválida não escorrega para o OIDC — o prefixo já declarou que
+  aquilo não é JWT.
+
+| 3
+| Bearer sem o prefixo `egk_`
+| Validação OIDC quando `EDGER_OIDC_ISSUER` e `EDGER_OIDC_AUDIENCE` estão
+  configurados; sem OIDC, `401`.
+|===
+
+A root key nunca entra no store. Ela é comparada em memória, não tem registro
+e por isso não há como revogá-la por essa via: trocar o arquivo ou a env é a
+revogação.
+
+A key persistente é `egk_` seguido de 64 hex, dois UUIDv4 concatenados. O
+store guarda `sha256("edger-auth-v1:" || raw)` em hex, contrato herdado do
+extinto `edger-ext-auth` e preservado de propósito, com teste travando o
+digest: mudar o sal ou o formato invalida todas as keys já emitidas de uma
+instância. Da key só ficam legíveis os 12 primeiros caracteres (`egk_` mais 8
+hex), usados como preview de exibição; o segredo bruto existe uma única vez,
+na resposta `201` do create, e nunca é relido nem re-exibido.
+
+O `SqliteApiKeyStore` persiste no SQLite apontado por `EDGER_API_KEYS_DB`, com
+default `.edger/api-keys.db`; o chart resolve esse caminho para dentro do PVC
+dos worker dirs. Sobre ele, o `ApiKeyService` serve o lookup de um cache em
+memória com TTL de 60 s, limpo inteiro a cada revoke e a cada delete, e grava
+`last_used_at` com throttle de 60 s para o hot path não virar write
+amplification. Em open mode — sem root key e sem OIDC — o store nem
+inicializa, e os endpoints de gestão respondem `503` com
+`KEYS_STORE_UNAVAILABLE` antes de ler o corpo.
+
+`/api/mcp` entra por essa mesma porta, com a `authenticate` do admin e a mesma
+checagem de CSRF; não existe caminho de autenticação paralelo.
+
+Pendências conhecidas: hash argon2, rate limit por key e rotate com grace
+period seguem fora da v1.
+
+==== Catálogo de permissions
+
+`PERMISSION_CATALOG` é a lista inteira do que uma key pode receber. `"*"` não
+é permission armazenável de propósito: root já é tudo por construção, e manter
+as keys sempre enumeradas deixa trivial a matemática de subconjunto da
+anti-escalada.
+
+[cols="1,2",options="header"]
+|===
+| Permission | Libera
+
+| `workers:read`
+| Listagem de workers, erros e error summary, listagem e download de arquivos
+  do worker. O health-check manual pede a mesma permission e ainda exige
+  `role: admin`.
+
+| `workers:install`
+| Install de pacote, upload de arquivos no worker e rescan do index.
+
+| `workers:delete`
+| Remoção de worker.
+
+| `workers:promote`
+| Promote de versão e o par enable/disable, que era root-only até a 0.3.0.
+
+| `workers:invoke`
+| Invocação administrativa do worker, na raiz e por path.
+
+| `observability:read`
+| Eventos, séries e o stream SSE de observabilidade, que antes eram root-only.
+  O resultado sai filtrado pelo escopo da key, não só pela permission.
+
+| `keys:manage`
+| Os quatro endpoints de api-keys e, no cPanel, a tela API Keys.
+|===
+
+O gate é o `require_permission` de cada handler, e o principal root passa por
+todos sem consultar o catálogo. `GET /api/admin/catalog` continua root-only,
+fora do vocabulário de permissions.
+
+Os endpoints de gestão são `GET /api/admin/keys`, `POST /api/admin/keys`,
+`POST /api/admin/keys/{id}/revoke` e `DELETE /api/admin/keys/{id}`. Todos
+exigem `keys:manage`, e as mutações ainda passam pela checagem de same-origin
+quando a request vem de browser.
+
+==== Escopo por namespace e por worker
+
+Uma key carrega dois escopos ortogonais. `namespaces` é a fronteira
+multi-tenant que já existia; `workers` é o escopo de recurso, campo novo no
+principal. O default de desserialização é `["*"]`, para que principal
+serializado antes do campo continue valendo; o validador OIDC grava o mesmo
+`"*"` explicitamente, porque a fronteira dele é o namespace do claim.
+
+[cols="1,3",options="header"]
+|===
+| Escopo | Regra de casamento
+
+| `namespaces`
+| `principal_can_access_optional_namespace`: `"*"` ou o nome literal do
+  namespace. Recurso sem namespace exige `"*"`.
+
+| `workers`
+| `principal_can_access_worker`: `"*"`, nome exato, ou glob de sufixo com
+  prefixo não vazio — `p-abc*` casa `p-abc-api`.
+|===
+
+O enforcement tem uma fonte só: `admin_workers_for_principal` filtra o index
+pelos dois escopos. `require_visible_worker` consulta essa lista antes de
+delete, promote, enable/disable, invoke e a leitura de erros recentes; a
+listagem, o download e a escrita de arquivos chegam nela por
+`resolve_worker_dir`. Worker fora do escopo responde `404` com `NOT_FOUND`, e
+não `403`: quem não pode operar o worker também não deve descobrir que ele
+existe, e um `403` transformaria a API administrativa em oráculo de nomes de
+outros tenants.
+
+Rota que lê por nome sem passar por essa fonte vaza escopo mesmo com a
+permission certa — foi o que aconteceu com a leitura de erros recentes, que
+entregava mensagem e stack de worker alheio a qualquer key com `workers:read`.
+O health-check manual continua resolvendo o worker no índice inteiro, e hoje é
+segurado pela dupla `workers:read` mais `role: admin`.
+
+Rota agregada tem o mesmo problema por outro caminho: ela não recebe nome
+nenhum, então não há o que resolver contra o inventário. O resumo de erros
+(`/api/admin/workers/error-summary`) é indexado por nome de worker e traz a
+última mensagem de cada um — entregá-lo inteiro daria de uma vez o inventário
+alheio e o texto de cada falha. Ele filtra o mapa pelo escopo antes de
+responder; root segue vendo tudo.
+
+A observabilidade não recebe nome de worker no path e por isso não passa pelo
+mesmo choke point: ela filtra na fonte. O `OperationalEventQuery` carrega, além
+dos filtros que o chamador escolhe, o principal de quem pergunta, e
+`event_matches` descarta o evento cujo worker ou namespace esteja fora do
+escopo. Isso vale de uma vez para a listagem, para as séries e para o stream
+SSE, que compartilham esse predicado — o SSE é o que mais importa, porque fica
+aberto emitindo evento a evento. Evento que não nomeia worker nem namespace é
+do runtime, não de um tenant, e continua visível para quem tem a permission.
+
+O install é a exceção deliberada, porque o nome definitivo só aparece depois
+de inspecionar o manifest do ZIP. O pacote é extraído num diretório temporário
+fora do root de install, o nome é confrontado com o escopo da key e um pacote
+fora do escopo é recusado com `403` `FORBIDDEN` antes de qualquer efeito. Aqui
+o nome veio do próprio chamador; não há o que esconder.
+
+==== Anti-escalada na criação de keys
+
+`validate_key_grant` é puro, vive em `edger-core` e roda no create antes do
+insert: quem concede não dá o que não tem.
+
+[cols="1,3",options="header"]
+|===
+| Regra | Efeito
+
+| Permission fora do `PERMISSION_CATALOG`
+| `400` `VALIDATION_ERROR`. `"*"` cai aqui, inclusive vindo de root.
+
+| Permission que o criador não possui
+| `403` `KEY_GRANT_DENIED`.
+
+| `namespaces` e `workers` concedidos
+| Liberados quando o criador é root ou tem `"*"` no escopo correspondente;
+  fora disso, exigem pertinência literal na lista do criador.
+
+| Lista de permissions, namespaces ou workers vazia
+| `400` `VALIDATION_ERROR`; escopo amplo se escreve explicitamente como `"*"`.
+|===
+
+Não há subsunção de glob: um criador com `workers: ["p-abc*"]` concede
+`p-abc*` de novo, mas não `p-abc-api`. Decidir por comparação de strings se um
+glob contém outro é a esperteza que vira bug de segurança, e recusar custa
+apenas uma entrada a mais na lista.
+
+A anti-escalada cobre o create e só ele. Listar, revogar e apagar não filtram
+por escopo: qualquer portador de `keys:manage` enxerga e derruba as keys da
+instância inteira, inclusive as de outro tenant.
 
 ==== Isolamento JS/TS
 
@@ -66,17 +245,25 @@ precisem ler arquivos locais.
 
 ==== Extensões
 
-Crates `edger-ext-*` precisam manter fronteiras rígidas:
-
-* dependem apenas de `edger-core`;
-* escolhem um modo por crate: `Middleware`, `AuthProvider` ou `WorkerHandler`;
-* são registradas explicitamente no bin `edger`;
-* não devem publicar crates internos manualmente em crates.io.
+Não há mais extensão em processo: as crates `edger-ext-*` e os traits de
+extensão do `edger-core` — `Middleware`, `AuthProvider`, `WorkerHandler` —
+saíram no Epic 17. A auth virou o `ControlAuth` built-in e o gateway saiu
+para o ingress externo. O ADR 0003 fica como registro histórico da decisão
+revogada.
 
 ==== Operação segura
 
 * Trate `ROOT_API_KEY` como segredo, mesmo em ambientes temporários.
-* Use `EDGER_AUTH_DB` fora de memória para ambientes persistentes.
+* Prefira uma key `egk_` escopada à root key em qualquer automação: a root não
+  tem registro no store nem revogação individual.
+* Aponte `EDGER_API_KEYS_DB` para um caminho dentro do PVC; o default
+  `.edger/api-keys.db` morre com o pod e leva junto as keys emitidas.
+* Guarde o segredo devolvido pelo create no ato: ele é exibido uma única vez e
+  o store só conhece o hash.
+* Revogue antes de apagar. A revogação é terminal, não existe reativar, e o
+  delete de uma key viva é recusado com `409` `KEY_NOT_REVOKED`.
+* Trate `keys:manage` como delegação ampla: o teto do portador limita só a
+  criação; listar, revogar e apagar alcançam qualquer key da instância.
 * Não injete segredos em manifests sem uma política de env allowlist.
 * Configure `allowNet` por worker ou `EDGER_DENO_ALLOW_NET` global antes de
   operar em ambiente multi-tenant; a ausência de allowlist deixa a rede aberta
