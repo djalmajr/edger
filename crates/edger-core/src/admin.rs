@@ -125,8 +125,9 @@ pub struct CreateApiKeyRequest {
     #[serde(default = "star_scope")]
     pub workers: Vec<String>,
     pub expires_at: Option<u64>,
-    /// Rótulo informativo (`operator` por default); autorização real vem das
-    /// permissions.
+    /// `operator` por default. A autorização vem das permissions, com UMA
+    /// exceção viva: o health-check manual exige `role` igual a `admin` além de
+    /// `workers:read` — ver `follow-ups/api-keys-evolucoes.md`.
     pub role: Option<String>,
 }
 
