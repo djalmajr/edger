@@ -2,12 +2,13 @@
 
 All notable changes to EdgeR will be documented here.
 
-## [0.3.0] - 2026-08-26
+## [0.3.0] - 2026-08-27
 
 ### Added
 
 - `/api/mcp`: the control-plane MCP over HTTP — POST-only stateless JSON-RPC
-  (native batch; tool failures are `isError` results carrying `_meta.status`).
+  (native batch; tool failures come back as `isError` results, carrying
+  `_meta.status` whenever the failure has an HTTP status behind it).
   Tools self-dispatch through the Admin API router with the caller's own
   credential, so permissions, CSRF, worker scope and deploy contracts are
   identical to REST. Remote subset only: no local filesystem/authoring tools,
@@ -27,6 +28,45 @@ All notable changes to EdgeR will be documented here.
   revoke/delete) gated by `keys:manage`. Anti-escalation everywhere: a
   non-root creator only grants a subset of its own permissions/scopes, with
   no glob subsumption.
+
+- Docs caught up with the code, including debt that predates this release:
+  `04-seguranca-e-isolamento` still described an `AuthGate` and `publicRoutes`
+  that no longer exist (the data plane has been open since Epic 17) and
+  credited API keys to the deleted `edger-ext-auth` crate; `06-operacao-e-testes`
+  documented `EDGER_AUTH_DB`, so its backup runbook copied a file the runtime
+  never writes. Both now describe the real auth order, the permission catalog,
+  both scopes and the anti-escalation rule; `03-contratos-http-e-workers` gained
+  the REST and `/api/mcp` contracts; ADR 0006 records why the MCP vocabulary
+  moved into `edger-core` and why HTTP tools self-dispatch through the Admin
+  router. `planning/edger/scripts/api-keys-mcp-e2e.py` is a re-runnable
+  end-to-end gate against a live instance (22 checks).
+
+### Fixed
+
+- Observability no longer hands a scoped key the whole store. Moving `events`,
+  `series` and the SSE stream off root-only (above) made
+  `observability:read` enough to read every worker's events — worker name,
+  namespace and message included — because the only `worker=`/`namespace=`
+  filters were the ones the caller chose. The query now also carries the
+  principal, and the single `event_matches` predicate the three routes share
+  drops anything outside the key's scope. Events that name no worker and no
+  namespace belong to the runtime, not to a tenant, and stay visible.
+- Per-worker scope no longer leaks through the error feed.
+  `GET /api/admin/workers/{name}/errors` read straight from the raw name, so a
+  key scoped to one worker got `200` with another worker's recent messages and
+  stack traces — the single route by name that skipped the choke point every
+  sibling goes through. It now resolves the worker first and answers `404` for
+  anything outside the scope, like the rest.
+- The aggregate error summary is scoped too. `GET /api/admin/workers/error-summary`
+  takes no worker name, so it never met the choke point and returned the whole
+  map: every worker that has failed, plus each one's latest message. A non-root
+  principal now sees only its own slice.
+
+  All three leaks were found by auditing the new documentation against the
+  code, reproduced against a live instance, and pinned by regression tests that
+  fail without the fix. They share one shape — a route that reads by name, or
+  returns an aggregate, without going through the scope filter — which is now
+  spelled out in `docs/developers/04-seguranca-e-isolamento.adoc`.
 
 ### Changed
 
