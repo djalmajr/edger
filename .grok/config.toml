@@ -1,5 +1,7 @@
 [mcp_servers.linear]
 url = "https://mcp.linear.app/mcp"
+enabled = true
 
 [mcp_servers.memory-personal]
 url = "https://memory.djalmajr.dev/mcp"
+enabled = true
