@@ -28,12 +28,19 @@
 | Raiz local permitida para o servidor MCP `edger-mcp`. Default: diretório
   atual do processo.
 
+| `EDGER_URL` e `EDGER_ROOT_KEY`
+| Servidor edger e credencial que o `edger-mcp` usa nas tools de control
+  plane. Valem só em par: configurar uma sem a outra aborta o start. URL
+  não-loopback exige `https`.
+
 | `ROOT_API_KEY`
 | Key root sintética para bootstrap/local. Opcional, mas necessária para chamar
   workers protegidos sem API key persistida.
 
-| `EDGER_AUTH_DB`
-| Caminho SQLite para API keys. Default: store em memória.
+| `EDGER_API_KEYS_DB`
+| Caminho SQLite das API keys persistentes. Default: `.edger/api-keys.db`. O
+  store só inicializa quando a auth do control plane está configurada; em open
+  mode ele nem abre.
 
 | `EDGER_DURABLE_SQL_PROVIDER`
 | Seleciona o provider SQL durável no composition root. Valores: `local`
@@ -110,8 +117,11 @@ histórico foi removido e não deve ser usado como fallback de runtime.
 
 ==== Control plane MCP local
 
-O crate `edger-mcp` entrega a primeira superfície AI-native local do edger. Ele
-roda por stdio, fala JSON-RPC 2.0 newline-delimited e não faz deploy remoto.
+O crate `edger-mcp` entrega a superfície AI-native local do edger. Ele roda por
+stdio e fala JSON-RPC 2.0 newline-delimited. Sem `EDGER_URL` e `EDGER_ROOT_KEY`
+ele é estritamente local: descobre, valida e escreve dentro do workspace
+autorizado, sem tocar em servidor nenhum. As duas variáveis andam em par —
+configurar só uma aborta o start em vez de subir meio conectado.
 
 [source,bash]
 ----
@@ -154,6 +164,16 @@ Tools iniciais:
   criar commit, abrir PR ou fazer deploy.
 |===
 
+O `tools/list` do stdio não para nessas seis: ele anuncia sempre, sem olhar
+env, as tools de control plane (`edger.install_worker`,
+`edger.list_deployed_workers`, `edger.enable_worker`, `edger.disable_worker`,
+`edger.delete_worker`, `edger.promote_worker`, `edger.invoke_worker`,
+`edger.list_observability_events`) e as de gestão de keys
+(`edger.list_api_keys`, `edger.create_api_key`, `edger.revoke_api_key`). Elas
+falam HTTP com um servidor edger real e é por elas que o deploy remoto sai. Sem
+`EDGER_URL` e `EDGER_ROOT_KEY` elas continuam listadas e falham na chamada,
+dizendo que o control plane não está configurado.
+
 Exemplo de chamada stdio:
 
 [source,bash]
@@ -168,7 +188,8 @@ Limites de segurança v1:
 * Escrita fica restrita a paths relativos sob `workers/`.
 * `workspaceRoot` e `workerDirs` não podem escapar da raiz configurada.
 * O inventário MCP não serializa `env` de manifests.
-* Validação é local; nenhuma tool realiza deploy remoto.
+* Validação é local; deploy remoto só sai pelas tools de control plane,
+  contra o `EDGER_URL` configurado e com a credencial de `EDGER_ROOT_KEY`.
 
 Validação stdio real registrada:
 
@@ -178,6 +199,44 @@ Validação stdio real registrada:
   `edger.prepare_commit` contra o workspace atual.
 * O dry-run de `edger.write_worker_file` não criou arquivo e
   `edger.prepare_commit` não fez commit, push, PR ou deploy remoto.
+
+==== Control plane MCP por HTTP
+
+`POST /api/mcp` publica o control plane como MCP remoto, autenticado por API
+key. A rota é POST-only, JSON-RPC 2.0 stateless — cada requisição autentica
+do zero, sem sessão — e aceita batch nativo; uma requisição só de
+notificações responde `202` sem corpo. A versão de protocolo MCP é
+`2025-06-18`.
+
+Autenticação e CSRF são avaliados na porta, com os headers originais e a
+mesma autenticação do Admin API: um `401` ou `403` daí é falha de transporte,
+não recusa de tool. As tools não reimplementam regra nenhuma. O handler monta
+um `Request` e o entrega ao próprio router do Admin API por `oneshot`,
+carregando a credencial de quem chamou — o `edger.invoke_worker` usa o slot
+dedicado `x-edger-control-authorization`, porque o `Authorization` comum
+viaja para o worker. Permissão, escopo por worker e auditoria acontecem uma
+vez só, no admin.
+
+[source,bash]
+----
+curl -s -X POST -H 'authorization: Bearer test-root' \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  http://127.0.0.1:19080/api/mcp
+----
+
+O subset de tools é `edger.list_capabilities` mais o de control plane e o de
+keys; as tools locais de authoring do stdio ficam de fora, porque o trust
+domain do servidor é outro.
+O `edger.install_worker` aceita apenas `zipBase64` — `zipPath` apontaria para
+o disco do servidor, não para o do chamador — e por isso o limite de corpo
+desta rota é `96 MiB`, folga para o pacote de deploy virar base64 dentro do
+envelope JSON.
+
+Falha de tool vira `result` com `isError: true` e `_meta.status`; erro de
+protocolo continua erro JSON-RPC. O stdio adotou o mesmo framing e deixou de
+responder `-32603` para tool recusada — mudança breaking registrada no
+CHANGELOG 0.3.0.
 
 ==== Validação manual de lançamento
 
@@ -274,23 +333,25 @@ pause tráfego de escrita antes da cópia:
 
 [source,bash]
 ----
-export EDGER_AUTH_DB=/var/lib/edger/auth.sqlite
+export EDGER_API_KEYS_DB=/var/lib/edger/api-keys.db
 export EDGER_STATE_DIR=/var/lib/edger/state
 export EDGER_EXTENSION_STATUS_FILE=/var/lib/edger/extension-status.json
 
 mkdir -p backups/edger-$(date +%Y%m%d)
-cp "$EDGER_AUTH_DB" backups/edger-$(date +%Y%m%d)/auth.sqlite
+cp "$EDGER_API_KEYS_DB" backups/edger-$(date +%Y%m%d)/api-keys.db
 cp -R "$EDGER_STATE_DIR" backups/edger-$(date +%Y%m%d)/state
 test -f "$EDGER_EXTENSION_STATUS_FILE" && \
   cp "$EDGER_EXTENSION_STATUS_FILE" backups/edger-$(date +%Y%m%d)/extension-status.json
 ----
 
 Restauração local é a operação inversa: pare o processo, restaure
-`EDGER_AUTH_DB`, `EDGER_STATE_DIR` e, quando usado, `EDGER_EXTENSION_STATUS_FILE`,
-depois reinicie com as mesmas variáveis. Quando `EDGER_STATE_DIR` não está
-configurado, os providers de estado são efêmeros e não há estado de app para
-preservar. Quando nenhum status store de extensões está configurado, o
-enable/disable de extensões permanece apenas em memória.
+`EDGER_API_KEYS_DB`, `EDGER_STATE_DIR` e, quando usado,
+`EDGER_EXTENSION_STATUS_FILE`, depois reinicie com as mesmas variáveis. Perder
+o banco de keys não é recuperável por outro caminho: os segredos brutos não
+existem em lugar nenhum, e cada key perdida precisa ser recriada. Quando
+`EDGER_STATE_DIR` não está configurado, os providers de estado são efêmeros e
+não há estado de app para preservar. Quando nenhum status store de extensões
+está configurado, o enable/disable de extensões permanece apenas em memória.
 
 ==== Troubleshooting operacional
 
@@ -332,8 +393,13 @@ enable/disable de extensões permanece apenas em memória.
 A API administrativa fica reservada sob `/api/admin/*` para evitar colisão com
 workers. `GET /api/admin/session` aceita qualquer API key válida e retorna o
 principal autenticado. `GET /api/admin/workers` aceita root ou uma key com
-`workers:read`; keys não-root veem somente workers dentro dos seus namespaces.
-O catálogo de módulos, endpoints de extensões, keys e mutações v1 exigem root.
+`workers:read`; keys não-root veem somente workers dentro dos seus namespaces
+e do seu escopo de worker. O catálogo de módulos e os endpoints de extensões
+exigem root. As demais rotas pedem a permission da própria operação:
+`workers:install` para install, upload de arquivos e rescan,
+`workers:delete` para remoção, `workers:promote` para promote e
+enable/disable, `workers:invoke` para invocação, `observability:read` para
+observabilidade e `keys:manage` para a gestão de keys.
 
 [cols="1,1,3",options="header"]
 |===
@@ -345,7 +411,9 @@ O catálogo de módulos, endpoints de extensões, keys e mutações v1 exigem ro
 
 | `GET`
 | `/api/admin/workers`
-| Lista workers descobertos com nome, namespace, versão, kind, source, status e rotas públicas. Keys não-root são filtradas por namespace.
+| Lista workers descobertos com nome, namespace, versão, kind, source, status
+  e rotas públicas. Keys não-root são filtradas por namespace e por escopo de
+  worker.
 
 | `GET`
 | `/api/admin/catalog`
@@ -360,6 +428,21 @@ O catálogo de módulos, endpoints de extensões, keys e mutações v1 exigem ro
 | `GET`
 | `/api/admin/keys`
 | Lista metadata de chaves persistidas, sem raw key ou hash.
+
+| `POST`
+| `/api/admin/keys`
+| Mutação protegida. Cria uma key escopada e devolve `201` com a raw key uma
+  única vez.
+
+| `POST`
+| `/api/admin/keys/{id}/revoke`
+| Mutação protegida. Revogação terminal; a credencial morre no ato e não há
+  reativação.
+
+| `DELETE`
+| `/api/admin/keys/{id}`
+| Mutação protegida. Exige revogação prévia; key viva responde
+  `409 KEY_NOT_REVOKED`.
 
 | `POST`
 | `/api/admin/extensions/reconcile`
@@ -412,6 +495,180 @@ curl -i -X POST -H 'authorization: Bearer test-root' \
 curl -i -X POST -H 'authorization: Bearer test-root' \
   http://127.0.0.1:19080/api/admin/extensions/gateway/disable
 ----
+
+==== Gestão de API keys
+
+A root key é bootstrap; a credencial de uso corrente é uma API key
+persistente emitida pelo próprio control plane. A raw key é `egk_` seguido de
+64 hex; o servidor guarda apenas o hash SHA-256 e um preview de 12 caracteres
+para exibição. O segredo bruto existe uma única vez, no corpo do `201` do
+create — ele nunca é relido nem re-exibido, e a saída para uma key perdida é
+criar outra.
+
+A ordem de autenticação é root key, depois key `egk_` consultada no store,
+depois OIDC. O prefixo é discriminante: uma `egk_` inválida falha ali mesmo e
+não cai no OIDC. A root key nunca está no store, e por isso não é revogável
+por esta via.
+
+O store é o SQLite de `EDGER_API_KEYS_DB` (default `.edger/api-keys.db`; no
+chart, dentro do PVC dos worker dirs). Em open mode — sem root key e sem
+OIDC — ele não inicializa, e os endpoints de keys respondem
+`503 KEYS_STORE_UNAVAILABLE` antes de o corpo da requisição ser interpretado:
+sem store o endpoint é inútil qualquer que seja o payload, então o `503`
+domina o `400`.
+
+Permissions atribuíveis:
+
+[cols="1,3",options="header"]
+|===
+| Permission | Concede
+
+| `workers:read`
+| Inventário de workers, erros recentes, leitura/download de arquivos de
+  worker e o health-check manual, que além dela exige principal com `role`
+  `admin`.
+
+| `workers:install`
+| Install por zip, upload de arquivos de worker e rescan.
+
+| `workers:delete`
+| Remoção de uma versão ou de todas as versões de um worker.
+
+| `workers:promote`
+| Promote de versão pública e enable/disable de worker.
+
+| `workers:invoke`
+| Invocação de worker pelo control plane.
+
+| `observability:read`
+| Eventos, séries e stream de observabilidade.
+
+| `keys:manage`
+| Os quatro endpoints de keys.
+|===
+
+O catálogo é fechado e `"*"` não é permission armazenável: uma key criada
+por essa via fica sempre enumerada, e uma permission fora do catálogo é
+`400 VALIDATION_ERROR`.
+
+Escopo da key:
+
+[cols="1,3",options="header"]
+|===
+| Campo | Semântica
+
+| `namespaces`
+| Fronteira multi-tenant já existente. `"*"` ou nomes exatos como `@acme`.
+
+| `workers`
+| Escopo de recurso por worker, default `["*"]`. Casa nome exato ou glob de
+  sufixo (`p-abc*`) e é ortogonal a namespaces: uma key pode enxergar o
+  tenant inteiro e tocar somente os workers do app dela.
+|===
+
+O escopo por worker vale no choke point que monta o inventário
+administrativo: delete, promote, enable/disable, invoke e as rotas de arquivos
+resolvem o worker por lá. Worker fora do escopo responde `404`, não `403`:
+quem não pode operá-lo não deve nem descobrir que ele existe. O install
+aplica o mesmo escopo antes de qualquer efeito no root de instalação e responde
+`403 FORBIDDEN`, porque ali o nome só existe depois de inspecionar o manifesto
+do ZIP.
+
+A rota de erros por worker também passa pelo filtro. Ela lia pelo nome cru e
+era o único ponto por onde o escopo vazava: uma key com `workers:read` recebia
+`200` com a mensagem e o stack de worker alheio. O
+`POST /api/admin/workers/{name}/health-check` não resolve o worker pelo
+inventário, mas é barrado antes disso pelo `role` `admin`.
+
+A criação é anti-escalada: as permissions concedidas precisam estar no
+catálogo e ser subconjunto das do criador, e cada namespace ou worker
+concedido exige `"*"` no criador ou pertinência literal na lista dele. Não há
+subsunção de glob — um criador com `p-abc*` não concede `p-abc-api`.
+Concessão recusada é `403 KEY_GRANT_DENIED`.
+
+O ciclo de vida é create, revoke, delete. Revogar é terminal, sem reativação,
+e derruba a credencial no ato porque revoke e delete limpam o cache de lookup
+inteiro — sem isso a key sobreviveria até o TTL de 60 segundos. Apagar exige
+revogar antes; key viva responde `409 KEY_NOT_REVOKED`. Rotate não existe no
+v1.
+
+Contra o servidor local já de pé:
+
+[source,bash]
+----
+curl -s -X POST -H 'authorization: Bearer test-root' \
+  -H 'content-type: application/json' \
+  -d '{"name":"studio","permissions":["workers:read","workers:invoke"],"namespaces":["*"],"workers":["hello"]}' \
+  http://127.0.0.1:19080/api/admin/keys
+----
+
+Resposta (`201`) — é aqui, e em nenhum outro lugar, que o `rawKey` aparece:
+
+[source,json]
+----
+{
+  "key": {
+    "id": 1,
+    "name": "studio",
+    "keyPrefix": "egk_<8 hex>",
+    "role": "operator",
+    "permissions": ["workers:read", "workers:invoke"],
+    "namespaces": ["*"],
+    "workers": ["hello"],
+    "createdAt": 1787788800,
+    "lastUsedAt": null,
+    "expiresAt": null,
+    "revokedAt": null
+  },
+  "rawKey": "egk_<64 hex>"
+}
+----
+
+`namespaces` e `workers` têm default `["*"]` no corpo; `expiresAt` é epoch em
+segundos e precisa estar no futuro. A key criada autentica em qualquer rota
+como principal escopado — `GET /api/admin/session` responde com o principal
+dela e `isRoot: false`.
+
+Listar, revogar e apagar:
+
+[source,bash]
+----
+curl -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/keys
+
+curl -i -X POST -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/keys/1/revoke
+
+curl -i -X DELETE -H 'authorization: Bearer test-root' \
+  http://127.0.0.1:19080/api/admin/keys/1
+----
+
+A listagem nunca devolve raw key nem hash: só metadata operacional, que inclui
+`workers`, `lastUsedAt` e `revokedAt`. O `lastUsedAt` é gravado com throttle de
+60 segundos, então ele mede uso recente, não cada requisição.
+
+No cPanel, a tela API Keys só aparece para quem tem `keys:manage`. Ela mostra o
+segredo em um painel one-time logo após o create, e a ação de apagar confirma e
+encadeia revoke e delete, porque o servidor exige essa ordem.
+
+O ciclo inteiro tem gate reexecutável contra uma instância viva, que é onde
+aparecem os defeitos que o router montado em memória não pega — rota não
+registrada, guarda ausente na porta, escopo que vaza por uma rota específica:
+
+[source,bash]
+----
+python3 planning/edger/scripts/api-keys-mcp-e2e.py
+----
+
+Ele lê `EDGER_URL` e `EDGER_ROOT_KEY` do ambiente (default `127.0.0.1:19080` e
+`test-root`), cria e apaga as próprias keys e sai com `1` na primeira quebra de
+contrato.
+
+A tela tem o par dinâmico do `cpanel-ui-gate.sh`, que é estático: o
+`cpanel-keys-walkthrough.mjs` abre o cPanel em chromium headless e percorre o
+fluxo do operador — entrar, criar com escopo, ver o segredo uma única vez, usar
+a credencial resultante e apagá-la, conferindo que ela sumiu do SERVIDOR e não
+só da tabela. Exige Playwright com chromium instalado, que o repo não traz.
 
 ==== Reconcile controlado de extensões
 
@@ -944,7 +1201,8 @@ Resposta esperada:
 * Capture corpo e status das validações manuais em scratch/logs quando usar como
   evidência.
 * Não use root key compartilhada em ambiente remoto.
-* Trate `EDGER_AUTH_DB` como dado operacional, não como fixture descartável.
+* Trate `EDGER_API_KEYS_DB` como dado operacional, não como fixture
+  descartável.
 * Se a ponte Deno falhar, verifique `EDGER_DENO_BIN`, `deno.json` local e
   permissões antes de alterar o contrato do worker.
 * Qualquer mudança em auth, manifests, routing ou worker lifecycle exige gate

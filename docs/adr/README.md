@@ -26,6 +26,7 @@ quando a arquitetura mudar, crie um ADR novo que supersede o anterior.
 | [0003](./0003-extensoes-estaticas-via-crates.md) | Extensões estáticas via crates `edger-ext-*` | Aceito |
 | [0004](./0004-js-ts-v1-via-deno-cli-bridge.md) | JS/TS v1 via Deno CLI bridge, com `deno_core` como alvo | Aceito |
 | [0005](./0005-wasm-standalone-wasmtime-abi-v1.md) | Wasm standalone com `wasmtime` e ABI HTTP v1 | Aceito |
+| [0006](./0006-mcp-dois-transportes-vocabulario-no-core.md) | MCP em dois transportes com vocabulário no `edger-core` | Aceito |
 
 ## Template
 
