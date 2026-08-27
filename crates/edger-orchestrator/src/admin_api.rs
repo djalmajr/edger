@@ -9,10 +9,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, delete, get, post};
 use axum::{Json, Router};
 use edger_core::{
-    principal_has_permission, root_principal, AdminApiKeysResponse, AdminCatalogItem,
-    AdminCatalogResponse, AdminErrorResponse, AdminMutationResponse, AdminSessionResponse,
-    AdminWorkerInfo, AdminWorkersResponse, ApiKeyPrincipal, CoreError, CreateApiKeyRequest,
-    SerializedRequest, WorkerOrigin, WorkerVisibility,
+    principal_can_access_worker, principal_has_permission, root_principal, AdminApiKeysResponse,
+    AdminCatalogItem, AdminCatalogResponse, AdminErrorResponse, AdminMutationResponse,
+    AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse, ApiKeyPrincipal, CoreError,
+    CreateApiKeyRequest, SerializedRequest, WorkerOrigin, WorkerVisibility,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -689,6 +689,9 @@ impl From<ObservabilityEventsQuery> for crate::observability::OperationalEventQu
             status: query.status,
             request_id: query.request_id,
             trace_id: query.trace_id,
+            // Escopo não vem da query string: quem o preenche é o handler,
+            // com o principal autenticado.
+            scope: None,
         }
     }
 }
@@ -701,7 +704,17 @@ async fn worker_error_summary(
         require_permission(&principal, "workers:read")?;
         Ok(principal)
     }) {
-        Ok(_) => Json(json!({ "summary": state.server.worker_errors().summary() })).into_response(),
+        Ok(principal) => {
+            // O resumo é indexado por NOME de worker e traz o último erro de
+            // cada um: entregá-lo inteiro daria, de uma vez, o inventário
+            // alheio e a mensagem de cada falha. Root vê tudo; key escopada vê
+            // o próprio pedaço.
+            let mut summary = state.server.worker_errors().summary();
+            if !principal.is_root {
+                summary.retain(|name, _| principal_can_access_worker(&principal, name));
+            }
+            Json(json!({ "summary": summary })).into_response()
+        }
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
 }
@@ -714,6 +727,11 @@ async fn worker_errors(
 ) -> Response {
     match authenticate(&state, &headers).await.and_then(|principal| {
         require_permission(&principal, "workers:read")?;
+        // O erro recente carrega mensagem e stack do worker. Sem este filtro a
+        // rota lia pelo NOME cru, então uma key escopada em `a` recebia `200`
+        // com os erros de `b` — o único ponto por onde o escopo por worker
+        // vazava, já que as vizinhas resolvem o worker antes de responder.
+        require_visible_worker(&state, &principal, &name, None)?;
         Ok(principal)
     }) {
         Ok(_) => {
@@ -730,11 +748,15 @@ async fn observability_events(
     headers: HeaderMap,
     Query(query): Query<ObservabilityEventsQuery>,
 ) -> Response {
-    match authenticate(&state, &headers)
-        .await
-        .and_then(|principal| require_permission(&principal, "observability:read"))
-    {
-        Ok(()) => Json(state.server.operational_events().query(query.into())).into_response(),
+    match authenticate(&state, &headers).await.and_then(|principal| {
+        require_permission(&principal, "observability:read")?;
+        Ok(principal)
+    }) {
+        Ok(principal) => {
+            let mut event_query: crate::observability::OperationalEventQuery = query.into();
+            event_query.scope = Some(principal);
+            Json(state.server.operational_events().query(event_query)).into_response()
+        }
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
 }
@@ -744,16 +766,18 @@ async fn observability_series(
     headers: HeaderMap,
     Query(query): Query<ObservabilitySeriesQuery>,
 ) -> Response {
-    if let Err(err) = authenticate(&state, &headers)
-        .await
-        .and_then(|principal| require_permission(&principal, "observability:read"))
-    {
-        return admin_error(map_error_status(&err), &err, &headers);
-    }
+    let principal = match authenticate(&state, &headers).await.and_then(|principal| {
+        require_permission(&principal, "observability:read")?;
+        Ok(principal)
+    }) {
+        Ok(principal) => principal,
+        Err(err) => return admin_error(map_error_status(&err), &err, &headers),
+    };
     let event_query = crate::observability::OperationalEventQuery {
         namespace: query.namespace,
         worker: query.worker,
         version: query.version,
+        scope: Some(principal),
         ..Default::default()
     };
     Json(state.server.operational_events().series(
@@ -769,12 +793,13 @@ async fn observability_events_stream(
     headers: HeaderMap,
     Query(query): Query<ObservabilityEventsQuery>,
 ) -> Response {
-    if let Err(err) = authenticate(&state, &headers)
-        .await
-        .and_then(|principal| require_permission(&principal, "observability:read"))
-    {
-        return admin_error(map_error_status(&err), &err, &headers);
-    }
+    let principal = match authenticate(&state, &headers).await.and_then(|principal| {
+        require_permission(&principal, "observability:read")?;
+        Ok(principal)
+    }) {
+        Ok(principal) => principal,
+        Err(err) => return admin_error(map_error_status(&err), &err, &headers),
+    };
     let cursor = query.cursor.or_else(|| {
         headers
             .get("last-event-id")
@@ -787,7 +812,14 @@ async fn observability_events_stream(
         EventTailState {
             store,
             receiver,
-            query: query.into(),
+            query: {
+                // O SSE fica aberto emitindo evento a evento: sem o escopo
+                // aqui, a assinatura vaza continuamente o que a listagem
+                // paginada já não entrega.
+                let mut event_query: crate::observability::OperationalEventQuery = query.into();
+                event_query.scope = Some(principal);
+                event_query
+            },
             cursor: cursor.unwrap_or_default(),
             pending: VecDeque::new(),
             gap_pending: None,

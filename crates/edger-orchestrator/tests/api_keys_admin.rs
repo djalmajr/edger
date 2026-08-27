@@ -266,6 +266,15 @@ async fn anti_escalation_blocks_grants_beyond_creator() {
 #[tokio::test]
 async fn worker_scope_filters_inventory_and_gates_mutations() {
     let state = keyed_state();
+    // Um erro de cada worker, para o resumo agregado ter o que esconder.
+    state
+        .server
+        .worker_errors()
+        .record("hello", "req-1", 500, "BOOM", "hello quebrou");
+    state
+        .server
+        .worker_errors()
+        .record("other", "req-2", 500, "BOOM", "segredo do vizinho");
     let app = build_pipeline(state);
 
     let (_, scoped, _) = create_key(
@@ -319,6 +328,60 @@ async fn worker_scope_filters_inventory_and_gates_mutations() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A rota de erros lia pelo NOME cru: com `workers:read` e escopo em
+    // `hello`, ela respondia `200` com os erros de `other`. Mensagem e stack
+    // de outro worker é justamente o que o escopo existe para não entregar.
+    let (status, _, _) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/hello/errors",
+        Some(scoped_key),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // O resumo é agregado — não recebe nome no path — e por isso passava
+    // inteiro: nome de cada worker com erro e a última mensagem de cada um.
+    let (status, summary, text) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/error-summary",
+        Some(scoped_key),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let vistos: Vec<&str> = summary["summary"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(vistos, vec!["hello"], "resumo vazou worker alheio: {text}");
+    assert!(!text.contains("segredo do vizinho"), "{text}");
+
+    // Root continua vendo os dois no mesmo resumo.
+    let (_, summary, _) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/error-summary",
+        Some(ROOT_KEY),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(summary["summary"].as_object().unwrap().len(), 2);
+
+    let (status, _, text) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/other/errors",
+        Some(scoped_key),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
 }
 
 #[tokio::test]
@@ -359,6 +422,87 @@ async fn observability_needs_permission_not_root() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// A permission de observabilidade deixou de ser root-only nesta versão. Sem
+/// filtro de escopo isso vira o caminho mais fácil para ler o vizinho: o
+/// evento carrega worker, namespace e mensagem, e a rota devolvia o store
+/// inteiro para qualquer key com `observability:read`.
+#[tokio::test]
+async fn observability_events_stay_inside_the_key_scope() {
+    let state = keyed_state();
+    let evento = |worker: &str| edger_orchestrator::observability::OperationalEventInput {
+        source: edger_orchestrator::observability::OperationalEventSource::Runtime,
+        kind: "dispatch".into(),
+        level: edger_orchestrator::observability::OperationalEventLevel::Info,
+        namespace: None,
+        worker: Some(worker.into()),
+        version: Some("1.0.0".into()),
+        process_id: None,
+        request_id: Some(format!("req-{worker}")),
+        trace_id: None,
+        outcome: Some("ok".into()),
+        status: Some(200),
+        duration_ms: Some(1),
+        code: None,
+        message: None,
+        truncated: None,
+        dropped_count: None,
+    };
+    state.server.operational_events().record(evento("hello"));
+    state.server.operational_events().record(evento("other"));
+    let app = build_pipeline(state);
+
+    let (_, escopada, _) = create_key(
+        app.clone(),
+        ROOT_KEY,
+        json!({
+            "name": "observador-escopado",
+            "permissions": ["observability:read"],
+            "workers": ["hello"],
+        }),
+    )
+    .await;
+    let escopada_key = escopada["rawKey"].as_str().unwrap();
+
+    let (status, body, text) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/observability/events",
+        Some(escopada_key),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let workers: Vec<&str> = body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event["worker"].as_str())
+        .collect();
+    assert_eq!(
+        workers,
+        vec!["hello"],
+        "vazou evento fora do escopo: {text}"
+    );
+
+    // Root continua vendo os dois: o filtro é do escopo, não do endpoint.
+    let (_, body, _) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/observability/events",
+        Some(ROOT_KEY),
+        Body::empty(),
+    )
+    .await;
+    let mut todos: Vec<&str> = body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event["worker"].as_str())
+        .collect();
+    todos.sort_unstable();
+    assert_eq!(todos, vec!["hello", "other"]);
 }
 
 #[tokio::test]
