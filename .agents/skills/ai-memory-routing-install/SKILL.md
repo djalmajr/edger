@@ -19,7 +19,7 @@ The always-loaded instruction block is owned by ai-memory only between these mar
 - Start marker: `<!-- ai-memory:start -->`
 - End marker: `<!-- ai-memory:end -->`
 
-Refresh must replace the first complete marker-bounded block in place, preserving unrelated content before and after it. If no complete block exists, append the canonical block with one blank line of separation. Never edit unrelated instructions while refreshing ai-memory routing.
+Refresh must replace the first complete marker-bounded block whose start and end delimiters appear alone on their own lines, preserving unrelated content before and after it. Ignore inline mentions of marker strings inside prose or code; they are not delimiters. If no complete line-delimited block exists, append the canonical block with one blank line of separation. Never edit unrelated instructions while refreshing ai-memory routing.
 
 ## Managed skill marker
 
@@ -37,16 +37,19 @@ Project-local targets:
 
 - `.claude/skills/<skill>/SKILL.md` for Claude-compatible installs.
 - `.agents/skills/<skill>/SKILL.md` for cross-client installs.
+- `.grok/skills/<skill>/SKILL.md` for Grok Build CLI installs.
 
 Global targets:
 
 - `~/.claude/skills/<skill>/SKILL.md` for Claude-compatible installs.
 - `~/.agents/skills/<skill>/SKILL.md` for cross-client installs.
+- `$GROK_HOME/skills/<skill>/SKILL.md` for Grok Build CLI installs (default:
+  `~/.grok/skills/<skill>/SKILL.md`).
 
 Use platform-aware path joining. Do not build paths by string concatenation.
 
 ## Refresh guidance
 
-For an agent-side refresh, call the install-routing tool, choose the right instruction filename from its hints, write the markered block with the agent's file-edit tool, and write each managed skill file to the selected skill roots. Claude Code normally uses `CLAUDE.md` and `.claude/skills`; Codex, OpenCode, Cursor, Gemini CLI, and AGENTS-aware clients normally use `AGENTS.md` and `.agents/skills` unless the project says otherwise.
+For an agent-side refresh, call the install-routing tool. Its returned `target_hints` are authoritative for skill roots: choose the right instruction filename from `agent_filenames`, write the markered block with the agent's file-edit tool, and write each managed skill file below the selected hint using its `relative_path`. Claude Code normally uses `CLAUDE.md` and `.claude/skills`; Codex, OpenCode, Cursor, Gemini CLI, and AGENTS-aware clients normally use `AGENTS.md` and `.agents/skills`; Grok Build CLI uses `AGENTS.md` and `.grok/skills` unless the project says otherwise.
 
 For a CLI refresh, prefer the canonical install command. The snippet and skills must be updated from the same core-owned assets so they do not drift.
