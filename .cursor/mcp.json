@@ -2,9 +2,6 @@
   "mcpServers": {
     "linear": {
       "url": "https://mcp.linear.app/mcp"
-    },
-    "memory-personal": {
-      "url": "https://memory.djalmajr.dev/mcp"
     }
   }
 }
