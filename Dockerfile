@@ -7,7 +7,7 @@ RUN cargo build --release -p edger-orchestrator --bin edger --features otel
 # O dist do frontend é estático e plataforma-neutro: rodar este estágio
 # na plataforma do BUILDER evita emular o bun x86_64, que exige AVX2 e
 # morre com SIGILL sob QEMU/Rosetta em cross-builds.
-FROM --platform=$BUILDPLATFORM oven/bun:1.3.14 AS frontend-builder
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.0 AS frontend-builder
 
 WORKDIR /src/workers
 COPY workers/package.json workers/bun.lock ./
