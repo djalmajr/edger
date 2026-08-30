@@ -38,7 +38,7 @@ tower-http = { version = "0.7", features = ["trace"] }
 http = "1"
 hyper = { version = "1", features = ["full"] }
 semver = "1"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 libsql = { version = "0.10.0-pre.4", default-features = false, features = ["core", "remote", "sync", "tls"] }
 sha2 = "0.10"
 wasmtime = { version = "36.0.12", default-features = false, features = ["cranelift", "runtime", "std", "wat"] }
