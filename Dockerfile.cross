@@ -10,7 +10,7 @@
 #
 # Mantenha os estágios espelhando o Dockerfile canônico ao mudar qualquer um.
 
-FROM --platform=$BUILDPLATFORM rust:1.88-bookworm AS builder
+FROM --platform=$BUILDPLATFORM rust:1.98-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       gcc-x86-64-linux-gnu g++-x86-64-linux-gnu libc6-dev-amd64-cross cmake \
