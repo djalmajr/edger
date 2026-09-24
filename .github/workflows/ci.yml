@@ -157,7 +157,11 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.licenses=O'Saasy-1.0
+      # Helm fixado em v3.18.6: versões maiores quebram o passo de Tag no ghcr
+      # ao publicar o chart (helm/helm#31223).
       - uses: azure/setup-helm@v5
+        with:
+          version: v3.18.6
       - name: Publica o chart no ghcr (OCI) fixado no digest da imagem
         env:
           IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
@@ -176,7 +180,18 @@ jobs:
           helm lint charts/edger --set-string rootKey.value=ci-test-root-key
           helm package charts/edger --destination "$RUNNER_TEMP/chart"
           echo "$REGISTRY_TOKEN" | helm registry login ghcr.io --username "$REGISTRY_USER" --password-stdin
-          helm push "$RUNNER_TEMP/chart/edger-${GITHUB_REF_NAME#v}.tgz" "$CHART_REPO"
+          # O ghcr pode demorar a propagar blobs recém-escritos; tenta 3x.
+          for attempt in 1 2 3; do
+            if helm push "$RUNNER_TEMP/chart/edger-${GITHUB_REF_NAME#v}.tgz" "$CHART_REPO"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::helm push falhou 3 vezes"
+              exit 1
+            fi
+            echo "helm push falhou (tentativa $attempt); nova tentativa em 10s"
+            sleep 10
+          done
       - name: Referências para o deploy
         run: |
           echo "imagem: ghcr.io/${{ github.repository }}@${{ steps.push.outputs.digest }}"
