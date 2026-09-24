@@ -144,10 +144,12 @@ import {
   SearchIcon,
   ShieldCheckIcon,
   SunIcon,
+  Trash2Icon,
   UploadCloudIcon,
   UploadIcon,
   WebhookIcon,
 } from "@edger/ui/icons/lucide";
+import StarIcon from "~icons/lucide/star";
 import {
   ThemeProvider,
   type ThemePreference,
@@ -183,12 +185,20 @@ import {
   workerBasePath,
   workerUrl,
 } from "./lib/api";
+import {
+  cpanelBasePath,
+  readRoute,
+  routePath,
+  type RouteState,
+  type Target,
+  type View,
+} from "./lib/route";
+import { servingVersion, versionActions } from "./lib/versions";
 
 const SESSION_KEY = "edger.cpanel.apiKey";
-
-type View = "overview" | "workers" | "observability" | "logs" | "files" | "keys";
-type Target = { name: string; version: string };
-type RouteState = { path: string; target?: Target; view: View };
+// The mount comes from the runtime-injected <base href>; every SPA URL is
+// built under this prefix so navigation stays inside the proxy prefix.
+const cpanelBase = cpanelBasePath(workerBasePath);
 
 function workerKindIcon(kind: unknown) {
   switch (kindLabel(kind).toLowerCase()) {
@@ -235,47 +245,6 @@ const NAVIGATION = [
     titleKey: "nav.keys" as TranslationKey,
   },
 ];
-
-function readRoute(): RouteState {
-  const parts = location.pathname.split("/").filter(Boolean);
-  if (parts[0] !== "cpanel") return { path: "", view: "overview" };
-  if (parts[1] === "keys") return { path: "", view: "keys" };
-  if (parts[1] === "observability")
-    return { path: "", view: parts[2] === "logs" ? "logs" : "observability" };
-  if (parts[1] !== "workers") return { path: "", view: "overview" };
-  if (
-    parts.length < 5 ||
-    !["files", "logs", "observability"].includes(parts[4])
-  )
-    return { path: "", view: "workers" };
-  return {
-    path:
-      parts[4] === "files"
-        ? parts.slice(5).map(decodeURIComponent).join("/")
-        : "",
-    target: {
-      name: decodeURIComponent(parts[2]),
-      version: decodeURIComponent(parts[3]),
-    },
-    view: parts[4] as View,
-  };
-}
-
-function routePath(route: RouteState) {
-  if (route.view === "overview") return "/cpanel/";
-  if (route.view === "workers" && !route.target) return "/cpanel/workers";
-  if (route.view === "keys") return "/cpanel/keys";
-  if (route.view === "observability" && !route.target)
-    return "/cpanel/observability";
-  if (route.view === "logs" && !route.target)
-    return "/cpanel/observability/logs";
-  if (!route.target) return "/cpanel/workers";
-  const suffix =
-    route.view === "files" && route.path
-      ? `/${route.path.split("/").map(encodeURIComponent).join("/")}`
-      : "";
-  return `/cpanel/workers/${encodeURIComponent(route.target.name)}/${encodeURIComponent(route.target.version)}/${route.view}${suffix}`;
-}
 
 function formatBytes(bytes: number) {
   if (!bytes) return "0 B";
@@ -445,19 +414,18 @@ function Workers({
   const [deployOpen, setDeployOpen] = React.useState(false);
   const [page, setPage] = React.useState(0);
   const [pageSize, setPageSize] = React.useState(DEFAULT_PAGE_SIZE);
+  const [actionError, setActionError] = React.useState("");
+  const [deleteTarget, setDeleteTarget] = React.useState<Worker | null>(null);
   const queryClient = useQueryClient();
-  const serving = new Map<string, string>();
-  data.workers
-    .filter((worker) => worker.status !== "disabled")
-    .forEach((worker) => {
-      const current = serving.get(worker.name);
-      if (!current || compareSemver(worker.version, current) > 0)
-        serving.set(worker.name, worker.version);
-    });
   const grouped = new Map<string, Worker[]>();
   data.workers.forEach((worker) =>
     grouped.set(worker.name, [...(grouped.get(worker.name) ?? []), worker]),
   );
+  const serving = new Map<string, string>();
+  grouped.forEach((versions, name) => {
+    const version = servingVersion(versions);
+    if (version) serving.set(name, version);
+  });
   const groups = [...grouped.values()].map((versions) => ({
     name: versions[0].name,
     versions: versions.sort((a, b) => compareSemver(b.version, a.version)),
@@ -486,10 +454,59 @@ function Workers({
         { method: "POST" },
       ),
     onSuccess: async () => {
+      setActionError("");
       await onRefresh();
       await queryClient.invalidateQueries({ queryKey: ["cpanel"] });
     },
   });
+  const promoteMutation = useMutation({
+    mutationFn: (worker: Worker) =>
+      apiJson(
+        apiKey,
+        `/api/admin/workers/${encodeURIComponent(worker.name)}/promote?version=${encodeURIComponent(worker.version)}`,
+        { method: "POST" },
+      ),
+    onSuccess: async () => {
+      setActionError("");
+      await onRefresh();
+      await queryClient.invalidateQueries({ queryKey: ["cpanel"] });
+    },
+    onError: (reason) =>
+      setActionError(reason instanceof Error ? reason.message : String(reason)),
+  });
+  const deleteMutation = useMutation({
+    mutationFn: (worker: Worker) =>
+      apiJson(
+        apiKey,
+        `/api/admin/workers/${encodeURIComponent(worker.name)}?version=${encodeURIComponent(worker.version)}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: async () => {
+      setActionError("");
+      await onRefresh();
+      await queryClient.invalidateQueries({ queryKey: ["cpanel"] });
+    },
+    onError: (reason) =>
+      setActionError(reason instanceof Error ? reason.message : String(reason)),
+  });
+  const deleteVersions = deleteTarget
+    ? grouped.get(deleteTarget.name) ?? []
+    : [];
+  const deleteActions =
+    deleteTarget && deleteVersions.length
+      ? versionActions(deleteTarget, deleteVersions)
+      : undefined;
+  const deleteDescription = (() => {
+    if (!deleteTarget) return "";
+    const text = `Delete ${deleteTarget.name}@${deleteTarget.version}? Its files are removed and this cannot be undone.`;
+    if (deleteActions?.isOnlyVersion)
+      return `${text} It is the only version: the app URL stops responding.`;
+    if (deleteActions?.isDefault)
+      return deleteActions.nextDefault
+        ? `${text} It is the default version: ${deleteTarget.name} will be served by ${deleteActions.nextDefault}.`
+        : `${text} It is the default version: no other version will serve ${deleteTarget.name}.`;
+    return text;
+  })();
   return (
     <div className="grid gap-4">
       <div className="flex items-center gap-2">
@@ -539,6 +556,11 @@ function Workers({
           </Button>
         </div>
       </div>
+      {actionError && (
+        <p className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+          {actionError}
+        </p>
+      )}
       <div className="grid gap-2">
         {rows.map((group) => {
           const open = expanded.has(group.name);
@@ -611,6 +633,7 @@ function Workers({
                             candidate.version === worker.version,
                         );
                         const isCore = worker.origin !== "user";
+                        const actions = versionActions(worker, group.versions);
                         const canOpenUrl =
                           worker.status !== "disabled" &&
                           worker.name !== "cpanel";
@@ -698,6 +721,16 @@ function Workers({
                                       <ScrollTextIcon />
                                       View logs
                                     </DropdownMenuItem>
+                                    {actions.canSetDefault && (
+                                      <DropdownMenuItem
+                                        onClick={() =>
+                                          promoteMutation.mutate(worker)
+                                        }
+                                      >
+                                        <StarIcon />
+                                        Set as default
+                                      </DropdownMenuItem>
+                                    )}
                                     <DropdownMenuSeparator />
                                     {worker.status === "disabled" ? (
                                       <DropdownMenuItem
@@ -732,6 +765,18 @@ function Workers({
                                         <PowerOffIcon />
                                         Disable version
                                       </DropdownMenuItem>
+                                    )}
+                                    {actions.canDelete && (
+                                      <>
+                                        <DropdownMenuSeparator />
+                                        <DropdownMenuItem
+                                          variant="destructive"
+                                          onClick={() => setDeleteTarget(worker)}
+                                        >
+                                          <Trash2Icon />
+                                          Delete version
+                                        </DropdownMenuItem>
+                                      </>
                                     )}
                                   </DropdownMenuContent>
                                 </DropdownMenu>
@@ -784,6 +829,34 @@ function Workers({
         open={deployOpen}
         onOpenChange={setDeployOpen}
       />
+      <Dialog
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        open={deleteTarget !== null}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete version</DialogTitle>
+            <DialogDescription>{deleteDescription}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              onClick={() => setDeleteTarget(null)}
+              variant="outline"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (deleteTarget) deleteMutation.mutate(deleteTarget);
+                setDeleteTarget(null);
+              }}
+              variant="destructive"
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1450,6 +1523,7 @@ function DeployDialog({
     };
     zip?: Uint8Array;
   }>({});
+  const [dragging, setDragging] = React.useState(false);
   const input = React.useRef<HTMLInputElement>(null);
   async function stageFile(file: File) {
     try {
@@ -1548,7 +1622,11 @@ function DeployDialog({
         onOpenChange(next);
       }}
     >
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent
+        className="sm:max-w-lg"
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => event.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>Deploy an app</DialogTitle>
           <DialogDescription>
@@ -1557,13 +1635,41 @@ function DeployDialog({
           </DialogDescription>
         </DialogHeader>
         <button
-          className="grid min-h-44 place-items-center rounded-xl border-2 border-dashed p-6 text-center transition-colors hover:bg-accent/50"
+          className={
+            dragging
+              ? "grid min-h-44 place-items-center rounded-xl border-2 border-dashed border-primary bg-accent/50 p-6 text-center transition-colors"
+              : "grid min-h-44 place-items-center rounded-xl border-2 border-dashed p-6 text-center transition-colors hover:bg-accent/50"
+          }
+          onDragEnter={(event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+            setDragging(true);
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            setDragging(false);
+            const file = event.dataTransfer.files[0];
+            if (!file) return;
+            if (!file.name.toLowerCase().endsWith(".zip")) {
+              setStage({ error: "Only .zip packages are supported." });
+              return;
+            }
+            void stageFile(file);
+          }}
           onClick={() => input.current?.click()}
           type="button"
         >
           <span>
             <UploadCloudIcon className="mx-auto mb-2 size-8 text-muted-foreground" />
-            <strong className="block text-sm">Choose a zip package</strong>
+            <strong className="block text-sm">
+              Drop a zip package or click to choose
+            </strong>
             <small className="text-muted-foreground">
               Limit: 64 MiB
             </small>
@@ -1783,7 +1889,9 @@ function Shell({
   const queryClient = useQueryClient();
   const [pageActionsElement, setPageActionsElement] =
     React.useState<HTMLDivElement | null>(null);
-  const [route, setRoute] = React.useState(readRoute);
+  const [route, setRoute] = React.useState(() =>
+    readRoute(location.pathname, cpanelBase),
+  );
   const active =
     NAVIGATION.find((entry) => entry.id === route.view) ??
     NAVIGATION.find(
@@ -1791,12 +1899,12 @@ function Shell({
     ) ??
     NAVIGATION[0];
   React.useEffect(() => {
-    const pop = () => setRoute(readRoute());
+    const pop = () => setRoute(readRoute(location.pathname, cpanelBase));
     addEventListener("popstate", pop);
     return () => removeEventListener("popstate", pop);
   }, []);
   function navigate(next: RouteState) {
-    history.pushState(null, "", routePath(next));
+    history.pushState(null, "", routePath(next, cpanelBase));
     setRoute(next);
   }
   const refresh = async () => {
@@ -2032,10 +2140,9 @@ function CpanelApp() {
 }
 
 const rootRoute = createRootRoute({ component: CpanelApp });
-// The mount comes from the runtime-injected <base href> — "/apps/cpanel"
-// behind a stripping proxy, "/cpanel" bare. Hardcoding the latter made the
-// router rewrite URLs out of the proxy prefix on navigation.
-const router = createRouter({ routeTree: rootRoute, basepath: workerBasePath || "/cpanel" });
+// The router mounts on the same derived prefix: hardcoding the fallback
+// made it rewrite URLs out of the proxy prefix on navigation.
+const router = createRouter({ routeTree: rootRoute, basepath: cpanelBase });
 declare module "@tanstack/react-router" {
   interface Register {
     router: typeof router;

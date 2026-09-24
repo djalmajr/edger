@@ -52,6 +52,7 @@ export type CreateKeyRequest = {
 
 export type CreatedKey = { key: ApiKey; rawKey: string };
 export type Worker = {
+  defaultVersion?: string | null;
   healthCheck?: {
     method?: string;
     mode?: string;
@@ -63,7 +64,9 @@ export type Worker = {
   namespace?: string | null;
   origin?: string;
   source?: string;
+  staged?: boolean;
   status: string;
+  visibility?: "public" | "internal";
   version: string;
 };
 export type RuntimeWorker = {
