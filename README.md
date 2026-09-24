@@ -141,6 +141,18 @@ replacement.
 OTLP is optional. EdgeR remains operable with its bounded local event store
 when no collector is configured or when export is unavailable.
 
+## Agent skill
+
+This repository ships an agent skill, [`skills/edger-deploy`](skills/edger-deploy/),
+that teaches agents how to package and deploy apps to EdgeR: `manifest.yaml`,
+the zip layout, the static-SPA contract, the deploy channels (cPanel, REST,
+MCP HTTP, MCP stdio), versions, staged promotes and deletion. Install it into
+any agent with the `skills` CLI:
+
+```bash
+bunx skills add djalmajr/edger --skill edger-deploy
+```
+
 ## Development gates
 
 Before opening a pull request, run:
