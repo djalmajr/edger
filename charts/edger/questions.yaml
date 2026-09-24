@@ -152,8 +152,8 @@ questions:
 
   - variable: ingress.host
     label: Ingress Host
-    description: Hostname for the EdgeR Ingress.
-    type: hostname
+    description: Hostname for the EdgeR Ingress; wildcards such as *.example.com are allowed.
+    type: string
     default: ""
     show_if: "ingress.enabled=true"
     group: Networking
@@ -174,6 +174,26 @@ questions:
     show_if: "ingress.enabled=true"
     group: Networking
 
+  - variable: ingress.pathType
+    label: Ingress Path Type
+    description: Use ImplementationSpecific for Kong string-prefix paths such as /apps/.
+    type: enum
+    default: Prefix
+    options:
+      - Prefix
+      - ImplementationSpecific
+      - Exact
+    show_if: "ingress.enabled=true"
+    group: Networking
+
+  - variable: ingress.annotations
+    label: Ingress Annotations
+    description: 'YAML map of Ingress annotations, for example konghq.com/strip-path: "true".'
+    type: multiline
+    default: "{}"
+    show_if: "ingress.enabled=true"
+    group: Networking
+
   - variable: ingress.tls.enabled
     label: Enable TLS
     description: Attach TLS configuration to the Ingress.
@@ -189,6 +209,20 @@ questions:
     default: ""
     show_if: "ingress.enabled=true&&ingress.tls.enabled=true"
     group: Networking
+
+  - variable: rootKey.existingSecret
+    label: Root Key Secret
+    description: Existing Secret holding the root key. Leave empty to create one from Root Key.
+    type: string
+    default: ""
+    group: Auth
+
+  - variable: rootKey.secretKey
+    label: Root Key Secret Field
+    description: Secret data key holding the root key value.
+    type: string
+    default: root-key
+    group: Auth
 
   - variable: rootKey.value
     label: Root Key
