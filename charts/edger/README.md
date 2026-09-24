@@ -46,19 +46,21 @@ worker distribution.
 
 The `values-labdev.yaml` overlay pins that topology (1 replica, PVC, HPA off,
 Recreate) and expects the root key in the pre-provisioned `edger-root-key`
-Secret. The CI deploy job runs exactly:
+Secret. Every `vX.Y.Z` tag publishes the chart to the GitHub Container
+Registry, so labdev installs it straight from there:
 
 ```bash
-helm upgrade --install edger charts/edger \
+helm upgrade --install edger oci://ghcr.io/djalmajr/charts/edger \
+  --version X.Y.Z \
   --namespace hyper \
   -f charts/edger/values-labdev.yaml \
-  --set-string image.repository=repositorio.cithyper.click/centralit/edger \
-  --set-string image.digest=sha256:<digest-do-build> \
   --history-max 5
 ```
 
-The image is addressed by **digest** (immutable reference produced by the
-build job), never by mutable tag.
+The published chart carries the **digest** of the image built for the same
+release in `image.digest` (an immutable reference, never a mutable tag), so no
+digest is passed by hand. A chart packaged from this repository has an empty
+digest and falls back to the `appVersion` tag.
 
 ## Access and validation
 
@@ -74,6 +76,11 @@ The Deployment exposes `/livez` and `/ready` probes. The configured root key is
 mounted from its Secret and is required for root control-plane access.
 
 ## Release notes
+
+### 0.3.1
+
+- Published as an OCI chart at `oci://ghcr.io/djalmajr/charts/edger`, with
+  the release image digest recorded in `image.digest`.
 
 ### 0.2.0
 

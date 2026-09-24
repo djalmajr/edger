@@ -8,8 +8,9 @@ replicaCount: 1
 image:
   repository: ghcr.io/djalmajr/edger
   tag: ""
-  # Opcional e imutável. Quando preenchido tem precedência sobre tag; o CI
-  # publica a imagem, captura o sha256 e o injeta com --set-string.
+  # Opcional e imutável. Quando preenchido tem precedência sobre tag. No chart
+  # publicado no ghcr o CI grava aqui o sha256 da imagem do mesmo release; no
+  # repositório fica vazio (a imagem sai da tag = appVersion).
   digest: ""
   pullPolicy: IfNotPresent
 
