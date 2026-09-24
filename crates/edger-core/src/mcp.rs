@@ -553,7 +553,7 @@ fn create_api_key_schema() -> Value {
                 "items": {"type": "string"},
                 "minItems": 1,
                 "x-required": true,
-                "description": "Subset of the permission catalog (workers:read|install|delete|promote|invoke, observability:read, keys:manage). \"*\" is not storable."
+                "description": "Subset of the permission catalog (workers:read|install|delete|promote|toggle|invoke, files:read|write|delete, observability:read, keys:manage). \"*\" is not storable."
             }),
         ),
         (

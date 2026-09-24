@@ -282,7 +282,7 @@ async fn worker_scope_filters_inventory_and_gates_mutations() {
         ROOT_KEY,
         json!({
             "name": "escopada",
-            "permissions": ["workers:read", "workers:promote"],
+            "permissions": ["workers:read", "workers:toggle"],
             "workers": ["hello"],
         }),
     )
@@ -307,7 +307,7 @@ async fn worker_scope_filters_inventory_and_gates_mutations() {
         .collect();
     assert_eq!(names, vec!["hello"]);
 
-    // enable com workers:promote no worker do escopo funciona…
+    // enable com workers:toggle no worker do escopo funciona…
     let (status, _, text) = send(
         app.clone(),
         "POST",

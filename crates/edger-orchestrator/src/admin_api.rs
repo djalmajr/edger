@@ -73,6 +73,10 @@ pub fn router() -> Router<OrchestratorState> {
                 .layer(DefaultBodyLimit::max(MAX_DEPLOY_PACKAGE_BYTES)),
         )
         .route(
+            "/api/admin/workers/{name}/files/delete",
+            post(delete_worker_files),
+        )
+        .route(
             "/api/admin/workers/{name}/files/download",
             get(download_worker_files),
         )
@@ -1035,11 +1039,11 @@ async fn worker_mutation(
     version: Option<String>,
     enabled: bool,
 ) -> Response {
-    // workers:promote, não root: ligar/desligar versões é a mesma família de
-    // decisão de "quais versões servem tráfego" que o promote.
+    // workers:toggle, não root: ligar/desligar versões é decisão de tráfego
+    // separada do promote (que escolhe a default).
     let auth = async {
         let principal = authenticate(&state, &headers).await?;
-        require_permission(&principal, "workers:promote")?;
+        require_permission(&principal, "workers:toggle")?;
         validate_admin_mutation_security("POST", &headers, &principal)?;
         require_visible_worker(&state, &principal, &name, version.as_deref())?;
         Ok(principal)
@@ -1077,7 +1081,7 @@ async fn worker_files(
     Query(query): Query<WorkerFilesQuery>,
 ) -> Response {
     match authenticate(&state, &headers).await.and_then(|principal| {
-        require_permission(&principal, "workers:read")?;
+        require_permission(&principal, "files:read")?;
         list_worker_files(
             &state,
             &principal,
@@ -1106,7 +1110,7 @@ async fn download_worker_files(
     Query(query): Query<WorkerFilesQuery>,
 ) -> Response {
     match authenticate(&state, &headers).await.and_then(|principal| {
-        require_permission(&principal, "workers:read")?;
+        require_permission(&principal, "files:read")?;
         build_worker_file_download(
             &state,
             &principal,
@@ -1132,8 +1136,10 @@ async fn download_worker_files(
     }
 }
 
-// Draft file upload: only internal versions are mutable. The changed worker is
-// recycled before the response so the next invocation observes the new files.
+// File upload into any user version (internal or public alike): mutability
+// is gated by files:write alone and core workers stay read-only. The changed
+// worker is recycled before the response so the next invocation observes the
+// new files.
 async fn upload_worker_files(
     State(state): State<OrchestratorState>,
     headers: HeaderMap,
@@ -1143,7 +1149,7 @@ async fn upload_worker_files(
 ) -> Response {
     let result = async {
         let principal = authenticate(&state, &headers).await?;
-        require_permission(&principal, "workers:install")?;
+        require_permission(&principal, "files:write")?;
         validate_admin_mutation_security("POST", &headers, &principal)?;
         let payload = write_worker_files(
             &state,
@@ -1218,20 +1224,8 @@ fn write_worker_files(
             "core worker files are read-only; publish a new core overlay version instead",
         ));
     }
-    let mutable = state.index.worker_refs().into_iter().any(|candidate| {
-        candidate.name == worker.name
-            && candidate.version == worker.version
-            && candidate.config.visibility == WorkerVisibility::Internal
-    });
-    if !mutable {
-        return Err(CoreError::new(
-            "DEPLOY_PUBLIC_VERSION_IMMUTABLE",
-            format!(
-                "public worker {}@{} is immutable; edit an internal draft or deploy a new version",
-                worker.name, worker.version
-            ),
-        ));
-    }
+    // files:write is the only mutability gate: any user version (internal or
+    // public) accepts the upload.
     let rel = sub_path.unwrap_or("").trim_matches('/');
     if rel.split('/').any(|segment| segment == "..") {
         return Err(CoreError::new(
@@ -1265,6 +1259,178 @@ fn write_worker_files(
         object.insert("revision".into(), serde_json::Value::String(revision));
     }
     Ok(payload)
+}
+
+// Batch delete of files/directories inside a deployed user version. Per-item
+// failures come back in the 200 body (partial failure is the contract); the
+// CAS revision advances only when at least one item was actually removed.
+const MAX_FILE_DELETIONS: usize = 1000;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteWorkerFilesBody {
+    paths: Vec<String>,
+}
+
+fn delete_within(base: &std::path::Path, rel: &str) -> Result<(), CoreError> {
+    if rel.is_empty() || rel == "." {
+        return Err(CoreError::new(
+            "VALIDATION_ERROR",
+            "use the version delete to remove the whole version",
+        ));
+    }
+    if rel.split('/').any(|segment| segment == "..") {
+        return Err(CoreError::new(
+            "FORBIDDEN",
+            "path escapes the worker directory",
+        ));
+    }
+    // Parent canônico + último segmento: o alvo NUNCA é canonicalizado, que
+    // seguiria o symlink (`root-alias -> .` apontaria para a própria raiz).
+    let segments: Vec<&str> = rel
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let name = *segments.last().expect("rel is non-empty and not .");
+    let parent_rel = segments[..segments.len() - 1].join("/");
+    let parent = std::fs::canonicalize(base.join(parent_rel))
+        .map_err(|err| CoreError::new("NOT_FOUND", format!("path not found: {err}")))?;
+    if !parent.starts_with(base) {
+        return Err(CoreError::new(
+            "FORBIDDEN",
+            "path escapes the worker directory",
+        ));
+    }
+    let target = parent.join(name);
+    let metadata = match std::fs::symlink_metadata(&target) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(CoreError::new(
+                "NOT_FOUND",
+                format!("path not found: {err}"),
+            ));
+        }
+        Err(err) => {
+            return Err(CoreError::new(
+                "DEPLOY_INTERNAL",
+                format!("cannot read path: {err}"),
+            ));
+        }
+    };
+    if name == crate::deploy::REVISION_FILE {
+        return Err(CoreError::new("FORBIDDEN", "reserved file"));
+    }
+    if target == *base {
+        return Err(CoreError::new(
+            "VALIDATION_ERROR",
+            "use the version delete to remove the whole version",
+        ));
+    }
+    if metadata.file_type().is_symlink() {
+        // Symlink some como ele mesmo — remove_file não segue o link: nem o
+        // marcador, nem a raiz, nem uma pasta fora da versão são tocados.
+        std::fs::remove_file(&target).map_err(|err| {
+            CoreError::new("DEPLOY_INTERNAL", format!("cannot remove symlink: {err}"))
+        })?;
+    } else if metadata.is_dir() {
+        std::fs::remove_dir_all(&target).map_err(|err| {
+            CoreError::new("DEPLOY_INTERNAL", format!("cannot remove directory: {err}"))
+        })?;
+    } else {
+        std::fs::remove_file(&target).map_err(|err| {
+            CoreError::new("DEPLOY_INTERNAL", format!("cannot remove file: {err}"))
+        })?;
+    }
+    Ok(())
+}
+
+fn delete_worker_file_paths(
+    state: &OrchestratorState,
+    principal: &ApiKeyPrincipal,
+    name: &str,
+    version: Option<&str>,
+    body: &[u8],
+) -> Result<(bool, String, serde_json::Value), CoreError> {
+    let requested: DeleteWorkerFilesBody = serde_json::from_slice(body)
+        .map_err(|err| CoreError::new("VALIDATION_ERROR", format!("invalid body: {err}")))?;
+    if requested.paths.is_empty() || requested.paths.len() > MAX_FILE_DELETIONS {
+        return Err(CoreError::new(
+            "VALIDATION_ERROR",
+            format!("paths must contain 1..={MAX_FILE_DELETIONS} entries"),
+        ));
+    }
+    let (base, worker) = resolve_worker_dir(state, principal, name, version)?;
+    if worker.origin != WorkerOrigin::User {
+        return Err(CoreError::new(
+            "FORBIDDEN",
+            "core worker files are read-only; publish a new core overlay version instead",
+        ));
+    }
+    // Mesma exclusão mútua do upload: apagar e force/install de outra
+    // transação não podem correr em paralelo sobre a mesma versão.
+    let mutation_root = base
+        .parent()
+        .ok_or_else(|| CoreError::new("DEPLOY_INTERNAL", "worker directory has no parent"))?;
+    let _slot =
+        crate::deploy::claim_worker_mutation_slot(mutation_root, &worker.name, &worker.version)?;
+    let mut deleted = Vec::new();
+    let mut errors = Vec::new();
+    for path in &requested.paths {
+        let rel = path.trim_matches('/');
+        match delete_within(&base, rel) {
+            Ok(()) => deleted.push(path.clone()),
+            Err(err) => errors.push(json!({
+                "path": path,
+                "code": err.code,
+                "message": err.message,
+            })),
+        }
+    }
+    let deleted_any = !deleted.is_empty();
+    let revision = if deleted_any {
+        crate::deploy::bump_worker_revision(&base)?
+    } else {
+        crate::deploy::worker_revision(&base).unwrap_or_default()
+    };
+    let entries = list_worker_files(state, principal, name, version, None)?
+        .get("entries")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    Ok((
+        deleted_any,
+        worker.version,
+        json!({
+            "deleted": deleted,
+            "errors": errors,
+            "revision": revision,
+            "entries": entries,
+        }),
+    ))
+}
+
+async fn delete_worker_files(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(query): Query<WorkerFilesQuery>,
+    body: Bytes,
+) -> Response {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "files:delete")?;
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        let (deleted_any, version, payload) =
+            delete_worker_file_paths(&state, &principal, &name, query.version.as_deref(), &body)?;
+        if deleted_any {
+            state.pool.recycle_worker(&name, Some(&version)).await;
+        }
+        Ok(payload)
+    }
+    .await;
+    match result {
+        Ok(payload) => Json(payload).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
 }
 
 // Read-only browse of a deployed version's directory. The dir comes from the

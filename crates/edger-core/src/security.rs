@@ -13,7 +13,11 @@ pub const PERMISSION_CATALOG: &[&str] = &[
     "workers:install",
     "workers:delete",
     "workers:promote",
+    "workers:toggle",
     "workers:invoke",
+    "files:read",
+    "files:write",
+    "files:delete",
     "observability:read",
     "keys:manage",
 ];
@@ -179,6 +183,28 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn permission_catalog_has_eleven_entries_in_stable_order() {
+        // A ordem é contrato: a migração de keys no boot a usa para
+        // reordenar, e o espelho do cPanel (api.ts) a repete na tela de keys.
+        assert_eq!(
+            PERMISSION_CATALOG,
+            &[
+                "workers:read",
+                "workers:install",
+                "workers:delete",
+                "workers:promote",
+                "workers:toggle",
+                "workers:invoke",
+                "files:read",
+                "files:write",
+                "files:delete",
+                "observability:read",
+                "keys:manage",
+            ]
+        );
     }
 
     #[test]

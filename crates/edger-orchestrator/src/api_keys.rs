@@ -18,7 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use edger_core::{
     validate_key_grant, AdminApiKeyCreatedResponse, AdminApiKeyInfo, ApiKeyPrincipal, ApiKeyStore,
-    CoreError, CreateApiKeyRequest, NewApiKey,
+    CoreError, CreateApiKeyRequest, NewApiKey, PERMISSION_CATALOG,
 };
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
@@ -37,22 +37,22 @@ pub struct SqliteApiKeyStore {
 
 impl SqliteApiKeyStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, CoreError> {
-        let conn = Connection::open(path).map_err(db_err)?;
-        Self::init_schema(&conn)?;
+        let mut conn = Connection::open(path).map_err(db_err)?;
+        Self::init_schema(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
     }
 
     pub fn in_memory() -> Result<Self, CoreError> {
-        let conn = Connection::open_in_memory().map_err(db_err)?;
-        Self::init_schema(&conn)?;
+        let mut conn = Connection::open_in_memory().map_err(db_err)?;
+        Self::init_schema(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
     }
 
-    fn init_schema(conn: &Connection) -> Result<(), CoreError> {
+    fn init_schema(conn: &mut Connection) -> Result<(), CoreError> {
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS api_keys (
@@ -71,7 +71,55 @@ impl SqliteApiKeyStore {
             );
             "#,
         )
-        .map_err(db_err)
+        .map_err(db_err)?;
+        Self::migrate_permissions(conn)?;
+        Ok(())
+    }
+
+    /// Migração de dados para o catálogo v1 (PRAGMA user_version): as keys
+    /// criadas antes das permissões de arquivos e do toggle mantêm as
+    /// capacidades que as antigas davam — `workers:read` segue listando e
+    /// baixando arquivos, `workers:install` segue subindo, `workers:promote`
+    /// segue ligando/desligando. `files:delete` NUNCA é concedida: era
+    /// capacidade inexistente. Idempotente — com user_version >= 1 é no-op.
+    fn migrate_permissions(conn: &mut Connection) -> Result<(), CoreError> {
+        let user_version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(db_err)?;
+        if user_version >= 1 {
+            return Ok(());
+        }
+        let tx = conn.transaction().map_err(db_err)?;
+        let rows: Vec<(i64, String)> = {
+            let mut stmt = tx
+                .prepare("SELECT id, permissions FROM api_keys")
+                .map_err(db_err)?;
+            let collected = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(db_err)?;
+            collected.collect::<Result<Vec<_>, _>>().map_err(db_err)?
+        };
+        let mut migrated = 0;
+        for (id, permissions_json) in rows {
+            let permissions: Vec<String> =
+                serde_json::from_str(&permissions_json).map_err(json_err)?;
+            let next = migrate_permissions_list(&permissions);
+            if next != permissions {
+                migrated += 1;
+                tx.execute(
+                    "UPDATE api_keys SET permissions = ?2 WHERE id = ?1",
+                    params![id, serde_json::to_string(&next).map_err(json_err)?],
+                )
+                .map_err(db_err)?;
+            }
+        }
+        tx.execute_batch("PRAGMA user_version = 1")
+            .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        if migrated > 0 {
+            tracing::info!(migrated, "api key permissions migrated to catalog v1");
+        }
+        Ok(())
     }
 
     fn hash_key(raw_key: &str) -> String {
@@ -84,6 +132,38 @@ impl SqliteApiKeyStore {
     fn key_prefix(raw_key: &str) -> String {
         raw_key.chars().take(12).collect()
     }
+}
+
+/// `perm' = perm ∪ {files:read se workers:read} ∪ {files:write se
+/// workers:install} ∪ {workers:toggle se workers:promote}`, deduplicada
+/// (inclusive de permissões legadas repetidas — `validate_key_grant` aceita
+/// entradas repetidas e elas persistem) e na ordem do catálogo; as
+/// desconhecidas (se houver) ficam no fim, em ordem original. `files:delete`
+/// nunca entra: era capacidade inexistente.
+fn migrate_permissions_list(permissions: &[String]) -> Vec<String> {
+    let owned: Vec<&str> = permissions.iter().map(String::as_str).collect();
+    let mut migrated: Vec<&str> = Vec::new();
+    for permission in &owned {
+        if !migrated.contains(permission) {
+            migrated.push(permission);
+        }
+    }
+    for (source, target) in [
+        ("workers:read", "files:read"),
+        ("workers:install", "files:write"),
+        ("workers:promote", "workers:toggle"),
+    ] {
+        if owned.contains(&source) && !migrated.contains(&target) {
+            migrated.push(target);
+        }
+    }
+    migrated.sort_by_key(|permission| {
+        PERMISSION_CATALOG
+            .iter()
+            .position(|candidate| *candidate == *permission)
+            .unwrap_or(usize::MAX)
+    });
+    migrated.into_iter().map(str::to_string).collect()
 }
 
 type KeyRow = (
@@ -464,6 +544,84 @@ mod tests {
             expires_at: None,
             role: None,
         }
+    }
+
+    #[test]
+    fn permission_migration_upgrades_legacy_base_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.db");
+        let permissions_a = vec!["workers:read".to_string()];
+        let permissions_b = vec!["workers:install".to_string(), "workers:promote".to_string()];
+        let permissions_c = vec!["observability:read".to_string()];
+        let permissions_d = vec!["workers:read".to_string(), "workers:read".to_string()];
+        {
+            let store = SqliteApiKeyStore::open(&path).unwrap();
+            for (name, raw_key, permissions) in [
+                ("leitor", "legacy-a", &permissions_a),
+                ("instalador", "legacy-b", &permissions_b),
+                ("revogada", "legacy-c", &permissions_c),
+                ("duplicada", "legacy-d", &permissions_d),
+            ] {
+                store
+                    .insert_key(NewApiKey {
+                        name,
+                        raw_key,
+                        role: "operator",
+                        permissions,
+                        namespaces: &["*".to_string()],
+                        workers: &["*".to_string()],
+                        expires_at: None,
+                    })
+                    .unwrap();
+            }
+            // Keys revogadas também migram: revoga uma e confere o efeito.
+            let id = store
+                .list_keys()
+                .unwrap()
+                .into_iter()
+                .find(|key| key.name == "revogada")
+                .unwrap()
+                .id;
+            assert!(store.revoke_key(id).unwrap());
+            // Simula a base legacy: linhas antigas com user_version zerado.
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .execute_batch("PRAGMA user_version = 0")
+                .unwrap();
+        }
+
+        // Reabrir roda a migração dentro de uma transação.
+        let store = SqliteApiKeyStore::open(&path).unwrap();
+        let migrated = store.list_keys().unwrap();
+        let by_name = |name: &str| migrated.iter().find(|key| key.name == name).unwrap();
+        assert_eq!(
+            by_name("leitor").permissions,
+            vec!["workers:read".to_string(), "files:read".to_string()]
+        );
+        assert_eq!(
+            by_name("instalador").permissions,
+            vec![
+                "workers:install".to_string(),
+                "workers:promote".to_string(),
+                "workers:toggle".to_string(),
+                "files:write".to_string(),
+            ]
+        );
+        // Sem fonte, nada entra — e files:delete nunca é concedida.
+        assert_eq!(by_name("revogada").permissions, permissions_c);
+        // Duplicatas legadas são normalizadas na migração.
+        assert_eq!(
+            by_name("duplicada").permissions,
+            vec!["workers:read".to_string(), "files:read".to_string()]
+        );
+
+        // Idempotente: a segunda abertura não muda nada.
+        drop(store);
+        let store = SqliteApiKeyStore::open(&path).unwrap();
+        let again = store.list_keys().unwrap();
+        assert_eq!(again, migrated);
     }
 
     #[test]

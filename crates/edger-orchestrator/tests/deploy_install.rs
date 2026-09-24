@@ -12,8 +12,8 @@ use edger_core::{
 };
 use edger_isolation::{DenoFacade, DenoIsolate, WasmIsolate};
 use edger_orchestrator::{
-    build_pipeline, load_manifests_from_dirs, load_manifests_from_roots, ControlAuth,
-    OrchestratorState, ServerState,
+    build_pipeline, load_manifests_from_dirs, load_manifests_from_roots, ApiKeyService,
+    ControlAuth, OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -218,6 +218,38 @@ fn state_with_roots(
         index: load_manifests_from_roots(&[bundled], Some(&overlay), &[user]).unwrap(),
         auth: ControlAuth::with_static_key("test-root"),
     }
+}
+
+// Mesmo fixture do state_with_root, com o store de keys ligado para os gates
+// de permissão exigirem credenciais escopadas (egk_) além da root.
+fn state_with_root_and_keys(root: std::path::PathBuf) -> OrchestratorState {
+    let server = ServerState::new_unready();
+    let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(RuntimeFactory));
+    server.mark_ready(pool.clone());
+
+    OrchestratorState {
+        server,
+        pool,
+        index: load_manifests_from_dirs(&[root]).unwrap(),
+        auth: ControlAuth::with_static_key("test-root")
+            .with_key_service(Arc::new(ApiKeyService::in_memory().unwrap())),
+    }
+}
+
+async fn create_key(app: Router, permissions: &[&str]) -> (StatusCode, serde_json::Value, String) {
+    send(
+        app,
+        "POST",
+        "/api/admin/keys",
+        Some("test-root"),
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({
+            "name": "scoped",
+            "permissions": permissions,
+        }))
+        .unwrap(),
+    )
+    .await
 }
 
 async fn send(
@@ -862,6 +894,401 @@ async fn worker_files_rejects_uploads_to_core_origins() {
     assert!(fs::read_to_string(bundled.path().join("cpanel/index.html"))
         .unwrap()
         .contains("bundled-body"));
+}
+
+#[tokio::test]
+async fn file_routes_gate_on_files_permissions_and_toggle_gates_enable() {
+    let root = tempfile::tempdir().unwrap();
+    write_manual_worker(root.path(), "gate-app", "gate-body");
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    // files:read é o gate de listar/baixar: workers:read sozinho é 403.
+    let (status, readonly, _) = create_key(app.clone(), &["workers:read"]).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let readonly_key = readonly["rawKey"].as_str().unwrap();
+    let (status, denied, text) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/gate-app/files?version=1.0.0",
+        Some(readonly_key),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(denied["code"], "FORBIDDEN");
+    assert!(
+        denied["message"].as_str().unwrap().contains("files:read"),
+        "{text}"
+    );
+    let (status, denied, _) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/gate-app/files/download?version=1.0.0",
+        Some(readonly_key),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+
+    let (status, reader, _) = create_key(app.clone(), &["files:read"]).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let reader_key = reader["rawKey"].as_str().unwrap();
+    let (status, listed, text) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/gate-app/files?version=1.0.0",
+        Some(reader_key),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let names: Vec<&str> = listed["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"index.html"), "{text}");
+    let (status, _, _) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/gate-app/files/download?version=1.0.0",
+        Some(reader_key),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // files:write é o gate do upload (e não a visibilidade): workers:install
+    // sozinho é 403, e files:write aceita versão PÚBLICA de origem user.
+    let (status, installer, _) = create_key(app.clone(), &["workers:install"]).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let installer_key = installer["rawKey"].as_str().unwrap();
+    let (status, denied, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/gate-app/files?version=1.0.0",
+        Some(installer_key),
+        "application/zip",
+        zip_package(&[("extra.txt", "nope")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(denied["code"], "FORBIDDEN");
+
+    let (status, writer, _) = create_key(app.clone(), &["files:write"]).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let writer_key = writer["rawKey"].as_str().unwrap();
+    let (status, uploaded, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/gate-app/files?version=1.0.0",
+        Some(writer_key),
+        "application/zip",
+        zip_package(&[("extra.txt", "ok")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(
+        uploaded["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "extra.txt"),
+        "{text}"
+    );
+
+    // workers:toggle é o gate de enable/disable: workers:promote sozinho é 403.
+    let (status, promoter, _) = create_key(app.clone(), &["workers:promote"]).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let promoter_key = promoter["rawKey"].as_str().unwrap();
+    let (status, denied, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/gate-app/enable?version=1.0.0",
+        Some(promoter_key),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(denied["code"], "FORBIDDEN");
+
+    let (status, toggler, _) = create_key(app.clone(), &["workers:toggle"]).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let toggler_key = toggler["rawKey"].as_str().unwrap();
+    let (status, enabled, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/gate-app/enable?version=1.0.0",
+        Some(toggler_key),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(enabled["status"], "loaded");
+    let (status, _, _) = send(
+        app,
+        "POST",
+        "/api/admin/workers/gate-app/disable?version=1.0.0",
+        Some(toggler_key),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn files_delete_removes_batch_with_partial_errors_and_bumps_revision() {
+    let root = tempfile::tempdir().unwrap();
+    write_manual_worker(root.path(), "delete-app", "delete-body");
+    let dir = root.path().join("delete-app");
+    fs::create_dir_all(dir.join("assets/nested")).unwrap();
+    fs::create_dir_all(dir.join("docs")).unwrap();
+    fs::write(dir.join("top.txt"), b"top").unwrap();
+    fs::write(dir.join("assets/plain.txt"), b"plain").unwrap();
+    fs::write(dir.join("assets/nested/deep.txt"), b"deep").unwrap();
+    fs::write(dir.join("docs/notes.txt"), b"notes").unwrap();
+    // Marcador real na raiz (como numa versão instalada) e um arquivo
+    // reservado em nível mais fundo: os dois resistem ao lote.
+    fs::write(dir.join(".edger-revision"), "v-test-1\n").unwrap();
+    fs::write(dir.join("docs/.edger-revision"), b"rev-doc").unwrap();
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    // Sem files:delete: 403 mesmo com o resto das permissões de arquivos.
+    let (status, reader, _) = create_key(app.clone(), &["files:read", "files:write"]).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let reader_key = reader["rawKey"].as_str().unwrap();
+    let (status, denied, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/delete-app/files/delete?version=1.0.0",
+        Some(reader_key),
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({ "paths": ["top.txt"] })).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(denied["code"], "FORBIDDEN");
+
+    // Lote com falha parcial por item: arquivo + pastas somem; raiz, "..",
+    // .edger-revision (em qualquer nível) e inexistente viram erro do item —
+    // e a resposta continua 200.
+    let (status, result, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/delete-app/files/delete?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({
+            "paths": [
+                "top.txt",
+                "assets",
+                "docs/.edger-revision",
+                "docs",
+                "/",
+                "..",
+                ".edger-revision",
+                "ghost.txt"
+            ]
+        }))
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        result["deleted"],
+        serde_json::json!(["top.txt", "assets", "docs"])
+    );
+    let code_of = |path: &str| {
+        result["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|error| error["path"] == path)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(code_of("/")["code"], "VALIDATION_ERROR");
+    assert!(code_of("/")["message"]
+        .as_str()
+        .unwrap()
+        .contains("use the version delete"));
+    assert_eq!(code_of("..")["code"], "FORBIDDEN");
+    assert_eq!(code_of(".edger-revision")["code"], "FORBIDDEN");
+    assert_eq!(code_of(".edger-revision")["message"], "reserved file");
+    assert_eq!(code_of("docs/.edger-revision")["code"], "FORBIDDEN");
+    assert_eq!(code_of("ghost.txt")["code"], "NOT_FOUND");
+    assert!(result["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["name"] != "assets" && entry["name"] != "top.txt",));
+    assert!(!dir.join("assets").exists(), "recursive folder delete");
+    assert!(!dir.join("top.txt").exists());
+    assert!(
+        dir.join("manifest.yaml").exists(),
+        "version root must survive"
+    );
+    assert!(
+        dir.join(".edger-revision").exists(),
+        "the reserved marker must survive"
+    );
+    let bumped = result["revision"].as_str().unwrap().to_string();
+    assert_ne!(bumped, "v-test-1", "a delete must advance the CAS revision");
+
+    // Nada apagado (todos os itens falharam): mesma resposta, deleted vazio,
+    // erros por item, e a revisão NÃO avança.
+    let (status, none, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/delete-app/files/delete?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({ "paths": ["ghost.txt"] })).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(none["deleted"], serde_json::json!([]));
+    assert_eq!(none["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        none["revision"], bumped,
+        "an all-failed batch must not bump the revision"
+    );
+}
+
+#[tokio::test]
+async fn files_delete_removes_symlinks_without_following_them() {
+    let root = tempfile::tempdir().unwrap();
+    write_manual_worker(root.path(), "link-app", "link-body");
+    let dir = root.path().join("link-app");
+    // Marcador com estado staged: tem que sobreviver a qualquer alias.
+    fs::write(dir.join(".edger-revision"), "v-marker\nstaged=true\n").unwrap();
+    std::os::unix::fs::symlink(".", dir.join("root-alias")).unwrap();
+    std::os::unix::fs::symlink(".edger-revision", dir.join("marker-alias")).unwrap();
+    let outside = root.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("precious.txt"), b"keep").unwrap();
+    std::os::unix::fs::symlink("../outside", dir.join("outside-alias")).unwrap();
+    let state = state_with_root(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    // root-alias -> .: apaga só o link; a versão continua íntegra.
+    let (status, root_alias, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/link-app/files/delete?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({ "paths": ["root-alias"] })).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(root_alias["deleted"], serde_json::json!(["root-alias"]));
+    assert!(!dir.join("root-alias").exists(), "only the link goes");
+    assert!(dir.join("index.html").exists(), "version must survive");
+    assert!(dir.join(".edger-revision").exists());
+
+    // marker-alias -> .edger-revision: só o link some; o marcador continua
+    // lá e o estado staged sobrevive (o bump avança só a revisão).
+    let (status, marker_alias, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/link-app/files/delete?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({ "paths": ["marker-alias"] })).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(marker_alias["deleted"], serde_json::json!(["marker-alias"]));
+    assert!(!dir.join("marker-alias").exists());
+    let marker = fs::read_to_string(dir.join(".edger-revision")).unwrap();
+    assert!(
+        marker.contains("staged=true"),
+        "the marker (and its staged state) must survive: {marker}"
+    );
+
+    // outside-alias -> ../outside: o link é apagado como link, sem tocar no
+    // destino fora da versão.
+    let (status, outside_alias, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/link-app/files/delete?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({ "paths": ["outside-alias"] })).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        outside_alias["deleted"],
+        serde_json::json!(["outside-alias"])
+    );
+    assert!(!dir.join("outside-alias").exists());
+    assert!(
+        outside.join("precious.txt").exists(),
+        "the symlink target must survive"
+    );
+}
+
+#[tokio::test]
+async fn files_delete_refuses_core_workers_and_out_of_bounds_batches() {
+    let bundled = tempfile::tempdir().unwrap();
+    let overlay = tempfile::tempdir().unwrap();
+    let user = tempfile::tempdir().unwrap();
+    write_manual_worker(bundled.path(), "cpanel", "bundled-body");
+    let app = build_pipeline(state_with_roots(
+        bundled.path().to_path_buf(),
+        overlay.path().to_path_buf(),
+        user.path().to_path_buf(),
+    ));
+
+    // Origem core é somente leitura, como no upload.
+    let (status, core, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/cpanel/files/delete?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({ "paths": ["index.html"] })).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(core["code"], "FORBIDDEN");
+
+    // Lote vazio ou acima do teto (1000) são VALIDATION_ERROR (400).
+    let (status, empty, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/cpanel/files/delete?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({ "paths": [] })).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert_eq!(empty["code"], "VALIDATION_ERROR");
+    let huge: Vec<String> = (0..1001).map(|index| format!("f{index}.txt")).collect();
+    let (status, too_many, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/cpanel/files/delete?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({ "paths": huge })).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert_eq!(too_many["code"], "VALIDATION_ERROR");
 }
 
 // Mutation captured: making rescan apply behave like dry-run (never touching
@@ -1911,7 +2338,9 @@ async fn internal_draft_is_private_invokable_and_never_promotable() {
             && header[1] != "test-root"
     }));
 
-    let (status, json, _) = send(
+    // files:write gates the mutability: uma versão pública de origem user
+    // aceita upload (o 409 DEPLOY_PUBLIC_VERSION_IMMUTABLE saiu da rota).
+    let (status, json, text) = send(
         app.clone(),
         "POST",
         "/api/admin/workers/studio-app/files?version=1.0.0",
@@ -1920,8 +2349,15 @@ async fn internal_draft_is_private_invokable_and_never_promotable() {
         zip_package(&[("marker.txt", "mutated-release")]),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(json["code"], "DEPLOY_PUBLIC_VERSION_IMMUTABLE");
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(
+        json["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "marker.txt"),
+        "uploaded file must be listed at the version root: {json}"
+    );
 
     let (status, _, text) = send(
         app.clone(),
