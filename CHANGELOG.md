@@ -2,13 +2,24 @@
 
 All notable changes to EdgeR will be documented here.
 
-## [0.3.1-rc.4] - 2026-09-24
+## [0.3.1] - 2026-09-24
 
-`v0.3.1-rc.1` was tagged but never published: two advisories disclosed after
-0.3.0 failed the `cargo deny` gate that guards the release job. `v0.3.1-rc.2`
-published its image, but the chart push failed on Helm's "Tag" step against
-ghcr (helm/helm#31223). `v0.3.1-rc.3` was the first complete publish; rc.4
-adds the Rancher form changes below.
+Validated on labdev as `0.3.1-rc.4`, upgraded from 0.3.0 through the Rancher
+UI. Release candidates: `v0.3.1-rc.1` was tagged but never published (two
+advisories disclosed after 0.3.0 failed the `cargo deny` gate that guards the
+release job); `v0.3.1-rc.2` published its image, but the chart push failed on
+Helm's "Tag" step against ghcr (helm/helm#31223); `v0.3.1-rc.3` was the first
+complete publish; `v0.3.1-rc.4` added the Rancher form changes.
+
+### Added
+
+- Agent skill `skills/edger-deploy` (install with
+  `bunx skills add djalmajr/edger --skill edger-deploy`): `manifest.yaml`, zip
+  layout, static-SPA contract, deploy channels (cPanel, REST, MCP HTTP, MCP
+  stdio), versions, staged promotes and deletion.
+- The chart README documents installing and upgrading through the Rancher UI
+  (OCI repository, form fields, labdev values) and through Helm on the
+  terminal.
 
 ### Changed (chart)
 
