@@ -2,7 +2,20 @@
 
 All notable changes to EdgeR will be documented here.
 
-## [0.3.1-rc.1] - 2026-09-24
+## [0.3.1-rc.2] - 2026-09-24
+
+`v0.3.1-rc.1` was tagged but never published: two advisories disclosed after
+0.3.0 failed the `cargo deny` gate that guards the release job. rc.2 carries
+the same changes plus the patched dependencies.
+
+### Security
+
+- `rustls` 0.23.41 → 0.23.45 (RUSTSEC-2026-0285: TLS 1.3 handshake messages
+  accepted across encryption-level boundaries), pulling `aws-lc-rs` 1.18.1,
+  `aws-lc-sys` 0.45.0 and `rustls-webpki` 0.103.15.
+- `wasmtime`/`wasmtime-wasi` 36.0.13 → 36.0.15 (RUSTSEC-2026-0269: filesystem
+  sandbox escape through paths or symlinks with trailing slashes), with the
+  matching `cranelift`/`cap-std` patch releases.
 
 ### Fixed
 
