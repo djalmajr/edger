@@ -310,7 +310,7 @@ function CreateKeyDialog({
     <Dialog onOpenChange={(next) => !next && onClose()} open={open}>
       {/* O default do DialogContent é `sm:max-w-sm`, e nele o rótulo do campo
           de workers quebra em duas linhas: o input desce e desalinha do par ao
-          lado. Este formulário tem duas colunas de verdade — sete permissions
+          lado. Este formulário tem duas colunas de verdade — onze permissions
           e os dois escopos —, então pede a largura maior. */}
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>

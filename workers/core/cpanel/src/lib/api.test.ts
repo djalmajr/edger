@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { compareSemver, kindLabel, runtimeUrl, workerUrl, type Worker } from "./api";
+import {
+  can,
+  compareSemver,
+  kindLabel,
+  runtimeUrl,
+  workerUrl,
+  type Worker,
+} from "./api";
 
 const worker: Worker = {
   kind: "fetch",
@@ -32,5 +39,23 @@ describe("cPanel API helpers", () => {
   it("orders semantic versions numerically", () => {
     expect(compareSemver("1.10.0", "1.2.9")).toBeGreaterThan(0);
     expect(compareSemver("2.0.0", "2.0.0")).toBe(0);
+  });
+});
+
+describe("can", () => {
+  const permissions = ["workers:read", "files:delete"];
+  it("grants every permission to the root principal", () => {
+    expect(can({ isRoot: true, permissions: [] }, "keys:manage")).toBe(true);
+  });
+  it("grants every permission to a wildcard principal", () => {
+    expect(can({ permissions: ["*"] }, "files:write")).toBe(true);
+  });
+  it("grants a permission present in the list", () => {
+    expect(can({ permissions }, "files:delete")).toBe(true);
+  });
+  it("denies a permission that is not present", () => {
+    expect(can({ permissions }, "files:write")).toBe(false);
+    expect(can({ permissions: [] }, "files:read")).toBe(false);
+    expect(can({}, "files:read")).toBe(false);
   });
 });
