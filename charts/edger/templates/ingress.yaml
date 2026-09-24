@@ -1,11 +1,18 @@
 {{- if .Values.ingress.enabled }}
+{{- $annotations := .Values.ingress.annotations }}
+{{- if kindIs "string" $annotations }}
+{{- $annotations = fromYaml $annotations }}
+{{- if hasKey $annotations "Error" }}
+{{- fail "ingress.annotations must be a YAML map" }}
+{{- end }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ include "edger.fullname" . }}
   labels:
     {{- include "edger.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
+  {{- with $annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}

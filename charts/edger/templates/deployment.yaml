@@ -1,5 +1,13 @@
 {{- include "edger.validate" . -}}
 {{- $hasRootKey := or .Values.rootKey.value .Values.rootKey.existingSecret }}
+{{- $extraEnv := .Values.extraEnv }}
+{{- if kindIs "string" $extraEnv }}
+{{- $parsed := fromYamlArray $extraEnv }}
+{{- if and (kindIs "slice" $parsed) (eq (len $parsed) 1) (kindIs "string" (index $parsed 0)) }}
+{{- fail "extraEnv must be a YAML list" }}
+{{- end }}
+{{- $extraEnv = $parsed }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,7 +57,7 @@ spec:
             {{- with .Values.extraEnvFrom }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- if or $hasRootKey .Values.extraEnv (and .Values.otel.enabled .Values.otel.headersSecret.name) }}
+          {{- if or $hasRootKey $extraEnv (and .Values.otel.enabled .Values.otel.headersSecret.name) }}
           env:
             {{- if $hasRootKey }}
             - name: EDGER_ROOT_KEY_FILE
@@ -62,7 +70,7 @@ spec:
                   name: {{ .Values.otel.headersSecret.name | quote }}
                   key: {{ .Values.otel.headersSecret.key | quote }}
             {{- end }}
-            {{- with .Values.extraEnv }}
+            {{- with $extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           {{- end }}

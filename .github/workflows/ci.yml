@@ -88,6 +88,16 @@ jobs:
           --set rootKey.source=existing
           --set rootKey.existingSecret=edger-root-key
           >/tmp/edger-otel.yaml
+      - name: Render com valores em texto (formulário do Rancher)
+        run: >-
+          helm template edger charts/edger
+          --set rootKey.existingSecret=edger-root-key
+          --set ingress.enabled=true
+          --set-string ingress.host='*.example.com'
+          --set-string ingress.pathType=ImplementationSpecific
+          --set-string 'ingress.annotations=konghq.com/strip-path: "true"'
+          --set-string 'extraEnv=[]'
+          >/tmp/edger-rancher-form.yaml
 
   image:
     name: Container image
