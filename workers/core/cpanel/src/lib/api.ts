@@ -15,17 +15,27 @@ export const PERMISSION_CATALOG = [
   "workers:install",
   "workers:delete",
   "workers:promote",
+  "workers:toggle",
   "workers:invoke",
+  "files:read",
+  "files:write",
+  "files:delete",
   "observability:read",
   "keys:manage",
 ] as const;
 
+// Mirror of the server's principal_has_permission: the root principal holds
+// everything, "*" grants everything, and any other permission must be
+// present literally. The UI hides every action whose permission the logged
+// principal lacks; the server still enforces each route.
+export function can(principal: Principal, permission: string): boolean {
+  if (principal.isRoot) return true;
+  const permissions = principal.permissions ?? [];
+  return permissions.includes("*") || permissions.includes(permission);
+}
+
 export function canManageKeys(principal: Principal): boolean {
-  return Boolean(
-    principal.isRoot ||
-      principal.permissions?.includes("keys:manage") ||
-      principal.permissions?.includes("*"),
-  );
+  return can(principal, "keys:manage");
 }
 
 export type ApiKey = {

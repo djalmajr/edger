@@ -174,17 +174,28 @@ import {
 import {
   apiDownload,
   apiJson,
+  can,
+  canManageKeys,
   compareSemver,
   kindLabel,
   loadAll,
   type OperationalEvent,
+  type Principal,
   type RuntimeData,
   type RuntimeWorker,
   type Worker,
-  canManageKeys,
   workerBasePath,
   workerUrl,
 } from "./lib/api";
+import {
+  deleteDialogText,
+  deleteEntriesCacheUpdates,
+  deletablePaths,
+  REVISION_FILE,
+  type DeleteTarget,
+  type FileEntry,
+  type FilesDeleteResponse,
+} from "./lib/files";
 import {
   cpanelBasePath,
   readRoute,
@@ -417,6 +428,13 @@ function Workers({
   const [actionError, setActionError] = React.useState("");
   const [deleteTarget, setDeleteTarget] = React.useState<Worker | null>(null);
   const queryClient = useQueryClient();
+  const principal = data.principal;
+  const canDeploy = can(principal, "workers:install");
+  const canBrowseFiles = can(principal, "files:read");
+  const canObserve = can(principal, "observability:read");
+  const canPromote = can(principal, "workers:promote");
+  const canToggle = can(principal, "workers:toggle");
+  const canDeleteVersion = can(principal, "workers:delete");
   const grouped = new Map<string, Worker[]>();
   data.workers.forEach((worker) =>
     grouped.set(worker.name, [...(grouped.get(worker.name) ?? []), worker]),
@@ -546,14 +564,18 @@ function Workers({
           </SelectContent>
         </Select>
         <div className="ml-auto flex items-center gap-2">
-          <Button onClick={() => void onRefresh()} variant="outline">
-            <RefreshCwIcon />
-            Refresh
-          </Button>
-          <Button onClick={() => setDeployOpen(true)}>
-            <UploadCloudIcon />
-            Deploy app
-          </Button>
+          {canDeploy && (
+            <Button onClick={() => void onRefresh()} variant="outline">
+              <RefreshCwIcon />
+              Refresh
+            </Button>
+          )}
+          {canDeploy && (
+            <Button onClick={() => setDeployOpen(true)}>
+              <UploadCloudIcon />
+              Deploy app
+            </Button>
+          )}
         </div>
       </div>
       {actionError && (
@@ -634,6 +656,18 @@ function Workers({
                         );
                         const isCore = worker.origin !== "user";
                         const actions = versionActions(worker, group.versions);
+                        // A menu item only renders when both the session
+                        // permission and the version rule allow it; with no
+                        // visible item the "..." trigger disappears entirely.
+                        const showObservability = canObserve;
+                        const showSetDefault = canPromote && actions.canSetDefault;
+                        const showToggle = canToggle;
+                        const showDelete = canDeleteVersion && actions.canDelete;
+                        const showActionsMenu =
+                          showObservability ||
+                          showSetDefault ||
+                          showToggle ||
+                          showDelete;
                         const canOpenUrl =
                           worker.status !== "disabled" &&
                           worker.name !== "cpanel";
@@ -672,12 +706,14 @@ function Workers({
                             </TableCell>
                             <TableCell>
                               <div className="flex justify-end">
-                                <ActionButton
-                                  label="Browse files"
-                                  onClick={() => onOpen(worker, "files")}
-                                >
-                                  <FolderOpenIcon />
-                                </ActionButton>
+                                {canBrowseFiles && (
+                                  <ActionButton
+                                    label="Browse files"
+                                    onClick={() => onOpen(worker, "files")}
+                                  >
+                                    <FolderOpenIcon />
+                                  </ActionButton>
+                                )}
                                 <ActionButton
                                   disabled={!canOpenUrl}
                                   label="Open URL"
@@ -691,84 +727,99 @@ function Workers({
                                 >
                                   <ExternalLinkIcon />
                                 </ActionButton>
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger
-                                    render={
-                                      <Button
-                                        aria-label="Worker actions"
-                                        size="icon-sm"
-                                        variant="ghost"
-                                      />
-                                    }
-                                  >
-                                    <MoreVerticalIcon />
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent
-                                    align="end"
-                                    className="min-w-44 whitespace-nowrap"
-                                  >
-                                    <DropdownMenuItem
-                                      onClick={() =>
-                                        onOpen(worker, "observability")
+                                {showActionsMenu && (
+                                  <DropdownMenu>
+                                    <DropdownMenuTrigger
+                                      render={
+                                        <Button
+                                          aria-label="Worker actions"
+                                          size="icon-sm"
+                                          variant="ghost"
+                                        />
                                       }
                                     >
-                                      <HeartPulseIcon />
-                                      Observability
-                                    </DropdownMenuItem>
-                                    <DropdownMenuItem
-                                      onClick={() => onOpen(worker, "logs")}
+                                      <MoreVerticalIcon />
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent
+                                      align="end"
+                                      className="min-w-44 whitespace-nowrap"
                                     >
-                                      <ScrollTextIcon />
-                                      View logs
-                                    </DropdownMenuItem>
-                                    {actions.canSetDefault && (
-                                      <DropdownMenuItem
-                                        onClick={() =>
-                                          promoteMutation.mutate(worker)
-                                        }
-                                      >
-                                        <StarIcon />
-                                        Set as default
-                                      </DropdownMenuItem>
-                                    )}
-                                    <DropdownMenuSeparator />
-                                    {worker.status === "disabled" ? (
-                                      <DropdownMenuItem
-                                        onClick={() =>
-                                          toggleMutation.mutate({
-                                            enable: true,
-                                            worker,
-                                          })
-                                        }
-                                      >
-                                        <RotateCcwIcon />
-                                        Enable version
-                                      </DropdownMenuItem>
-                                    ) : isCore &&
-                                      group.versions.filter(
-                                        (candidate) =>
-                                          candidate.status !== "disabled",
-                                      ).length <= 1 ? (
-                                      <DropdownMenuItem disabled>
-                                        <ShieldCheckIcon />
-                                        Default required
-                                      </DropdownMenuItem>
-                                    ) : (
-                                      <DropdownMenuItem
-                                        onClick={() =>
-                                          toggleMutation.mutate({
-                                            enable: false,
-                                            worker,
-                                          })
-                                        }
-                                      >
-                                        <PowerOffIcon />
-                                        Disable version
-                                      </DropdownMenuItem>
-                                    )}
-                                    {actions.canDelete && (
-                                      <>
-                                        <DropdownMenuSeparator />
+                                      {showObservability && (
+                                        <>
+                                          <DropdownMenuItem
+                                            onClick={() =>
+                                              onOpen(worker, "observability")
+                                            }
+                                          >
+                                            <HeartPulseIcon />
+                                            Observability
+                                          </DropdownMenuItem>
+                                          <DropdownMenuItem
+                                            onClick={() =>
+                                              onOpen(worker, "logs")
+                                            }
+                                          >
+                                            <ScrollTextIcon />
+                                            View logs
+                                          </DropdownMenuItem>
+                                        </>
+                                      )}
+                                      {showObservability &&
+                                        (showSetDefault ||
+                                          showToggle ||
+                                          showDelete) && (
+                                          <DropdownMenuSeparator />
+                                        )}
+                                      {showSetDefault && (
+                                        <DropdownMenuItem
+                                          onClick={() =>
+                                            promoteMutation.mutate(worker)
+                                          }
+                                        >
+                                          <StarIcon />
+                                          Set as default
+                                        </DropdownMenuItem>
+                                      )}
+                                      {showToggle &&
+                                        (worker.status === "disabled" ? (
+                                          <DropdownMenuItem
+                                            onClick={() =>
+                                              toggleMutation.mutate({
+                                                enable: true,
+                                                worker,
+                                              })
+                                            }
+                                          >
+                                            <RotateCcwIcon />
+                                            Enable version
+                                          </DropdownMenuItem>
+                                        ) : isCore &&
+                                        group.versions.filter(
+                                          (candidate) =>
+                                            candidate.status !== "disabled",
+                                        ).length <= 1 ? (
+                                          <DropdownMenuItem disabled>
+                                            <ShieldCheckIcon />
+                                            Default required
+                                          </DropdownMenuItem>
+                                        ) : (
+                                          <DropdownMenuItem
+                                            onClick={() =>
+                                              toggleMutation.mutate({
+                                                enable: false,
+                                                worker,
+                                              })
+                                            }
+                                          >
+                                            <PowerOffIcon />
+                                            Disable version
+                                          </DropdownMenuItem>
+                                        ))}
+                                      {(showSetDefault || showToggle) &&
+                                        showDelete && (
+                                          <DropdownMenuSeparator />
+                                        )}
+                                      {showDelete && (
                                         <DropdownMenuItem
                                           variant="destructive"
                                           onClick={() => setDeleteTarget(worker)}
@@ -776,10 +827,10 @@ function Workers({
                                           <Trash2Icon />
                                           Delete version
                                         </DropdownMenuItem>
-                                      </>
-                                    )}
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
+                                      )}
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
+                                )}
                               </div>
                             </TableCell>
                           </TableRow>
@@ -1283,14 +1334,18 @@ function Logs({ apiKey, target }: { apiKey: string; target?: Target }) {
 
 function Files({
   apiKey,
+  deletable,
   mutable,
   path,
+  principal,
   setPath,
   target,
 }: {
   apiKey: string;
+  deletable: boolean;
   mutable: boolean;
   path: string;
+  principal: Principal;
   setPath(path: string): void;
   target: Target;
 }) {
@@ -1298,16 +1353,29 @@ function Files({
   const fileInput = React.useRef<HTMLInputElement>(null);
   const [downloadError, setDownloadError] = React.useState("");
   const [downloading, setDownloading] = React.useState<string | null>(null);
+  const [fileErrors, setFileErrors] = React.useState<string[]>([]);
+  const [pendingDelete, setPendingDelete] =
+    React.useState<DeleteTarget[] | null>(null);
+  const [selected, setSelected] = React.useState<Set<string>>(
+    () => new Set(),
+  );
+  const canDownload = can(principal, "files:read");
   const filesQuery = useQuery({
     queryKey: ["cpanel", "files", target, path],
     queryFn: () =>
-      apiJson<{
-        entries: Array<{ kind: "dir" | "file"; name: string; size: number }>;
-      }>(
+      apiJson<{ entries: FileEntry[] }>(
         apiKey,
         `/api/admin/workers/${encodeURIComponent(target.name)}/files?${new URLSearchParams({ path, version: target.version })}`,
       ),
   });
+  const entries = filesQuery.data?.entries ?? [];
+  // The revision bookkeeping file is listed at the version root but is never
+  // a deletion target: no checkbox, no row action, not part of "select all".
+  const selectable = entries.filter((entry) => entry.name !== REVISION_FILE);
+  React.useEffect(() => {
+    setSelected(new Set());
+    setFileErrors([]);
+  }, [path, target.name, target.version]);
   const upload = useMutation({
     mutationFn: (body: Uint8Array) =>
       apiJson(
@@ -1319,9 +1387,63 @@ function Files({
           method: "POST",
         },
       ),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["cpanel", "files", target] }),
+    onSuccess: () => {
+      setFileErrors([]);
+      queryClient.invalidateQueries({ queryKey: ["cpanel", "files", target] });
+    },
   });
+  // The route answers with the ROOT listing of the version: apply it to the
+  // root query only and refetch the open folder when it is not the root.
+  // Partial failure is a 200 with a per-path errors list, and the per-item
+  // notices clear on the next successful action.
+  const deleteFiles = useMutation({
+    mutationFn: (paths: string[]) =>
+      apiJson<FilesDeleteResponse>(
+        apiKey,
+        `/api/admin/workers/${encodeURIComponent(target.name)}/files/delete?${new URLSearchParams({ version: target.version })}`,
+        {
+          body: JSON.stringify({ paths }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      ),
+    onSuccess: (data) => {
+      setPendingDelete(null);
+      setSelected(new Set());
+      setFileErrors(
+        data.errors.map((error) => `${error.path}: ${error.message}`),
+      );
+      for (const update of deleteEntriesCacheUpdates(path)) {
+        const queryKey = ["cpanel", "files", target, update.path];
+        if (update.action === "set")
+          queryClient.setQueryData(queryKey, { entries: data.entries });
+        else queryClient.invalidateQueries({ queryKey });
+      }
+    },
+    onError: (reason) =>
+      setFileErrors([reason instanceof Error ? reason.message : String(reason)]),
+  });
+  function toggleSelected(name: string, checked: boolean) {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (checked) next.add(name);
+      else next.delete(name);
+      return next;
+    });
+  }
+  function openBatchDelete() {
+    const names = deletablePaths(entries, selected);
+    if (!names.length) return;
+    setPendingDelete(
+      names.map((name) => {
+        const entry = entries.find((candidate) => candidate.name === name);
+        return {
+          isDir: entry?.kind === "dir",
+          path: path ? `${path}/${name}` : name,
+        };
+      }),
+    );
+  }
   async function pick(event: React.ChangeEvent<HTMLInputElement>) {
     const files = [...(event.currentTarget.files ?? [])];
     const map: Record<string, Uint8Array> = {};
@@ -1352,27 +1474,23 @@ function Files({
       setDownloading(null);
     }
   }
-  function downloadEntry(entry: { kind: "dir" | "file"; name: string }) {
-    const entryPath = path ? `${path}/${entry.name}` : entry.name;
-    return downloadPath(entryPath);
-  }
   const crumbs = path ? path.split("/") : [];
+  const deleteText = pendingDelete ? deleteDialogText(pendingDelete) : null;
   return (
     <>
       <PageActions>
-        <Button
-          disabled={downloading === ""}
-          onClick={() => void downloadPath("")}
-          variant="outline"
-        >
-          <DownloadIcon />
-          Download
-        </Button>
-        {mutable && (
+        {canDownload && (
           <Button
-            onClick={() => fileInput.current?.click()}
+            disabled={downloading === ""}
+            onClick={() => void downloadPath("")}
             variant="outline"
           >
+            <DownloadIcon />
+            Download
+          </Button>
+        )}
+        {mutable && (
+          <Button onClick={() => fileInput.current?.click()} variant="outline">
             <UploadIcon />
             Upload files
           </Button>
@@ -1412,91 +1530,211 @@ function Files({
               ))}
             </div>
           )}
-        {upload.error && (
-          <p className="mb-3 text-sm text-destructive">
-            {upload.error.message}
-          </p>
-        )}
-        {downloadError && (
-          <p className="mb-3 text-sm text-destructive">{downloadError}</p>
-        )}
-        <div className="overflow-hidden rounded-lg border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead className="text-right">Size</TableHead>
-                <TableHead className="w-16 text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {path && (
-                <TableRow
-                  className="cursor-pointer"
-                  onClick={() => setPath(crumbs.slice(0, -1).join("/"))}
-                >
-                  <TableCell colSpan={3}>
-                    <FolderOpenIcon className="mr-2 inline size-4" />
-                    ..
-                  </TableCell>
-                </TableRow>
-              )}
-              {filesQuery.data?.entries.map((entry) => (
-                <TableRow
-                  className={entry.kind === "dir" ? "cursor-pointer" : ""}
-                  key={entry.name}
-                  onClick={
-                    entry.kind === "dir"
-                      ? () =>
-                          setPath(path ? `${path}/${entry.name}` : entry.name)
-                      : undefined
-                  }
-                >
-                  <TableCell>
-                    <span className="flex items-center gap-2 font-mono text-sm">
-                      {entry.kind === "dir" ? (
-                        <FolderIcon className="size-4 text-primary" />
-                      ) : (
-                        <FileIcon className="size-4 text-muted-foreground" />
-                      )}
-                      {entry.name}
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-right text-muted-foreground">
-                    {entry.kind === "dir" ? "—" : formatBytes(entry.size)}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <ActionButton
-                      label={`Download ${entry.name}`}
-                      disabled={
-                        downloading ===
-                        (path ? `${path}/${entry.name}` : entry.name)
-                      }
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void downloadEntry(entry);
-                      }}
-                    >
-                      <DownloadIcon />
-                    </ActionButton>
-                  </TableCell>
-                </TableRow>
+          {upload.error && (
+            <p className="mb-3 text-sm text-destructive">
+              {upload.error.message}
+            </p>
+          )}
+          {downloadError && (
+            <p className="mb-3 text-sm text-destructive">{downloadError}</p>
+          )}
+          {fileErrors.length > 0 && (
+            <div className="mb-3 space-y-1 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+              {fileErrors.map((line, index) => (
+                <p key={`${line}-${index}`}>{line}</p>
               ))}
-              {!filesQuery.isLoading && !filesQuery.data?.entries.length && (
+            </div>
+          )}
+          {deletable && selected.size > 0 && (
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-sm font-medium">
+                {selected.size} selected
+              </span>
+              <div className="bg-border h-4 w-px" />
+              <Button
+                onClick={openBatchDelete}
+                size="sm"
+                variant="destructive"
+              >
+                <Trash2Icon />
+                Delete
+              </Button>
+              <Button
+                onClick={() => setSelected(new Set())}
+                size="sm"
+                variant="ghost"
+              >
+                Clear
+              </Button>
+            </div>
+          )}
+          <div className="overflow-hidden rounded-lg border">
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell
-                    className="h-32 text-center text-muted-foreground"
-                    colSpan={3}
-                  >
-                    This folder is empty.
-                  </TableCell>
+                  {deletable && (
+                    <TableHead className="w-10">
+                      <input
+                        aria-label="Select all"
+                        className="size-4"
+                        checked={
+                          selectable.length > 0 &&
+                          selectable.every((entry) => selected.has(entry.name))
+                        }
+                        onChange={(event) =>
+                          setSelected(
+                            event.target.checked
+                              ? new Set(selectable.map((entry) => entry.name))
+                              : new Set(),
+                          )
+                        }
+                        type="checkbox"
+                      />
+                    </TableHead>
+                  )}
+                  <TableHead>Name</TableHead>
+                  <TableHead className="text-right">Size</TableHead>
+                  <TableHead className="w-24 text-right">Actions</TableHead>
                 </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
+              </TableHeader>
+              <TableBody>
+                {path && (
+                  <TableRow
+                    className="cursor-pointer"
+                    onClick={() => setPath(crumbs.slice(0, -1).join("/"))}
+                  >
+                    {deletable && <TableCell />}
+                    <TableCell colSpan={3}>
+                      <FolderOpenIcon className="mr-2 inline size-4" />
+                      ..
+                    </TableCell>
+                  </TableRow>
+                )}
+                {entries.map((entry) => {
+                  const entryPath = path
+                    ? `${path}/${entry.name}`
+                    : entry.name;
+                  const selectableEntry =
+                    deletable && entry.name !== REVISION_FILE;
+                  return (
+                    <TableRow
+                      className={entry.kind === "dir" ? "cursor-pointer" : ""}
+                      key={entry.name}
+                      onClick={
+                        entry.kind === "dir"
+                          ? () => setPath(entryPath)
+                          : undefined
+                      }
+                    >
+                      {deletable && (
+                        <TableCell>
+                          {selectableEntry && (
+                            <input
+                              aria-label={`Select ${entry.name}`}
+                              className="size-4"
+                              checked={selected.has(entry.name)}
+                              onClick={(event) => event.stopPropagation()}
+                              onChange={(event) =>
+                                toggleSelected(entry.name, event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          )}
+                        </TableCell>
+                      )}
+                      <TableCell>
+                        <span className="flex items-center gap-2 font-mono text-sm">
+                          {entry.kind === "dir" ? (
+                            <FolderIcon className="size-4 text-primary" />
+                          ) : (
+                            <FileIcon className="size-4 text-muted-foreground" />
+                          )}
+                          {entry.name}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground">
+                        {entry.kind === "dir"
+                          ? "—"
+                          : formatBytes(entry.size)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end">
+                          {canDownload && (
+                            <ActionButton
+                              label={`Download ${entry.name}`}
+                              disabled={downloading === entryPath}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void downloadPath(entryPath);
+                              }}
+                            >
+                              <DownloadIcon />
+                            </ActionButton>
+                          )}
+                          {selectableEntry && (
+                            <ActionButton
+                              label={`Delete ${entry.name}`}
+                              variant="destructive"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setPendingDelete([
+                                  {
+                                    isDir: entry.kind === "dir",
+                                    path: entryPath,
+                                  },
+                                ]);
+                              }}
+                            >
+                              <Trash2Icon />
+                            </ActionButton>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+                {!filesQuery.isLoading && entries.length === 0 && (
+                  <TableRow>
+                    {deletable && <TableCell />}
+                    <TableCell
+                      className="h-32 text-center text-muted-foreground"
+                      colSpan={3}
+                    >
+                      This folder is empty.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
+      <Dialog
+        onOpenChange={(open) => !open && setPendingDelete(null)}
+        open={pendingDelete !== null}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{deleteText?.title}</DialogTitle>
+            <DialogDescription>{deleteText?.description}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button onClick={() => setPendingDelete(null)} variant="outline">
+              Cancel
+            </Button>
+            <Button
+              disabled={deleteFiles.isPending}
+              onClick={() => {
+                if (pendingDelete)
+                  deleteFiles.mutate(pendingDelete.map((item) => item.path));
+              }}
+              variant="destructive"
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
@@ -1942,7 +2180,11 @@ function Shell({
           <SidebarGroup>
             <SidebarMenu>
               {NAVIGATION.filter(
-                (entry) => entry.id !== "keys" || canManageKeys(data.principal),
+                (entry) =>
+                  (entry.id !== "keys" ||
+                    canManageKeys(data.principal)) &&
+                  (entry.id !== "observability" ||
+                    can(data.principal, "observability:read")),
               ).map((entry) => (
                 <SidebarMenuItem key={entry.id}>
                   <SidebarMenuButton
@@ -2013,14 +2255,19 @@ function Shell({
                 >
                   <TabsList>
                     <TabsTrigger value="files">Files</TabsTrigger>
-                    <TabsTrigger value="observability">
-                      Observability
-                    </TabsTrigger>
-                    <TabsTrigger value="logs">Logs</TabsTrigger>
+                    {can(data.principal, "observability:read") && (
+                      <>
+                        <TabsTrigger value="observability">
+                          Observability
+                        </TabsTrigger>
+                        <TabsTrigger value="logs">Logs</TabsTrigger>
+                      </>
+                    )}
                   </TabsList>
                 </Tabs>
               )}
               {!route.target &&
+                can(data.principal, "observability:read") &&
                 ["observability", "logs"].includes(route.view) && (
                   <Tabs
                     value={route.view}
@@ -2038,10 +2285,12 @@ function Shell({
                 className="ml-auto flex flex-wrap items-center justify-end gap-2"
                 data-slot="page-actions"
               >
-                <Button onClick={() => void refresh()} variant="outline">
-                  <RefreshCwIcon />
-                  Refresh
-                </Button>
+                {can(data.principal, "workers:install") && (
+                  <Button onClick={() => void refresh()} variant="outline">
+                    <RefreshCwIcon />
+                    Refresh
+                  </Button>
+                )}
                 <div className="contents" ref={setPageActionsElement} />
               </div>
             </div>
@@ -2090,8 +2339,16 @@ function Shell({
             {route.view === "files" && route.target && targetWorker && (
               <Files
                 apiKey={apiKey}
-                mutable={targetWorker.origin === "user"}
+                deletable={
+                  can(data.principal, "files:delete") &&
+                  targetWorker.origin === "user"
+                }
+                mutable={
+                  can(data.principal, "files:write") &&
+                  targetWorker.origin === "user"
+                }
                 path={route.path}
+                principal={data.principal}
                 setPath={(path) => navigate({ ...route, path })}
                 target={route.target}
               />
