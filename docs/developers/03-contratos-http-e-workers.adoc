@@ -183,6 +183,50 @@ inexistente, revogada ou expirada falha ali mesmo com `401`, sem cair no
 OIDC. A root key nunca está no store, e portanto não é revogável por esta
 via.
 
+==== Arquivos de workers
+
+As rotas de arquivos operam sobre uma versão instalada; `?version=` é
+opcional e o escopo por worker vale igual às demais rotas administrativas —
+worker fora do escopo da key responde `404` com `NOT_FOUND`.
+
+[cols="1,2,3",options="header"]
+|===
+| Método | Path | Contrato
+
+| `GET`
+| `/api/admin/workers/{name}/files`
+| Lista a raiz da versão ou um subdiretório (`?path=`). Responde
+  `{"entries":[{"kind","name","size"}], "name", "path", "version"}`.
+  Permission `files:read`.
+
+| `GET`
+| `/api/admin/workers/{name}/files/download`
+| Baixa um arquivo (`?path=`) ou empacota o diretório em
+  `application/zip`. Symlink para dentro da versão é resolvido e servido;
+  os que apontam para fora da pasta da versão são recusados (a rota de
+  apagar é a única que trata symlink sem segui-lo). Permission `files:read`.
+
+| `POST`
+| `/api/admin/workers/{name}/files`
+| Upload de um zip para a raiz ou um subdiretório (`?path=`). Qualquer
+  versão de origem `user` aceita, pública ou interna; core responde `403`.
+  Responde a listagem atualizada e a nova `revision`; o worker é reciclado
+  antes da resposta. Permission `files:write`.
+
+| `POST`
+| `/api/admin/workers/{name}/files/delete`
+| Apaga arquivos e diretórios da versão em lote. Body JSON
+  `{"paths":[...]}` com 1 a 1000 paths relativos à raiz; a falha de um item
+  não quebra o resto — a resposta é sempre `200` com
+  `{"deleted":[...], "errors":[{"path","code","message"}], "revision",
+  "entries"}`, onde `entries` é a listagem da raiz após a operação. Por
+  path: raiz (`.`) e o arquivo reservado `.edger-revision` são recusados,
+  `..` ou saída da pasta responde `FORBIDDEN` no item e path inexistente
+  responde `NOT_FOUND`; symlink é removido como link, nunca o destino. A
+  revisão avança e o worker é reciclado só quando pelo menos um item foi
+  apagado. Permission `files:delete`.
+|===
+
 ==== MCP por HTTP
 
 `/api/mcp` é a superfície MCP do control plane. Aceita apenas `POST` —

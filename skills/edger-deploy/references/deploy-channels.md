@@ -24,7 +24,13 @@ The cPanel is served at `$EDGER_URL/cpanel/` (for example
    file name.
 3. The worker is active without a runtime restart.
 
-Needs the `workers:install` permission.
+The deploy and the Refresh action need the `workers:install` permission.
+The workers view also offers **Set as default** (promote a version back to
+default, `workers:promote` — applied immediately) and **Delete version**
+(`workers:delete`), the latter behind a confirmation dialog; the Files tab
+lists, uploads and deletes files under `files:read` / `files:write` /
+`files:delete` (file deletions behind a confirmation dialog too), and every
+action is hidden unless the key holds the matching permission.
 
 ## REST
 
@@ -93,28 +99,38 @@ over HTTP. With `zipPath` the agent only passes the path to a local zip.
 ## API-key permissions
 
 Catalog: `workers:read`, `workers:install`, `workers:delete`,
-`workers:promote`, `workers:invoke`, `observability:read`, `keys:manage`
+`workers:promote`, `workers:toggle`, `workers:invoke`, `files:read`,
+`files:write`, `files:delete`, `observability:read`, `keys:manage`
 (`*` is not storable; root passes everything).
 
 | Operation | Permission |
 |---|---|
 | `GET /api/admin/workers` (list; read the `revision` field) | `workers:read` |
 | `POST /api/admin/workers/install` | `workers:install` |
-| `POST /api/admin/workers/{name}/promote`, `.../enable`, `.../disable` | `workers:promote` |
+| `POST /api/admin/workers/{name}/promote` | `workers:promote` |
+| `POST /api/admin/workers/{name}/enable`, `.../disable` | `workers:toggle` |
 | `DELETE /api/admin/workers/{name}` | `workers:delete` |
+| `GET /api/admin/workers/{name}/files`, `.../files/download` | `files:read` |
+| `POST /api/admin/workers/{name}/files` (zip upload; any user version) | `files:write` |
+| `POST /api/admin/workers/{name}/files/delete` (batch; per-item errors in the 200 body) | `files:delete` |
 
 Keys also carry scopes: `namespaces` (default `["*"]`) and `workers` (exact
 name or suffix glob such as `p-abc*`, default `["*"]`). A non-root key
 outside its scope gets `403 FORBIDDEN` on install and `404 NOT_FOUND` on
-list/delete/promote/enable/disable. A deploy key is created with
+list/delete/promote/enable/disable and the file routes. A deploy key is
+created with
 `POST /api/admin/keys` (needs `keys:manage`); the raw `egk_` key is returned
 once.
 
 ## Versions, staged and promote
 
-- **Public versions are immutable.** Reinstalling the same `name@version`
-  answers `409 COLLISION`; `force` on a public version answers
-  `409 DEPLOY_PUBLIC_VERSION_IMMUTABLE`. Update by installing a new version.
+- **Public versions are immutable as a whole.** Reinstalling the same
+  `name@version` answers `409 COLLISION`; `force` on a public version
+  answers `409 DEPLOY_PUBLIC_VERSION_IMMUTABLE`. Update by installing a new
+  version. File-level edits are the exception: `POST .../files` (upload,
+  `files:write`) and `POST .../files/delete` (`files:delete`) mutate files
+  of any user version, public included — the version stays the same
+  `name@version`, its revision advances.
 - **`force`** replaces an existing **internal** draft version only, and only
   with `x-edger-expected-revision` (REST) / `expectedRevision` (MCP)
   matching the installed revision — the compare-and-swap; a stale revision
