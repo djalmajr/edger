@@ -2,13 +2,24 @@
 
 All notable changes to EdgeR will be documented here.
 
-## [0.3.1-rc.3] - 2026-09-24
+## [0.3.1-rc.4] - 2026-09-24
 
 `v0.3.1-rc.1` was tagged but never published: two advisories disclosed after
 0.3.0 failed the `cargo deny` gate that guards the release job. `v0.3.1-rc.2`
 published its image, but the chart push failed on Helm's "Tag" step against
-ghcr (helm/helm#31223). rc.3 carries the same changes, the patched
-dependencies and the release fix below.
+ghcr (helm/helm#31223). `v0.3.1-rc.3` was the first complete publish; rc.4
+adds the Rancher form changes below.
+
+### Changed (chart)
+
+- The Rancher form (`questions.yaml`) now covers an Ingress like labdev's:
+  `Ingress Path Type`, `Ingress Annotations` (a YAML map), a host that accepts
+  wildcards, and `Root Key Secret` / `Root Key Secret Field` to use an existing
+  Secret instead of typing the key.
+- `ingress.annotations` and `extraEnv` accept YAML text as well as a map/list
+  (Rancher sends multiline fields as strings); invalid YAML fails the render
+  with an explicit message. Previously the form's default `extraEnv` (`"[]"`)
+  was written verbatim into the container `env`.
 
 ### Fixed (release)
 
