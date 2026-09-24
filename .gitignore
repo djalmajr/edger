@@ -35,5 +35,7 @@ coverage/
 
 # Scratch / local binaries
 edger-bin
+/tmp/
 # Local Claude Code config
 .claude/
+.herdr-agents/

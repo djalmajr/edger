@@ -2,6 +2,29 @@
 
 All notable changes to EdgeR will be documented here.
 
+## [0.3.1-rc.1] - 2026-09-24
+
+### Fixed
+
+- A worker addressed with its version (`/name@1.2.3/...`, `/@scope/name@1.2.3/...`)
+  got `/` as its public base: the `<base href>` injected into a static SPA and
+  the `x-base` header lost the address segment, so every relative asset
+  resolved outside the worker and the page loaded blank. The base now keeps
+  the version segment (`<base href="/name@1.2.3/" />`), also behind
+  `X-Forwarded-Prefix` (`/apps/name@1.2.3/`).
+
+### Changed
+
+- The release workflow now also publishes the Helm chart as an OCI artifact at
+  `oci://ghcr.io/djalmajr/charts/edger`, with the digest of the image built
+  for the same tag recorded in `image.digest`. Installing a chart version
+  therefore runs exactly that release's image without passing a digest by
+  hand. The job fails before publishing anything when `Chart.yaml`
+  `version`/`appVersion` differ from the tag.
+- `values-labdev.yaml` no longer declares an empty `image.digest` (it would
+  override the digest carried by the published chart), and its install
+  command, like the chart README, now points at the ghcr chart.
+
 ## [0.3.0] - 2026-08-27
 
 ### Added
