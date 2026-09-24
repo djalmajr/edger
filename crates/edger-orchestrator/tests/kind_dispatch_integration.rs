@@ -503,6 +503,53 @@ injectBase: true
 }
 
 #[tokio::test]
+async fn static_spa_base_href_keeps_the_versioned_address() {
+    // `/name@version/...` is a public address too: the injected <base href>
+    // must keep the version segment, or relative assets resolve outside it.
+    let root = tempfile::tempdir().unwrap();
+    for (dir, name) in [("todos", "todos"), ("team-board", "@team/board")] {
+        let worker_dir = root.path().join(dir);
+        fs::create_dir_all(&worker_dir).unwrap();
+        fs::write(
+            worker_dir.join("manifest.yaml"),
+            format!(
+                "name: \"{name}\"\nversion: \"1.2.3\"\nentrypoint: index.html\ninjectBase: true\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            worker_dir.join("index.html"),
+            r#"<!doctype html><html><head><base href="/" /></head><body></body></html>"#,
+        )
+        .unwrap();
+    }
+
+    let app = build_pipeline(state_with_workers(root.path().to_path_buf()));
+    for (uri, expected) in [
+        ("/todos@1.2.3", r#"<base href="/todos@1.2.3/" />"#),
+        ("/todos@1.2.3/", r#"<base href="/todos@1.2.3/" />"#),
+        (
+            "/todos@1.2.3/filter/active",
+            r#"<base href="/todos@1.2.3/" />"#,
+        ),
+        ("/todos/filter/active", r#"<base href="/todos/" />"#),
+        (
+            "/@team/board@1.2.3/cards/7",
+            r#"<base href="/@team/board@1.2.3/" />"#,
+        ),
+        ("/@team/board/cards/7", r#"<base href="/@team/board/" />"#),
+    ] {
+        let (status, body) = dispatch(app.clone(), "GET", uri, Body::empty()).await;
+        let body = String::from_utf8_lossy(&body);
+        assert_eq!(status, StatusCode::OK, "{uri}: unexpected body: {body}");
+        assert!(
+            body.contains(expected),
+            "{uri}: expected {expected}, got {body}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn repository_js_examples_dispatch_through_deno_backend() {
     let workers_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

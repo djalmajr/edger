@@ -606,10 +606,18 @@ fn worker_error_to_core(err: WorkerError) -> CoreError {
 fn worker_base_path(worker: &WorkerRef, original_path: &str) -> String {
     let base = format!("/{}", worker.name);
     if original_path == base || original_path.starts_with(&format!("{base}/")) {
-        base
-    } else {
-        "/".into()
+        return base;
     }
+    // `/name@version/...` (and `/@scope/name@version/...`) is a public address
+    // too: its base keeps the version segment, otherwise the <base href> of a
+    // SPA served there points at `/` and every relative asset misses.
+    if let Some(rest) = original_path.strip_prefix(&format!("{base}@")) {
+        let version = rest.split('/').next().unwrap_or_default();
+        if !version.is_empty() {
+            return format!("{base}@{version}");
+        }
+    }
+    "/".into()
 }
 
 fn normalize_rewritten_path(remainder: &str) -> String {
