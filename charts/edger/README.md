@@ -1,26 +1,76 @@
 # EdgeR Helm chart
 
-## Install with Rancher
+## Chart source
 
-In Rancher, open **Apps > Charts > edger**, select the desired version, and
-install it into the target namespace.
+The chart is published to the GitHub Container Registry at
+`oci://ghcr.io/djalmajr/charts/edger` on every `vX.Y.Z` tag, one chart version
+per tag, including pre-release tags such as `X.Y.Z-rc.N`. It is a public
+package: pulling it needs no credentials.
 
-1. Create or select a namespace suitable for the runtime.
-2. Choose a release name, such as `edger`.
-3. The selected chart version uses its associated EdgeR image by default. Use
-   **Edit YAML** only when the cluster requires a private registry or an
-   explicit image override.
+The published chart records the `image.digest` (sha256) of the image built for
+the same release, so installing it runs exactly that image, and no digest is
+ever passed by hand. A chart packaged directly from this repository has an
+empty digest and falls back to the `appVersion` tag.
 
-4. Configure persistent storage for user worker packages to meet the cluster
-   policy. cPanel and WebIDE are versioned with the EdgeR image and are restored
-   from it whenever the pod is replaced.
-5. Enable and configure Ingress, OpenTelemetry, or OIDC only when their
-   required infrastructure is available.
-6. Install the release and wait for the Deployment and enabled PVCs to become
-   ready.
+The image and the chart are two ghcr packages that share the same tag:
+`ghcr.io/djalmajr/edger` (image) and `ghcr.io/djalmajr/charts/edger` (chart).
 
-Provide a root key in the **Auth** section. The chart stores it in the
-`<release-name>-root-key` Secret. It can be retrieved later with:
+## Rancher (UI)
+
+### Add the chart repository
+
+Apps → Repositories → Create, with target **OCI Repository**:
+
+- Name: `edger`
+- URL: `oci://ghcr.io/djalmajr/charts/edger`
+- No authentication (public package)
+
+Use the full chart path, not just the `charts` namespace: ghcr does not
+expose the catalog listing Rancher would use to discover the charts inside a
+namespace.
+
+Declarative equivalent:
+
+```yaml
+apiVersion: catalog.cattle.io/v1
+kind: ClusterRepo
+metadata:
+  name: edger
+spec:
+  url: oci://ghcr.io/djalmajr/charts/edger
+  refreshInterval: 3600
+```
+
+Pre-release versions only appear with the "show pre-release versions" user
+preference enabled in the Rancher preferences page.
+
+### Install
+
+Apps → Charts → `edger` → **Install**. Choose the namespace and the release
+name (for example `edger`). The form is grouped into **Runtime**,
+**Networking**, **Auth**, **Resources**, **Observability** and **Scaling**.
+
+While **Enable Ingress** is on, the Networking fields are:
+
+- **Ingress Host** — hostname for the Ingress; wildcards such as
+  `*.example.com` are allowed.
+- **Ingress Class** — optional `ingressClassName`.
+- **Ingress Path** — path prefix routed to EdgeR (default `/`).
+- **Ingress Path Type** — `Prefix` (default), `ImplementationSpecific` or
+  `Exact`; use `ImplementationSpecific` for Kong string-prefix paths such as
+  `/apps/`.
+- **Ingress Annotations** — YAML map of Ingress annotations (default `{}`).
+- **Enable TLS** — attach TLS configuration to the Ingress (default off);
+  when on, **TLS Secret Name** asks for the existing Kubernetes TLS Secret.
+
+The Auth fields are:
+
+- **Root Key Secret** — existing Secret holding the root key. Leave empty to
+  create one from **Root Key**.
+- **Root Key Secret Field** — Secret data key holding the root key value
+  (default `root-key`).
+- **Root Key** — required while **Root Key Secret** is empty. The chart stores
+  it in the `<release-name>-root-key` Secret, retrievable later with:
 
 ```bash
 kubectl -n <namespace> get secret <release-name>-root-key \
@@ -28,8 +78,39 @@ kubectl -n <namespace> get secret <release-name>-root-key \
 echo
 ```
 
-For direct Helm installations, set `rootKey.existingSecret` through a values
-file when the cluster already manages this credential in a Secret.
+### labdev example
+
+Values taken from `values-labdev.yaml`:
+
+| Field | Value |
+| --- | --- |
+| Enable Ingress | `true` |
+| Ingress Class | `kong` |
+| Ingress Host | `*.cloud4biz.com` |
+| Ingress Path | `/apps/` |
+| Ingress Path Type | `ImplementationSpecific` |
+| Ingress Annotations | see below |
+| Enable TLS | `false` |
+| Root Key Secret | `edger-root-key` |
+| Root Key Secret Field | `root-key` |
+| Persist Workers | `true` |
+| Workers Volume Size | `5Gi` |
+
+```yaml
+konghq.com/preserve-host: "true"
+konghq.com/protocols: https
+konghq.com/strip-path: "true"
+```
+
+The `edger-root-key` Secret (key `root-key`) is pre-provisioned in the
+namespace before the first install; the Helm section below shows the command.
+
+### Upgrade
+
+Apps → Installed Apps → `edger` → **Upgrade**, then choose the target version.
+The release's current values come pre-filled; anything not exposed by the form
+goes through **Edit YAML**. A release installed with Helm on the terminal also
+appears in Installed Apps and can be upgraded from the UI — and vice versa.
 
 ## Topology: single replica by design
 
@@ -42,25 +123,74 @@ enabling worker persistence switches the Deployment to `strategy: Recreate`
 same node). Do not try to scale by replicas; scale vertically or wait for
 worker distribution.
 
-## labdev overlay
+## Helm (terminal)
 
-The `values-labdev.yaml` overlay pins that topology (1 replica, PVC, HPA off,
-Recreate) and expects the root key in the pre-provisioned `edger-root-key`
-Secret. Every `vX.Y.Z` tag publishes the chart to the GitHub Container
-Registry, so labdev installs it straight from there:
+### Get the overlay
+
+The labdev overlay lives in the repository at `charts/edger/values-labdev.yaml`
+and is also shipped inside the published chart package:
+
+```bash
+helm pull oci://ghcr.io/djalmajr/charts/edger --version X.Y.Z --untar
+# the overlay lands at edger/values-labdev.yaml
+```
+
+### Pre-provision the root key
+
+Before the first install, create the `edger-root-key` Secret in the namespace.
+Read the key from a file — never pass it on the command line:
+
+```bash
+kubectl -n hyper create secret generic edger-root-key \
+  --from-file=root-key=./edger-root-key.txt
+```
+
+### Install or upgrade
 
 ```bash
 helm upgrade --install edger oci://ghcr.io/djalmajr/charts/edger \
   --version X.Y.Z \
-  --namespace hyper \
-  -f charts/edger/values-labdev.yaml \
+  -n hyper \
+  -f edger/values-labdev.yaml \
   --history-max 5
 ```
 
-The published chart carries the **digest** of the image built for the same
-release in `image.digest` (an immutable reference, never a mutable tag), so no
-digest is passed by hand. A chart packaged from this repository has an empty
-digest and falls back to the `appVersion` tag.
+If you are at the repository root, use the versioned overlay with
+`-f charts/edger/values-labdev.yaml`. The overlay pins the single-replica
+topology and expects the `edger-root-key` Secret. The published chart already
+carries the image digest in `image.digest`, so no digest is passed by hand —
+and never declare
+`image.digest: ""` in a values file of your own: the empty value overrides the
+chart's digest and the image falls back to the mutable tag.
+
+### Verify
+
+```bash
+helm history edger -n hyper
+kubectl -n hyper rollout status deploy/edger
+kubectl -n hyper get deploy edger \
+  -o jsonpath='{.spec.template.spec.containers[0].image}'
+# ghcr.io/djalmajr/edger@sha256:...
+curl https://<host>/apps/health
+```
+
+The `@sha256:` reference in the printed image proves the pod runs the
+immutable image of the release. Kong strips the `/apps/` prefix (the
+`konghq.com/strip-path` annotation), so `/apps/health` reaches EdgeR's
+`/health` route.
+
+### Roll back
+
+```bash
+helm rollback edger <revision> -n hyper
+```
+
+## Upgrade notes
+
+With worker persistence enabled, the Deployment uses the `Recreate` strategy
+because the workers PVC is `ReadWriteOnce`: an upgrade terminates the pod and
+starts the new one, so EdgeR is down for a few seconds. The installed workers
+live on the PVC and survive the upgrade.
 
 ## Access and validation
 
