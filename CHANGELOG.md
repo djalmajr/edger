@@ -20,6 +20,25 @@ complete publish; `v0.3.1-rc.4` added the Rancher form changes.
 - The chart README documents installing and upgrading through the Rancher UI
   (OCI repository, form fields, labdev values) and through Helm on the
   terminal.
+- API-key permissions `workers:toggle`, `files:read`, `files:write` and
+  `files:delete` join the catalog (11 entries; the order is a contract — the
+  key migration and the cPanel mirror it).
+- `POST /api/admin/workers/{name}/files/delete`: batch deletion of files and
+  directories inside a deployed user version — body
+  `{"paths": ["a.txt", "dir/sub"]}` (1 to 1000 paths), per-item failures in
+  the `200` body (`{"deleted", "errors", "revision", "entries"}`, where
+  `entries` is the version's root listing after the operation). The route
+  never follows a symlink (a link is removed as the link), refuses the
+  version root and the reserved `.edger-revision` file per item, and
+  advances the revision and recycles the worker only when at least one item
+  was removed. `files:delete` is never granted automatically.
+- cPanel: "Set as default" (promote, applied immediately) and "Delete
+  version" actions on the workers view — the delete behind a confirmation
+  dialog that warns when the version is the default or the only one; file
+  deletion in the Files tab — one at a time and in batch via row checkboxes,
+  with a confirmation dialog and per-item errors shown inline; and every
+  action is rendered only when the logged-in key holds the matching
+  permission.
 
 ### Changed (chart)
 
@@ -55,6 +74,14 @@ complete publish; `v0.3.1-rc.4` added the Rancher form changes.
   resolved outside the worker and the page loaded blank. The base now keeps
   the version segment (`<base href="/name@1.2.3/" />`), also behind
   `X-Forwarded-Prefix` (`/apps/name@1.2.3/`).
+- cPanel behind a proxy prefix (`/apps/cpanel/`): menu navigation dropped
+  the prefix from the URL and a refresh under the prefix fell back to the
+  overview. Routes now derive from the runtime-injected `<base href>` (also
+  for versioned addresses like `/cpanel@x.y.z/`), so navigation and refresh
+  keep the prefix.
+- The cPanel deploy dialog's drop zone used to open or download the dropped
+  file; it now stages the dropped `.zip` (any other file is rejected) and the
+  dialog cancels the browser's default drop.
 
 ### Changed
 
@@ -67,6 +94,20 @@ complete publish; `v0.3.1-rc.4` added the Rancher form changes.
 - `values-labdev.yaml` no longer declares an empty `image.digest` (it would
   override the digest carried by the published chart), and its install
   command, like the chart README, now points at the ghcr chart.
+- Behavior change for existing API users — the permission each route
+  requires moved to the new granular set: listing and downloading worker
+  files now requires `files:read` (was `workers:read`); uploading files now
+  requires `files:write` (was `workers:install`) and no longer requires an
+  `internal` version — any user-origin version accepts uploads (core stays
+  read-only; `DEPLOY_PUBLIC_VERSION_IMMUTABLE` no longer applies to this
+  route); enabling/disabling a version now requires `workers:toggle` (was
+  `workers:promote`; `promote` itself still requires `workers:promote`).
+- One-time migration of existing API keys on store open
+  (`PRAGMA user_version`): a key holding `workers:read` gains `files:read`,
+  `workers:install` gains `files:write` and `workers:promote` gains
+  `workers:toggle`, so the routes above keep working with pre-existing keys;
+  `files:delete` is never added. Idempotent: reopening the store changes
+  nothing.
 
 ## [0.3.0] - 2026-08-27
 

@@ -396,10 +396,12 @@ principal autenticado. `GET /api/admin/workers` aceita root ou uma key com
 `workers:read`; keys não-root veem somente workers dentro dos seus namespaces
 e do seu escopo de worker. O catálogo de módulos e os endpoints de extensões
 exigem root. As demais rotas pedem a permission da própria operação:
-`workers:install` para install, upload de arquivos e rescan,
-`workers:delete` para remoção, `workers:promote` para promote e
-enable/disable, `workers:invoke` para invocação, `observability:read` para
-observabilidade e `keys:manage` para a gestão de keys.
+`workers:install` para install e rescan, `workers:delete` para remoção,
+`workers:promote` para promote, `workers:toggle` para enable/disable,
+`files:read` para listar e baixar arquivos, `files:write` para upload de
+arquivos, `files:delete` para apagar arquivos, `workers:invoke` para
+invocação, `observability:read` para observabilidade e `keys:manage` para a
+gestão de keys.
 
 [cols="1,1,3",options="header"]
 |===
@@ -457,6 +459,27 @@ observabilidade e `keys:manage` para a gestão de keys.
 | `POST`
 | `/api/admin/workers/{name}/disable`
 | Mutação protegida. Remove worker do roteamento pelo overlay runtime em memória.
+
+| `GET`
+| `/api/admin/workers/{name}/files`
+| Lista a raiz da versão ou um subdiretório (`?path=`, `?version=`).
+  Permission `files:read`.
+
+| `GET`
+| `/api/admin/workers/{name}/files/download`
+| Baixa um arquivo ou o diretório em `application/zip`. Permission
+  `files:read`.
+
+| `POST`
+| `/api/admin/workers/{name}/files`
+| Mutação protegida. Upload de um zip para a versão; aceita qualquer versão
+  de origem `user`. Permission `files:write`.
+
+| `POST`
+| `/api/admin/workers/{name}/files/delete`
+| Mutação protegida. Apaga arquivos/diretórios da versão em lote
+  (`{"paths":[...]}`); falhas parciais voltam no corpo `200` por item.
+  Permission `files:delete`.
 
 | `POST`
 | `/api/admin/extensions/{name}/enable`
@@ -524,21 +547,34 @@ Permissions atribuíveis:
 | Permission | Concede
 
 | `workers:read`
-| Inventário de workers, erros recentes, leitura/download de arquivos de
-  worker e o health-check manual, que além dela exige principal com `role`
-  `admin`.
+| Inventário de workers, erros recentes e o health-check manual, que além
+  dela exige principal com `role` `admin`.
 
 | `workers:install`
-| Install por zip, upload de arquivos de worker e rescan.
+| Install por zip e rescan.
 
 | `workers:delete`
 | Remoção de uma versão ou de todas as versões de um worker.
 
 | `workers:promote`
-| Promote de versão pública e enable/disable de worker.
+| Promote de versão pública.
+
+| `workers:toggle`
+| Enable/disable de worker.
 
 | `workers:invoke`
 | Invocação de worker pelo control plane.
+
+| `files:read`
+| Leitura e download de arquivos de worker.
+
+| `files:write`
+| Upload de arquivos para qualquer versão de origem `user` (pública ou
+  interna); core permanece somente leitura.
+
+| `files:delete`
+| Apagar arquivos e diretórios de uma versão (rota em lote). Nunca é
+  concedida automaticamente.
 
 | `observability:read`
 | Eventos, séries e stream de observabilidade.
@@ -549,7 +585,12 @@ Permissions atribuíveis:
 
 O catálogo é fechado e `"*"` não é permission armazenável: uma key criada
 por essa via fica sempre enumerada, e uma permission fora do catálogo é
-`400 VALIDATION_ERROR`.
+`400 VALIDATION_ERROR`. Keys criadas antes de o catálogo ganhar
+`workers:toggle` e as `files:*` são convertidas numa migração única ao abrir
+o store (`PRAGMA user_version`): quem tinha `workers:read` ganhou
+`files:read`, `workers:install` ganhou `files:write` e `workers:promote`
+ganhou `workers:toggle`; `files:delete` nunca é adicionada. A migração é
+idempotente.
 
 Escopo da key:
 
@@ -649,7 +690,11 @@ A listagem nunca devolve raw key nem hash: só metadata operacional, que inclui
 
 No cPanel, a tela API Keys só aparece para quem tem `keys:manage`. Ela mostra o
 segredo em um painel one-time logo após o create, e a ação de apagar confirma e
-encadeia revoke e delete, porque o servidor exige essa ordem.
+encadeia revoke e delete, porque o servidor exige essa ordem. As demais ações
+seguem a mesma lógica — só são exibidas quando a key logada tem a permission
+da operação (apagar arquivos pede `files:delete`, o Set as default pede
+`workers:promote` e o Delete version pede `workers:delete`) — e a navegação
+mantém o prefixo de montagem, como `/apps/cpanel/`.
 
 O ciclo inteiro tem gate reexecutável contra uma instância viva, que é onde
 aparecem os defeitos que o router montado em memória não pega — rota não

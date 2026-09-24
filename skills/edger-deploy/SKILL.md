@@ -74,7 +74,7 @@ A JS/TS worker directory needs `index.{ts,js,mjs}` compatible with one of:
 | 400 | `DEPLOY_INVALID_PACKAGE` | No inferable `name`, or no entrypoint | Set `name` and `entrypoint` in `manifest.yaml` |
 | 409 | `CORE_WORKER_IMMUTABLE` | Deleting a bundled or overlay version | Only versions installed from user zips can be deleted |
 | 404 | `NOT_FOUND` | Unknown name/version, or delete/promote/enable/disable on a worker the key's scope hides | Check `GET $EDGER_URL/api/admin/workers`; out-of-scope workers 404 (hidden) on those operations, not 403 |
-| 403 | `FORBIDDEN` | Key lacks the permission, or install of a worker outside the key's `workers` / `namespaces` scope | Grant `workers:install` / `workers:promote` / `workers:delete`, or use a key whose scope covers the worker name |
+| 403 | `FORBIDDEN` | Key lacks the permission, or install of a worker outside the key's `workers` / `namespaces` scope | Grant the matching permission — `workers:install`, `workers:promote`, `workers:toggle` (enable/disable), `workers:delete`, or `files:read` / `files:write` / `files:delete` for the file routes — or use a key whose scope covers the worker name |
 | 401 | `UNAUTHORIZED` | Missing or invalid credential | Send `Authorization: Bearer $EDGER_API_KEY` |
 
 ## SPA blank page or wrong asset paths behind a prefix?

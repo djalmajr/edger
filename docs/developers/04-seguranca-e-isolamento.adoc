@@ -73,21 +73,36 @@ anti-escalada.
 | Permission | Libera
 
 | `workers:read`
-| Listagem de workers, erros e error summary, listagem e download de arquivos
-  do worker. O health-check manual pede a mesma permission e ainda exige
-  `role: admin`.
+| Listagem de workers, erros e error summary. O health-check manual pede a
+  mesma permission e ainda exige `role: admin`.
 
 | `workers:install`
-| Install de pacote, upload de arquivos no worker e rescan do index.
+| Install de pacote e rescan do index; no cPanel, o Deploy app e o Refresh.
 
 | `workers:delete`
-| Remoção de worker.
+| Remoção de worker (uma versão ou todas); no cPanel, o Delete version.
 
 | `workers:promote`
-| Promote de versão e o par enable/disable, que era root-only até a 0.3.0.
+| Promote de versão (o ponteiro default); no cPanel, o Set as default.
+
+| `workers:toggle`
+| O par enable/disable de versão, separado do promote na 0.3.1; no cPanel,
+  o Enable/Disable version.
 
 | `workers:invoke`
 | Invocação administrativa do worker, na raiz e por path.
+
+| `files:read`
+| Listagem e download dos arquivos de um worker; no cPanel, a navegação da
+  aba Files e o Download.
+
+| `files:write`
+| Upload de arquivos para qualquer versão de origem `user`, pública ou
+  interna — core continua somente leitura. No cPanel, o Upload files.
+
+| `files:delete`
+| Apagar arquivos e diretórios da versão pela rota em lote; no cPanel, o
+  Delete da aba Files. Nunca é concedida automaticamente.
 
 | `observability:read`
 | Eventos, séries e o stream SSE de observabilidade, que antes eram root-only.
@@ -100,6 +115,15 @@ anti-escalada.
 O gate é o `require_permission` de cada handler, e o principal root passa por
 todos sem consultar o catálogo. `GET /api/admin/catalog` continua root-only,
 fora do vocabulário de permissions.
+
+Como o catálogo ganhou `workers:toggle` e as três `files:*`, o store roda uma
+migração única de dados ao abrir: com `PRAGMA user_version < 1`, cada key
+passa por `perm' = perm ∪ {files:read se workers:read} ∪ {files:write se
+workers:install} ∪ {workers:toggle se workers:promote}` — deduplicada e na
+ordem do catálogo — e o store grava `user_version = 1`. Assim uma key
+existente continua listando, baixando, subindo e ligando/desligando o que
+sempre pôde; `files:delete` nunca entra, porque era capacidade inexistente.
+A migração é idempotente: com `user_version >= 1` a abertura é no-op.
 
 Os endpoints de gestão são `GET /api/admin/keys`, `POST /api/admin/keys`,
 `POST /api/admin/keys/{id}/revoke` e `DELETE /api/admin/keys/{id}`. Todos
@@ -130,8 +154,8 @@ serializado antes do campo continue valendo; o validador OIDC grava o mesmo
 O enforcement tem uma fonte só: `admin_workers_for_principal` filtra o index
 pelos dois escopos. `require_visible_worker` consulta essa lista antes de
 delete, promote, enable/disable, invoke e a leitura de erros recentes; a
-listagem, o download e a escrita de arquivos chegam nela por
-`resolve_worker_dir`. Worker fora do escopo responde `404` com `NOT_FOUND`, e
+listagem, o download, a escrita e o apagar em lote de arquivos chegam nela
+por `resolve_worker_dir`. Worker fora do escopo responde `404` com `NOT_FOUND`, e
 não `403`: quem não pode operar o worker também não deve descobrir que ele
 existe, e um `403` transformaria a API administrativa em oráculo de nomes de
 outros tenants.
