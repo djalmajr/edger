@@ -2,11 +2,19 @@
 
 All notable changes to EdgeR will be documented here.
 
-## [0.3.1-rc.2] - 2026-09-24
+## [0.3.1-rc.3] - 2026-09-24
 
 `v0.3.1-rc.1` was tagged but never published: two advisories disclosed after
-0.3.0 failed the `cargo deny` gate that guards the release job. rc.2 carries
-the same changes plus the patched dependencies.
+0.3.0 failed the `cargo deny` gate that guards the release job. `v0.3.1-rc.2`
+published its image, but the chart push failed on Helm's "Tag" step against
+ghcr (helm/helm#31223). rc.3 carries the same changes, the patched
+dependencies and the release fix below.
+
+### Fixed (release)
+
+- The publish job pins Helm to v3.18.6 (later versions fail to tag OCI charts
+  on ghcr) and retries `helm push` up to three times to absorb ghcr
+  propagation delays.
 
 ### Security
 
