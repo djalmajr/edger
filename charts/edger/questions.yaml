@@ -160,8 +160,8 @@ questions:
 
   - variable: ingress.className
     label: Ingress Class
-    description: Optional ingressClassName, such as nginx, traefik, or alb.
-    type: string
+    description: Optional IngressClass from the cluster. Leave empty to use the cluster default.
+    type: reference[networking.k8s.io.ingressclass]
     default: ""
     show_if: "ingress.enabled=true"
     group: Networking
@@ -188,9 +188,9 @@ questions:
 
   - variable: ingress.annotations
     label: Ingress Annotations
-    description: 'YAML map of Ingress annotations, for example konghq.com/strip-path: "true".'
-    type: multiline
-    default: "{}"
+    description: Ingress annotations as key/value pairs, for example konghq.com/strip-path = "true".
+    type: questionMap
+    default: {}
     show_if: "ingress.enabled=true"
     group: Networking
 

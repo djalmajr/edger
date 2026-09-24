@@ -54,12 +54,13 @@ While **Enable Ingress** is on, the Networking fields are:
 
 - **Ingress Host** — hostname for the Ingress; wildcards such as
   `*.example.com` are allowed.
-- **Ingress Class** — optional `ingressClassName`.
+- **Ingress Class** — select with the IngressClasses available in the
+  cluster; leave empty to use the cluster default.
 - **Ingress Path** — path prefix routed to EdgeR (default `/`).
 - **Ingress Path Type** — `Prefix` (default), `ImplementationSpecific` or
   `Exact`; use `ImplementationSpecific` for Kong string-prefix paths such as
   `/apps/`.
-- **Ingress Annotations** — YAML map of Ingress annotations (default `{}`).
+- **Ingress Annotations** — Ingress annotations as key/value pairs.
 - **Enable TLS** — attach TLS configuration to the Ingress (default off);
   when on, **TLS Secret Name** asks for the existing Kubernetes TLS Secret.
 
@@ -89,7 +90,7 @@ Values taken from `values-labdev.yaml`:
 | Ingress Host | `*.cloud4biz.com` |
 | Ingress Path | `/apps/` |
 | Ingress Path Type | `ImplementationSpecific` |
-| Ingress Annotations | see below |
+| Ingress Annotations | 3 key/value pairs (see below) |
 | Enable TLS | `false` |
 | Root Key Secret | `edger-root-key` |
 | Root Key Secret Field | `root-key` |
