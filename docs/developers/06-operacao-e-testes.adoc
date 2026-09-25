@@ -397,6 +397,20 @@ está configurado, o enable/disable de extensões permanece apenas em memória.
   browser `Sec-Fetch-*`.
 |===
 
+==== Workers Deno: bundle e config em desenvolvimento
+
+* **Dependências só de tipo no bundle.** Um import só de tipo apontando para
+  fora do diretório do worker (JSDoc `@type {import(...)}` ou `import type`)
+  não derruba mais o deploy com `DENO_BUNDLE_GRAPH_DENIED`: o validador do
+  grafo do bundle ignora módulos alcançados só por arestas de tipo do
+  `deno info --json`, já que o `deno bundle` as descarta. Um import de código
+  para fora do worker continua recusado.
+* **Config do Deno em dev.** Sem `deno.json`/`deno.jsonc` no diretório do
+  worker, o EdgeR não passa `--config` nem `--no-config`: o Deno sobe os
+  diretórios e herda o `deno.json` (import map) e o `package.json` (`type`)
+  dos pais. Para isolar um worker dentro de um repositório, coloque um
+  `deno.json` próprio no diretório do worker; o EdgeR o passa com `--config`.
+
 ==== Admin API operacional
 
 A API administrativa fica reservada sob `/api/admin/*` para evitar colisão com

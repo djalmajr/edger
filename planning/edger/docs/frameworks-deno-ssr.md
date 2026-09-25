@@ -154,6 +154,23 @@ Os dois caminhos já têm fixtures de referência no repositório:
 
 Ambos foram revalidados com SSR, endpoint server/API, assets e hidratação.
 
+**Arquivos públicos (tanstack).** Um caminho que não casa com `assetPrefixes`
+continua sendo atendido: um arquivo existente no `clientDir`, dentro da raiz,
+é servido como estático. Não entram nessa via componentes do path iniciados
+por `.` (exceto `.well-known` como primeiro componente), as rotas de servidor
+`/api` e `/_serverFn` (inclusive na forma percent-encoded) e caminhos sem
+arquivo, que caem no SSR. Declarar `assetPrefixes` substitui o padrão do
+adapter (para `tanstack`: `/assets/`, `/favicon.ico`, `/logo192.png`,
+`/logo512.png`, `/manifest.json` e `/robots.txt`).
+
+**Base path no build (React e Solid).** O basepath do TanStack Start é
+resolvido no build e gravado no bundle (Vite `base` e `router.basepath`),
+então um mesmo build só funciona numa base: com `basePath: auto`, a rota por
+host dá `/` e a rota por nome dá `/<nome>`. Para servir o mesmo build nas
+duas, o app precisa resolver a base em runtime (assets relativos, basepath do
+router, base das server functions e base do auth); o EdgeR não reescreve o
+HTML do SSR.
+
 ## Fresh
 
 Configure `basePath` no Fresh/Vite e gere o build de produção. O entrypoint

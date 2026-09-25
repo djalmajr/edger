@@ -4,7 +4,8 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.2` (owned domains, metrics key,
+Toward 0.3.2. Release candidates: `v0.3.2-rc.3` (tanstack public files,
+type-only bundle deps); `v0.3.2-rc.2` (owned domains, metrics key,
 core-worker precedence); `v0.3.2-rc.1` (published and validated on
 labdev: zero-downtime host switch, 21/21 probes 200 across four promotes).
 
@@ -46,6 +47,12 @@ labdev: zero-downtime host switch, 21/21 probes 200 across four promotes).
   active version keeps serving until a promote; installing with
   `staged=true` does not touch the active version, and the promote is what
   switches it. An explicit enable still activates the requested version.
+- TanStack Start (React and Solid): the router basepath is baked into the
+  build (Vite `base` and `router.basepath`, burned into the bundle), so one
+  build serves exactly one base. With `basePath: auto`, a host route answers
+  at `/` and a name route at `/<name>`; serving the same build at both bases
+  requires the app to resolve the base at runtime (asset URLs, router
+  basepath, server-function base, auth base).
 
 ### Added
 
@@ -69,6 +76,18 @@ labdev: zero-downtime host switch, 21/21 probes 200 across four promotes).
   ignored with a warning.
 - Installing a newer cPanel with `staged=true` no longer disables the active
   version, which left the cPanel out of the air until the promote.
+- The `tanstack` fullstack adapter now serves any existing public file from
+  `clientDir` even when the path matches no `assetPrefixes`. Not served
+  through that path: path components starting with `.` (a leading
+  `.well-known` is the exception), the TanStack server routes `/api` and
+  `/_serverFn` (also when percent-encoded), and paths with no file, which
+  fall back to the SSR.
+- Type-only imports pointing outside the worker (JSDoc `@type {import(...)}`
+  or `import type`) no longer fail the deploy with
+  `DENO_BUNDLE_GRAPH_DENIED`: the bundle graph validator now ignores modules
+  reachable only through type edges of `deno info --json` (redirects
+  included). Code imports to files outside the worker directory are still
+  refused.
 
 ### Dependencies
 
