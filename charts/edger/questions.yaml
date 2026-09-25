@@ -189,7 +189,7 @@ questions:
   - variable: ingress.annotations
     label: Ingress Annotations
     description: Ingress annotations as key/value pairs, for example konghq.com/strip-path = "true".
-    type: questionMap
+    type: map[string]
     default: {}
     show_if: "ingress.enabled=true"
     group: Networking
