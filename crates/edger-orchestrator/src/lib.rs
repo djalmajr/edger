@@ -41,7 +41,10 @@ pub use router::{
     resolve_host_route, resolve_route, PathParser, PluginRef, ReservedPath, ResolvedRoute,
 };
 pub use security::validate_admin_mutation_security;
-pub use server::{port_from_env, router, serve, ServerConfig, ServerState};
+pub use server::{
+    bind_ip_from_env, parse_bind_ip, parse_bind_os, port_from_env, router, serve, ServerConfig,
+    ServerState,
+};
 pub use tracing_init::{init_tracing_from_env, TracingInitConfig};
 
 pub use wire::{
