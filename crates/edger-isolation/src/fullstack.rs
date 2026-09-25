@@ -131,7 +131,7 @@ pub fn prepare_fullstack_request(
                 && request_path(&req.uri) == base_path
             {
                 let query = req.uri.split_once('?').map(|(_, query)| query.to_string());
-                req.uri = format!("{base_path}/");
+                req.uri = base_href(&base_path);
                 if let Some(query) = query {
                     req.uri.push('?');
                     req.uri.push_str(&query);
@@ -564,6 +564,63 @@ mod tests {
 
             assert_eq!(request.uri, format!("/{adapter}-demo/?preview=1"));
         }
+    }
+
+    #[test]
+    fn router_framework_root_base_keeps_a_single_slash() {
+        let root = tempfile::tempdir().unwrap();
+        for adapter in ["sveltekit", "tanstack"] {
+            let config = config_from_manifest(
+                root.path(),
+                WorkerManifest {
+                    name: format!("{adapter}-demo"),
+                    adapter: Some(adapter.into()),
+                    base_path: Some("/".into()),
+                    client_dir: Some("client".into()),
+                    kind: Some("fullstack".into()),
+                    ssr_entrypoint: Some("server.js".into()),
+                    ..WorkerManifest::default()
+                },
+            );
+
+            let (request, _) = prepare_fullstack_request(req("/"), &config).unwrap();
+            assert_eq!(request.uri, "/");
+            assert_eq!(request.base_href.as_deref(), Some("/"));
+            let x_base = request
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("x-base"))
+                .map(|(_, value)| value.as_str());
+            assert_eq!(x_base, Some("/"));
+
+            let (request, _) = prepare_fullstack_request(req("/?preview=1"), &config).unwrap();
+            assert_eq!(request.uri, "/?preview=1");
+
+            let (request, _) = prepare_fullstack_request(req("/about"), &config).unwrap();
+            assert_eq!(request.uri, "/about");
+        }
+
+        let config = config_from_manifest(
+            root.path(),
+            WorkerManifest {
+                name: "sveltekit-demo".into(),
+                adapter: Some("sveltekit".into()),
+                client_dir: Some("client".into()),
+                kind: Some("fullstack".into()),
+                ssr_entrypoint: Some("server.js".into()),
+                ..WorkerManifest::default()
+            },
+        );
+        let request = SerializedRequest {
+            method: "GET".into(),
+            uri: "/".into(),
+            headers: vec![],
+            body: None,
+            request_id: "req".into(),
+            base_href: None,
+        };
+        let (request, _) = prepare_fullstack_request(request, &config).unwrap();
+        assert_eq!(request.uri, "/");
     }
 
     #[test]

@@ -2,14 +2,21 @@
 
 All notable changes to EdgeR will be documented here.
 
-## [0.3.1] - 2026-09-24
+## [0.3.1] - 2026-09-25
 
-Validated on labdev as `0.3.1-rc.4`, upgraded from 0.3.0 through the Rancher
-UI. Release candidates: `v0.3.1-rc.1` was tagged but never published (two
+Validated on labdev as `0.3.1-rc.7`. The `0.3.1-rc.4` upgrade from 0.3.0 ran
+through the Rancher UI, `0.3.1-rc.6` and `0.3.1-rc.7` came in through
+`helm upgrade`, and the `0.3.1-rc.7` form was checked in the Rancher UI.
+Release candidates: `v0.3.1-rc.1` was tagged but never published (two
 advisories disclosed after 0.3.0 failed the `cargo deny` gate that guards the
 release job); `v0.3.1-rc.2` published its image, but the chart push failed on
 Helm's "Tag" step against ghcr (helm/helm#31223); `v0.3.1-rc.3` was the first
-complete publish; `v0.3.1-rc.4` added the Rancher form changes.
+complete publish; `v0.3.1-rc.4` added the Rancher form changes;
+`v0.3.1-rc.5` added the cPanel actions and file permissions;
+`v0.3.1-rc.6` made `Ingress Class` a select and `Ingress Annotations` a
+`questionMap`, which Rancher 2.13 does not render (the dashboard lowercases
+the type before looking up the component, so the field fell back to plain
+text); `v0.3.1-rc.7` moved the annotations to `map[string]`.
 
 ### Added
 
@@ -43,9 +50,11 @@ complete publish; `v0.3.1-rc.4` added the Rancher form changes.
 ### Changed (chart)
 
 - The Rancher form (`questions.yaml`) now covers an Ingress like labdev's:
-  `Ingress Path Type`, `Ingress Annotations` (a YAML map), a host that accepts
-  wildcards, and `Root Key Secret` / `Root Key Secret Field` to use an existing
-  Secret instead of typing the key.
+  `Ingress Path Type`, `Ingress Class` (a select over the cluster's
+  `IngressClass` resources, where empty keeps the cluster default),
+  `Ingress Annotations` (a key/value editor), a host that accepts wildcards,
+  and `Root Key Secret` / `Root Key Secret Field` to use an existing Secret
+  instead of typing the key.
 - `ingress.annotations` and `extraEnv` accept YAML text as well as a map/list
   (Rancher sends multiline fields as strings); invalid YAML fails the render
   with an explicit message. Previously the form's default `extraEnv` (`"[]"`)
@@ -82,6 +91,9 @@ complete publish; `v0.3.1-rc.4` added the Rancher form changes.
 - The cPanel deploy dialog's drop zone used to open or download the dropped
   file; it now stages the dropped `.zip` (any other file is rejected) and the
   dialog cancels the browser's default drop.
+- A fullstack `tanstack` or `sveltekit` worker with base path `/` (fixed, or
+  resolved by `auto`) got `//` instead of `/` on its root, so the router saw
+  a doubled-slash pathname; the root now keeps a single `/`.
 
 ### Changed
 
