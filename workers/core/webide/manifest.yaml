@@ -1,4 +1,4 @@
 name: webide
-version: "0.3.2-rc.3"
+version: "0.3.2-rc.4"
 entrypoint: dist/index.html
 injectBase: true
