@@ -96,4 +96,9 @@ arquivo é o registro. A resposta ao planner está em
     qualquer lugar.
 - **Reverter:** baixo. O token pode ser revogado e recriado.
 - **Onde:** dashboard da Cloudflare (R2 → Manage API tokens) e Secret no k3s.
+- **Nota (https://celld.dev/docs/services/r2/):**
+  - Os bindings R2 do app gravam no **próprio bucket da fleet**, sob
+    `r2/<bucket_name>/`, sem segundo bucket nem segunda credencial.
+  - O token acima cobre o estado da fleet e o R2 do app. Uploads acima de
+    8 MiB viram multipart, que o Object Read & Write inclui.
 - **Status:** bloqueada (o operador cria o token).
