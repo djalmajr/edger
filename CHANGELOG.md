@@ -4,7 +4,8 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.1` (published and validated on
+Toward 0.3.2. Release candidates: `v0.3.2-rc.2` (owned domains, metrics key,
+core-worker precedence); `v0.3.2-rc.1` (published and validated on
 labdev: zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Changed
