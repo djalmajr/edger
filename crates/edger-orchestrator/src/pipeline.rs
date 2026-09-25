@@ -163,12 +163,16 @@ async fn metrics_stats_handler(
 /// vem do pseudo-header `:authority` — o hyper a expõe em
 /// `uri().authority()` — e o header `Host` pode não existir. No
 /// request-target em forma absoluta a autoridade do URI prevalece sobre o
-/// `Host` (RFC 9112 §3.2.2, RFC 9113 §8.3.1). A autoridade pode vir com
-/// `userinfo@`; o `normalize_host_alias` rejeita `@`, então tal host não
-/// resolve e cai no ramo "sem dono" (comportamento esperado, D20).
+/// `Host` (RFC 9112 §3.2.2, RFC 9113 §8.3.1). Do request-target usamos só o
+/// `host[:port]` — `userinfo@` não faz parte da autoridade (D20, revisada);
+/// o ramo do header `Host` continua devolvendo o valor cru, que o
+/// `normalize_host_alias` valida.
 fn request_authority(req: &Request<Body>) -> Option<String> {
     if let Some(authority) = req.uri().authority() {
-        return Some(authority.as_str().to_string());
+        return match authority.port_u16() {
+            Some(port) => Some(format!("{}:{}", authority.host(), port)),
+            None => Some(authority.host().to_string()),
+        };
     }
     req.headers()
         .get(header::HOST)

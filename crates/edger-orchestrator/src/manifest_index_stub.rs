@@ -674,7 +674,14 @@ impl ManifestIndex {
                 format!("core worker {name} must keep at least one enabled default version"),
             ));
         }
-        if name == "cpanel" && enabled {
+        // D23: a versão alvo staged não é servida; habilitá-la muda só o
+        // flag dela — derrubar as demais versões do cPanel é papel do
+        // promote (`set_default_version`).
+        let target_is_staged = bucket
+            .iter()
+            .find(|entry| entry.worker.version == target_version)
+            .is_some_and(|entry| entry.staged);
+        if name == "cpanel" && enabled && !target_is_staged {
             for entry in bucket.iter_mut() {
                 entry.worker.config.enabled = entry.worker.version == target_version;
             }
@@ -1449,6 +1456,55 @@ mod tests {
         assert!(!index.cpanel_version_is_older_than_active("other", "1.0.0"));
         // versão que não é semver → false
         assert!(!index.cpanel_version_is_older_than_active("cpanel", "next"));
+    }
+
+    // D23: habilitar uma versão STAGED do cPanel muda só o flag dela — a
+    // versão ativa continua servida até o promote.
+    #[test]
+    fn enabling_staged_cpanel_keeps_the_active_version_enabled() {
+        let root = tempfile::tempdir().unwrap();
+        let active_dir = root.path().join("cpanel-1");
+        std::fs::create_dir_all(&active_dir).unwrap();
+        let mut index = ManifestIndex::new();
+        index
+            .insert_with_origin(
+                active_dir,
+                manifest("cpanel", "1.0.0"),
+                WorkerOrigin::CoreBundled,
+            )
+            .unwrap();
+        let staged_dir = root.path().join("cpanel-2");
+        std::fs::create_dir_all(&staged_dir).unwrap();
+        std::fs::write(
+            staged_dir.join(".edger-revision"),
+            "revision-v2\nstaged=true\n",
+        )
+        .unwrap();
+        index
+            .insert_with_origin(
+                staged_dir,
+                manifest("cpanel", "2.0.0"),
+                WorkerOrigin::CoreOverlay,
+            )
+            .unwrap();
+
+        index
+            .set_worker_enabled("cpanel", Some("2.0.0"), true)
+            .unwrap();
+
+        assert_eq!(
+            index.resolve_worker("cpanel", None).unwrap().version,
+            "1.0.0"
+        );
+        let workers = index.admin_workers();
+        assert_eq!(
+            workers
+                .iter()
+                .find(|worker| worker.name == "cpanel" && worker.version == "1.0.0")
+                .unwrap()
+                .status,
+            "loaded"
+        );
     }
 
     #[test]

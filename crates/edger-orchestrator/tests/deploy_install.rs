@@ -587,6 +587,68 @@ async fn installing_an_older_cpanel_keeps_the_newer_one_active() {
     assert!(body.contains("cpanel-one"), "{body}");
 }
 
+// D23: instalar um cPanel mais novo com `?staged=true` não pode derrubar o
+// cPanel ativo — é o promote que troca a versão.
+#[tokio::test]
+async fn staged_cpanel_install_keeps_the_active_one_until_promote() {
+    let bundled = tempfile::tempdir().unwrap();
+    let overlay = tempfile::tempdir().unwrap();
+    let user = tempfile::tempdir().unwrap();
+    let app = build_pipeline(state_with_roots(
+        bundled.path().to_path_buf(),
+        overlay.path().to_path_buf(),
+        user.path().to_path_buf(),
+    ));
+
+    let (status, v1, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        cpanel_zip("1.0.0", "cpanel-one"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    assert_eq!(v1["activation"], "active", "{text}");
+    assert_eq!(v1["defaultVersion"], "1.0.0", "{text}");
+
+    // O cPanel novo chega staged — a versão ativa tem que continuar servida.
+    let (status, v2, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install?staged=true",
+        Some("test-root"),
+        "application/zip",
+        cpanel_zip("2.0.0", "cpanel-two"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    assert_eq!(v2["staged"], true, "{text}");
+    assert_eq!(v2["defaultVersion"], "1.0.0", "{text}");
+
+    let (status, body) = body_of(app.clone(), "/cpanel/").await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+    assert!(body.contains("cpanel-one"), "{body}");
+
+    // O promote é que troca para a versão nova.
+    let (status, promoted, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/cpanel/promote?version=2.0.0",
+        Some("test-root"),
+        "application/json",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(promoted["defaultVersion"], "2.0.0", "{text}");
+
+    let (status, body) = body_of(app, "/cpanel/").await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+    assert!(body.contains("cpanel-two"), "{body}");
+}
+
 #[tokio::test]
 async fn failed_on_deploy_health_check_keeps_candidate_unroutable() {
     let root = tempfile::tempdir().unwrap();
@@ -3001,6 +3063,78 @@ async fn owned_host_is_detected_from_uri_authority_without_host_header() {
         .await
         .unwrap();
     assert_eq!(marker(std::str::from_utf8(&home_body).unwrap()), "zero-one");
+}
+
+// D20 (revisada): `userinfo@` não faz parte da autoridade usada no
+// roteamento — `http://user@zero.example/...` ainda cai no domínio com
+// dono, e não no control plane.
+#[tokio::test]
+async fn owned_host_ignores_userinfo_in_uri_authority() {
+    let root = tempfile::tempdir().unwrap();
+    let marker = |body: &str| {
+        serde_json::from_str::<serde_json::Value>(body).unwrap()["marker"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let app = build_pipeline(state_with_factory(
+        root.path().to_path_buf(),
+        Arc::new(EchoFactory),
+    ));
+
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        zero_zip("1.0.0", "zero-one"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    assert_eq!(installed["defaultVersion"], "1.0.0");
+
+    // `userinfo@` na autoridade, sem header `Host`: `/api/admin/workers`
+    // chega ao worker (marcador zero-one), e não 200 da Admin API.
+    let admin_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("http://user@zero.example/api/admin/workers")
+                .header("authorization", "Bearer test-root")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admin_response.status(), StatusCode::MULTI_STATUS);
+    let admin_body = axum::body::to_bytes(admin_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        marker(std::str::from_utf8(&admin_body).unwrap()),
+        "zero-one"
+    );
+
+    // O mesmo com `/health` → worker, e não 200 da rota de health.
+    let health_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("http://user@zero.example/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(health_response.status(), StatusCode::MULTI_STATUS);
+    let health_body = axum::body::to_bytes(health_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        marker(std::str::from_utf8(&health_body).unwrap()),
+        "zero-one"
+    );
 }
 
 // D20 (P2): o ponto final de DNS antes da porta (`ZERO.EXAMPLE.:443`) tem
