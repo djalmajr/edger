@@ -114,7 +114,7 @@ impl ManifestIndex {
             });
             state
                 .plugins
-                .sort_by(|a, b| b.base.len().cmp(&a.base.len()));
+                .sort_by_key(|a| std::cmp::Reverse(a.base.len()));
         }
         // cPanel: o boot carrega o bundled antes do overlay (D8 item 3), então
         // uma versão habilitada e não staged mais ANTIGA não pode desabilitar a
@@ -938,7 +938,7 @@ fn register_entry_routes(
         });
         state
             .plugins
-            .sort_by(|left, right| right.base.len().cmp(&left.base.len()));
+            .sort_by_key(|left| std::cmp::Reverse(left.base.len()));
     }
 }
 
@@ -959,7 +959,7 @@ fn activate_staged_entry_routes(state: &mut ManifestIndexState, entry: &Manifest
     state.plugins.insert(0, plugin);
     state
         .plugins
-        .sort_by(|left, right| right.base.len().cmp(&left.base.len()));
+        .sort_by_key(|left| std::cmp::Reverse(left.base.len()));
 }
 
 impl ManifestIndexState {

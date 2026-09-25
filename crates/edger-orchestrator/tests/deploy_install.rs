@@ -3153,7 +3153,7 @@ async fn owned_host_matches_trailing_dot_before_port() {
         Arc::new(EchoFactory),
     ));
 
-    let (status, installed, text) = send(
+    let (status, _installed, text) = send(
         app.clone(),
         "POST",
         "/api/admin/workers/install",
