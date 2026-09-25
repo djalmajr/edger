@@ -4,7 +4,8 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: none published yet.
+Toward 0.3.2. Release candidates: `v0.3.2-rc.1` (published and validated on
+labdev: zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Changed
 
@@ -18,12 +19,55 @@ Toward 0.3.2. Release candidates: none published yet.
   `/<name>@<version>/`, then promote it; rollback is promoting the previous
   version. Before, a second version with the same host answered `409`, so
   the deploy required deleting the current one first.
+- An owned host is the app's entirely: when a host is claimed through
+  `hosts:`, every path on it — `/`, `/health`, `/ready`, `/metrics`,
+  `/api/*` and `/.well-known/*` — is answered by the owning worker, and the
+  control plane (Admin API, MCP, metrics, health and the `/` redirect) only
+  answers on hosts without an owner. An owned host with no version serving
+  it answers `404`. The effective authority is the URI authority when
+  present (HTTP/2 `:authority` or absolute-form request target, without
+  userinfo), otherwise the `Host` header.
+- `/metrics` and `/metrics/stats` now require a credential with the
+  `observability:read` permission (or the root key): `401` without a
+  credential and `403` without the permission. Breaking for scrapers that
+  called `/metrics` without a key; with no `ROOT_API_KEY` set (open mode)
+  the endpoints stay open.
+- Core workers: the cPanel and WebIDE versions now follow the release (the
+  publish job checks that the `workers/core/*` manifests match the tag, as
+  it already does for `Chart.yaml`); when the bundled and the overlay carry
+  the same `name@version`, the bundled version wins and the overlay entry is
+  ignored with a log warning; the active cPanel version at boot is the
+  persisted default pointer when valid, otherwise the highest semver among
+  enabled non-staged versions. The default-version pointer of a core worker
+  is written to the writable overlay root.
+- cPanel installs through the Admin API follow the active-version rule: a
+  cPanel older than the active one answers `activation: "inactive"` and the
+  active version keeps serving until a promote; installing with
+  `staged=true` does not touch the active version, and the promote is what
+  switches it. An explicit enable still activates the requested version.
 
 ### Added
 
 - `EDGER_BIND` environment variable: the listening IP of the HTTP server
   (IPv4 or IPv6), default `0.0.0.0`. An invalid value fails the start with a
   clear message; the port stays in `PORT`.
+
+### Fixed
+
+- HTTP/2 and `Host: x.:443` no longer escape to the control plane on an
+  owned host: the routing authority now comes from the URI when present
+  (HTTP/2 `:authority` or absolute-form request target, without userinfo),
+  falling back to the `Host` header, and the port is removed before the DNS
+  trailing dot, so `x.example.:443` matches the registered `x.example`
+  owner.
+- Promoting a core version that only exists in the bundled root no longer
+  fails with `DEPLOY_IO`: the default-version pointer is written to the
+  writable overlay root (the bundled root is read-only in the image).
+- Boot no longer fails when the bundled and the overlay carry the same core
+  worker `name@version`: the bundled version wins and the overlay entry is
+  ignored with a warning.
+- Installing a newer cPanel with `staged=true` no longer disables the active
+  version, which left the cPanel out of the air until the promote.
 
 ### Dependencies
 

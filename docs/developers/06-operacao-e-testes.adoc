@@ -26,7 +26,10 @@
 | `EDGER_CORE_WORKER_OVERLAY_DIR`
 | Root gravável para atualizações administrativas de cPanel e WebIDE. Default:
   `.edger/core-worker-overlays` no desenvolvimento e
-  `/app/core-worker-overlays` na imagem.
+  `/app/core-worker-overlays` na imagem. Com a mesma `nome@versão` do
+  bundled, o bundled vence e a entrada do overlay é ignorada com aviso no
+  log; o ponteiro de default dos core workers também fica na raiz do
+  overlay (a raiz bundled é somente leitura na imagem).
 
 | `EDGER_MCP_WORKSPACE_ROOT`
 | Raiz local permitida para o servidor MCP `edger-mcp`. Default: diretório
@@ -286,7 +289,9 @@ liveness para supervisores externos.
 
 | `/metrics`
 | Prometheus text format com counters HTTP, snapshot read-only do `WorkerPool`
-  e métricas de cron.
+  e métricas de cron. Com `ROOT_API_KEY` configurada, exige credencial com a
+  permission `observability:read` (ou a root); no modo aberto (sem
+  `ROOT_API_KEY`) continua livre.
 |===
 
 [source,bash]
@@ -294,7 +299,7 @@ liveness para supervisores externos.
 curl http://127.0.0.1:19080/healthz
 curl http://127.0.0.1:19080/readyz
 curl http://127.0.0.1:19080/livez
-curl http://127.0.0.1:19080/metrics
+curl -H 'authorization: Bearer <key>' http://127.0.0.1:19080/metrics
 ----
 
 `/metrics` expõe apenas contadores e gauges numéricos. Ele não serializa
@@ -1100,8 +1105,12 @@ O `edger-ext-gateway` também aplica políticas de borda locais:
 * Vhosts/host routing local: um worker pode declarar `hosts` no manifesto para
   receber requests por `Host` exato antes do shell fallback. O runtime normaliza
   host para lowercase, ignora porta no match e rejeita aliases com wildcard,
-  caminho, esquema ou whitespace. Paths reservados (`/api`, `/health`, `/ready`,
-  `/.well-known`) continuam protegidos mesmo quando o host é conhecido.
+  caminho, esquema ou whitespace. Num host com dono, todos os caminhos vão para
+  o app — `/`, `/health`, `/ready`, `/metrics`, `/api/*` e `/.well-known/*`
+  inclusos — e o control plane só responde em hosts sem dono; domínio com dono
+  sem versão servida responde `404`. A autoridade vem da URI quando existe
+  (HTTP/2 ou request-target em forma absoluta, sem `userinfo`) e, senão, do
+  header `Host`.
 +
 O host pertence ao *nome* do worker, não a uma versão: o domínio responde pela
 versão que o nome serve no momento — o ponteiro de default ou, sem ele, a

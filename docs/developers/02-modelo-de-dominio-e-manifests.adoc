@@ -178,7 +178,9 @@ O router aceita:
 
 Regras relevantes:
 
-* `/health`, `/ready`, `/api/*` e `/.well-known/*` são paths reservados.
+* `/health`, `/ready`, `/api/*` e `/.well-known/*` são paths reservados em
+  hosts sem dono; num host com dono, todos os caminhos vão para o app,
+  inclusive esses.
 * `latest` escolhe a maior versão semver disponível; se só houver `latest`, usa
   `latest`.
 * Namespaces vêm do formato `@scope/name`.

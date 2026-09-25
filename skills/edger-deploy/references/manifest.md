@@ -35,8 +35,9 @@ for a deploy and are documented in
   those names, or with `base: /cpanel` / `/webide`, is rejected with
   `CORE_NAME_RESERVED`.
 - **Reserved paths.** `/health` and `/ready` (exact), `/api` and `/api/*`, and
-  `/.well-known*` are runtime routes. A worker named `api` or `health` is
-  installed but unreachable at those paths.
+  `/.well-known*` are runtime routes on hosts without an owner. A worker named
+  `api` or `health` is installed but unreachable at those paths on such hosts.
+  On a host declared in `hosts:`, the app receives every path, including these.
 - **Name fallback order.** `name` in the manifest, then `name` in
   `package.json`, then the `x-edger-package-name` header, then the
   top-level folder of the zip. If none yields a name, install fails with
