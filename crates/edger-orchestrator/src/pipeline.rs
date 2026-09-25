@@ -159,6 +159,23 @@ async fn metrics_stats_handler(
         .into_response()
 }
 
+/// A autoridade da requisição para fins de roteamento (D20): em HTTP/2 ela
+/// vem do pseudo-header `:authority` — o hyper a expõe em
+/// `uri().authority()` — e o header `Host` pode não existir. No
+/// request-target em forma absoluta a autoridade do URI prevalece sobre o
+/// `Host` (RFC 9112 §3.2.2, RFC 9113 §8.3.1). A autoridade pode vir com
+/// `userinfo@`; o `normalize_host_alias` rejeita `@`, então tal host não
+/// resolve e cai no ramo "sem dono" (comportamento esperado, D20).
+fn request_authority(req: &Request<Body>) -> Option<String> {
+    if let Some(authority) = req.uri().authority() {
+        return Some(authority.as_str().to_string());
+    }
+    req.headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
 /// Num Host com dono, o domínio é inteiro do app (D6): a requisição vai
 /// direto para o pipeline do worker dono, sem passar pelas rotas fixas do
 /// control plane. Hosts sem dono seguem o app normal (rotas fixas + fallback).
@@ -167,11 +184,11 @@ async fn owned_host_middleware(
     req: Request<Body>,
     next: axum::middleware::Next,
 ) -> Response<Body> {
-    let host = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok());
-    if host.is_some_and(|host| state.index.host_owner(host).is_some()) {
+    let host = request_authority(&req);
+    if host
+        .as_deref()
+        .is_some_and(|host| state.index.host_owner(host).is_some())
+    {
         pipeline_handler(State(state), req).await
     } else {
         next.run(req).await
@@ -211,12 +228,9 @@ async fn handle_request(
     } else {
         false
     };
-    let host = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok());
+    let host = request_authority(&req);
     if let Some(route) =
-        resolve_host_route_with_internal(&path, host, &state.index, allow_internal)?
+        resolve_host_route_with_internal(&path, host.as_deref(), &state.index, allow_internal)?
     {
         return dispatch_resolved_route(state, req, request_id, &path, route).await;
     }

@@ -2857,6 +2857,122 @@ async fn owned_host_receives_control_plane_paths() {
     }
 }
 
+// D20 (P1): em HTTP/2 a autoridade vem do pseudo-header `:authority` (o
+// hyper a expõe em `uri().authority()`) e o header `Host` pode não existir;
+// aqui o request-target em forma absoluta simula esse caso. O domínio com
+// dono tem que ser inteiro do app também nesse caminho.
+#[tokio::test]
+async fn owned_host_is_detected_from_uri_authority_without_host_header() {
+    let root = tempfile::tempdir().unwrap();
+    let marker = |body: &str| {
+        serde_json::from_str::<serde_json::Value>(body).unwrap()["marker"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let app = build_pipeline(state_with_factory(
+        root.path().to_path_buf(),
+        Arc::new(EchoFactory),
+    ));
+
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        zero_zip("1.0.0", "zero-one"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    assert_eq!(installed["defaultVersion"], "1.0.0");
+
+    // Sem header `Host`: `/api/admin/workers` chega ao worker (marcador
+    // zero-one), e não 200 da Admin API.
+    let admin_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("http://zero.example/api/admin/workers")
+                .header("authorization", "Bearer test-root")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admin_response.status(), StatusCode::MULTI_STATUS);
+    let admin_body = axum::body::to_bytes(admin_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        marker(std::str::from_utf8(&admin_body).unwrap()),
+        "zero-one"
+    );
+
+    // Sem header `Host`: `/` chega ao worker, e não 307 do control plane.
+    let home_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("http://zero.example/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(home_response.status(), StatusCode::MULTI_STATUS);
+    let home_body = axum::body::to_bytes(home_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(marker(std::str::from_utf8(&home_body).unwrap()), "zero-one");
+}
+
+// D20 (P2): o ponto final de DNS antes da porta (`ZERO.EXAMPLE.:443`) tem
+// que resolver para o dono registrado.
+#[tokio::test]
+async fn owned_host_matches_trailing_dot_before_port() {
+    let root = tempfile::tempdir().unwrap();
+    let marker = |body: &str| {
+        serde_json::from_str::<serde_json::Value>(body).unwrap()["marker"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let app = build_pipeline(state_with_factory(
+        root.path().to_path_buf(),
+        Arc::new(EchoFactory),
+    ));
+
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        zero_zip("1.0.0", "zero-one"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/admin/workers")
+                .header("host", "ZERO.EXAMPLE.:443")
+                .header("authorization", "Bearer test-root")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::MULTI_STATUS);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(marker(std::str::from_utf8(&body).unwrap()), "zero-one");
+}
+
 /// Replacement de draft precisa funcionar quando o root configurado NÃO é o
 /// path canônico (RUNTIME_WORKER_DIRS relativo ou atrás de symlink): o scan
 /// indexa o dir como configurado, install_root() canonicaliza, e a guarda de

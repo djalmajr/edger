@@ -272,6 +272,22 @@ fn unknown_host_keeps_reserved_paths() {
     }
 }
 
+// D20 (P2): a porta sai ANTES do ponto final de DNS —
+// "App.Example.test.:19080" resolve para o dono do alias `app.example.test`.
+#[test]
+fn host_alias_normalizes_trailing_dot_before_port() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/w/hosted"),
+            host_manifest("hosted", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+
+    let worker = index.worker_for_host("App.Example.test.:19080").unwrap();
+    assert_eq!(worker.name, "hosted");
+}
+
 #[test]
 fn owned_host_without_served_version_is_not_found() {
     let mut index = build_index();

@@ -1045,12 +1045,14 @@ fn normalize_host_aliases(hosts: &[String]) -> Result<Vec<String>, CoreError> {
 }
 
 fn normalize_host_alias(host: &str) -> Result<Option<String>, CoreError> {
-    let trimmed = host.trim().trim_end_matches('.');
-    if trimmed.is_empty() {
+    // A porta sai antes do ponto final de DNS (D20): `ZERO.EXAMPLE.:443`
+    // precisa resolver como `zero.example`.
+    let without_port = strip_host_port(host.trim()).trim_end_matches('.');
+    if without_port.is_empty() {
         return Ok(None);
     }
-    if trimmed.contains("://")
-        || trimmed
+    if without_port.contains("://")
+        || without_port
             .chars()
             .any(|ch| ch.is_whitespace() || matches!(ch, '/' | '\\' | '*' | '[' | ']' | '@'))
     {
@@ -1059,8 +1061,7 @@ fn normalize_host_alias(host: &str) -> Result<Option<String>, CoreError> {
             format!("invalid host route: {host}"),
         ));
     }
-    let without_port = strip_host_port(trimmed);
-    if without_port.is_empty() || without_port.contains(':') {
+    if without_port.contains(':') {
         return Err(CoreError::new(
             "VALIDATION_ERROR",
             format!("invalid host route: {host}"),
