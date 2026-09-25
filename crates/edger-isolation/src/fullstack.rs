@@ -8,8 +8,8 @@ use std::path::{Component, Path, PathBuf};
 
 use bytes::Bytes;
 use edger_core::{
-    FullstackBasePath, Isolate, IsolationError, SerializedRequest, SerializedResponse,
-    WorkerConfig, WorkerResponse,
+    FullstackBasePath, FullstackConfig, Isolate, IsolationError, SerializedRequest,
+    SerializedResponse, WorkerConfig, WorkerResponse,
 };
 
 pub async fn dispatch_fullstack_buffered<I: Isolate + ?Sized>(
@@ -55,7 +55,35 @@ pub fn try_serve_fullstack_asset(
         return Ok(None);
     }
     if !matches_asset_prefix(path, &fullstack.asset_prefixes) {
-        return Ok(None);
+        // D27: o tanstack também serve arquivos públicos existentes fora dos
+        // prefixes; qualquer falha de decodificação, validação ou resolução
+        // devolve Ok(None) e deixa o SSR decidir.
+        if fullstack.adapter != "tanstack" {
+            return Ok(None);
+        }
+        let Ok(decoded) = percent_decode(path) else {
+            return Ok(None);
+        };
+        if !decoded.starts_with('/') || decoded.contains('\0') {
+            return Ok(None);
+        }
+        let relative = decoded.trim_start_matches('/');
+        if path_has_forbidden_components(relative) {
+            return Ok(None);
+        }
+        let client_root = resolve_client_root(config, client_dir)?;
+        let Some(file_path) = resolve_fullstack_asset(&client_root, relative, &fullstack.adapter)
+        else {
+            return Ok(None);
+        };
+        return Ok(Some(serve_fullstack_file(
+            req,
+            config,
+            fullstack,
+            &client_root,
+            &file_path,
+            path,
+        )?));
     }
 
     let decoded = match percent_decode(path) {
@@ -77,29 +105,49 @@ pub fn try_serve_fullstack_asset(
     if !file_path.is_file() {
         return Ok(Some(text_response(404, "not found")));
     }
-    let mut body = fs::read(&file_path).map_err(|err| {
+    Ok(Some(serve_fullstack_file(
+        req,
+        config,
+        fullstack,
+        &client_root,
+        &file_path,
+        path,
+    )?))
+}
+
+/// Leitura e montagem da resposta dos dois caminhos de serve (prefixo
+/// casado e arquivo público existente, D27): mesmo `content_type_for`,
+/// mesmo `cache_control_for` e mesma transformação de HTML de entrada.
+fn serve_fullstack_file(
+    req: &SerializedRequest,
+    config: &WorkerConfig,
+    fullstack: &FullstackConfig,
+    client_root: &Path,
+    file_path: &Path,
+    path: &str,
+) -> Result<SerializedResponse, IsolationError> {
+    let mut body = fs::read(file_path).map_err(|err| {
         IsolationError::new(
             "FULLSTACK_ASSET_READ_FAILED",
             format!("failed to read {}: {err}", file_path.display()),
         )
     })?;
-    let content_type = crate::static_spa::content_type_for(&file_path);
+    let content_type = crate::static_spa::content_type_for(file_path);
     if content_type.starts_with("text/html")
-        && (fullstack.adapter == "lume" || is_client_index_html(&file_path, &client_root))
+        && (fullstack.adapter == "lume" || is_client_index_html(file_path, client_root))
     {
         let base_path = resolve_base_path(req, &fullstack.base_path);
         let entry_base_href = base_href(&base_path);
         body = crate::static_spa::transform_entry_html(body, Some(&entry_base_href), config);
     }
-
-    Ok(Some(SerializedResponse {
+    Ok(SerializedResponse {
         status: 200,
         headers: vec![
             ("content-type".into(), content_type.into()),
             ("cache-control".into(), cache_control_for(path).into()),
         ],
         body: Some(Bytes::from(body)),
-    }))
+    })
 }
 
 pub fn prepare_fullstack_request(
@@ -666,6 +714,64 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status, 200);
             assert!(String::from_utf8_lossy(response.body.unwrap().as_ref()).contains(expected));
+        }
+    }
+
+    #[test]
+    fn tanstack_serves_existing_public_files_outside_the_asset_prefixes() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/icons")).unwrap();
+        fs::write(root.path().join("client/og-image.png"), b"\x89PNG-data").unwrap();
+        fs::write(root.path().join("client/icons/a.svg"), b"<svg/>").unwrap();
+        let config = config(root.path());
+
+        let image = try_serve_fullstack_asset(&req("/og-image.png"), &config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(image.status, 200);
+        assert_eq!(
+            image
+                .headers
+                .iter()
+                .find(|(name, _)| name == "content-type")
+                .unwrap()
+                .1,
+            "image/png"
+        );
+        assert_eq!(image.body.unwrap().as_ref(), b"\x89PNG-data");
+
+        let icon = try_serve_fullstack_asset(&req("/icons/a.svg"), &config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(icon.status, 200);
+        assert_eq!(
+            icon.headers
+                .iter()
+                .find(|(name, _)| name == "content-type")
+                .unwrap()
+                .1,
+            "image/svg+xml"
+        );
+        assert_eq!(icon.body.unwrap().as_ref(), b"<svg/>");
+    }
+
+    #[test]
+    fn tanstack_leaves_missing_or_server_paths_to_ssr() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/api")).unwrap();
+        fs::write(root.path().join("client/api/x"), "not an asset").unwrap();
+        let config = config(root.path());
+
+        for path in [
+            "/issues",
+            "/",
+            "/api/x",
+            "/_serverFn/y",
+            "/%2e%2e/server.js",
+            "/%E0%A4%A",
+        ] {
+            let served = try_serve_fullstack_asset(&req(path), &config).unwrap();
+            assert!(served.is_none(), "expected SSR fallback for {path}");
         }
     }
 }
