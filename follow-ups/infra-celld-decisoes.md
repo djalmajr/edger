@@ -178,3 +178,30 @@ arquivo é o registro. A resposta ao planner está em
 - **Reverter:** —
 - **Onde:** runbook 19.
 - **Status:** aplicada.
+
+## C9. Fleet `planner` em espera; issues upstream como rascunho
+- **Decisão:**
+  - Não criar o Job de deploy da fleet `planner` enquanto o Planner não
+    rodar no `celld`.
+  - A infra do piloto (fleet `smoke`) fica no ar.
+  - Os três problemas viram rascunhos de issue em
+    `infra/celld/upstream-issues-draft.md`, publicados só com o ok do
+    operador.
+- **Por quê** (spike do planner,
+  `planner/.herdr-agents/w7/reports/celld-spike-20260925T200449.md`):
+  - A v0.5.1 publica um módulo único. Reempacotar o grafo do
+    `@cloudflare/vite-plugin` quebra os ciclos do TanStack Start
+    (`RouterContext is not a function`), e o SSR dá 500.
+  - `node:crypto.scrypt` não existe, e o sign-up do Better Auth falha.
+  - `import "node:stream";` sem `from` não registra o stub, e o Worker não
+    carrega.
+  - Assets, D1 (19 migrations), Durable Object com WebSocket e heap (~34 MB)
+    funcionaram.
+- **Alternativas:**
+  - Subir mesmo assim: SSR e sign-up quebrados.
+  - Esperar só pelo upstream: o planner vai testar um arquivo único gerado
+    pelo Rollup (`inlineDynamicImports`) e `scrypt` em JS puro.
+- **Reverter:** baixo.
+- **Onde:** `infra/celld/` e o relatório do planner.
+- **Status:** bloqueada (resultado do segundo experimento do planner, e ok
+  do operador para publicar as issues).
