@@ -256,6 +256,37 @@ fn core_overlay_coexists_with_bundled_and_becomes_default_by_version() {
 }
 
 #[test]
+fn bundled_wins_over_overlay_with_the_same_core_version() {
+    let bundled = tempfile::tempdir().unwrap();
+    let overlay = tempfile::tempdir().unwrap();
+    let user = tempfile::tempdir().unwrap();
+    static_worker(bundled.path(), "cpanel", "cpanel", "1.0.0");
+    static_worker(overlay.path(), "cpanel@1.0.0", "cpanel", "1.0.0");
+
+    // D8: a mesma `name@version` no bundled e no overlay não mais derruba o
+    // boot; o bundled vence e a entrada do overlay é ignorada.
+    let index = load_manifests_from_roots(
+        &[bundled.path().to_path_buf()],
+        Some(&overlay.path().to_path_buf()),
+        &[user.path().to_path_buf()],
+    )
+    .unwrap();
+
+    assert_eq!(
+        index.resolve_worker("cpanel", None).unwrap().version,
+        "1.0.0"
+    );
+    let inventory = index.admin_workers();
+    let cpanel_entries: Vec<_> = inventory
+        .iter()
+        .filter(|worker| worker.name == "cpanel")
+        .collect();
+    assert_eq!(cpanel_entries.len(), 1);
+    assert_eq!(cpanel_entries[0].version, "1.0.0");
+    assert_eq!(cpanel_entries[0].origin, WorkerOrigin::CoreBundled);
+}
+
+#[test]
 fn user_root_cannot_shadow_a_reserved_core_identity() {
     let bundled = tempfile::tempdir().unwrap();
     let user = tempfile::tempdir().unwrap();

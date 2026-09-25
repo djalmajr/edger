@@ -130,7 +130,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Antes de publicar qualquer coisa: chart e tag contam a mesma versão.
-      - name: Chart.yaml bate com a tag
+      - name: Versões (Chart.yaml e core workers) batem com a tag
         run: |
           tag_version="${GITHUB_REF_NAME#v}"
           chart_version="$(awk '$1 == "version:" {print $2}' charts/edger/Chart.yaml)"
@@ -139,6 +139,14 @@ jobs:
             echo "::error::Chart.yaml (version=$chart_version, appVersion=$app_version) não bate com a tag $GITHUB_REF_NAME"
             exit 1
           fi
+          for manifest in workers/core/*/manifest.yaml; do
+            [ -f "$manifest" ] || continue
+            worker_version="$(awk '$1 == "version:" {gsub(/"/, "", $2); print $2}' "$manifest")"
+            if [ "$worker_version" != "$tag_version" ]; then
+              echo "::error::$manifest (version=$worker_version) não bate com a tag $GITHUB_REF_NAME"
+              exit 1
+            fi
+          done
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
