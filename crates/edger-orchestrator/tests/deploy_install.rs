@@ -2603,6 +2603,149 @@ async fn staged_public_release_stays_pinned_until_promoted_across_rescan_and_res
     );
 }
 
+fn zero_zip(version: &str, marker: &str) -> Vec<u8> {
+    zip_package(&[
+        (
+            "manifest.yaml",
+            &format!(
+                "name: zero-app\nversion: \"{version}\"\nvisibility: public\nentrypoint: index.ts\nkind: fetch\nhosts:\n  - zero.example\n"
+            ),
+        ),
+        ("index.ts", "export default () => new Response('ok');"),
+        ("marker.txt", marker),
+    ])
+}
+
+async fn probe_host(app: &Router, host: &str, uri: &str) -> (StatusCode, String) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header("host", host)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+// Mutation captured: keeping the host tied to a version (hoje) makes the
+// staged install of the second version collide (409) instead of reserving
+// the domain for an atomic promote.
+#[tokio::test]
+async fn host_alias_switches_versions_on_promote_without_downtime() {
+    let root = tempfile::tempdir().unwrap();
+    let marker = |body: &str| {
+        serde_json::from_str::<serde_json::Value>(body).unwrap()["marker"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let app = build_pipeline(state_with_factory(
+        root.path().to_path_buf(),
+        Arc::new(EchoFactory),
+    ));
+
+    let (status, installed_v1, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        zero_zip("1.0.0", "zero-one"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    assert_eq!(installed_v1["staged"], false);
+    assert_eq!(installed_v1["defaultVersion"], "1.0.0");
+
+    let (status, body) = probe_host(&app, "zero.example", "/probe").await;
+    assert_eq!(status, StatusCode::MULTI_STATUS);
+    assert_eq!(marker(&body), "zero-one");
+
+    // A v2 staged com o mesmo host só pode instalar se o domínio pertencer
+    // ao nome (hoje seria 409 COLLISION) e não pode assumir o domínio.
+    let (status, installed_v2, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install?staged=true",
+        Some("test-root"),
+        "application/zip",
+        zero_zip("2.0.0", "zero-two"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    assert_eq!(installed_v2["staged"], true);
+    assert_eq!(installed_v2["defaultVersion"], "1.0.0");
+
+    let (status, body) = probe_host(&app, "zero.example", "/probe").await;
+    assert_eq!(status, StatusCode::MULTI_STATUS);
+    assert_eq!(
+        marker(&body),
+        "zero-one",
+        "staged v2 took the domain before promote"
+    );
+
+    let (status, promoted, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/zero-app/promote?version=2.0.0",
+        Some("test-root"),
+        "application/json",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(promoted["defaultVersion"], "2.0.0");
+
+    let (status, body) = probe_host(&app, "zero.example", "/probe").await;
+    assert_eq!(status, StatusCode::MULTI_STATUS);
+    assert_eq!(
+        marker(&body),
+        "zero-two",
+        "promote must hand the domain to v2 atomically"
+    );
+
+    let restarted = build_pipeline(state_with_factory(
+        root.path().to_path_buf(),
+        Arc::new(EchoFactory),
+    ));
+    let (status, body) = probe_host(&restarted, "zero.example", "/probe").await;
+    assert_eq!(status, StatusCode::MULTI_STATUS);
+    assert_eq!(
+        marker(&body),
+        "zero-two",
+        "host version switch did not survive restart"
+    );
+
+    // Rollback: promover a versão anterior devolve o domínio a ela.
+    let (status, promoted, text) = send(
+        restarted.clone(),
+        "POST",
+        "/api/admin/workers/zero-app/promote?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(promoted["defaultVersion"], "1.0.0");
+
+    let (status, body) = probe_host(&restarted, "zero.example", "/probe").await;
+    assert_eq!(status, StatusCode::MULTI_STATUS);
+    assert_eq!(
+        marker(&body),
+        "zero-one",
+        "rollback must hand the domain back to v1"
+    );
+}
+
 /// Replacement de draft precisa funcionar quando o root configurado NÃO é o
 /// path canônico (RUNTIME_WORKER_DIRS relativo ou atrás de symlink): o scan
 /// indexa o dir como configurado, install_root() canonicaliza, e a guarda de

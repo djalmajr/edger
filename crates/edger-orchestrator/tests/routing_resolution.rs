@@ -449,6 +449,113 @@ fn duplicate_host_alias_is_a_collision() {
     assert_eq!(err.code, "COLLISION");
 }
 
+// O host pertence ao nome do worker: versões do mesmo nome podem repetir o
+// alias, e a versão que responde é a que o nome serve no momento.
+#[test]
+fn same_worker_versions_share_a_host_alias() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/w/hosted-1"),
+            host_manifest("hosted", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+    index
+        .insert(
+            PathBuf::from("/w/hosted-2"),
+            host_manifest("hosted", "2.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+
+    let worker = index.worker_for_host("app.example.test").unwrap();
+
+    assert_eq!(worker.name, "hosted");
+    assert_eq!(worker.version, "2.0.0");
+}
+
+#[test]
+fn host_alias_falls_back_when_served_version_is_disabled() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/w/hosted-1"),
+            host_manifest("hosted", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+    index
+        .insert(
+            PathBuf::from("/w/hosted-2"),
+            host_manifest("hosted", "2.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+    index
+        .set_worker_enabled("hosted", Some("2.0.0"), false)
+        .unwrap();
+
+    let worker = index.worker_for_host("app.example.test").unwrap();
+
+    assert_eq!(worker.name, "hosted");
+    assert_eq!(worker.version, "1.0.0");
+}
+
+#[test]
+fn host_alias_requires_the_served_version_to_declare_it() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/w/hosted-1"),
+            host_manifest("hosted", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+    index
+        .insert(
+            PathBuf::from("/w/hosted-2"),
+            host_manifest("hosted", "2.0.0", Vec::new()),
+        )
+        .unwrap();
+
+    assert_eq!(index.worker_for_host("app.example.test"), None);
+}
+
+#[test]
+fn host_alias_claim_follows_the_versions_that_declare_it() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/w/a-1"),
+            host_manifest("a", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+    index
+        .insert(
+            PathBuf::from("/w/a-2"),
+            host_manifest("a", "2.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+
+    index.remove_worker("a", "1.0.0").unwrap();
+    let err = index
+        .insert(
+            PathBuf::from("/w/b-1"),
+            host_manifest("b", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "COLLISION");
+
+    index.remove_worker("a", "2.0.0").unwrap();
+    index
+        .insert(
+            PathBuf::from("/w/b-1"),
+            host_manifest("b", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+
+    let worker = index.worker_for_host("app.example.test").unwrap();
+
+    assert_eq!(worker.name, "b");
+    assert_eq!(worker.version, "1.0.0");
+}
+
 #[test]
 fn unknown_worker_returns_not_found() {
     let index = build_index();

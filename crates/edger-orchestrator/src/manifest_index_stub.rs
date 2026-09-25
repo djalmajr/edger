@@ -20,6 +20,9 @@ pub struct ManifestEntry {
     pub plugin_base: Option<String>,
     pub origin: WorkerOrigin,
     pub staged: bool,
+    /// Hosts normalizados que o manifesto desta versão declara. O host
+    /// pertence ao nome do worker; a versão que responde precisa listá-lo.
+    pub hosts: Vec<String>,
 }
 
 /// Minimal manifest index used by `resolve_route`.
@@ -32,7 +35,9 @@ pub struct ManifestIndex {
 struct ManifestIndexState {
     entries: HashMap<String, Vec<ManifestEntry>>,
     default_versions: HashMap<String, String>,
-    host_routes: HashMap<String, WorkerRef>,
+    // host normalizado -> nome do worker dono do domínio; a versão que
+    // responde é a que o nome serve no momento e precisa declarar o host.
+    host_routes: HashMap<String, String>,
     plugins: Vec<PluginRef>,
     homepage: Option<WorkerRef>,
     shell: Option<WorkerRef>,
@@ -78,8 +83,15 @@ impl ManifestIndex {
         }
 
         let host_aliases = normalize_host_aliases(&manifest.hosts)?;
+        // O domínio pertence ao nome do worker: colide apenas se o dono
+        // registrado for outro nome. Versões do mesmo nome podem repetir o
+        // host desde a instalação, inclusive staged (reserva para o promote).
         for host in &host_aliases {
-            if state.host_routes.contains_key(host) {
+            if state
+                .host_routes
+                .get(host)
+                .is_some_and(|owner| owner.as_str() != worker.name)
+            {
                 return Err(CoreError::new(
                     "COLLISION",
                     format!("duplicate host route: {host}"),
@@ -104,10 +116,6 @@ impl ManifestIndex {
                 .plugins
                 .sort_by(|a, b| b.base.len().cmp(&a.base.len()));
         }
-        for host in host_aliases {
-            state.host_routes.insert(host, worker.clone());
-        }
-
         if key == "cpanel" && worker.config.enabled && !staged {
             if let Some(entries) = state.entries.get_mut(&key) {
                 for entry in entries {
@@ -116,12 +124,18 @@ impl ManifestIndex {
             }
         }
 
-        state.entries.entry(key).or_default().push(ManifestEntry {
-            plugin_base,
-            origin,
-            worker,
-            staged,
-        });
+        state
+            .entries
+            .entry(key.clone())
+            .or_default()
+            .push(ManifestEntry {
+                plugin_base,
+                origin,
+                worker,
+                staged,
+                hosts: host_aliases,
+            });
+        rebuild_host_routes(&mut state, &key);
         Ok(())
     }
 
@@ -175,11 +189,11 @@ impl ManifestIndex {
             ));
         }
         for host in &host_aliases {
-            if state.host_routes.get(host).is_some_and(|existing| {
-                existing.name != previous.worker.name
-                    || existing.version != previous.worker.version
-                    || existing.dir != previous.worker.dir
-            }) {
+            if state
+                .host_routes
+                .get(host)
+                .is_some_and(|owner| owner.as_str() != worker.name)
+            {
                 return Err(CoreError::new(
                     "COLLISION",
                     format!("duplicate host route: {host}"),
@@ -193,12 +207,14 @@ impl ManifestIndex {
             plugin_base,
             origin,
             staged,
+            hosts: host_aliases,
         };
         state
             .entries
             .get_mut(&key)
             .expect("replacement bucket exists")[position] = replacement.clone();
-        register_entry_routes(&mut state, &replacement, &manifest, host_aliases);
+        register_entry_routes(&mut state, &replacement, &manifest);
+        rebuild_host_routes(&mut state, &key);
         Ok(previous)
     }
 
@@ -362,8 +378,14 @@ impl ManifestIndex {
     pub fn worker_for_host(&self, host: &str) -> Option<WorkerRef> {
         let normalized = normalize_host_alias(host).ok()??;
         let state = self.inner.read().ok()?;
-        let worker = state.host_routes.get(&normalized)?;
-        state.worker_ref_is_enabled(worker).then(|| worker.clone())
+        // O host pertence ao nome do worker; a versão que responde é a que o
+        // nome serve no momento e precisa declarar o host no manifesto.
+        let name = state.host_routes.get(&normalized)?;
+        let entry = served_entry(&state, name)?;
+        entry
+            .hosts
+            .contains(&normalized)
+            .then(|| entry.worker.clone())
     }
 
     pub fn homepage(&self) -> Option<WorkerRef> {
@@ -558,9 +580,7 @@ impl ManifestIndex {
             state.default_versions.remove(name);
         }
         let removed_dir = removed.worker.dir.clone();
-        state.host_routes.retain(|_, worker| {
-            !(worker.name == name && worker.version == version && worker.dir == removed_dir)
-        });
+        rebuild_host_routes(&mut state, name);
         state
             .plugins
             .retain(|plugin| !(plugin.name == name && plugin.dir == removed_dir));
@@ -776,11 +796,6 @@ fn validate_promotion_entry(
 }
 
 fn unregister_entry_routes(state: &mut ManifestIndexState, entry: &ManifestEntry) {
-    state.host_routes.retain(|_, worker| {
-        worker.name != entry.worker.name
-            || worker.version != entry.worker.version
-            || worker.dir != entry.worker.dir
-    });
     state
         .plugins
         .retain(|plugin| plugin.name != entry.worker.name || plugin.dir != entry.worker.dir);
@@ -800,11 +815,59 @@ fn unregister_entry_routes(state: &mut ManifestIndexState, entry: &ManifestEntry
     }
 }
 
+/// Reafirma o mapa de dominios de um nome: remove as entradas cujo dono é
+/// `name` e reinsere a união dos `hosts` de todas as versões ainda indexadas.
+fn rebuild_host_routes(state: &mut ManifestIndexState, name: &str) {
+    state.host_routes.retain(|_, owner| owner.as_str() != name);
+    let Some(bucket) = state.entries.get(name) else {
+        return;
+    };
+    for entry in bucket {
+        for host in &entry.hosts {
+            state.host_routes.insert(host.clone(), name.to_string());
+        }
+    }
+}
+
+/// A versão que o nome serve no momento, com a mesma regra de
+/// `resolve_worker(name, None)`: valem as entradas habilitadas e não staged;
+/// o default explícito vale se for uma delas; senão, a maior versão.
+/// Sem versão servida (ou semver sem match) não há host route.
+fn served_entry<'a>(state: &'a ManifestIndexState, name: &str) -> Option<&'a ManifestEntry> {
+    let bucket = state.entries.get(name)?;
+    let enabled: Vec<&ManifestEntry> = bucket
+        .iter()
+        .filter(|entry| entry.worker.config.enabled && !entry.staged)
+        .collect();
+    if enabled.is_empty() {
+        return None;
+    }
+    let versions: Vec<&str> = enabled
+        .iter()
+        .map(|entry| entry.worker.version.as_str())
+        .collect();
+    let resolved_version = match state
+        .default_versions
+        .get(name)
+        .filter(|version| {
+            enabled
+                .iter()
+                .any(|entry| entry.worker.version == version.as_str())
+        })
+        .cloned()
+    {
+        Some(version) => version,
+        None => resolve_semver(versions, None).ok()?,
+    };
+    enabled
+        .into_iter()
+        .find(|entry| entry.worker.version == resolved_version)
+}
+
 fn register_entry_routes(
     state: &mut ManifestIndexState,
     entry: &ManifestEntry,
     manifest: &WorkerManifest,
-    host_aliases: Vec<String>,
 ) {
     if entry.plugin_base.as_deref() == Some("/") {
         state.homepage = Some(entry.worker.clone());
@@ -819,9 +882,6 @@ fn register_entry_routes(
         state
             .plugins
             .sort_by(|left, right| right.base.len().cmp(&left.base.len()));
-    }
-    for host in host_aliases {
-        state.host_routes.insert(host, entry.worker.clone());
     }
 }
 
