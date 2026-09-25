@@ -2,6 +2,36 @@
 
 All notable changes to EdgeR will be documented here.
 
+## [Unreleased]
+
+Toward 0.3.2. Release candidates: none published yet.
+
+### Changed
+
+- `hosts:` belongs to the worker **name**, not to a version: the host is
+  answered by the version the name serves at the moment (the promoted
+  default, or the highest enabled non-staged version when there is none), as
+  long as that version's manifest declares the host. Versions of the same
+  name may repeat the host; a different name declaring an already-claimed
+  host is refused with `409 COLLISION`. The new version therefore deploys
+  without downtime: install it with `staged=true`, test it at
+  `/<name>@<version>/`, then promote it; rollback is promoting the previous
+  version. Before, a second version with the same host answered `409`, so
+  the deploy required deleting the current one first.
+
+### Added
+
+- `EDGER_BIND` environment variable: the listening IP of the HTTP server
+  (IPv4 or IPv6), default `0.0.0.0`. An invalid value fails the start with a
+  clear message; the port stays in `PORT`.
+
+### Dependencies
+
+- `tokio` 1.53.1, `bytes` 1.12.1, `thiserror` 2.0.21 and `futures-core`
+  0.3.34.
+- `docker/login-action` v4 and `docker/metadata-action` v6 in the release
+  workflow.
+
 ## [0.3.1] - 2026-09-25
 
 Validated on labdev as `0.3.1-rc.7`. The `0.3.1-rc.4` upgrade from 0.3.0 ran

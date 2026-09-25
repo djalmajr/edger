@@ -10,6 +10,10 @@
 | `PORT`
 | Porta do HTTP server. Default: `3000`.
 
+| `EDGER_BIND`
+| IP de escuta do HTTP server. Default: `0.0.0.0`. Valor inválido faz o
+  start falhar. Em dev, recomenda-se `127.0.0.1`.
+
 | `RUNTIME_WORKER_DIRS`
 | Lista de roots ou workers comuns separados por `:`. Default:
   `workers/examples`. Não aceita substituir os nomes reservados `cpanel` e
@@ -242,7 +246,7 @@ CHANGELOG 0.3.0.
 
 [source,bash]
 ----
-ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers/examples \
+ROOT_API_KEY=test-root EDGER_BIND=127.0.0.1 PORT=19080 RUNTIME_WORKER_DIRS=workers/examples \
   EDGER_CORE_WORKER_DIR=workers/core \
   EDGER_CORE_WORKER_OVERLAY_DIR=.edger/core-worker-overlays \
   cargo run -p edger-orchestrator --bin edger
@@ -991,7 +995,7 @@ as Admin APIs existentes com credencial root informada em memória pelo operador
 
 [source,bash]
 ----
-ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers/examples \
+ROOT_API_KEY=test-root EDGER_BIND=127.0.0.1 PORT=19080 RUNTIME_WORKER_DIRS=workers/examples \
   EDGER_CORE_WORKER_DIR=workers/core \
   EDGER_CORE_WORKER_OVERLAY_DIR=.edger/core-worker-overlays \
   cargo run -p edger-orchestrator --bin edger
@@ -1098,6 +1102,15 @@ O `edger-ext-gateway` também aplica políticas de borda locais:
   host para lowercase, ignora porta no match e rejeita aliases com wildcard,
   caminho, esquema ou whitespace. Paths reservados (`/api`, `/health`, `/ready`,
   `/.well-known`) continuam protegidos mesmo quando o host é conhecido.
++
+O host pertence ao *nome* do worker, não a uma versão: o domínio responde pela
+versão que o nome serve no momento — o ponteiro de default ou, sem ele, a
+maior versão habilitada e não staged — desde que o manifesto dessa versão
+declare o host. Versões do mesmo nome podem repetir o host; outro nome que
+declare um host já reivindicado recebe `409` `COLLISION` na instalação. Com
+isso, o deploy de uma nova versão é instalá-la com `staged=true`, testá-la em
+`/<nome>@<versão>/` e fazer o `promote`; o rollback é o `promote` da versão
+anterior.
 +
 [source,yaml]
 ----

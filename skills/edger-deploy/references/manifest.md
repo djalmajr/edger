@@ -18,7 +18,7 @@ the conventional entrypoints `index.html`, `index.ts`, `index.js`,
 | `injectBase` | `true` | Rewrites `<base href>` in the served `index.html` (static SPAs); see [spa-contract.md](spa-contract.md). |
 | `env` | none | Environment for the worker process (JS/TS); never sent to the browser. |
 | `publicEnv` | none | Keys from `env` injected into the HTML as `window.__env__`; keys that look like secrets are dropped. |
-| `hosts` | none | Exact `Host` aliases routed to this worker (vhost mapping). |
+| `hosts` | none | Exact `Host` aliases (vhost mapping). The aliases belong to the worker's **name**, not to one version: the host is answered by the version the name serves at the moment (the promoted default, or the highest enabled non-staged version when there is none) as long as that version's manifest declares the host; versions of the same name may repeat the host. A different name declaring an already-claimed host is refused with `409 COLLISION`. |
 | `basePath` | `auto` | Base path for fullstack/SSR builds (`auto` or a fixed path such as `/base`). Fullstack only. |
 | `ssrEntrypoint` / `adapter` | none | SSR/fullstack: the SSR module and the framework adapter (`astro`, `fresh`, `hono`, `lume`, `nextjs`, `nuxt`, `remix`, `solidstart`, `sveltekit`, `tanstack`). Details: `docs/developers/02-modelo-de-dominio-e-manifests.adoc`. |
 | `allowNet` | none | Egress allowlist for persistent Deno workers (`--allow-net=host1,host2`). An empty list denies network; when absent, the runtime falls back to `EDGER_DENO_ALLOW_NET`, and with that also absent, network stays open. |

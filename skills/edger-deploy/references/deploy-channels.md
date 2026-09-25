@@ -50,6 +50,12 @@ curl -sS -X POST "$EDGER_URL/api/admin/workers/install" \
   body carries `name`, `version`, `url` (`/my-spa`), `kind`, `origin`,
   `revision` (save it for a later `force`) and `staged`.
 
+With `hosts:` in the manifest, the domain follows the version the name serves,
+so a new release goes in without taking the domain offline: install it with
+`staged=true`, test it under `/<name>@<version>/`, then `promote` it — the
+host switches to the promoted version. Rollback is promoting the previous
+version.
+
 ## MCP HTTP (`$EDGER_URL/api/mcp`)
 
 `POST`-only JSON-RPC. The install tool accepts **`zipBase64` only** —
