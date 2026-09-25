@@ -102,3 +102,79 @@ arquivo é o registro. A resposta ao planner está em
   - O token acima cobre o estado da fleet e o R2 do app. Uploads acima de
     8 MiB viram multipart, que o Object Read & Write inclui.
 - **Status:** bloqueada (o operador cria o token).
+
+## C6. Manifests do piloto no repositório `infra`, StatefulSet de uma réplica
+- **Decisão:**
+  - Os manifests ficam em `infra/celld/` (repositório privado, branch
+    `feat/celld-pilot`):
+    - StatefulSet `celld`, uma réplica, imagem `v0.5.1` fixada no digest;
+    - `CELLD_WATCH` e o asset cache num PVC `local-path` de 5Gi;
+    - `startupProbe`, `readinessProbe` e `livenessProbe` em
+      `/.well-known/celld/health`;
+    - `terminationGracePeriodSeconds: 90`;
+    - `--advertise` pelo DNS do pod no headless Service;
+    - NetworkPolicy com a porta 8081 só entre pods do `celld`, e a 8080 do
+      namespace `celld` e do `traefik`.
+  - Sem rota pública no piloto.
+  - A imagem roda como root, com `allowPrivilegeEscalation: false` e
+    capabilities removidas.
+- **Por quê** (pesquisa `scout-qwen-20260925T184156`):
+  - sem `CELLD_WATCH`, o estado vai para `/tmp/celld-<PID>`;
+  - o health segura o primeiro 200 por até 120 s;
+  - o SIGTERM faz handoff em até 40 s;
+  - o listener interno tem API de operador sem autenticação;
+  - o `--advertise` aceita DNS de pod.
+- **Alternativas:**
+  - Manifests no repositório público do EdgeR: expõe conta e bucket.
+  - Chart Helm próprio: mais trabalho antes de validar o piloto.
+  - Deployment em vez de StatefulSet: perde o DNS estável do pod.
+- **Reverter:** baixo (`kubectl delete -k celld/`). O PVC e o bucket ficam.
+- **Onde:** `infra/celld/`.
+- **Status:**
+  - Aplicada na VPS em 2026-09-25 (worktree `infra-celld`, branch
+    `feat/celld-pilot`, commits `db1231b` e o do Job). O push e o PR para o
+    `infra` esperam o ok do operador.
+  - O pod `celld-0` está pronto e renova o lease no R2 em ~140 ms. A
+    NetworkPolicy foi validada ao vivo: 8080 liberada só do namespace
+    `celld`, e 8081 bloqueada para pods sem o label e para outros
+    namespaces.
+
+## C7. Uma fleet por prefixo do bucket; smoke só de assets
+- **Decisão:**
+  - A fleet de smoke usa `s3://celld-planner/smoke`, e o Planner usará
+    `s3://celld-planner/planner`.
+  - O smoke é um app só de assets (`celld-smoke`), publicado por um Job com
+    a imagem oficial, que não tem `esbuild`.
+- **Por quê:**
+  - O `--bucket` aceita `NAME/PREFIX`, e cada fleet roda um app só. O
+    prefixo separa os estados sem outro bucket nem outro token.
+  - Um app só de assets não precisa de `esbuild`.
+- **Alternativas:**
+  - `examples/hello` (Worker): exige `esbuild` ou imagem derivada.
+  - Um bucket por app: mais tokens e mais dashboard.
+- **Reverter:** baixo.
+- **Onde:** `infra/celld/smoke/`.
+- **Status:** aplicada. Deploy `b6986c765fee93b3` em
+  `s3://celld-planner/smoke`, e `http://celld:8080/` responde `celld-smoke ok`.
+
+## C8. Pegadinhas do piloto registradas; ajustes que ficam para depois
+- **Decisão:** registrar as pegadinhas no runbook
+  (`djalmajr/infra` `runbooks/19-celld-pilot.md`) e deixar para o deploy do
+  Planner:
+  - `RUST_LOG=info,celld::ltx_repl=warn`, porque o `ship loop` loga toda
+    segunda;
+  - um Job com `esbuild` para publicar Worker.
+- **Por quê:** observado ao vivo em 2026-09-25:
+  - o `celld` só abre o listener público depois do primeiro deploy, e o
+    `startupProbe` reiniciou o pod duas vezes antes disso;
+  - volume de ConfigMap monta symlinks, e o `celld deploy` recusa;
+  - o kube-router só libera um pod novo na NetworkPolicy depois de alguns
+    segundos;
+  - o `--dry-run=client` não pegou `envFrom` no nível do pod, e o
+    `--dry-run=server --validate=strict` pegou.
+- **Alternativas:** subir o `failureThreshold` do `startupProbe` para
+  cobrir a fleet sem deploy. Esconderia um nó sem app, então preferi
+  documentar: publique antes, ou aceite os restarts iniciais.
+- **Reverter:** —
+- **Onde:** runbook 19.
+- **Status:** aplicada.
