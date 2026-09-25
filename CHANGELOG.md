@@ -4,10 +4,11 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.3` (tanstack public files,
-type-only bundle deps); `v0.3.2-rc.2` (owned domains, metrics key,
-core-worker precedence); `v0.3.2-rc.1` (published and validated on
-labdev: zero-downtime host switch, 21/21 probes 200 across four promotes).
+Toward 0.3.2. Release candidates: `v0.3.2-rc.4` (Rust 1.98 toolchain,
+rusqlite 0.40); `v0.3.2-rc.3` (tanstack public files, type-only bundle
+deps); `v0.3.2-rc.2` (owned domains, metrics key, core-worker
+precedence); `v0.3.2-rc.1` (published and validated on labdev:
+zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Changed
 
@@ -53,6 +54,8 @@ labdev: zero-downtime host switch, 21/21 probes 200 across four promotes).
   at `/` and a name route at `/<name>`; serving the same build at both bases
   requires the app to resolve the base at runtime (asset URLs, router
   basepath, server-function base, auth base).
+- The MSRV is now 1.98 (`rust-version = "1.98"`): compiling locally
+  requires `rustup update stable` (1.98.1).
 
 ### Added
 
@@ -95,6 +98,18 @@ labdev: zero-downtime host switch, 21/21 probes 200 across four promotes).
   0.3.34.
 - `docker/login-action` v4 and `docker/metadata-action` v6 in the release
   workflow.
+- `rusqlite` 0.40.2 with the `fallible_uint` feature: the 0.40 line drops
+  the `u64` `ToSql`/`FromSql` impls, and the feature restores them as
+  fallible conversions, so the key store keeps its `u64` fields. The
+  embedded SQLite it ships moves 3.46.0 to 3.53.2 (`libsqlite3-sys` 0.30.1
+  to 0.38.2); existing key stores open and migrate — the review probed an
+  `api-keys.db` created by the 3.46.0 amalgamation: it opens, keeps
+  `journal_mode delete`, preserves the row and `created_at`, and accepts
+  the `user_version` migration.
+- Rust 1.98 toolchain in the workspace `rust-version`, the `Dockerfile`
+  and `Dockerfile.cross` builder images, the three GitHub Actions
+  `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
+- `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
 
 ## [0.3.1] - 2026-09-25
 
