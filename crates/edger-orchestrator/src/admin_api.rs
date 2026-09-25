@@ -335,15 +335,24 @@ async fn install_worker(
         } else {
             transaction.installed.health = "not_configured".into();
         }
-        if let Err(error) = state.index.set_worker_enabled(
+        if state.index.cpanel_version_is_older_than_active(
             &transaction.installed.name,
-            Some(&transaction.installed.version),
-            true,
+            &transaction.installed.version,
         ) {
-            rollback_failed_install(&state, &transaction).await?;
-            return Err(error);
+            // D19: um cPanel mais antigo que o ativo não é reativado no
+            // install — fica inativo até uma promoção explícita.
+            transaction.installed.activation = "inactive".into();
+        } else {
+            if let Err(error) = state.index.set_worker_enabled(
+                &transaction.installed.name,
+                Some(&transaction.installed.version),
+                true,
+            ) {
+                rollback_failed_install(&state, &transaction).await?;
+                return Err(error);
+            }
+            transaction.installed.activation = "active".into();
         }
-        transaction.installed.activation = "active".into();
         if replaced_existing {
             state
                 .pool

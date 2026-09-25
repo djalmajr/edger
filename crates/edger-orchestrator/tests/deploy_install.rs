@@ -511,6 +511,82 @@ async fn core_names_install_into_overlay_and_regular_workers_into_user_root() {
         .starts_with(user.path().canonicalize().unwrap()));
 }
 
+fn cpanel_zip(version: &str, body: &str) -> Vec<u8> {
+    zip_package(&[
+        (
+            "manifest.yaml",
+            &format!(
+                "name: cpanel\nversion: \"{version}\"\nentrypoint: index.html\nkind: static\n"
+            ),
+        ),
+        ("index.html", body),
+    ])
+}
+
+// D19: instalar pela Admin API um cPanel mais antigo que o ativo não o
+// reativa — ele entra inativo, o default continua na versão ativa, e o
+// caminho para ativá-lo é uma promoção explícita.
+#[tokio::test]
+async fn installing_an_older_cpanel_keeps_the_newer_one_active() {
+    let bundled = tempfile::tempdir().unwrap();
+    let overlay = tempfile::tempdir().unwrap();
+    let user = tempfile::tempdir().unwrap();
+    let app = build_pipeline(state_with_roots(
+        bundled.path().to_path_buf(),
+        overlay.path().to_path_buf(),
+        user.path().to_path_buf(),
+    ));
+
+    let (status, v2, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        cpanel_zip("2.0.0", "cpanel-two"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    assert_eq!(v2["activation"], "active", "{text}");
+    assert_eq!(v2["defaultVersion"], "2.0.0", "{text}");
+
+    // O cPanel mais antigo entra inativo; o default segue na 2.0.0.
+    let (status, v1, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        cpanel_zip("1.0.0", "cpanel-one"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    assert_eq!(v1["activation"], "inactive", "{text}");
+    assert_eq!(v1["defaultVersion"], "2.0.0", "{text}");
+
+    // A rota sem versão continua servindo a 2.0.0.
+    let (status, body) = body_of(app.clone(), "/cpanel/").await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+    assert!(body.contains("cpanel-two"), "{body}");
+
+    // Promover a 1.0.0 continua sendo o caminho para ativá-la.
+    let (status, promoted, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/cpanel/promote?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(promoted["defaultVersion"], "1.0.0", "{text}");
+
+    let (status, body) = body_of(app, "/cpanel/").await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+    assert!(body.contains("cpanel-one"), "{body}");
+}
+
 #[tokio::test]
 async fn failed_on_deploy_health_check_keeps_candidate_unroutable() {
     let root = tempfile::tempdir().unwrap();

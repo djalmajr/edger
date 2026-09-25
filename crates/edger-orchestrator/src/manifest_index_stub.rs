@@ -122,17 +122,9 @@ impl ManifestIndex {
         // existentes não mudam. Versão semver inválida mantém o comportamento
         // atual (a última inserida vence).
         if key == "cpanel" && worker.config.enabled && !staged {
-            let newer_active_exists =
-                semver::Version::parse(&worker.version).is_ok_and(|new_version| {
-                    state.entries.get(&key).is_some_and(|entries| {
-                        entries.iter().any(|entry| {
-                            entry.worker.config.enabled
-                                && !entry.staged
-                                && semver::Version::parse(&entry.worker.version)
-                                    .is_ok_and(|existing| existing > new_version)
-                        })
-                    })
-                });
+            let newer_active_exists = state.entries.get(&key).is_some_and(|entries| {
+                has_newer_enabled_non_staged_version(entries, &worker.version)
+            });
             if newer_active_exists {
                 worker.config.enabled = false;
             } else if let Some(entries) = state.entries.get_mut(&key) {
@@ -155,6 +147,22 @@ impl ManifestIndex {
             });
         rebuild_host_routes(&mut state, &key);
         Ok(())
+    }
+
+    /// D19: `true` só quando `name == "cpanel"` e existe outra entrada com
+    /// semver estritamente maior que `version`, habilitada e não staged.
+    /// Versões que não são semver (a consultada ou a existente) não contam.
+    pub fn cpanel_version_is_older_than_active(&self, name: &str, version: &str) -> bool {
+        if name != "cpanel" {
+            return false;
+        }
+        let Ok(state) = self.inner.read() else {
+            return false;
+        };
+        state
+            .entries
+            .get(name)
+            .is_some_and(|entries| has_newer_enabled_non_staged_version(entries, version))
     }
 
     /// Atomically replace the indexed manifest for one existing version while
@@ -842,6 +850,21 @@ fn unregister_entry_routes(state: &mut ManifestIndexState, entry: &ManifestEntry
     }
 }
 
+/// Existe uma entrada habilitada e não staged com semver estritamente maior
+/// que `version`? A comparação só vale com semver válidos nos dois lados
+/// (D8 item 3 / D19): sem semver não há "mais antigo", e o comportamento
+/// atual (a última inserida vence) se mantém.
+fn has_newer_enabled_non_staged_version(entries: &[ManifestEntry], version: &str) -> bool {
+    semver::Version::parse(version).is_ok_and(|target| {
+        entries.iter().any(|entry| {
+            entry.worker.config.enabled
+                && !entry.staged
+                && semver::Version::parse(&entry.worker.version)
+                    .is_ok_and(|existing| existing > target)
+        })
+    })
+}
+
 /// Reafirma o mapa de dominios de um nome: remove as entradas cujo dono é
 /// `name` e reinsere a união dos `hosts` de todas as versões ainda indexadas.
 fn rebuild_host_routes(state: &mut ManifestIndexState, name: &str) {
@@ -1400,6 +1423,32 @@ mod tests {
                 .status,
             "disabled"
         );
+    }
+
+    // D19: o install usa esta consulta para não reativar um cPanel mais
+    // antigo que o ativo.
+    #[test]
+    fn cpanel_version_is_older_than_active_follows_semver_and_scope() {
+        let mut index = ManifestIndex::new();
+        index
+            .insert_with_origin(
+                PathBuf::from("/w/cpanel-2"),
+                manifest("cpanel", "2.0.0"),
+                WorkerOrigin::CoreBundled,
+            )
+            .unwrap();
+        index
+            .insert(PathBuf::from("/w/other-1"), manifest("other", "1.0.0"))
+            .unwrap();
+
+        // mais antiga que a ativa → true
+        assert!(index.cpanel_version_is_older_than_active("cpanel", "1.0.0"));
+        // mais nova que a ativa → false
+        assert!(!index.cpanel_version_is_older_than_active("cpanel", "2.1.0"));
+        // worker que não é cpanel → false
+        assert!(!index.cpanel_version_is_older_than_active("other", "1.0.0"));
+        // versão que não é semver → false
+        assert!(!index.cpanel_version_is_older_than_active("cpanel", "next"));
     }
 
     #[test]
