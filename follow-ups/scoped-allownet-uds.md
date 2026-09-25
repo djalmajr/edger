@@ -1,8 +1,9 @@
 # Follow-up: scoped `allowNet` is incompatible with the multiproc UDS transport
 
-**Status:** deferred by decision — egress scoping isn't needed for now, so workers run with
-`allowNet` unset (full net). Revisit if/when host-level egress scoping is required. The
-root cause + options below are kept for that day.
+**Status:** resolvido no código desde o #45: `deno_network_permission_args_with_uds`
+acrescenta `unix:<socket>` à lista. A prova são os testes
+`restricted_network_worker_still_connects_to_internal_uds` e
+`scoped_network_worker_still_connects_to_internal_uds`, de 2026-09-25.
 
 ## Symptom
 

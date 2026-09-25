@@ -52,6 +52,34 @@ async fn restricted_network_worker_still_connects_to_internal_uds() {
     assert_eq!(response.body.unwrap().as_ref(), b"restricted-network-ok");
 }
 
+// Mutation captured: if the scoped `allowNet` list stopped gaining the
+// `unix:<socket>` grant (`deno_network_permission_args_with_uds`), the
+// harness's internal UDS connect would be denied and this boot would fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scoped_network_worker_still_connects_to_internal_uds() {
+    let dir = tempfile::tempdir().unwrap();
+    write_worker(
+        dir.path(),
+        r#"Deno.serve(() => new Response("scoped-network-ok"));"#,
+    );
+    let mut config = parse_worker_config(&WorkerManifest {
+        name: "scoped-network".into(),
+        entrypoint: Some("index.ts".into()),
+        allow_net: Some(vec!["example.com:443".into()]),
+        ..WorkerManifest::default()
+    });
+    config.worker_dir = Some(dir.path().to_path_buf());
+
+    let mut isolate = DenoProcessIsolate::new();
+    let response = isolate
+        .execute_fetch(request("GET", "/", None), &config)
+        .await
+        .expect("internal UDS must remain reachable for a scoped allowNet list");
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.unwrap().as_ref(), b"scoped-network-ok");
+}
+
 #[cfg(unix)]
 struct EnvVarGuard {
     key: &'static str,

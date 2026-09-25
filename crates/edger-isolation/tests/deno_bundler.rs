@@ -219,3 +219,51 @@ Deno.serve(() => new Response(secret));
     assert_eq!(error.code, "DENO_BUNDLE_GRAPH_DENIED");
     assert!(error.message.contains("escapes worker_dir"));
 }
+
+// D29: um import só de tipo em JSDoc (alvo fora do worker e inexistente)
+// aparece no grafo do `deno info` com aresta `type`; o validador ignora o
+// alvo e o bundle roda — sem ele o worker morre com DENO_BUNDLE_GRAPH_DENIED.
+#[test]
+fn deno_cli_bundler_ignores_jsdoc_type_only_import() {
+    let workers = tempfile::tempdir().expect("create workers root");
+    let worker_dir = workers.path().join("jsdoc-worker");
+    fs::create_dir_all(&worker_dir).unwrap();
+    let entrypoint = worker_dir.join("index.js");
+    fs::write(
+        &entrypoint,
+        r#"import { message } from "./message.js";
+/** @type {import('../types/index').X} */
+const handler = () => new Response(message);
+Deno.serve(handler);
+"#,
+    )
+    .unwrap();
+    fs::write(
+        worker_dir.join("message.js"),
+        "export const message = 'jsdoc-bundle-ok';",
+    )
+    .unwrap();
+    let output_dir = tempfile::tempdir().expect("create bundle output dir");
+    let bundler = DenoCliBundler::default();
+
+    let bundle = match bundler.bundle_entrypoint(&worker_dir, &entrypoint, output_dir.path()) {
+        Ok(bundle) => bundle,
+        Err(err) if err.code == "DENO_BUNDLE_UNAVAILABLE" => {
+            eprintln!(
+                "skipping deno_cli_bundler_ignores_jsdoc_type_only_import: {}",
+                err.message
+            );
+            return;
+        }
+        Err(err) => panic!("bundle failed: {err}"),
+    };
+
+    let bundle_path = Path::new(&bundle.path);
+    assert!(bundle_path.is_file(), "bundle artifact must exist");
+    let bundled_source = fs::read_to_string(bundle_path).expect("read bundle");
+    assert!(
+        !bundled_source.contains("types/index"),
+        "type-only JSDoc import must not reach the bundle"
+    );
+    assert_eq!(run_bundle(bundle_path, &bundler), "jsdoc-bundle-ok");
+}
