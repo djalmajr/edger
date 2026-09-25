@@ -75,10 +75,8 @@ pub fn try_serve_fullstack_asset(
         // (`.well-known` é exceção apenas como PRIMEIRO componente — D6);
         // e a rota de servidor do TanStack também é checada no path
         // decodificado (`/%61pi/x` é `/api/x`).
-        for (index, component) in relative.split('/').filter(|c| !c.is_empty()).enumerate() {
-            if component.starts_with('.') && !(index == 0 && component == ".well-known") {
-                return Ok(None);
-            }
+        if path_has_dotfile_components(Path::new(relative)) {
+            return Ok(None);
         }
         if is_tanstack_server_path(&decoded) {
             return Ok(None);
@@ -88,6 +86,14 @@ pub fn try_serve_fullstack_asset(
         else {
             return Ok(None);
         };
+        // D30: symlinks não podem revelar dotfiles dentro de `clientDir`; a
+        // mesma regra de componentes vale para o caminho canônico resolvido.
+        let Some(canonical_relative) = file_path.strip_prefix(&client_root).ok() else {
+            return Ok(None);
+        };
+        if path_has_dotfile_components(canonical_relative) {
+            return Ok(None);
+        }
         return Ok(Some(serve_fullstack_file(
             req,
             config,
@@ -294,6 +300,18 @@ fn path_has_forbidden_components(path: &str) -> bool {
             component,
             Component::ParentDir | Component::RootDir | Component::Prefix(_)
         )
+    })
+}
+
+/// D30: nenhum componente pode começar com ".", exceto `.well-known` como
+/// PRIMEIRO componente (D6). A mesma regra vale para o path pedido e para o
+/// caminho canônico dentro de `clientDir` (symlinks).
+fn path_has_dotfile_components(path: &Path) -> bool {
+    path.components().enumerate().any(|(index, component)| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|name| name.starts_with('.') && !(index == 0 && name == ".well-known"))
     })
 }
 
@@ -785,6 +803,55 @@ mod tests {
             let served = try_serve_fullstack_asset(&req(path), &config).unwrap();
             assert!(served.is_none(), "expected SSR fallback for {path}");
         }
+    }
+
+    // D30 (P1): symlinks dentro de `clientDir` não podem revelar dotfiles;
+    // a regra de componentes vale também para o caminho canônico.
+    #[cfg(unix)]
+    #[test]
+    fn tanstack_public_files_do_not_follow_symlinks_to_dotfiles() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client")).unwrap();
+        fs::write(root.path().join("client/.env"), "PRIVATE=secret\n").unwrap();
+        symlink(".env", root.path().join("client/public-link")).unwrap();
+        let config = config(root.path());
+
+        let served = try_serve_fullstack_asset(&req("/public-link"), &config).unwrap();
+        assert!(served.is_none(), "symlink to dotfile must fall to SSR");
+    }
+
+    // D30 (P1): symlink para dentro de um diretório oculto também cai no SSR.
+    #[cfg(unix)]
+    #[test]
+    fn tanstack_public_files_do_not_follow_symlinks_into_dot_dirs() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/.git")).unwrap();
+        fs::write(root.path().join("client/.git/config"), "core = bare").unwrap();
+        symlink(".git/config", root.path().join("client/cfg")).unwrap();
+        let config = config(root.path());
+
+        let served = try_serve_fullstack_asset(&req("/cfg"), &config).unwrap();
+        assert!(served.is_none(), "symlink into dot dir must fall to SSR");
+    }
+
+    // D30: symlink para arquivo regular continua legítimo e é servido.
+    #[cfg(unix)]
+    #[test]
+    fn tanstack_public_files_follow_symlinks_to_regular_files() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client")).unwrap();
+        fs::write(root.path().join("client/real.txt"), "public content").unwrap();
+        symlink("real.txt", root.path().join("client/alias.txt")).unwrap();
+        let config = config(root.path());
+
+        let res = try_serve_fullstack_asset(&req("/alias.txt"), &config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(res.status, 200);
+        assert_eq!(res.body.unwrap().as_ref(), b"public content");
     }
 
     // D30 (P1): nenhum dotfile sai pela via de arquivos públicos, seja em
