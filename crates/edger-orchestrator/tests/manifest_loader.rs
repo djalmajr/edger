@@ -255,6 +255,62 @@ fn core_overlay_coexists_with_bundled_and_becomes_default_by_version() {
         .any(|worker| { worker.name == "hello" && worker.origin == WorkerOrigin::User }));
 }
 
+// D8 item 3: o boot carrega o overlay depois do bundled; um cPanel bundled
+// mais novo não pode ser desabilitado por um overlay mais antigo.
+#[test]
+fn newer_bundled_cpanel_wins_over_older_overlay_at_boot() {
+    let bundled = tempfile::tempdir().unwrap();
+    let overlay = tempfile::tempdir().unwrap();
+    let user = tempfile::tempdir().unwrap();
+    static_worker(bundled.path(), "cpanel", "cpanel", "2.0.0");
+    static_worker(overlay.path(), "cpanel@1.0.0", "cpanel", "1.0.0");
+
+    let index = load_manifests_from_roots(
+        &[bundled.path().to_path_buf()],
+        Some(&overlay.path().to_path_buf()),
+        &[user.path().to_path_buf()],
+    )
+    .unwrap();
+
+    assert_eq!(
+        index.resolve_worker("cpanel", None).unwrap().version,
+        "2.0.0"
+    );
+}
+
+// O ponteiro de default continua mandando: um ponteiro para um cPanel de
+// overlay mais antigo o fixa no boot, mesmo com o bundled mais novo.
+#[test]
+fn persisted_pointer_pins_an_older_overlay_cpanel_at_boot() {
+    let bundled = tempfile::tempdir().unwrap();
+    let overlay = tempfile::tempdir().unwrap();
+    let user = tempfile::tempdir().unwrap();
+    static_worker(bundled.path(), "cpanel", "cpanel", "2.0.0");
+    static_worker(overlay.path(), "cpanel@1.0.0", "cpanel", "1.0.0");
+
+    // Mesmo ponteiro que persist_default_version grava:
+    // <root>/.edger-defaults/<hex(name)>.json com {"name":..., "version":...}.
+    let defaults_dir = overlay.path().join(".edger-defaults");
+    fs::create_dir_all(&defaults_dir).unwrap();
+    fs::write(
+        defaults_dir.join("6370616e656c.json"),
+        "{\"name\":\"cpanel\",\"version\":\"1.0.0\"}\n",
+    )
+    .unwrap();
+
+    let index = load_manifests_from_roots(
+        &[bundled.path().to_path_buf()],
+        Some(&overlay.path().to_path_buf()),
+        &[user.path().to_path_buf()],
+    )
+    .unwrap();
+
+    assert_eq!(
+        index.resolve_worker("cpanel", None).unwrap().version,
+        "1.0.0"
+    );
+}
+
 #[test]
 fn bundled_wins_over_overlay_with_the_same_core_version() {
     let bundled = tempfile::tempdir().unwrap();

@@ -66,7 +66,7 @@ impl ManifestIndex {
         manifest: WorkerManifest,
         origin: WorkerOrigin,
     ) -> Result<(), CoreError> {
-        let worker = create_worker_ref(dir, manifest.clone())?;
+        let mut worker = create_worker_ref(dir, manifest.clone())?;
         let staged = crate::deploy::worker_is_staged(&worker.dir)?;
         validate_origin_identity(&worker.name, manifest.base.as_deref(), origin)?;
         let key = worker.name.clone();
@@ -116,8 +116,26 @@ impl ManifestIndex {
                 .plugins
                 .sort_by(|a, b| b.base.len().cmp(&a.base.len()));
         }
+        // cPanel: o boot carrega o bundled antes do overlay (D8 item 3), então
+        // uma versão habilitada e não staged mais ANTIGA não pode desabilitar a
+        // versão habilitada e não staged mais NOVA: entra desabilitada e as
+        // existentes não mudam. Versão semver inválida mantém o comportamento
+        // atual (a última inserida vence).
         if key == "cpanel" && worker.config.enabled && !staged {
-            if let Some(entries) = state.entries.get_mut(&key) {
+            let newer_active_exists =
+                semver::Version::parse(&worker.version).is_ok_and(|new_version| {
+                    state.entries.get(&key).is_some_and(|entries| {
+                        entries.iter().any(|entry| {
+                            entry.worker.config.enabled
+                                && !entry.staged
+                                && semver::Version::parse(&entry.worker.version)
+                                    .is_ok_and(|existing| existing > new_version)
+                        })
+                    })
+                });
+            if newer_active_exists {
+                worker.config.enabled = false;
+            } else if let Some(entries) = state.entries.get_mut(&key) {
                 for entry in entries {
                     entry.worker.config.enabled = false;
                 }
@@ -1329,6 +1347,41 @@ mod tests {
             .insert_with_origin(
                 PathBuf::from("/w/cpanel-v2"),
                 manifest("cpanel", "2.0.0"),
+                WorkerOrigin::CoreOverlay,
+            )
+            .unwrap();
+
+        assert_eq!(
+            index.resolve_worker("cpanel", None).unwrap().version,
+            "2.0.0"
+        );
+        let workers = index.admin_workers();
+        assert_eq!(
+            workers
+                .iter()
+                .find(|worker| worker.name == "cpanel" && worker.version == "1.0.0")
+                .unwrap()
+                .status,
+            "disabled"
+        );
+    }
+
+    // D8 item 3: um cPanel mais antigo inserido depois (overlay carregado
+    // após o bundled no boot) não pode desabilitar a versão mais nova ativa.
+    #[test]
+    fn inserting_older_enabled_cpanel_keeps_the_newer_default() {
+        let mut index = ManifestIndex::new();
+        index
+            .insert_with_origin(
+                PathBuf::from("/w/cpanel-v2"),
+                manifest("cpanel", "2.0.0"),
+                WorkerOrigin::CoreBundled,
+            )
+            .unwrap();
+        index
+            .insert_with_origin(
+                PathBuf::from("/w/cpanel-v1"),
+                manifest("cpanel", "1.0.0"),
                 WorkerOrigin::CoreOverlay,
             )
             .unwrap();
