@@ -194,6 +194,7 @@ async fn cron_manifest_dispatches_internal_authenticated_request_and_counts_exec
         .oneshot(
             Request::builder()
                 .uri("/metrics")
+                .header("authorization", "Bearer root-secret")
                 .body(Body::empty())
                 .unwrap(),
         )

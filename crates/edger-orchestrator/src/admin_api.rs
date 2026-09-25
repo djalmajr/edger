@@ -1697,7 +1697,10 @@ async fn require_root(
     }
 }
 
-fn require_permission(principal: &ApiKeyPrincipal, permission: &str) -> Result<(), CoreError> {
+pub(crate) fn require_permission(
+    principal: &ApiKeyPrincipal,
+    permission: &str,
+) -> Result<(), CoreError> {
     if principal_has_permission(principal, permission) {
         Ok(())
     } else {
@@ -1708,7 +1711,7 @@ fn require_permission(principal: &ApiKeyPrincipal, permission: &str) -> Result<(
     }
 }
 
-fn map_error_status(err: &CoreError) -> StatusCode {
+pub(crate) fn map_error_status(err: &CoreError) -> StatusCode {
     match err.code.as_str() {
         "BAD_REQUEST"
         | "VALIDATION_ERROR"
@@ -1742,7 +1745,7 @@ fn map_error_status(err: &CoreError) -> StatusCode {
     }
 }
 
-fn admin_error(status: StatusCode, err: &CoreError, headers: &HeaderMap) -> Response {
+pub(crate) fn admin_error(status: StatusCode, err: &CoreError, headers: &HeaderMap) -> Response {
     let request_id = request_id_from_headers(headers);
     log_operational_error("admin_api", request_id.as_deref(), status, err);
     (

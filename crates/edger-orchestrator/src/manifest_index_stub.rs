@@ -375,6 +375,15 @@ impl ManifestIndex {
         None
     }
 
+    /// O dono do host registrado no `host_routes` (o nome do worker), esteja
+    /// ou não alguma versão servindo no momento. `None` para host não
+    /// reivindicado ou alias inválido.
+    pub fn host_owner(&self, host: &str) -> Option<String> {
+        let normalized = normalize_host_alias(host).ok()??;
+        let state = self.inner.read().ok()?;
+        state.host_routes.get(&normalized).cloned()
+    }
+
     pub fn worker_for_host(&self, host: &str) -> Option<WorkerRef> {
         let normalized = normalize_host_alias(host).ok()??;
         let state = self.inner.read().ok()?;

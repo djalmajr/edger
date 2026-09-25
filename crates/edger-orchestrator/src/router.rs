@@ -198,7 +198,9 @@ pub(crate) fn resolve_route_with_internal(
     }
 }
 
-/// Resolve exact vhost mappings before shell fallback while preserving reserved paths.
+/// Resolve exact vhost mappings before shell fallback. On an owned Host
+/// every path goes to the owning worker (reserved paths do not apply);
+/// Hosts without an owner keep the reserved paths.
 pub fn resolve_host_route(
     path: &str,
     host: Option<&str>,
@@ -215,23 +217,33 @@ pub(crate) fn resolve_host_route_with_internal(
 ) -> Result<Option<ResolvedRoute>, CoreError> {
     let normalized = normalize_path(path);
 
+    // Domínio com dono é inteiro do app (D6): toda a requisição vai para o
+    // worker dono e os caminhos reservados não se aplicam. Sem versão
+    // servindo, o host não pode cair nas rotas por nome nem no control plane.
+    if let Some(host) = host {
+        if let Some(owner) = index.host_owner(host) {
+            return match index.worker_for_host(host) {
+                Some(worker) => {
+                    require_data_plane_visibility(&worker, allow_internal)?;
+                    Ok(Some(ResolvedRoute::Worker {
+                        kind_hint: worker.kind.clone(),
+                        rewritten_path: normalized,
+                        worker,
+                    }))
+                }
+                None => Err(CoreError::new(
+                    "NOT_FOUND",
+                    format!("no version of {owner} serves host {host}"),
+                )),
+            };
+        }
+    }
+
     if let Some(kind) = reserved_kind(&normalized) {
         return Ok(Some(ResolvedRoute::Reserved { kind }));
     }
 
-    let Some(host) = host else {
-        return Ok(None);
-    };
-    let Some(worker) = index.worker_for_host(host) else {
-        return Ok(None);
-    };
-    require_data_plane_visibility(&worker, allow_internal)?;
-
-    Ok(Some(ResolvedRoute::Worker {
-        kind_hint: worker.kind.clone(),
-        rewritten_path: normalized,
-        worker,
-    }))
+    Ok(None)
 }
 
 fn require_data_plane_visibility(

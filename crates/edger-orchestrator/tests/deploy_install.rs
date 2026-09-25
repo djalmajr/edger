@@ -2746,6 +2746,117 @@ async fn host_alias_switches_versions_on_promote_without_downtime() {
     );
 }
 
+// Domínio com dono é inteiro do app (D6): com Host dono, as rotas fixas do
+// control plane e os caminhos reservados vão para o worker dono; sem dono,
+// o control plane segue respondendo.
+#[tokio::test]
+async fn owned_host_receives_control_plane_paths() {
+    let root = tempfile::tempdir().unwrap();
+    let marker = |body: &str| {
+        serde_json::from_str::<serde_json::Value>(body).unwrap()["marker"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let app = build_pipeline(state_with_factory(
+        root.path().to_path_buf(),
+        Arc::new(EchoFactory),
+    ));
+
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        zero_zip("1.0.0", "zero-one"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    assert_eq!(installed["defaultVersion"], "1.0.0");
+
+    for uri in [
+        "/",
+        "/health",
+        "/metrics",
+        "/metrics/stats",
+        "/.well-known/openid-configuration",
+        "/api/anything",
+    ] {
+        let (status, body) = probe_host(&app, "zero.example", uri).await;
+        assert_eq!(status, StatusCode::MULTI_STATUS, "{uri}");
+        assert_eq!(marker(&body), "zero-one", "{uri}");
+    }
+
+    // Mesmo com credencial de root, /api/admin no domínio do app vai ao app.
+    let admin_on_owned_host = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/admin/workers")
+                .header("host", "zero.example")
+                .header("authorization", "Bearer test-root")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admin_on_owned_host.status(), StatusCode::MULTI_STATUS);
+    let admin_body = axum::body::to_bytes(admin_on_owned_host.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        marker(std::str::from_utf8(&admin_body).unwrap()),
+        "zero-one"
+    );
+
+    let mcp_on_owned_host = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/mcp")
+                .header("host", "zero.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mcp_on_owned_host.status(), StatusCode::MULTI_STATUS);
+    let mcp_body = axum::body::to_bytes(mcp_on_owned_host.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(marker(std::str::from_utf8(&mcp_body).unwrap()), "zero-one");
+
+    // Sem Host, ou com outro Host, o control plane segue respondendo: / dá
+    // 307 e /api/admin com root dá 200.
+    for host in [None, Some("other.example")] {
+        let mut redirect_builder = Request::builder().uri("/");
+        if let Some(host) = host {
+            redirect_builder = redirect_builder.header("host", host);
+        }
+        let redirect = app
+            .clone()
+            .oneshot(redirect_builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(redirect.status(), StatusCode::TEMPORARY_REDIRECT);
+
+        let mut admin_builder = Request::builder()
+            .uri("/api/admin/workers")
+            .header("authorization", "Bearer test-root");
+        if let Some(host) = host {
+            admin_builder = admin_builder.header("host", host);
+        }
+        let admin = app
+            .clone()
+            .oneshot(admin_builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(admin.status(), StatusCode::OK);
+    }
+}
+
 /// Replacement de draft precisa funcionar quando o root configurado NÃO é o
 /// path canônico (RUNTIME_WORKER_DIRS relativo ou atrás de symlink): o scan
 /// indexa o dir como configurado, install_root() canonicaliza, e a guarda de

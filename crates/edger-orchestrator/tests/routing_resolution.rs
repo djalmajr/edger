@@ -228,8 +228,10 @@ fn unknown_host_keeps_existing_path_fallback() {
     }
 }
 
+// Domínio com dono é inteiro do app (D6): os caminhos reservados não se
+// aplicam quando o Host tem dono.
 #[test]
-fn reserved_path_wins_over_known_host() {
+fn known_host_owns_reserved_paths() {
     let mut index = build_index();
     index
         .insert(
@@ -238,15 +240,51 @@ fn reserved_path_wins_over_known_host() {
         )
         .unwrap();
 
-    let route = resolve_host_route("/api/admin/session", Some("app.example.test"), &index)
-        .unwrap()
-        .expect("reserved route");
-    assert_eq!(
-        route,
-        ResolvedRoute::Reserved {
-            kind: ReservedPath::Api
+    for path in ["/api/admin/session", "/health", "/.well-known/x"] {
+        let route = resolve_host_route(path, Some("app.example.test"), &index)
+            .unwrap()
+            .expect("owned host serves every path");
+        match route {
+            ResolvedRoute::Worker {
+                worker,
+                rewritten_path,
+                ..
+            } => {
+                assert_eq!(worker.name, "hosted", "{path}");
+                assert_eq!(rewritten_path, path, "{path}");
+            }
+            other => panic!("expected worker for {path}, got {other:?}"),
         }
-    );
+    }
+}
+
+#[test]
+fn unknown_host_keeps_reserved_paths() {
+    let index = build_index();
+    for host in [None, Some("unknown.example.test")] {
+        let route = resolve_host_route("/api/x", host, &index).unwrap();
+        assert_eq!(
+            route,
+            Some(ResolvedRoute::Reserved {
+                kind: ReservedPath::Api
+            })
+        );
+    }
+}
+
+#[test]
+fn owned_host_without_served_version_is_not_found() {
+    let mut index = build_index();
+    index
+        .insert(
+            PathBuf::from("/workers/hosted"),
+            host_manifest("hosted", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+    index.set_worker_enabled("hosted", None, false).unwrap();
+
+    let err = resolve_host_route("/", Some("app.example.test"), &index).unwrap_err();
+    assert_eq!(err.code, "NOT_FOUND");
 }
 
 #[test]
@@ -260,8 +298,8 @@ fn disabled_host_worker_is_not_resolved_by_host_alias() {
         .unwrap();
     index.set_worker_enabled("hosted", None, false).unwrap();
 
-    let route = resolve_host_route("/", Some("app.example.test"), &index).unwrap();
-    assert_eq!(route, None);
+    let err = resolve_host_route("/", Some("app.example.test"), &index).unwrap_err();
+    assert_eq!(err.code, "NOT_FOUND");
 }
 
 #[test]
