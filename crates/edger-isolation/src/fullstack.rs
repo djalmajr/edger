@@ -71,6 +71,18 @@ pub fn try_serve_fullstack_asset(
         if path_has_forbidden_components(relative) {
             return Ok(None);
         }
+        // D30: nenhum componente do path decodificado pode começar com "."
+        // (`.well-known` é exceção apenas como PRIMEIRO componente — D6);
+        // e a rota de servidor do TanStack também é checada no path
+        // decodificado (`/%61pi/x` é `/api/x`).
+        for (index, component) in relative.split('/').filter(|c| !c.is_empty()).enumerate() {
+            if component.starts_with('.') && !(index == 0 && component == ".well-known") {
+                return Ok(None);
+            }
+        }
+        if is_tanstack_server_path(&decoded) {
+            return Ok(None);
+        }
         let client_root = resolve_client_root(config, client_dir)?;
         let Some(file_path) = resolve_fullstack_asset(&client_root, relative, &fullstack.adapter)
         else {
@@ -770,6 +782,71 @@ mod tests {
             "/%2e%2e/server.js",
             "/%E0%A4%A",
         ] {
+            let served = try_serve_fullstack_asset(&req(path), &config).unwrap();
+            assert!(served.is_none(), "expected SSR fallback for {path}");
+        }
+    }
+
+    // D30 (P1): nenhum dotfile sai pela via de arquivos públicos, seja em
+    // qualquer posição do path ou em forma percent-encoded.
+    #[test]
+    fn tanstack_public_files_never_serve_dotfiles() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/.git")).unwrap();
+        fs::create_dir_all(root.path().join("client/sub")).unwrap();
+        fs::write(root.path().join("client/.env"), "PRIVATE=secret\n").unwrap();
+        fs::write(root.path().join("client/.git/config"), "core = bare").unwrap();
+        fs::write(root.path().join("client/sub/.secret"), "hidden").unwrap();
+        let config = config(root.path());
+
+        for path in ["/.env", "/.git/config", "/sub/.secret", "/%2eenv"] {
+            let served = try_serve_fullstack_asset(&req(path), &config).unwrap();
+            assert!(served.is_none(), "expected SSR fallback for {path}");
+        }
+    }
+
+    // D30: `.well-known` só é exceção como PRIMEIRO componente (D6: o
+    // caminho é do app); dotfile abaixo dele continua caindo no SSR.
+    #[test]
+    fn tanstack_public_files_allow_well_known() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/.well-known")).unwrap();
+        fs::write(
+            root.path().join("client/.well-known/security.txt"),
+            "Contact: sec@example.test",
+        )
+        .unwrap();
+        fs::write(root.path().join("client/.well-known/.hidden"), "secret").unwrap();
+        let config = config(root.path());
+
+        let response = try_serve_fullstack_asset(&req("/.well-known/security.txt"), &config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            response.body.unwrap().as_ref(),
+            b"Contact: sec@example.test"
+        );
+
+        let hidden = try_serve_fullstack_asset(&req("/.well-known/.hidden"), &config).unwrap();
+        assert!(
+            hidden.is_none(),
+            "dotfile under .well-known must fall to SSR"
+        );
+    }
+
+    // D30 (P2): o check de rota de servidor TanStack vale também para o
+    // path decodificado — `/%61pi/x` é `/api/x` e não vira estático.
+    #[test]
+    fn tanstack_public_files_check_server_paths_after_decoding() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/api")).unwrap();
+        fs::create_dir_all(root.path().join("client/_serverFn")).unwrap();
+        fs::write(root.path().join("client/api/x"), "static").unwrap();
+        fs::write(root.path().join("client/_serverFn/y"), "static").unwrap();
+        let config = config(root.path());
+
+        for path in ["/%61pi/x", "/_server%46n/y"] {
             let served = try_serve_fullstack_asset(&req(path), &config).unwrap();
             assert!(served.is_none(), "expected SSR fallback for {path}");
         }
