@@ -298,5 +298,10 @@ arquivo é o registro. A resposta ao planner está em
   Job; o PVC, o prefixo no bucket e o diretório no nó ficam até limpeza
   manual.
 - **Onde:** `infra/celld/planner/` e o runbook 19 no ai-memory.
-- **Status:** manifests em preparo. **Aplicar na VPS espera o ok do
-  operador.**
+- **Status:** aplicada em 2026-09-26 (01:54 UTC), com o ok do operador:
+  - artefato `planner@7fb13d0`, 19 migrations e SSR 200;
+  - a primeira tentativa falhou porque o `celld` v0.5.1 reserva o prefixo
+    `CELLD_VAR_` no ambiente. O `deploy.sh` passou a apagar essas
+    variáveis antes de chamar o `celld` (`infra` `0c2854f`);
+  - não houve exposição de segredo;
+  - runbook 19 do `djalmajr/infra` no ai-memory atualizado.
