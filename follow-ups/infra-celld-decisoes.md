@@ -205,3 +205,37 @@ arquivo é o registro. A resposta ao planner está em
 - **Onde:** `infra/celld/` e o relatório do planner.
 - **Status:** bloqueada (resultado do segundo experimento do planner, e ok
   do operador para publicar as issues).
+
+## C10. Spike 2 aprovado; como o artefato do Planner chega ao cluster
+- **Estado:**
+  - O spike 2 do planner (`planner/.herdr-agents/w7/reports/celld-spike2-20260925T203418.md`)
+    rodou SSR, auth e e2e no mesmo nível do build de produção.
+  - Arquivo único do Rolldown (`output.codeSplitting: false`) com
+    `no_bundle: true`, então o **Job não precisa de `esbuild`**.
+  - `scrypt` em JS puro (`@noble/hashes`) é compatível com os hashes atuais.
+  - A fleet `planner` segue em espera até o planner versionar o alvo `celld`
+    no repositório dele, com o ok do operador.
+- **Decisão para quando destravar** (proposta, não aplicada):
+  - uma segunda StatefulSet `celld-planner`, com
+    `CELLD_BUCKET=s3://celld-planner/planner`. A fleet `smoke` fica como
+    canário.
+  - O artefato (~6,9 MB, acima do limite de 1 MiB de ConfigMap) vai para o
+    nó por `scp`. Um Job com `hostPath` somente leitura e `envFrom` do
+    Secret roda `celld deploy` com a imagem oficial, e o segredo não sai do
+    cluster.
+  - As migrations entram por `celld d1 migrations apply` no mesmo Job.
+- **Por quê:**
+  - O deploy precisa sair do IP da VPS (filtro do token), e ConfigMap não
+    comporta o artefato.
+  - Um binário do `celld` instalado no nó exigiria ler o Secret fora do
+    Kubernetes.
+- **Alternativas:**
+  - Subir o artefato no R2 (`celld r2 put`) e o Job baixar: mais uma peça
+    no caminho.
+  - Imagem OCI com o artefato: exige registry e build.
+  - Trocar a fleet da StatefulSet atual para o prefixo `planner`: perde o
+    canário.
+- **Reverter:** baixo.
+- **Onde:** `infra/celld/` (futuro `planner/`).
+- **Status:** na fila. Espera o alvo versionado do planner e o ok do
+  operador.
