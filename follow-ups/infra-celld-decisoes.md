@@ -284,6 +284,16 @@ arquivo é o registro. A resposta ao planner está em
     Ingress; fica para um ok próprio.
   - **Importar o dump do `sqld` agora:** mistura a validação da plataforma
     com a migração de dados; fica para decisão do operador.
+- **Para a fase 2** (nota de 2026-09-25, a partir da revisão do planner,
+  PR #27):
+  - o `build:celld` só aceita `ENV` e `APP_URL` em `vars`;
+  - o `deploy.sh` recusa sobrescrever chave presente, de propósito,
+    porque só mescla segredos;
+  - a troca de `ENV` e `APP_URL`, que são públicos, deve ser feita no
+    estágio: o `stage-planner-artifact.sh` ganha `--var CHAVE=valor`
+    restrito a essas duas chaves e reescreve o `wrangler.json` no Mac
+    antes do `rsync`;
+  - o artefato do planner segue igual para todos os ambientes.
 - **Reverter:** baixo. `kubectl delete` dos recursos `celld-planner` e do
   Job; o PVC, o prefixo no bucket e o diretório no nó ficam até limpeza
   manual.
