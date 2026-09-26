@@ -371,13 +371,13 @@ arquivo é o registro. A resposta ao planner está em
     interna.
 - **Onde:** `infra/celld/planner/` (worktree `infra-celld`, branch
   `feat/celld-pilot`) e o runbook 19 no ai-memory.
-- **Status:** decisão registrada em 2026-09-26 com o ok do operador.
-  Decidir ≠ implantar: o concluído fica separado do que está pendente.
+- **Status:** decisão registrada e fase 2 implantada em 2026-09-26, após
+  autorização explícita do operador para Job e rota pública.
   - **Concluído** (executado pelo orquestrador em 2026-09-26):
     - A record `celld.djalmajr.dev` → `167.235.206.217` (`proxied=false`,
       TTL 60), criada via API Cloudflare e resolvendo por `@1.1.1.1`;
     - Certificate `celld-planner-tls` aplicado isoladamente: Ready, válido
-      até 2026-12-25; a IngressRoute continua ausente;
+      até 2026-12-25;
     - backup pré-import do `sqld` de produção
       (`planner-20260926T031124Z.sql.gz` no PVC de backups; o `sqld` não
       mudou);
@@ -396,15 +396,30 @@ arquivo é o registro. A resposta ao planner está em
       de origem e o ensaio local.
     - artefato `planner@7fb13d0` estagiado no nó com `ENV=production` e
       `APP_URL=https://celld.djalmajr.dev`; commit e variáveis públicas
-      conferidos no destino, sem symlinks. O Job ainda não rodou.
+      conferidos no destino, sem symlinks;
+    - Secret da fase 2 com sete chaves: auth original preservado e seis
+      novas chaves verificadas sem expor valores;
+    - Job concluído após corrigir a permissão `0700` do diretório de
+      estágio (o primeiro Job não conseguia ler `wrangler.json`). Versão
+      celld `6d51c61343323ac9` adotada pelo nó, sem migrações novas;
+    - recuperação de senha de conta importada avançou à tela de código
+      sem OTP visível; o operador confirmou o e-mail recebido no horário
+      do teste, sem registrar o código;
+    - overlay público aplicado somente em `celld.djalmajr.dev`: HTTPS
+      `/sign-in` 200 com certificado válido, host divergente 404, UI de
+      cadastro por convite e pod pronto sem reinícios. Rotas HTTP de API
+      key, OTP direto e root-token responderam 404;
+    - teste de rede do pod Traefik: 8080 acessível, 8081 inacessível;
+      a 8081 respondeu do host ao pod. O pod temporário usado para um
+      diagnóstico de e-mail foi removido.
   - **Decidido:** host e URL HTTPS (`APP_URL`/`TRUSTED_ORIGINS`),
     `ENV=production`, `AUTH_SIGNUP=invite`, `AUTH_IP_HEADERS=x-real-ip`,
     e-mail pelo Cloudflare (três variáveis só do operador), preservação do
     `BETTER_AUTH_SECRET` e a regra do import (backup + compatibilidade
     antes; sem `d1_migrations`).
-  - **Trabalho local** (commit `06ea11c` no worktree `infra-celld`, ainda
-    sem push nem apply público): base `celld/planner/` privada; overlay irmão
-    `celld/planner-phase2/` com
+  - **Trabalho local** (commits `06ea11c` e `8c58992` no worktree
+    `infra-celld`, sem push/PR; overlay público já aplicado): base
+    `celld/planner/` privada; overlay irmão `celld/planner-phase2/` com
     IngressRoute `celld-planner` (host exato, `websecure`, serviço
     `celld-planner:8080`) e NetworkPolicy que admite o namespace `traefik`
     apenas na 8080 (8081 segue sem rota e inacessível do traefik);
@@ -414,12 +429,12 @@ arquivo é o registro. A resposta ao planner está em
     `CELLD_VAR_BETTER_AUTH_SECRET`); runbook passo a passo da fase 2 em
     `celld/planner/README.md`. A revisão independente final do recorte
     `celld/` passou sem achados; renders da base e do overlay e dry-runs
-    estritos no servidor passaram.
-  - **Operação ainda pendente** (nesta ordem): as seis chaves da fase 2 no
-    Secret `celld-planner-vars` (operador, `--phase2` — hoje o Secret tem
-    só `CELLD_VAR_BETTER_AUTH_SECRET`); deploy da versão de produção (o nó
-    adota a versão de forma assíncrona, #218); verificações
-    de OTP fora da tela e de e-mail (orquestrador); publicação da rota
-    (operador — IngressRoute ainda não aplicada).
-  - Deploy e publicação **não** estão concluídos enquanto a operação
-    pendente não sair.
+    estritos no servidor passaram. O commit `8c58992` registra o ajuste
+    de permissão no script de estágio e a atualização do README feitos
+    após o deploy; a simulação local do estágio com `--var` passou.
+  - **Observação de e-mail:** chamadas diretas da API Cloudflare do Mac
+    e do host VPS deram HTTP 401/código 10000; do pod `celld`, a mesma
+    credencial com corpo propositalmente inválido passou pela autenticação
+    e deu HTTP 400/código 10001. A causa da diferença de origem não foi
+    determinada. O envio real pelo aplicativo foi confirmado pelo
+    operador. Não houve ação no labdev nem deploy da IA no EdgeR.
