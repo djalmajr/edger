@@ -237,5 +237,55 @@ arquivo é o registro. A resposta ao planner está em
     canário.
 - **Reverter:** baixo.
 - **Onde:** `infra/celld/` (futuro `planner/`).
-- **Status:** na fila. Espera o alvo versionado do planner e o ok do
-  operador.
+- **Status:** destravado pelo PR #24 do planner (`5557cfb`); o plano
+  aplicado está na C11.
+
+## C11. Fleet `planner`, fase 1: sem rota pública, `ENV=local`, banco vazio
+- **Decisão:**
+  - **Recursos novos no namespace `celld`**, com o rótulo
+    `app.kubernetes.io/name: celld-planner`:
+    - ConfigMap `celld-planner-env` (`CELLD_BUCKET=s3://celld-planner/planner`,
+      o resto igual ao `celld-env`);
+    - Services `celld-planner` (8080) e `celld-planner-peers` (headless,
+      8081);
+    - StatefulSet `celld-planner` (mesma imagem e digest, PVC `local-path`
+      de 5Gi);
+    - NetworkPolicy `celld-planner`: a 8081 só dos pods `celld-planner` e
+      do Job de deploy, porque o `celld d1` fala com o nó pela porta
+      interna; a 8080 só do namespace `celld`. Sem `traefik` nesta fase.
+  - **Artefato:** `bun run build:celld` num clone descartável do planner em
+    `5557cfb`, com as `vars` públicas do artefato (`ENV=local`,
+    `APP_URL=http://localhost:3000`). Vai por `rsync` para
+    `/var/lib/celld-artifacts/planner/<commit>/` no nó.
+  - **Job `celld-planner-deploy`:**
+    - monta esse diretório por `hostPath` somente leitura;
+    - copia para um `emptyDir`;
+    - mescla em `vars` cada variável `CELLD_VAR_<NOME>` do Secret
+      `celld-planner-vars` (com `awk`, porque a imagem não tem `jq`);
+    - roda `celld deploy` e, com retentativas até o nó adotar a versão,
+      `celld d1 migrations apply planner-dev`.
+  - **Secret `celld-planner-vars`:** nesta fase só
+    `CELLD_VAR_BETTER_AUTH_SECRET`. O operador o cria com um script que
+    gera o valor na própria VPS (`openssl rand -hex 32`), então o valor não
+    passa pelo Mac nem pelo agente.
+  - **Acesso:** só por `kubectl port-forward` na porta 3000, porque com
+    `ENV=local` o código OTP aparece na tela.
+  - **Banco:** começa vazio.
+- **Por quê:**
+  - `ENV=local` dispensa as credenciais de e-mail e deixa validar SSR, auth
+    e D1 persistido no R2 sem expor um cadastro aberto.
+  - O Secret gerado na VPS segue a C10: o segredo não sai do cluster.
+  - O `celld deploy` não tem flag de `var` (v0.5.1), então os segredos
+    precisam estar no `wrangler.json` do diretório de deploy.
+- **Alternativas:**
+  - **Fase 2 já:** host público, `ENV=production`, e-mail e
+    `AUTH_SIGNUP=invite`. Exige o token de e-mail num Secret, DNS e
+    Ingress; fica para um ok próprio.
+  - **Importar o dump do `sqld` agora:** mistura a validação da plataforma
+    com a migração de dados; fica para decisão do operador.
+- **Reverter:** baixo. `kubectl delete` dos recursos `celld-planner` e do
+  Job; o PVC, o prefixo no bucket e o diretório no nó ficam até limpeza
+  manual.
+- **Onde:** `infra/celld/planner/` e o runbook 19 no ai-memory.
+- **Status:** manifests em preparo. **Aplicar na VPS espera o ok do
+  operador.**
