@@ -56,12 +56,43 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   basepath, server-function base, auth base).
 - The MSRV is now 1.98 (`rust-version = "1.98"`): compiling locally
   requires `rustup update stable` (1.98.1).
+- The promote and the release-marker write in the rescan now take the
+  version's mutation slot: a promote concurrent with another mutation of the
+  same `name@version` answers `409 DEPLOY_IN_PROGRESS`, and the rescan
+  skips, with a log warning, any version whose slot is already held — its
+  pending release runs on the next rescan or boot. Before, the promote
+  wrote the default pointer and the staged marker without holding the
+  version slot, and the rescan ran the release command the same way.
+- Helm chart: with worker persistence enabled, the core worker overlay is
+  persisted on the workers PVC under `.edger/core-overlays` (new
+  `runtime.persistCoreWorkerOverlay`, default `true`), so a core worker
+  installed through the Admin API survives pod restarts and chart upgrades;
+  before, it lived in an `emptyDir` and was lost on every restart. On image
+  upgrades the highest enabled cPanel semver is active unless a version was
+  explicitly promoted; a promoted version remains the default.
+  `runtime.persistCoreWorkerOverlay: false` keeps the previous `emptyDir`
+  behavior.
 
 ### Added
 
 - `EDGER_BIND` environment variable: the listening IP of the HTTP server
   (IPv4 or IPv6), default `0.0.0.0`. An invalid value fails the start with a
   clear message; the port stays in `PORT`.
+- `GET /api/admin/state/export` (root only): a consistent, online backup of
+  the EdgeR state while the process is up. The response is a zip streamed
+  from a temporary file (no 64 MiB download limit) with `user-roots/<i>/`
+  (each user worker root, in index order), `core-overlay/` (the core worker
+  overlay root, when present), `api-keys.db` (a consistent copy made with
+  `VACUUM INTO` on the store's connection, only when a key store is
+  configured) and `edger-state.json` (format, EdgeR version, creation date
+  and the source paths). Transient deploy files, the raw database file and
+  its sidecars, the top-level `.edger/` of the user roots and symlinks are
+  excluded. The export waits up to 30 s for in-flight mutations to settle
+  and answers `503 STATE_BUSY` when they do not; a mutation attempted while
+  an export is running answers `409 STATE_EXPORT_IN_PROGRESS`. Restore is
+  offline and documented (stop, extract the zip into the paths recorded in
+  `edger-state.json`, start again): `docs/developers/06-operacao-e-testes.adoc`
+  and the chart README.
 
 ### Fixed
 

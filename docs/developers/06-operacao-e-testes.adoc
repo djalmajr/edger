@@ -335,32 +335,50 @@ continuam com tracing fmt local, exceto quando OTEL é marcado como obrigatório
 O procedimento funcional de HPA e OTEL no K3s/Rancher está em
 <<eng-rancher-hpa-otel-lab>>.
 
-==== Backup local
+==== Backup e restauração
 
-O escopo atual é local/single-node. Para backup consistente, pare o processo ou
-pause tráfego de escrita antes da cópia:
+O backup consistente é online, com o processo no ar: `GET
+/api/admin/state/export` (root) monta um zip sob o plano de mutações — o
+export espera até 30 s as mutações em curso (`503 STATE_BUSY` se estourar) e
+uma mutação nova durante o export recebe `409 STATE_EXPORT_IN_PROGRESS`. O
+zip vai em stream a partir de um arquivo temporário, sem teto de tamanho.
 
 [source,bash]
 ----
-export EDGER_API_KEYS_DB=/var/lib/edger/api-keys.db
-export EDGER_STATE_DIR=/var/lib/edger/state
-export EDGER_EXTENSION_STATUS_FILE=/var/lib/edger/extension-status.json
-
-mkdir -p backups/edger-$(date +%Y%m%d)
-cp "$EDGER_API_KEYS_DB" backups/edger-$(date +%Y%m%d)/api-keys.db
-cp -R "$EDGER_STATE_DIR" backups/edger-$(date +%Y%m%d)/state
-test -f "$EDGER_EXTENSION_STATUS_FILE" && \
-  cp "$EDGER_EXTENSION_STATUS_FILE" backups/edger-$(date +%Y%m%d)/extension-status.json
+curl --fail -H 'authorization: Bearer test-root' \
+  -o backups/edger-$(date +%Y%m%d)-state.zip \
+  http://127.0.0.1:19080/api/admin/state/export
 ----
 
-Restauração local é a operação inversa: pare o processo, restaure
-`EDGER_API_KEYS_DB`, `EDGER_STATE_DIR` e, quando usado,
-`EDGER_EXTENSION_STATUS_FILE`, depois reinicie com as mesmas variáveis. Perder
-o banco de keys não é recuperável por outro caminho: os segredos brutos não
-existem em lugar nenhum, e cada key perdida precisa ser recriada. Quando
-`EDGER_STATE_DIR` não está configurado, os providers de estado são efêmeros e
-não há estado de app para preservar. Quando nenhum status store de extensões
-está configurado, o enable/disable de extensões permanece apenas em memória.
+Layout do zip:
+
+* `user-roots/<i>/` — cada raiz de usuário, na ordem do índice;
+* `core-overlay/` — a raiz de overlay dos core workers, quando existir;
+* `api-keys.db` — cópia consistente do store feita com `VACUUM INTO` (só com
+  store configurado);
+* `edger-state.json` — `{"format": 1, "edgerVersion", "createdAt" (RFC3339
+  UTC), "userRoots", "coreWorkerOverlayDir", "apiKeysDb",
+  "skippedSymlinks"}`, com os caminhos absolutos que o processo usa.
+
+Fica de fora: transitórios de deploy (`.edger-swaps/`, `.edger-install-*`,
+`.edger-revision-*.tmp` e `*.tmp` do `.edger-defaults/`), o arquivo cru do
+banco e os sidecars dele (`-journal`, `-wal`, `-shm`), o `.edger/` do topo
+das raízes de usuário (o banco e o overlay entram pelas entradas próprias) e
+symlinks (pulados e contados em `skippedSymlinks`). O que o export *não*
+cobre: o enable/disable feito pela Admin API é só em memória — o boot volta
+ao valor do manifest.
+
+O zip contém os hashes das chaves e todos os workers: guarde-o como segredo.
+
+Restauração local é offline: pare o processo, esvazie cada raiz e extraia
+cada `user-roots/<i>/` no caminho listado em `userRoots[i]`, o
+`core-overlay/` em `coreWorkerOverlayDir` e o `api-keys.db` em `apiKeysDb`,
+depois suba de novo. No Kubernetes, o procedimento completo (pod auxiliar
+montando o PVC de workers, extração nos caminhos do chart e `chown -R
+10001:10001`) está no README do chart (`charts/edger/README.md`, seção
+"Backup and restore"). Perder o banco de keys não é recuperável por outro
+caminho: os segredos brutos não existem em lugar nenhum, e cada key perdida
+precisa ser recriada.
 
 ==== Troubleshooting operacional
 

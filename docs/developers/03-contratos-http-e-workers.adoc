@@ -233,6 +233,17 @@ worker fora do escopo da key responde `404` com `NOT_FOUND`.
   responde `NOT_FOUND`; symlink é removido como link, nunca o destino. A
   revisão avança e o worker é reciclado só quando pelo menos um item foi
   apagado. Permission `files:delete`.
+
+| `GET`
+| `/api/admin/state/export`
+| Export online do estado: zip com `user-roots/<i>/`, `core-overlay/`,
+  `api-keys.db` (cópia consistente por `VACUUM INTO`) e `edger-state.json`
+  (formato, versão do EdgeR, data e caminhos de origem). Só root: `401`
+  sem credencial, `403` com key não-root. O export espera até 30 s as
+  mutações em curso (`503 STATE_BUSY` se estourar) e uma mutação nova durante
+  o export recebe `409 STATE_EXPORT_IN_PROGRESS`. Resposta em stream
+  (`application/zip`, `Content-Disposition: attachment`), sem o teto de 64 MiB
+  do download de arquivos.
 |===
 
 ==== MCP por HTTP
@@ -423,7 +434,8 @@ default.
 
 | `409`
 | Colisão de manifest `(name, version)`, ou `KEY_NOT_REVOKED` ao apagar key
-  que ainda não foi revogada.
+  que ainda não foi revogada, ou `STATE_EXPORT_IN_PROGRESS` em mutação
+  (install, upload, promote, delete) durante o export de estado.
 
 | `500`
 | Erro inesperado de pipeline, worker, isolate, store ou filesystem.
@@ -433,7 +445,8 @@ default.
 
 | `503`
 | `KEYS_STORE_UNAVAILABLE`: a instância subiu sem store de api-keys e a
-  gestão de keys fica indisponível.
+  gestão de keys fica indisponível; ou `STATE_BUSY` quando o export de estado
+  não consegue esperar as mutações em curso dentro do limite de 30 s.
 |===
 
 Formato de erro:

@@ -198,7 +198,9 @@ From this version on, with `userWorkers.persistence.enabled` and
 (`/app/core-worker-overlays`) also survives restarts and upgrades: it is
 mounted from the workers PVC under `.edger/core-overlays`. Content from the
 previous `emptyDir` is not migrated, because it was already lost on every
-restart.
+restart. On image upgrades, the highest enabled cPanel semver is active
+unless a version was explicitly promoted; a promoted version remains the
+default.
 
 ## Access and validation
 
@@ -212,6 +214,103 @@ open http://127.0.0.1:3000/cpanel/
 
 The Deployment exposes `/livez` and `/ready` probes. The configured root key is
 mounted from its Secret and is required for root control-plane access.
+
+## Backup and restore
+
+The EdgeR state (installed workers, the core worker overlay and the API key
+store) is backed up online through the admin API:
+
+```bash
+kubectl -n <namespace> port-forward service/<release-name> 3000:3000
+curl --fail -H "authorization: Bearer <root-key>" \
+  -o edger-state-$(date +%Y%m%d).zip \
+  http://127.0.0.1:3000/api/admin/state/export
+```
+
+The route requires the root key and answers `application/zip`
+(`Content-Disposition: attachment; filename="edger-state-<timestamp>.zip"`).
+The export is consistent: it waits up to 30 s for in-flight deploys to
+settle (otherwise `503 STATE_BUSY`), and a mutation started while the export
+runs answers `409 STATE_EXPORT_IN_PROGRESS`. The zip contains `user-roots/0/`
+(each user worker root), `core-overlay/` (the overlay root), `api-keys.db`
+(a consistent copy made with `VACUUM INTO`) and `edger-state.json` (format,
+EdgeR version, creation date and the source paths). Transient deploy files,
+the raw database file and its sidecars, the top-level `.edger/` of the user
+roots and symlinks are not included.
+
+The zip contains the key hashes and every installed worker: keep it as a
+secret. Sending it to a bucket is still manual; a scheduled upload lands in
+0.3.3.
+
+### Restore
+
+Restore is offline: stop EdgeR, replace the workers PVC content with the zip
+content, start EdgeR again.
+
+1. Scale the deployment down:
+
+   ```bash
+   kubectl -n <namespace> scale deploy/<release-name> --replicas=0
+   ```
+
+2. Run a helper pod that mounts the workers PVC
+   (`<release-name>-user-workers`, or `existingClaim` when set) as root:
+
+   ```yaml
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: edger-restore
+     namespace: <namespace>
+   spec:
+     containers:
+       - name: restore
+         image: busybox:1.37
+         command: ["sh", "-c", "sleep infinity"]
+         volumeMounts:
+           - name: workers
+             mountPath: /data
+     restartPolicy: Never
+     volumes:
+       - name: workers
+         persistentVolumeClaim:
+           claimName: <release-name>-user-workers
+   ```
+
+3. Empty the PVC, extract the zip into the chart paths (`user-roots/0/` at
+   the PVC root, `core-overlay/` at `.edger/core-overlays/`, `api-keys.db`
+   at `.edger/api-keys.db`) and fix ownership — the EdgeR pod runs as UID
+   `10001`, the helper extracts as root:
+
+   ```bash
+   kubectl -n <namespace> cp edger-state-<date>.zip edger-restore:/tmp/
+   kubectl -n <namespace> exec edger-restore -- sh -c '
+     rm -rf /data/..?* /data/.[!.]* /data/*
+     mkdir -p /data/.edger/core-overlays /tmp/restore
+     unzip -q /tmp/edger-state-<date>.zip -d /tmp/restore
+     cp -a /tmp/restore/user-roots/0/. /data/
+     cp -a /tmp/restore/core-overlay/. /data/.edger/core-overlays/
+     if [ -f /tmp/restore/api-keys.db ]; then
+       cp /tmp/restore/api-keys.db /data/.edger/api-keys.db
+     fi
+     chown -R 10001:10001 /data
+   '
+   ```
+
+   The `api-keys.db` destination is the `apiKeysDb` path from the zip's
+   `edger-state.json`, translated onto the PVC. With the chart default that
+   path is `/app/workers/.edger/api-keys.db`, i.e. `.edger/api-keys.db` at
+   the PVC root (the command above). If `apiKeys.dbPath` points outside
+   `/app/workers`, copy the `api-keys.db` entry to that path translated onto
+   the corresponding volume, and mount that volume at the matching path in
+   the helper pod as well.
+
+4. Remove the helper pod and scale back up:
+
+   ```bash
+   kubectl -n <namespace> delete pod edger-restore
+   kubectl -n <namespace> scale deploy/<release-name> --replicas=1
+   ```
 
 ## Release notes
 
