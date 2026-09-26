@@ -2,6 +2,146 @@
 
 All notable changes to EdgeR will be documented here.
 
+## [Unreleased]
+
+Toward 0.3.2. Release candidates: `v0.3.2-rc.4` (Rust 1.98 toolchain,
+rusqlite 0.40); `v0.3.2-rc.3` (tanstack public files, type-only bundle
+deps); `v0.3.2-rc.2` (owned domains, metrics key, core-worker
+precedence); `v0.3.2-rc.1` (published and validated on labdev:
+zero-downtime host switch, 21/21 probes 200 across four promotes).
+
+### Changed
+
+- `hosts:` belongs to the worker **name**, not to a version: the host is
+  answered by the version the name serves at the moment (the promoted
+  default, or the highest enabled non-staged version when there is none), as
+  long as that version's manifest declares the host. Versions of the same
+  name may repeat the host; a different name declaring an already-claimed
+  host is refused with `409 COLLISION`. The new version therefore deploys
+  without downtime: install it with `staged=true`, test it at
+  `/<name>@<version>/`, then promote it; rollback is promoting the previous
+  version. Before, a second version with the same host answered `409`, so
+  the deploy required deleting the current one first.
+- An owned host is the app's entirely: when a host is claimed through
+  `hosts:`, every path on it — `/`, `/health`, `/ready`, `/metrics`,
+  `/api/*` and `/.well-known/*` — is answered by the owning worker, and the
+  control plane (Admin API, MCP, metrics, health and the `/` redirect) only
+  answers on hosts without an owner. An owned host with no version serving
+  it answers `404`. The effective authority is the URI authority when
+  present (HTTP/2 `:authority` or absolute-form request target, without
+  userinfo), otherwise the `Host` header.
+- `/metrics` and `/metrics/stats` now require a credential with the
+  `observability:read` permission (or the root key): `401` without a
+  credential and `403` without the permission. Breaking for scrapers that
+  called `/metrics` without a key; with no `ROOT_API_KEY` set (open mode)
+  the endpoints stay open.
+- Core workers: the cPanel and WebIDE versions now follow the release (the
+  publish job checks that the `workers/core/*` manifests match the tag, as
+  it already does for `Chart.yaml`); when the bundled and the overlay carry
+  the same `name@version`, the bundled version wins and the overlay entry is
+  ignored with a log warning; the active cPanel version at boot is the
+  persisted default pointer when valid, otherwise the highest semver among
+  enabled non-staged versions. The default-version pointer of a core worker
+  is written to the writable overlay root.
+- cPanel installs through the Admin API follow the active-version rule: a
+  cPanel older than the active one answers `activation: "inactive"` and the
+  active version keeps serving until a promote; installing with
+  `staged=true` does not touch the active version, and the promote is what
+  switches it. An explicit enable still activates the requested version.
+- TanStack Start (React and Solid): the router basepath is baked into the
+  build (Vite `base` and `router.basepath`, burned into the bundle), so one
+  build serves exactly one base. With `basePath: auto`, a host route answers
+  at `/` and a name route at `/<name>`; serving the same build at both bases
+  requires the app to resolve the base at runtime (asset URLs, router
+  basepath, server-function base, auth base).
+- The MSRV is now 1.98 (`rust-version = "1.98"`): compiling locally
+  requires `rustup update stable` (1.98.1).
+- The promote and the release-marker write in the rescan now take the
+  version's mutation slot: a promote concurrent with another mutation of the
+  same `name@version` answers `409 DEPLOY_IN_PROGRESS`, and the rescan
+  skips, with a log warning, any version whose slot is already held — its
+  pending release runs on the next rescan or boot. Before, the promote
+  wrote the default pointer and the staged marker without holding the
+  version slot, and the rescan ran the release command the same way.
+- Helm chart: with worker persistence enabled, the core worker overlay is
+  persisted on the workers PVC under `.edger/core-overlays` (new
+  `runtime.persistCoreWorkerOverlay`, default `true`), so a core worker
+  installed through the Admin API survives pod restarts and chart upgrades;
+  before, it lived in an `emptyDir` and was lost on every restart. On image
+  upgrades the highest enabled cPanel semver is active unless a version was
+  explicitly promoted; a promoted version remains the default.
+  `runtime.persistCoreWorkerOverlay: false` keeps the previous `emptyDir`
+  behavior.
+
+### Added
+
+- `EDGER_BIND` environment variable: the listening IP of the HTTP server
+  (IPv4 or IPv6), default `0.0.0.0`. An invalid value fails the start with a
+  clear message; the port stays in `PORT`.
+- `GET /api/admin/state/export` (root only): a consistent, online backup of
+  the EdgeR state while the process is up. The response is a zip streamed
+  from a temporary file (no 64 MiB download limit) with `user-roots/<i>/`
+  (each user worker root, in index order), `core-overlay/` (the core worker
+  overlay root, when present), `api-keys.db` (a consistent copy made with
+  `VACUUM INTO` on the store's connection, only when a key store is
+  configured) and `edger-state.json` (format, EdgeR version, creation date
+  and the source paths). Transient deploy files, the raw database file and
+  its sidecars, the top-level `.edger/` of the user roots and symlinks are
+  excluded. The export waits up to 30 s for in-flight mutations to settle
+  and answers `503 STATE_BUSY` when they do not; a mutation attempted while
+  an export is running answers `409 STATE_EXPORT_IN_PROGRESS`. Restore is
+  offline and documented (stop, extract the zip into the paths recorded in
+  `edger-state.json`, start again): `docs/developers/06-operacao-e-testes.adoc`
+  and the chart README.
+
+### Fixed
+
+- HTTP/2 and `Host: x.:443` no longer escape to the control plane on an
+  owned host: the routing authority now comes from the URI when present
+  (HTTP/2 `:authority` or absolute-form request target, without userinfo),
+  falling back to the `Host` header, and the port is removed before the DNS
+  trailing dot, so `x.example.:443` matches the registered `x.example`
+  owner.
+- Promoting a core version that only exists in the bundled root no longer
+  fails with `DEPLOY_IO`: the default-version pointer is written to the
+  writable overlay root (the bundled root is read-only in the image).
+- Boot no longer fails when the bundled and the overlay carry the same core
+  worker `name@version`: the bundled version wins and the overlay entry is
+  ignored with a warning.
+- Installing a newer cPanel with `staged=true` no longer disables the active
+  version, which left the cPanel out of the air until the promote.
+- The `tanstack` fullstack adapter now serves any existing public file from
+  `clientDir` even when the path matches no `assetPrefixes`. Not served
+  through that path: path components starting with `.` (a leading
+  `.well-known` is the exception), the TanStack server routes `/api` and
+  `/_serverFn` (also when percent-encoded), and paths with no file, which
+  fall back to the SSR.
+- Type-only imports pointing outside the worker (JSDoc `@type {import(...)}`
+  or `import type`) no longer fail the deploy with
+  `DENO_BUNDLE_GRAPH_DENIED`: the bundle graph validator now ignores modules
+  reachable only through type edges of `deno info --json` (redirects
+  included). Code imports to files outside the worker directory are still
+  refused.
+
+### Dependencies
+
+- `tokio` 1.53.1, `bytes` 1.12.1, `thiserror` 2.0.21 and `futures-core`
+  0.3.34.
+- `docker/login-action` v4 and `docker/metadata-action` v6 in the release
+  workflow.
+- `rusqlite` 0.40.2 with the `fallible_uint` feature: the 0.40 line drops
+  the `u64` `ToSql`/`FromSql` impls, and the feature restores them as
+  fallible conversions, so the key store keeps its `u64` fields. The
+  embedded SQLite it ships moves 3.46.0 to 3.53.2 (`libsqlite3-sys` 0.30.1
+  to 0.38.2); existing key stores open and migrate — the review probed an
+  `api-keys.db` created by the 3.46.0 amalgamation: it opens, keeps
+  `journal_mode delete`, preserves the row and `created_at`, and accepts
+  the `user_version` migration.
+- Rust 1.98 toolchain in the workspace `rust-version`, the `Dockerfile`
+  and `Dockerfile.cross` builder images, the three GitHub Actions
+  `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
+- `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
 ## [0.3.1] - 2026-09-25
 
 Validated on labdev as `0.3.1-rc.7`. The `0.3.1-rc.4` upgrade from 0.3.0 ran

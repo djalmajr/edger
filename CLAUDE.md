@@ -21,7 +21,7 @@
 - Do not publish extension crates to crates.io manually.
 
 ## Launch / Workers
-- edger entry: `ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers/examples EDGER_CORE_WORKER_DIR=workers/core EDGER_CORE_WORKER_OVERLAY_DIR=.edger/core-worker-overlays cargo run -p edger-orchestrator --bin edger`
+- edger entry: `ROOT_API_KEY=test-root EDGER_BIND=127.0.0.1 PORT=19080 RUNTIME_WORKER_DIRS=workers/examples EDGER_CORE_WORKER_DIR=workers/core EDGER_CORE_WORKER_OVERLAY_DIR=.edger/core-worker-overlays cargo run -p edger-orchestrator --bin edger`
 - Worker dir **must** have `index.{ts,js,mjs}` compatible with:
   - `Deno.serve(handlerOrOptions)`
   - or `export default { fetch(req) {} }`

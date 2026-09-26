@@ -2,7 +2,7 @@
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::header::{AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -19,7 +19,10 @@ use serde_json::json;
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::io::{Read, Seek, Write};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 
 use crate::deploy::{
     commit_install, delete_worker as delete_worker_deployment, extract_zip,
@@ -80,6 +83,7 @@ pub fn router() -> Router<OrchestratorState> {
             "/api/admin/workers/{name}/files/download",
             get(download_worker_files),
         )
+        .route("/api/admin/state/export", get(state_export_route))
         .route("/api/admin/keys", get(list_api_keys).post(create_api_key))
         .route("/api/admin/keys/{id}/revoke", post(revoke_api_key))
         .route("/api/admin/keys/{id}", delete(delete_api_key))
@@ -335,15 +339,24 @@ async fn install_worker(
         } else {
             transaction.installed.health = "not_configured".into();
         }
-        if let Err(error) = state.index.set_worker_enabled(
+        if state.index.cpanel_version_is_older_than_active(
             &transaction.installed.name,
-            Some(&transaction.installed.version),
-            true,
+            &transaction.installed.version,
         ) {
-            rollback_failed_install(&state, &transaction).await?;
-            return Err(error);
+            // D19: um cPanel mais antigo que o ativo não é reativado no
+            // install — fica inativo até uma promoção explícita.
+            transaction.installed.activation = "inactive".into();
+        } else {
+            if let Err(error) = state.index.set_worker_enabled(
+                &transaction.installed.name,
+                Some(&transaction.installed.version),
+                true,
+            ) {
+                rollback_failed_install(&state, &transaction).await?;
+                return Err(error);
+            }
+            transaction.installed.activation = "active".into();
         }
-        transaction.installed.activation = "active".into();
         if replaced_existing {
             state
                 .pool
@@ -1682,6 +1695,116 @@ pub(crate) async fn authenticate(
         .ok_or_else(|| CoreError::new("UNAUTHORIZED", "missing or invalid API key"))
 }
 
+/// D36: export de estado online. Só root; o ZIP é montado sob o plano de
+/// mutações (exporting) e o guard é solto ANTES do stream. O arquivo
+/// temporário é dono RAII até o stream assumir (`into_owned` após o open):
+/// cancelamento/erro antes disso remove o ZIP; no EOF/abort o body apaga o
+/// arquivo (sem o teto de 64 MiB do download de package).
+async fn state_export_route(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(err) = require_root(&state, &headers).await {
+        return admin_error(map_error_status(&err), &err, &headers);
+    }
+    let export =
+        match crate::state_export::export_state(&state.index, state.auth.key_service(), None).await
+        {
+            Ok(export) => export,
+            Err(err) => return admin_error(map_error_status(&err), &err, &headers),
+        };
+    // Enquanto `export` vive, o ZIP é dono RAII: cancelar aqui (ou com o
+    // `File::open` pendendo) ou falhar no open dropa o export e REMOVE o
+    // arquivo — sem janela de ZIP órfão.
+    let file = match tokio::fs::File::open(&export.path).await {
+        Ok(file) => file,
+        Err(err) => {
+            let error = CoreError::new(
+                "STATE_EXPORT_FAILED",
+                format!("cannot open exported state file: {err}"),
+            );
+            return admin_error(map_error_status(&error), &error, &headers);
+        }
+    };
+    // Só depois do open passar a posse passa para o stream: o body apaga o
+    // ZIP no EOF/abort (uma única remoção, sem duplicar o owner).
+    let (zip_path, filename) = export.into_owned();
+    let body = state_export_chunks(StateExportBody {
+        file,
+        path: zip_path,
+    });
+    let disposition = format!("attachment; filename=\"{}\"", filename);
+    (
+        StatusCode::OK,
+        [
+            (CONTENT_TYPE, "application/zip"),
+            (CONTENT_DISPOSITION, disposition.as_str()),
+            // Backup com hashes de API keys e todos os workers: nunca
+            // cacheável (revisão P2).
+            (CACHE_CONTROL, "no-store"),
+        ],
+        axum::body::Body::from_stream(body),
+    )
+        .into_response()
+}
+
+/// Estado do stream do export (D36): assume a posse do ZIP após o
+/// `File::open` passar (via `StateExport::into_owned`) e apaga o arquivo no
+/// `Drop` — cobre tanto o fim do stream quanto o abandono pelo cliente.
+struct StateExportBody {
+    file: tokio::fs::File,
+    path: std::path::PathBuf,
+}
+
+const STATE_EXPORT_CHUNK_BYTES: usize = 64 * 1024;
+
+impl tokio::io::AsyncRead for StateExportBody {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.file).poll_read(cx, buf)
+    }
+}
+
+impl Drop for StateExportBody {
+    fn drop(&mut self) {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = std::fs::remove_file(path);
+        });
+    }
+}
+
+/// Lê `reader` em chunks e devolve o erro de LEITURA como item do stream
+/// (o último item): a transferência termina como falha detectável — o hyper
+/// aborta o chunked sem o chunk final — e nunca como EOF limpo com o ZIP
+/// truncado (revisão P1). O arquivo temporário segue no estado do stream e
+/// é apagado no `Drop` de `StateExportBody`.
+pub(crate) fn state_export_chunks<R>(
+    reader: R,
+) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> + Send
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    futures_util::stream::unfold(Some(reader), move |reader| async move {
+        let mut reader = reader?;
+        let mut buffer = vec![0u8; STATE_EXPORT_CHUNK_BYTES];
+        match reader.read(&mut buffer).await {
+            Ok(0) => None,
+            Ok(count) => {
+                buffer.truncate(count);
+                Some((Ok(Bytes::from(buffer)), Some(reader)))
+            }
+            Err(err) => {
+                tracing::error!("state export stream aborted: {err}");
+                Some((Err(err), None))
+            }
+        }
+    })
+}
+
 async fn require_root(
     state: &OrchestratorState,
     headers: &HeaderMap,
@@ -1697,7 +1820,10 @@ async fn require_root(
     }
 }
 
-fn require_permission(principal: &ApiKeyPrincipal, permission: &str) -> Result<(), CoreError> {
+pub(crate) fn require_permission(
+    principal: &ApiKeyPrincipal,
+    permission: &str,
+) -> Result<(), CoreError> {
     if principal_has_permission(principal, permission) {
         Ok(())
     } else {
@@ -1708,7 +1834,7 @@ fn require_permission(principal: &ApiKeyPrincipal, permission: &str) -> Result<(
     }
 }
 
-fn map_error_status(err: &CoreError) -> StatusCode {
+pub(crate) fn map_error_status(err: &CoreError) -> StatusCode {
     match err.code.as_str() {
         "BAD_REQUEST"
         | "VALIDATION_ERROR"
@@ -1722,7 +1848,8 @@ fn map_error_status(err: &CoreError) -> StatusCode {
         "UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
         "CSRF_DENIED" | "FORBIDDEN" | "KEY_GRANT_DENIED" => StatusCode::FORBIDDEN,
-        "KEYS_STORE_UNAVAILABLE" => StatusCode::SERVICE_UNAVAILABLE,
+        "STATE_EXPORT_IN_PROGRESS" => StatusCode::CONFLICT,
+        "KEYS_STORE_UNAVAILABLE" | "STATE_BUSY" => StatusCode::SERVICE_UNAVAILABLE,
         "DOWNLOAD_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
         "COLLISION"
         | "DEPLOY_REVISION_REQUIRED"
@@ -1742,7 +1869,7 @@ fn map_error_status(err: &CoreError) -> StatusCode {
     }
 }
 
-fn admin_error(status: StatusCode, err: &CoreError, headers: &HeaderMap) -> Response {
+pub(crate) fn admin_error(status: StatusCode, err: &CoreError, headers: &HeaderMap) -> Response {
     let request_id = request_id_from_headers(headers);
     log_operational_error("admin_api", request_id.as_deref(), status, err);
     (
@@ -1753,4 +1880,97 @@ fn admin_error(status: StatusCode, err: &CoreError, headers: &HeaderMap) -> Resp
         }),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod state_export_stream_tests {
+    use super::{state_export_chunks, StateExportBody, STATE_EXPORT_CHUNK_BYTES};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::{AsyncRead, ReadBuf};
+
+    /// Leitor que entrega exatamente N bytes (em várias leituras) e falha
+    /// na leitura seguinte — simula falha de I/O no meio do stream.
+    struct FailAfterRead {
+        data: Vec<u8>,
+        pos: usize,
+    }
+
+    impl AsyncRead for FailAfterRead {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if self.pos >= self.data.len() {
+                return Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "injected read failure",
+                )));
+            }
+            let remaining = self.data.len() - self.pos;
+            let count = remaining.min(buf.remaining());
+            buf.put_slice(&self.data[self.pos..self.pos + count]);
+            self.pos += count;
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Revisão P1: a falha de leitura aparece como item `Err` do stream (e o
+    /// stream termina ali) — nunca como EOF limpo com os N bytes entregues.
+    #[tokio::test]
+    async fn read_error_surfaces_as_stream_error_not_eof() {
+        let total = STATE_EXPORT_CHUNK_BYTES + 5;
+        let reader = FailAfterRead {
+            data: vec![7u8; total],
+            pos: 0,
+        };
+        let items: Vec<Result<axum::body::Bytes, std::io::Error>> =
+            futures_util::StreamExt::collect(state_export_chunks(reader)).await;
+
+        // N bytes (em 2 chunks de 64 KiB + 5) e, depois, um Err — não um fim
+        // limpo.
+        assert_eq!(items.len(), 3, "itens: {items:?}");
+        let (Ok(first), Ok(rest)) = (&items[0], &items[1]) else {
+            panic!("os dois primeiros itens deveriam ser chunks Ok: {items:?}");
+        };
+        assert_eq!(first.len(), STATE_EXPORT_CHUNK_BYTES);
+        assert!(first.iter().all(|&byte| byte == 7));
+        assert_eq!(rest.len(), 5);
+        assert!(rest.iter().all(|&byte| byte == 7));
+        match &items[2] {
+            Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::Other),
+            Ok(_) => panic!("o stream terminou limpo depois da falha: {items:?}"),
+        }
+    }
+
+    /// Revisão P2 (ciclo de vida): o body assume a posse do ZIP e o `Drop`
+    /// apaga o arquivo — cobre EOF, erro e abandono do cliente (o mesmo
+    /// caminho de drop).
+    #[tokio::test]
+    async fn body_drop_removes_zip() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("edger-state-test.zip");
+        std::fs::write(&zip_path, b"zip-fake").unwrap();
+
+        let file = tokio::fs::File::open(&zip_path).await.unwrap();
+        let body = StateExportBody {
+            file,
+            path: zip_path.clone(),
+        };
+        // Drop direto: simula EOF/abort antes de o consumidor ler.
+        drop(body);
+
+        // O `Drop` agenda a remoção na pool de blocking: espera o arquivo
+        // sumir (o `TempDir` ainda existe, só o ZIP precisa ir).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while zip_path.exists() {
+            assert!(
+                deadline > std::time::Instant::now(),
+                "o body não removeu o ZIP"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!zip_path.exists());
+    }
 }

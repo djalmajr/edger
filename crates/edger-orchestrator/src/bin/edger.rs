@@ -29,10 +29,10 @@ use edger_orchestrator::observability::{
     OperationalEventInput, OperationalEventLevel, OperationalEventSource, OperationalStore,
 };
 use edger_orchestrator::{
-    build_pipeline, collect_cron_registrations, init_tracing_from_env, load_manifests_from_roots,
-    parse_runtime_worker_dirs, port_from_env, prewarm_min_process_workers,
-    run_pending_releases_with_events, serve, ControlAuth, CronScheduler, CronSchedulerConfig,
-    OrchestratorState, ServerConfig, ServerState,
+    bind_ip_from_env, build_pipeline, collect_cron_registrations, init_tracing_from_env,
+    load_manifests_from_roots, parse_runtime_worker_dirs, port_from_env,
+    prewarm_min_process_workers, run_pending_releases_with_events, serve, ControlAuth,
+    CronScheduler, CronSchedulerConfig, OrchestratorState, ServerConfig, ServerState,
 };
 use edger_worker::{
     IsolateFactory, LifecycleEventSender, PoolConfig, WorkerLifecycleEvent,
@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
     let auth = ControlAuth::from_env()?;
 
     let port = port_from_env();
-    let config = ServerConfig::from_port(port);
+    let config = ServerConfig::from_bind(bind_ip_from_env().map_err(anyhow::Error::msg)?, port);
     let server = ServerState::new_unready();
     let console_sender = start_console_capture(&server);
     let lifecycle_sender = start_lifecycle_capture(&server);

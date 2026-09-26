@@ -83,8 +83,14 @@ spec:
               mountPath: /tmp
             - name: user-workers
               mountPath: {{ .Values.runtime.workerDirs | quote }}
+            {{- if and .Values.runtime.persistCoreWorkerOverlay .Values.userWorkers.persistence.enabled }}
+            - name: user-workers
+              mountPath: {{ .Values.runtime.coreWorkerOverlayDir | quote }}
+              subPath: .edger/core-overlays
+            {{- else }}
             - name: core-worker-overlay
               mountPath: {{ .Values.runtime.coreWorkerOverlayDir | quote }}
+            {{- end }}
             {{- if $hasRootKey }}
             - name: root-key
               mountPath: {{ .Values.rootKey.mountPath }}
@@ -112,8 +118,10 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- if not (and .Values.runtime.persistCoreWorkerOverlay .Values.userWorkers.persistence.enabled) }}
         - name: core-worker-overlay
           emptyDir: {}
+        {{- end }}
         {{- if $hasRootKey }}
         - name: root-key
           secret:

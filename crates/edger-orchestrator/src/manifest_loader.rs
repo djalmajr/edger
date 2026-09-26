@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use edger_core::{AdminWorkerInfo, CoreError, WorkerManifest, WorkerOrigin, WorkerVisibility};
 use serde::{Deserialize, Serialize};
 
-use crate::deploy::clear_worker_staged;
+use crate::deploy::{claim_worker_mutation_slot, clear_worker_staged};
 use crate::manifest_index_stub::ManifestIndex;
 
 const ENTRYPOINT_CANDIDATES: [&str; 6] = [
@@ -62,6 +62,26 @@ pub fn load_manifests_from_roots(
         (user_roots, WorkerOrigin::User),
     ] {
         for (worker_dir, manifest) in scan_worker_manifests(roots)? {
+            if origin == WorkerOrigin::CoreOverlay {
+                // D8: bundled e overlay com a mesma `name@version` não mais
+                // derrubam o boot — o bundled vence e a entrada do overlay é
+                // ignorada com um aviso no log.
+                let worker = edger_core::create_worker_ref(worker_dir.clone(), manifest.clone())?;
+                let already_bundled = index.admin_workers().into_iter().any(|existing| {
+                    existing.name == worker.name
+                        && existing.version == worker.version
+                        && existing.origin == WorkerOrigin::CoreBundled
+                });
+                if already_bundled {
+                    tracing::warn!(
+                        worker = %worker.name,
+                        version = %worker.version,
+                        dir = %worker_dir.display(),
+                        "overlay core worker has the same version as the bundled one; the bundled version wins"
+                    );
+                    continue;
+                }
+            }
             index.insert_with_origin(worker_dir, manifest, origin)?;
         }
     }
@@ -91,6 +111,15 @@ pub(crate) fn persist_default_version(
 ) -> Result<AdminWorkerInfo, CoreError> {
     let candidate = index.validate_promotion(name, version)?;
     let source = PathBuf::from(&candidate.source);
+    // Segura o slot da versão (D36) durante a escrita do ponteiro e do
+    // marcador `staged`: o export de estado não pode capturar o
+    // `.edger-defaults/` e a versão no meio do promote. O install já entra
+    // com o slot; este aqui cobre o promote HTTP/MCP que roda sozinho.
+    let _slot = claim_worker_mutation_slot(
+        source.parent().unwrap_or_else(|| Path::new("")),
+        name,
+        version,
+    )?;
     let path = default_version_path(index, name, &source)?;
     let directory = path
         .parent()
@@ -258,12 +287,30 @@ fn default_version_path(
     name: &str,
     source: &Path,
 ) -> Result<PathBuf, CoreError> {
-    let root = index
-        .all_roots()
-        .into_iter()
-        .map(|(root, _)| root)
-        .filter(|root| source == root || source.starts_with(root))
-        .max_by_key(|root| root.components().count())
+    let roots = index.all_roots();
+    let (root, origin) = match roots
+        .iter()
+        .filter(|(root, _)| source == root || source.starts_with(root))
+        .max_by_key(|(root, _)| root.components().count())
+        .cloned()
+    {
+        Some((root, origin)) => (Some(root), Some(origin)),
+        None => (None, None),
+    };
+    // D17: a raiz bundled é somente leitura na imagem; o ponteiro de default
+    // de uma versão que só existe no bundled vai para a raiz de overlay, que
+    // é gravável.
+    let root = match (root, origin) {
+        (Some(bundled), Some(WorkerOrigin::CoreBundled)) => Some(
+            roots
+                .iter()
+                .find(|(_, origin)| *origin == WorkerOrigin::CoreOverlay)
+                .map(|(root, _)| root.clone())
+                .unwrap_or(bundled),
+        ),
+        (root, _) => root,
+    };
+    let root = root
         .and_then(|root| pointer_root_for_configured_root(&root))
         .or_else(|| source.parent().map(Path::to_path_buf))
         .ok_or_else(|| {
@@ -480,4 +527,62 @@ fn dir_name(path: &Path) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or("worker")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn static_worker(root: &Path, directory: &str, name: &str, version: &str) {
+        let worker = root.join(directory);
+        fs::create_dir_all(&worker).unwrap();
+        fs::write(
+            worker.join("manifest.yaml"),
+            format!("name: {name}\nversion: \"{version}\"\nentrypoint: index.html\nkind: static\n"),
+        )
+        .unwrap();
+        fs::write(worker.join("index.html"), name).unwrap();
+    }
+
+    #[test]
+    fn bundled_core_default_pointer_is_stored_in_the_overlay_root() {
+        let bundled = tempfile::tempdir().unwrap();
+        let overlay = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        static_worker(bundled.path(), "webide", "webide", "1.0.0");
+        static_worker(bundled.path(), "webide@2.0.0", "webide", "2.0.0");
+
+        let index = load_manifests_from_roots(
+            &[bundled.path().to_path_buf()],
+            Some(&overlay.path().to_path_buf()),
+            &[user.path().to_path_buf()],
+        )
+        .unwrap();
+
+        let promoted = persist_default_version(&index, "webide", "1.0.0").unwrap();
+        assert_eq!(promoted.name, "webide");
+        assert_eq!(promoted.version, "1.0.0");
+
+        // D17: o ponteiro de uma versão somente-bundled fica na raiz de
+        // overlay, que é gravável na imagem.
+        let pointer = overlay
+            .path()
+            .join(DEFAULT_VERSIONS_DIR)
+            .join(pointer_file_name("webide"));
+        assert!(pointer.is_file());
+        assert!(!bundled.path().join(DEFAULT_VERSIONS_DIR).exists());
+
+        // E o boot seguinte revalida o ponteiro contra `default_version_path`
+        // e serve a versão promovida.
+        let reloaded = load_manifests_from_roots(
+            &[bundled.path().to_path_buf()],
+            Some(&overlay.path().to_path_buf()),
+            &[user.path().to_path_buf()],
+        )
+        .unwrap();
+        assert_eq!(
+            reloaded.resolve_worker("webide", None).unwrap().version,
+            "1.0.0"
+        );
+    }
 }

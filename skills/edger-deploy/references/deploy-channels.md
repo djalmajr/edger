@@ -50,6 +50,12 @@ curl -sS -X POST "$EDGER_URL/api/admin/workers/install" \
   body carries `name`, `version`, `url` (`/my-spa`), `kind`, `origin`,
   `revision` (save it for a later `force`) and `staged`.
 
+With `hosts:` in the manifest, the domain follows the version the name serves,
+so a new release goes in without taking the domain offline: install it with
+`staged=true`, test it under `/<name>@<version>/`, then `promote` it — the
+host switches to the promoted version. Rollback is promoting the previous
+version.
+
 ## MCP HTTP (`$EDGER_URL/api/mcp`)
 
 `POST`-only JSON-RPC. The install tool accepts **`zipBase64` only** —
@@ -113,6 +119,7 @@ Catalog: `workers:read`, `workers:install`, `workers:delete`,
 | `GET /api/admin/workers/{name}/files`, `.../files/download` | `files:read` |
 | `POST /api/admin/workers/{name}/files` (zip upload; any user version) | `files:write` |
 | `POST /api/admin/workers/{name}/files/delete` (batch; per-item errors in the 200 body) | `files:delete` |
+| `GET /api/admin/state/export` (state backup zip; waits up to 30 s for in-flight mutations, `503 STATE_BUSY` otherwise; a mutation during the export gets `409 STATE_EXPORT_IN_PROGRESS`) | root key only, no permission |
 
 Keys also carry scopes: `namespaces` (default `["*"]`) and `workers` (exact
 name or suffix glob such as `p-abc*`, default `["*"]`). A non-root key

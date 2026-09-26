@@ -1,7 +1,7 @@
 //! HTTP server — health/readiness probes and request tracing (story 05.01).
 
 use std::future::Future;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -31,8 +31,13 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     pub fn from_port(port: u16) -> Self {
+        Self::from_bind(IpAddr::from([0, 0, 0, 0]), port)
+    }
+
+    /// Build the listener config from an explicit IP (e.g. `EDGER_BIND`) and port.
+    pub fn from_bind(ip: IpAddr, port: u16) -> Self {
         Self {
-            addr: SocketAddr::from(([0, 0, 0, 0], port)),
+            addr: SocketAddr::new(ip, port),
         }
     }
 }
@@ -224,6 +229,35 @@ pub fn port_from_env() -> u16 {
         .unwrap_or(3000)
 }
 
+/// Parse the `EDGER_BIND` value into a listening IP (default `0.0.0.0`).
+pub fn parse_bind_ip(value: Option<&str>) -> Result<std::net::IpAddr, String> {
+    match value {
+        Some(raw) if !raw.trim().is_empty() => raw.trim().parse().map_err(|_| {
+            format!("EDGER_BIND must be an IP address such as 127.0.0.1 or 0.0.0.0, got {raw:?}")
+        }),
+        _ => Ok(IpAddr::from([0, 0, 0, 0])),
+    }
+}
+
+/// Parse the `EDGER_BIND` value (raw env bytes) into a listening IP (default `0.0.0.0`).
+/// Fails when the variable is set to bytes that are not valid UTF-8 text.
+pub fn parse_bind_os(value: Option<&std::ffi::OsStr>) -> Result<IpAddr, String> {
+    match value {
+        None => parse_bind_ip(None),
+        Some(v) => match v.to_str() {
+            Some(s) => parse_bind_ip(Some(s)),
+            None => Err(format!(
+                "EDGER_BIND must be valid UTF-8 text with an IP address such as 127.0.0.1 or 0.0.0.0, got {v:?}"
+            )),
+        },
+    }
+}
+
+/// Read the listening IP from the `EDGER_BIND` env (default `0.0.0.0`).
+pub fn bind_ip_from_env() -> Result<IpAddr, String> {
+    parse_bind_os(std::env::var_os("EDGER_BIND").as_deref())
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::*;
@@ -232,5 +266,69 @@ mod unit_tests {
     fn unready_state_is_not_ready() {
         let state = ServerState::new_unready();
         assert!(!state.is_ready());
+    }
+
+    #[test]
+    fn parse_bind_ip_defaults_to_wildcard() {
+        let wildcard = IpAddr::from([0, 0, 0, 0]);
+        assert_eq!(parse_bind_ip(None).unwrap(), wildcard);
+        assert_eq!(parse_bind_ip(Some("")).unwrap(), wildcard);
+        assert_eq!(parse_bind_ip(Some("  ")).unwrap(), wildcard);
+    }
+
+    #[test]
+    fn parse_bind_ip_accepts_ipv4_and_ipv6() {
+        assert_eq!(
+            parse_bind_ip(Some("127.0.0.1")).unwrap(),
+            "127.0.0.1".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            parse_bind_ip(Some("::1")).unwrap(),
+            "::1".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            parse_bind_ip(Some(" 0.0.0.0 ")).unwrap(),
+            IpAddr::from([0, 0, 0, 0])
+        );
+    }
+
+    #[test]
+    fn parse_bind_ip_rejects_hostnames() {
+        let err = parse_bind_ip(Some("localhost")).unwrap_err();
+        assert!(err.contains("EDGER_BIND"), "got: {err}");
+        assert!(err.contains("localhost"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_bind_os_maps_none_to_wildcard() {
+        assert_eq!(parse_bind_os(None).unwrap(), IpAddr::from([0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn parse_bind_os_accepts_utf8_ip() {
+        assert_eq!(
+            parse_bind_os(Some(std::ffi::OsStr::new("127.0.0.1"))).unwrap(),
+            "127.0.0.1".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_bind_ip_accepts_ipv6_unspecified() {
+        assert_eq!(parse_bind_ip(Some("::")).unwrap(), IpAddr::from([0u16; 8]));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn parse_bind_os_rejects_non_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let err = parse_bind_os(Some(std::ffi::OsStr::from_bytes(b"\xff"))).unwrap_err();
+        assert!(err.contains("EDGER_BIND"), "got: {err}");
+        assert!(err.contains("UTF-8"), "got: {err}");
+    }
+
+    #[test]
+    fn from_bind_builds_socket_addr_from_ip_and_port() {
+        let config = ServerConfig::from_bind("127.0.0.1".parse::<IpAddr>().unwrap(), 19080);
+        assert_eq!(config.addr.to_string(), "127.0.0.1:19080");
     }
 }

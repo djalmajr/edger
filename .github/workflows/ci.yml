@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.88
+      - uses: dtolnay/rust-toolchain@1.98
         with:
           components: clippy,rustfmt
       - uses: denoland/setup-deno@v2
@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.88
+      - uses: dtolnay/rust-toolchain@1.98
       - uses: denoland/setup-deno@v2
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p edger-orchestrator --features otel
@@ -48,7 +48,7 @@ jobs:
       - name: Install planning gate tools
         run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - uses: oven-sh/setup-bun@v2
-      - uses: dtolnay/rust-toolchain@1.88
+      - uses: dtolnay/rust-toolchain@1.98
       - uses: Swatinem/rust-cache@v2
       - name: Install core frontend dependencies
         working-directory: workers
@@ -130,7 +130,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Antes de publicar qualquer coisa: chart e tag contam a mesma versão.
-      - name: Chart.yaml bate com a tag
+      - name: Versões (Chart.yaml e core workers) batem com a tag
         run: |
           tag_version="${GITHUB_REF_NAME#v}"
           chart_version="$(awk '$1 == "version:" {print $2}' charts/edger/Chart.yaml)"
@@ -139,14 +139,22 @@ jobs:
             echo "::error::Chart.yaml (version=$chart_version, appVersion=$app_version) não bate com a tag $GITHUB_REF_NAME"
             exit 1
           fi
+          for manifest in workers/core/*/manifest.yaml; do
+            [ -f "$manifest" ] || continue
+            worker_version="$(awk '$1 == "version:" {gsub(/"/, "", $2); print $2}' "$manifest")"
+            if [ "$worker_version" != "$tag_version" ]; then
+              echo "::error::$manifest (version=$worker_version) não bate com a tag $GITHUB_REF_NAME"
+              exit 1
+            fi
+          done
       - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           # latest apenas em vX.Y.Z final (flavor latest=false + regra explícita).

@@ -8,8 +8,8 @@ use std::path::{Component, Path, PathBuf};
 
 use bytes::Bytes;
 use edger_core::{
-    FullstackBasePath, Isolate, IsolationError, SerializedRequest, SerializedResponse,
-    WorkerConfig, WorkerResponse,
+    FullstackBasePath, FullstackConfig, Isolate, IsolationError, SerializedRequest,
+    SerializedResponse, WorkerConfig, WorkerResponse,
 };
 
 pub async fn dispatch_fullstack_buffered<I: Isolate + ?Sized>(
@@ -55,7 +55,53 @@ pub fn try_serve_fullstack_asset(
         return Ok(None);
     }
     if !matches_asset_prefix(path, &fullstack.asset_prefixes) {
-        return Ok(None);
+        // D27: o tanstack também serve arquivos públicos existentes fora dos
+        // prefixes; qualquer falha de decodificação, validação ou resolução
+        // devolve Ok(None) e deixa o SSR decidir.
+        if fullstack.adapter != "tanstack" {
+            return Ok(None);
+        }
+        let Ok(decoded) = percent_decode(path) else {
+            return Ok(None);
+        };
+        if !decoded.starts_with('/') || decoded.contains('\0') {
+            return Ok(None);
+        }
+        let relative = decoded.trim_start_matches('/');
+        if path_has_forbidden_components(relative) {
+            return Ok(None);
+        }
+        // D30: nenhum componente do path decodificado pode começar com "."
+        // (`.well-known` é exceção apenas como PRIMEIRO componente — D6);
+        // e a rota de servidor do TanStack também é checada no path
+        // decodificado (`/%61pi/x` é `/api/x`).
+        if path_has_dotfile_components(Path::new(relative)) {
+            return Ok(None);
+        }
+        if is_tanstack_server_path(&decoded) {
+            return Ok(None);
+        }
+        let client_root = resolve_client_root(config, client_dir)?;
+        let Some(file_path) = resolve_fullstack_asset(&client_root, relative, &fullstack.adapter)
+        else {
+            return Ok(None);
+        };
+        // D30: symlinks não podem revelar dotfiles dentro de `clientDir`; a
+        // mesma regra de componentes vale para o caminho canônico resolvido.
+        let Some(canonical_relative) = file_path.strip_prefix(&client_root).ok() else {
+            return Ok(None);
+        };
+        if path_has_dotfile_components(canonical_relative) {
+            return Ok(None);
+        }
+        return Ok(Some(serve_fullstack_file(
+            req,
+            config,
+            fullstack,
+            &client_root,
+            &file_path,
+            path,
+        )?));
     }
 
     let decoded = match percent_decode(path) {
@@ -77,29 +123,49 @@ pub fn try_serve_fullstack_asset(
     if !file_path.is_file() {
         return Ok(Some(text_response(404, "not found")));
     }
-    let mut body = fs::read(&file_path).map_err(|err| {
+    Ok(Some(serve_fullstack_file(
+        req,
+        config,
+        fullstack,
+        &client_root,
+        &file_path,
+        path,
+    )?))
+}
+
+/// Leitura e montagem da resposta dos dois caminhos de serve (prefixo
+/// casado e arquivo público existente, D27): mesmo `content_type_for`,
+/// mesmo `cache_control_for` e mesma transformação de HTML de entrada.
+fn serve_fullstack_file(
+    req: &SerializedRequest,
+    config: &WorkerConfig,
+    fullstack: &FullstackConfig,
+    client_root: &Path,
+    file_path: &Path,
+    path: &str,
+) -> Result<SerializedResponse, IsolationError> {
+    let mut body = fs::read(file_path).map_err(|err| {
         IsolationError::new(
             "FULLSTACK_ASSET_READ_FAILED",
             format!("failed to read {}: {err}", file_path.display()),
         )
     })?;
-    let content_type = crate::static_spa::content_type_for(&file_path);
+    let content_type = crate::static_spa::content_type_for(file_path);
     if content_type.starts_with("text/html")
-        && (fullstack.adapter == "lume" || is_client_index_html(&file_path, &client_root))
+        && (fullstack.adapter == "lume" || is_client_index_html(file_path, client_root))
     {
         let base_path = resolve_base_path(req, &fullstack.base_path);
         let entry_base_href = base_href(&base_path);
         body = crate::static_spa::transform_entry_html(body, Some(&entry_base_href), config);
     }
-
-    Ok(Some(SerializedResponse {
+    Ok(SerializedResponse {
         status: 200,
         headers: vec![
             ("content-type".into(), content_type.into()),
             ("cache-control".into(), cache_control_for(path).into()),
         ],
         body: Some(Bytes::from(body)),
-    }))
+    })
 }
 
 pub fn prepare_fullstack_request(
@@ -234,6 +300,18 @@ fn path_has_forbidden_components(path: &str) -> bool {
             component,
             Component::ParentDir | Component::RootDir | Component::Prefix(_)
         )
+    })
+}
+
+/// D30: nenhum componente pode começar com ".", exceto `.well-known` como
+/// PRIMEIRO componente (D6). A mesma regra vale para o path pedido e para o
+/// caminho canônico dentro de `clientDir` (symlinks).
+fn path_has_dotfile_components(path: &Path) -> bool {
+    path.components().enumerate().any(|(index, component)| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|name| name.starts_with('.') && !(index == 0 && name == ".well-known"))
     })
 }
 
@@ -666,6 +744,178 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status, 200);
             assert!(String::from_utf8_lossy(response.body.unwrap().as_ref()).contains(expected));
+        }
+    }
+
+    #[test]
+    fn tanstack_serves_existing_public_files_outside_the_asset_prefixes() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/icons")).unwrap();
+        fs::write(root.path().join("client/og-image.png"), b"\x89PNG-data").unwrap();
+        fs::write(root.path().join("client/icons/a.svg"), b"<svg/>").unwrap();
+        let config = config(root.path());
+
+        let image = try_serve_fullstack_asset(&req("/og-image.png"), &config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(image.status, 200);
+        assert_eq!(
+            image
+                .headers
+                .iter()
+                .find(|(name, _)| name == "content-type")
+                .unwrap()
+                .1,
+            "image/png"
+        );
+        assert_eq!(image.body.unwrap().as_ref(), b"\x89PNG-data");
+
+        let icon = try_serve_fullstack_asset(&req("/icons/a.svg"), &config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(icon.status, 200);
+        assert_eq!(
+            icon.headers
+                .iter()
+                .find(|(name, _)| name == "content-type")
+                .unwrap()
+                .1,
+            "image/svg+xml"
+        );
+        assert_eq!(icon.body.unwrap().as_ref(), b"<svg/>");
+    }
+
+    #[test]
+    fn tanstack_leaves_missing_or_server_paths_to_ssr() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/api")).unwrap();
+        fs::write(root.path().join("client/api/x"), "not an asset").unwrap();
+        let config = config(root.path());
+
+        for path in [
+            "/issues",
+            "/",
+            "/api/x",
+            "/_serverFn/y",
+            "/%2e%2e/server.js",
+            "/%E0%A4%A",
+        ] {
+            let served = try_serve_fullstack_asset(&req(path), &config).unwrap();
+            assert!(served.is_none(), "expected SSR fallback for {path}");
+        }
+    }
+
+    // D30 (P1): symlinks dentro de `clientDir` não podem revelar dotfiles;
+    // a regra de componentes vale também para o caminho canônico.
+    #[cfg(unix)]
+    #[test]
+    fn tanstack_public_files_do_not_follow_symlinks_to_dotfiles() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client")).unwrap();
+        fs::write(root.path().join("client/.env"), "PRIVATE=secret\n").unwrap();
+        symlink(".env", root.path().join("client/public-link")).unwrap();
+        let config = config(root.path());
+
+        let served = try_serve_fullstack_asset(&req("/public-link"), &config).unwrap();
+        assert!(served.is_none(), "symlink to dotfile must fall to SSR");
+    }
+
+    // D30 (P1): symlink para dentro de um diretório oculto também cai no SSR.
+    #[cfg(unix)]
+    #[test]
+    fn tanstack_public_files_do_not_follow_symlinks_into_dot_dirs() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/.git")).unwrap();
+        fs::write(root.path().join("client/.git/config"), "core = bare").unwrap();
+        symlink(".git/config", root.path().join("client/cfg")).unwrap();
+        let config = config(root.path());
+
+        let served = try_serve_fullstack_asset(&req("/cfg"), &config).unwrap();
+        assert!(served.is_none(), "symlink into dot dir must fall to SSR");
+    }
+
+    // D30: symlink para arquivo regular continua legítimo e é servido.
+    #[cfg(unix)]
+    #[test]
+    fn tanstack_public_files_follow_symlinks_to_regular_files() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client")).unwrap();
+        fs::write(root.path().join("client/real.txt"), "public content").unwrap();
+        symlink("real.txt", root.path().join("client/alias.txt")).unwrap();
+        let config = config(root.path());
+
+        let res = try_serve_fullstack_asset(&req("/alias.txt"), &config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(res.status, 200);
+        assert_eq!(res.body.unwrap().as_ref(), b"public content");
+    }
+
+    // D30 (P1): nenhum dotfile sai pela via de arquivos públicos, seja em
+    // qualquer posição do path ou em forma percent-encoded.
+    #[test]
+    fn tanstack_public_files_never_serve_dotfiles() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/.git")).unwrap();
+        fs::create_dir_all(root.path().join("client/sub")).unwrap();
+        fs::write(root.path().join("client/.env"), "PRIVATE=secret\n").unwrap();
+        fs::write(root.path().join("client/.git/config"), "core = bare").unwrap();
+        fs::write(root.path().join("client/sub/.secret"), "hidden").unwrap();
+        let config = config(root.path());
+
+        for path in ["/.env", "/.git/config", "/sub/.secret", "/%2eenv"] {
+            let served = try_serve_fullstack_asset(&req(path), &config).unwrap();
+            assert!(served.is_none(), "expected SSR fallback for {path}");
+        }
+    }
+
+    // D30: `.well-known` só é exceção como PRIMEIRO componente (D6: o
+    // caminho é do app); dotfile abaixo dele continua caindo no SSR.
+    #[test]
+    fn tanstack_public_files_allow_well_known() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/.well-known")).unwrap();
+        fs::write(
+            root.path().join("client/.well-known/security.txt"),
+            "Contact: sec@example.test",
+        )
+        .unwrap();
+        fs::write(root.path().join("client/.well-known/.hidden"), "secret").unwrap();
+        let config = config(root.path());
+
+        let response = try_serve_fullstack_asset(&req("/.well-known/security.txt"), &config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            response.body.unwrap().as_ref(),
+            b"Contact: sec@example.test"
+        );
+
+        let hidden = try_serve_fullstack_asset(&req("/.well-known/.hidden"), &config).unwrap();
+        assert!(
+            hidden.is_none(),
+            "dotfile under .well-known must fall to SSR"
+        );
+    }
+
+    // D30 (P2): o check de rota de servidor TanStack vale também para o
+    // path decodificado — `/%61pi/x` é `/api/x` e não vira estático.
+    #[test]
+    fn tanstack_public_files_check_server_paths_after_decoding() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/api")).unwrap();
+        fs::create_dir_all(root.path().join("client/_serverFn")).unwrap();
+        fs::write(root.path().join("client/api/x"), "static").unwrap();
+        fs::write(root.path().join("client/_serverFn/y"), "static").unwrap();
+        let config = config(root.path());
+
+        for path in ["/%61pi/x", "/_server%46n/y"] {
+            let served = try_serve_fullstack_asset(&req(path), &config).unwrap();
+            assert!(served.is_none(), "expected SSR fallback for {path}");
         }
     }
 }

@@ -1,10 +1,16 @@
 # Follow-up: scoped `allowNet` is incompatible with the multiproc UDS transport
 
-**Status:** deferred by decision — egress scoping isn't needed for now, so workers run with
-`allowNet` unset (full net). Revisit if/when host-level egress scoping is required. The
-root cause + options below are kept for that day.
+**Status:** resolvido no código desde o #45: `deno_network_permission_args_with_uds`
+acrescenta `unix:<socket>` à lista. A prova são os testes
+`restricted_network_worker_still_connects_to_internal_uds` e
+`scoped_network_worker_still_connects_to_internal_uds`, de 2026-09-25.
 
-## Symptom
+Hoje, no backend multiproc persistente, `allowNet` com hosts funciona: a
+permissão do socket Unix interno (`unix:<socket>`) é acrescida à lista
+restrita, então a rede do worker continua limitada aos hosts declarados.
+As seções abaixo são o histórico do problema original, marcado como tal.
+
+## Symptom — histórico (até o #45)
 
 A worker with a **scoped** `allowNet` (e.g. `["pgbouncer:6432"]`) on the persistent
 multiproc backend fails to boot:
@@ -16,7 +22,7 @@ harness fatal: NotCapable: Requires net access to "unix:/…/w.sock", run again 
 Unset `allowNet` (full `--allow-net`) works. So today, DB/network workers on the
 multiproc backend must use **full net** (as `tests/fixtures/param-e2e` does).
 
-## Root cause (verified on Deno 2.9.1)
+## Root cause (verified on Deno 2.9.1) — histórico (até o #45)
 
 The harness connects to the orchestrator over a Unix domain socket
 (`Deno.connect({ transport: "unix", path })`, `multiproc_harness.mjs`). In Deno 2.9:
@@ -30,7 +36,7 @@ So the only grant that covers the UDS connect is **full `--allow-net`**. A scope
 `--allow-net=host:port` (from the manifest hosts) excludes the UDS → boot fails.
 `deno_sandbox_policy.rs::deno_network_permission_args` produces the scoped list.
 
-## Options (each is a real trade-off)
+## Options (each is a real trade-off) — histórico (até o #45)
 
 1. **fd-passing** — the orchestrator passes the already-connected socket fd to the
    Deno process; the harness wraps the inherited fd instead of `Deno.connect`. No net
@@ -45,7 +51,7 @@ So the only grant that covers the UDS connect is **full `--allow-net`**. A scope
    manifest's host allowlist at an edger layer (egress proxy / filter) instead of relying
    on Deno's `--allow-net` scoping. Most work; keeps both isolation and scoping.
 
-## Recommendation
+## Recommendation — histórico (até o #45)
 
 Do not rush a transport change. Keep the full-net workaround for now; pick (1) or (3)
 when hardening egress scoping. Track here.

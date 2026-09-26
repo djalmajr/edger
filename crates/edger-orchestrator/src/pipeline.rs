@@ -62,6 +62,14 @@ pub fn build_pipeline(state: OrchestratorState) -> Router {
         )
         .merge(admin_api::router())
         .fallback(any(pipeline_handler))
+        // Domínio com dono é inteiro do app (D6): aplicada depois do fallback
+        // para que, num Host com dono, toda a requisição vá para o worker
+        // dono antes das rotas fixas do control plane. As layers de métricas,
+        // request-id e tracing continuam envolvendo a requisição.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            owned_host_middleware,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             metrics_state,
             request_metrics_middleware,
@@ -103,7 +111,19 @@ async fn ready_handler(State(state): State<OrchestratorState>) -> impl IntoRespo
     }
 }
 
-async fn metrics_handler(State(state): State<OrchestratorState>) -> impl IntoResponse {
+// D7: /metrics e /metrics/stats expõem nome e versão de cada app instalado,
+// então exigem credencial com observability:read (ou a root). No modo
+// aberto (sem root key) o `authenticate` já devolve a root e nada muda.
+async fn metrics_handler(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+) -> Response<Body> {
+    if let Err(err) = admin_api::authenticate(&state, &headers)
+        .await
+        .and_then(|principal| admin_api::require_permission(&principal, "observability:read"))
+    {
+        return admin_api::admin_error(admin_api::map_error_status(&err), &err, &headers);
+    }
     let mut body = pool_metrics_prometheus(&state.pool.get_metrics());
     body.push_str(&cron_metrics_prometheus(&state.server.cron_metrics()));
     body.push_str(&crate::metrics::http_metrics_prometheus(
@@ -116,13 +136,67 @@ async fn metrics_handler(State(state): State<OrchestratorState>) -> impl IntoRes
         )],
         body,
     )
+        .into_response()
 }
 
-async fn metrics_stats_handler(State(state): State<OrchestratorState>) -> impl IntoResponse {
-    Json(metrics_stats_response(
-        &state.pool.get_metrics(),
-        &state.pool.worker_stats(),
-    ))
+async fn metrics_stats_handler(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+) -> Response<Body> {
+    if let Err(err) = admin_api::authenticate(&state, &headers)
+        .await
+        .and_then(|principal| admin_api::require_permission(&principal, "observability:read"))
+    {
+        return admin_api::admin_error(admin_api::map_error_status(&err), &err, &headers);
+    }
+    (
+        StatusCode::OK,
+        Json(metrics_stats_response(
+            &state.pool.get_metrics(),
+            &state.pool.worker_stats(),
+        )),
+    )
+        .into_response()
+}
+
+/// A autoridade da requisição para fins de roteamento (D20): em HTTP/2 ela
+/// vem do pseudo-header `:authority` — o hyper a expõe em
+/// `uri().authority()` — e o header `Host` pode não existir. No
+/// request-target em forma absoluta a autoridade do URI prevalece sobre o
+/// `Host` (RFC 9112 §3.2.2, RFC 9113 §8.3.1). Do request-target usamos só o
+/// `host[:port]` — `userinfo@` não faz parte da autoridade (D20, revisada);
+/// o ramo do header `Host` continua devolvendo o valor cru, que o
+/// `normalize_host_alias` valida.
+fn request_authority(req: &Request<Body>) -> Option<String> {
+    if let Some(authority) = req.uri().authority() {
+        return match authority.port_u16() {
+            Some(port) => Some(format!("{}:{}", authority.host(), port)),
+            None => Some(authority.host().to_string()),
+        };
+    }
+    req.headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+/// Num Host com dono, o domínio é inteiro do app (D6): a requisição vai
+/// direto para o pipeline do worker dono, sem passar pelas rotas fixas do
+/// control plane. Hosts sem dono seguem o app normal (rotas fixas + fallback).
+async fn owned_host_middleware(
+    State(state): State<OrchestratorState>,
+    req: Request<Body>,
+    next: axum::middleware::Next,
+) -> Response<Body> {
+    let host = request_authority(&req);
+    if host
+        .as_deref()
+        .is_some_and(|host| state.index.host_owner(host).is_some())
+    {
+        pipeline_handler(State(state), req).await
+    } else {
+        next.run(req).await
+    }
 }
 
 async fn pipeline_handler(
@@ -158,12 +232,9 @@ async fn handle_request(
     } else {
         false
     };
-    let host = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok());
+    let host = request_authority(&req);
     if let Some(route) =
-        resolve_host_route_with_internal(&path, host, &state.index, allow_internal)?
+        resolve_host_route_with_internal(&path, host.as_deref(), &state.index, allow_internal)?
     {
         return dispatch_resolved_route(state, req, request_id, &path, route).await;
     }

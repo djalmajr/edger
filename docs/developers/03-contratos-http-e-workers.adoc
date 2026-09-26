@@ -80,20 +80,28 @@ Antes de enviar ao isolate, o pipeline:
 | Path | Comportamento
 
 | `/health`, `/ready`
-| Probes do runtime, sem dispatch para worker.
+| Probes do runtime, sem dispatch para worker (host sem dono).
 
 | `/api`, `/api/*`
-| Prefixo reservado do control plane, nunca despachado para worker.
-  `/api/mcp` e `/api/admin/*` são rotas reais; o que não casa nenhuma delas
-  cai no fallback e retorna `404` com `API_STUB`.
+| Prefixo reservado do control plane, nunca despachado para worker
+  (host sem dono). `/api/mcp` e `/api/admin/*` são rotas reais; o que não
+  casa nenhuma delas cai no fallback e retorna `404` com `API_STUB`.
 
 | `/.well-known/*`
-| Reservado; atualmente retorna `404` com `WELL_KNOWN`.
+| Reservado (host sem dono); atualmente retorna `404` com `WELL_KNOWN`.
 
 | Plugin `base`
 | Resolver reconhece base de plugin; dispatch ainda retorna `501` com
   `PLUGIN_BASE`.
 |===
+
+Num host com dono (declarado em `hosts:`), nenhum desses caminhos é
+reservado: todos vão para o app — `/`, `/health`, `/ready`, `/metrics`,
+`/api/*` e `/.well-known/*` inclusos — e o control plane só responde em
+hosts sem dono.
+A autoridade efetiva da requisição — a que decide se o host tem dono — vem
+da URI quando existe (HTTP/2 `:authority` ou request-target em forma
+absoluta, sem `userinfo`) e, senão, do header `Host`.
 
 ==== Gestão de api-keys
 
@@ -225,6 +233,17 @@ worker fora do escopo da key responde `404` com `NOT_FOUND`.
   responde `NOT_FOUND`; symlink é removido como link, nunca o destino. A
   revisão avança e o worker é reciclado só quando pelo menos um item foi
   apagado. Permission `files:delete`.
+
+| `GET`
+| `/api/admin/state/export`
+| Export online do estado: zip com `user-roots/<i>/`, `core-overlay/`,
+  `api-keys.db` (cópia consistente por `VACUUM INTO`) e `edger-state.json`
+  (formato, versão do EdgeR, data e caminhos de origem). Só root: `401`
+  sem credencial, `403` com key não-root. O export espera até 30 s as
+  mutações em curso (`503 STATE_BUSY` se estourar) e uma mutação nova durante
+  o export recebe `409 STATE_EXPORT_IN_PROGRESS`. Resposta em stream
+  (`application/zip`, `Content-Disposition: attachment`), sem o teto de 64 MiB
+  do download de arquivos.
 |===
 
 ==== MCP por HTTP
@@ -415,7 +434,8 @@ default.
 
 | `409`
 | Colisão de manifest `(name, version)`, ou `KEY_NOT_REVOKED` ao apagar key
-  que ainda não foi revogada.
+  que ainda não foi revogada, ou `STATE_EXPORT_IN_PROGRESS` em mutação
+  (install, upload, promote, delete) durante o export de estado.
 
 | `500`
 | Erro inesperado de pipeline, worker, isolate, store ou filesystem.
@@ -425,7 +445,8 @@ default.
 
 | `503`
 | `KEYS_STORE_UNAVAILABLE`: a instância subiu sem store de api-keys e a
-  gestão de keys fica indisponível.
+  gestão de keys fica indisponível; ou `STATE_BUSY` quando o export de estado
+  não consegue esperar as mutações em curso dentro do limite de 30 s.
 |===
 
 Formato de erro:
