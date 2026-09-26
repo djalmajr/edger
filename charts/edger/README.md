@@ -193,6 +193,13 @@ because the workers PVC is `ReadWriteOnce`: an upgrade terminates the pod and
 starts the new one, so EdgeR is down for a few seconds. The installed workers
 live on the PVC and survive the upgrade.
 
+From this version on, with `userWorkers.persistence.enabled` and
+`runtime.persistCoreWorkerOverlay` (default `true`), the core worker overlay
+(`/app/core-worker-overlays`) also survives restarts and upgrades: it is
+mounted from the workers PVC under `.edger/core-overlays`. Content from the
+previous `emptyDir` is not migrated, because it was already lost on every
+restart.
+
 ## Access and validation
 
 Without an Ingress, forward the service from a machine with cluster access:

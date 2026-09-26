@@ -48,6 +48,10 @@ runtime:
   jsRuntime: "process"
   coreWorkerDir: "/opt/edger/core-workers"
   coreWorkerOverlayDir: "/app/core-worker-overlays"
+  # Com a persistência de workers ligada, o overlay usa o mesmo PVC em
+  # subPath: .edger/core-overlays; o diretório .edger é invisível ao scan de
+  # workers.
+  persistCoreWorkerOverlay: true
 
 # Deve permanecer habilitado em ambientes que recebem workers pela Admin API:
 # o conteúdo sobrevive ao restart enquanto o índice é reconstruído em memória.
