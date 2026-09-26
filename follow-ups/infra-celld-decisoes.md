@@ -305,3 +305,121 @@ arquivo é o registro. A resposta ao planner está em
     variáveis antes de chamar o `celld` (`infra` `0c2854f`);
   - não houve exposição de segredo;
   - runbook 19 do `djalmajr/infra` no ai-memory atualizado.
+
+## C12. Fleet `planner`, fase 2: host público `celld.djalmajr.dev`, `ENV=production`, e-mail e import do `sqld`
+- **Decisão:**
+  - **Host:** `celld.djalmajr.dev` — correção do operador (2026-09-26) sobre
+    a proposta do planner (`planner-celld.djalmajr.dev`): somente esse
+    domínio, com A record **sem proxy** (mesmo padrão de
+    `planner.djalmajr.dev` e `edger.djalmajr.dev` neste nó). Com ele,
+    `APP_URL=https://celld.djalmajr.dev` e
+    `TRUSTED_ORIGINS=https://celld.djalmajr.dev` (origem exata, sem
+    wildcard).
+  - **Variáveis públicas (estágio do artefato):** `ENV=production` e
+    `APP_URL=https://celld.djalmajr.dev` — as únicas que o `build:celld`
+    aceita em `vars` (C11). O `--var` do estágio reescreve o
+    `wrangler.json` no Mac antes do `rsync`. Sem `DATABASE_URL` no
+    artefato: o banco é o binding D1 `DB`.
+  - **Secret `celld-planner-vars` (o Job mescla no `wrangler.json`):**
+    `AUTH_SIGNUP=invite`, `AUTH_IP_HEADERS=x-real-ip` (o Traefik do nó vê o
+    IP real e escreve o header, como no deploy principal),
+    `TRUSTED_ORIGINS` e o trio de e-mail Cloudflare
+    (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_EMAIL_API_TOKEN` e
+    `AUTH_EMAIL_FROM`).
+  - **Segredos:** `BETTER_AUTH_SECRET` preserva o valor já gerado na VPS
+    (C11; merge-patch, sem rotação). O valor das três variáveis de e-mail é
+    fornecido **apenas pelo operador**, pelo procedimento seguro: nenhum
+    valor de segredo entra neste registro, no repositório ou em mensagem.
+  - **Import do `sqld`:** único import do dump de produção no D1 da fleet
+    (`planner-dev`) com `celld d1 execute --file`, **após** o backup
+    completo pré-import (que já existe) e a verificação de compatibilidade
+    (origem com 18 migrações, destino com 19; a 19ª adiciona seis tabelas
+    novas). A tabela `d1_migrations` **não** é importada — o estado de
+    migração do destino (19) não é tocado. O `sqld` de origem não é
+    alterado.
+  - **Rota pública:** publicada só depois de testar, na versão implantada,
+    que o OTP não aparece na tela (com `ENV=production` o código sai só por
+    e-mail) e que o envio de e-mail funciona.
+  - **Fora de escopo:** deploy da IA no EdgeR, publicação das issues
+    upstream e ações no labdev.
+- **Por quê:**
+  - O ok do operador de 2026-09-26 ("passe também o ok para prosseguir com
+    as próximas fases", com a correção do host) autoriza a fase 2 e o
+    import; o contrato de configuração está em
+    `planner/.herdr-agents/w7/to-edger-2026-09-26-celld-fase2.md`.
+  - `ENV=production` + `AUTH_SIGNUP=invite` fecha o cadastro aberto da fase
+    1: com host público, o OTP na tela era aceitável só em `ENV=local`.
+  - O import só com backup e compatibilidade conferidos separa a validação
+    da plataforma de um problema de dados, com caminho de volta.
+- **Alternativas:**
+  - O host proposto pelo planner (`planner-celld.djalmajr.dev`): rejeitado
+    pelo operador, que escolheu `celld.djalmajr.dev`.
+  - Importar o dump incluindo `d1_migrations`: sobrescreveria o estado de
+    migração do destino (19) com o da origem (18).
+  - Importar sem o backup completo: sem caminho de volta se o dump
+    conflitar com o esquema.
+- **Reverter:**
+  - Variáveis: reestagiar o artefato com `ENV`/`APP_URL` da fase 1 e
+    re-deployar; o Secret volta às chaves da C11.
+  - Import: o backup `planner-20260926T031124Z.sql.gz` é do **`sqld` de
+    origem** (permite reimportar), não um snapshot do D1 antes do import.
+    O D1 estava vazio antes; voltar ao estado vazio exigiria procedimento
+    próprio (recriação controlada), ainda não ensaiado.
+  - Host: `kubectl delete` do IngressRoute `celld-planner` e do
+    Certificate `celld-planner-tls` + remoção da A record (rollback
+    documentado em `infra/celld/planner/README.md`). A fleet fica no ar e
+    interna.
+- **Onde:** `infra/celld/planner/` (worktree `infra-celld`, branch
+  `feat/celld-pilot`) e o runbook 19 no ai-memory.
+- **Status:** decisão registrada em 2026-09-26 com o ok do operador.
+  Decidir ≠ implantar: o concluído fica separado do que está pendente.
+  - **Concluído** (executado pelo orquestrador em 2026-09-26):
+    - A record `celld.djalmajr.dev` → `167.235.206.217` (`proxied=false`,
+      TTL 60), criada via API Cloudflare e resolvendo por `@1.1.1.1`;
+    - Certificate `celld-planner-tls` aplicado isoladamente: Ready, válido
+      até 2026-12-25; a IngressRoute continua ausente;
+    - backup pré-import do `sqld` de produção
+      (`planner-20260926T031124Z.sql.gz` no PVC de backups; o `sqld` não
+      mudou);
+    - compatibilidade conferida: origem com 18 migrações e 31 tabelas de
+      aplicação, D1 destino com 19 migrações e 37 tabelas (as seis
+      adicionais da 0019), colunas das 31 tabelas comuns coincidentes, e
+      ensaio local do import em SQLite com integridade e FK válidas;
+      preflight do D1 `planner-dev` com 19 migrações e 37 tabelas de app
+      vazias;
+    - único import do dump no D1 `planner-dev`: 12 INSERTs via
+      `celld d1 execute --file /dev/stdin`, com `d1_migrations` preservada
+      em 19. Pós-import: 9 tabelas com 12 registros de app (contagens
+      iguais à origem) e `PRAGMA foreign_key_check` sem linhas. O endpoint
+      D1 recusou `PRAGMA integrity_check` (`not authorized`): a checagem de
+      integridade **no D1** não está concluída — o que passou foram o dump
+      de origem e o ensaio local.
+    - artefato `planner@7fb13d0` estagiado no nó com `ENV=production` e
+      `APP_URL=https://celld.djalmajr.dev`; commit e variáveis públicas
+      conferidos no destino, sem symlinks. O Job ainda não rodou.
+  - **Decidido:** host e URL HTTPS (`APP_URL`/`TRUSTED_ORIGINS`),
+    `ENV=production`, `AUTH_SIGNUP=invite`, `AUTH_IP_HEADERS=x-real-ip`,
+    e-mail pelo Cloudflare (três variáveis só do operador), preservação do
+    `BETTER_AUTH_SECRET` e a regra do import (backup + compatibilidade
+    antes; sem `d1_migrations`).
+  - **Trabalho local** (commit `06ea11c` no worktree `infra-celld`, ainda
+    sem push nem apply público): base `celld/planner/` privada; overlay irmão
+    `celld/planner-phase2/` com
+    IngressRoute `celld-planner` (host exato, `websecure`, serviço
+    `celld-planner:8080`) e NetworkPolicy que admite o namespace `traefik`
+    apenas na 8080 (8081 segue sem rota e inacessível do traefik);
+    `stage-planner-artifact.sh` com `--var` restrito a
+    `ENV`/`APP_URL`; `create-planner-vars-secret.sh --phase2` (mescla as
+    seis chaves da fase 2 no Secret existente e preserva
+    `CELLD_VAR_BETTER_AUTH_SECRET`); runbook passo a passo da fase 2 em
+    `celld/planner/README.md`. A revisão independente final do recorte
+    `celld/` passou sem achados; renders da base e do overlay e dry-runs
+    estritos no servidor passaram.
+  - **Operação ainda pendente** (nesta ordem): as seis chaves da fase 2 no
+    Secret `celld-planner-vars` (operador, `--phase2` — hoje o Secret tem
+    só `CELLD_VAR_BETTER_AUTH_SECRET`); deploy da versão de produção (o nó
+    adota a versão de forma assíncrona, #218); verificações
+    de OTP fora da tela e de e-mail (orquestrador); publicação da rota
+    (operador — IngressRoute ainda não aplicada).
+  - Deploy e publicação **não** estão concluídos enquanto a operação
+    pendente não sair.
