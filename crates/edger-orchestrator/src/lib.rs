@@ -17,6 +17,7 @@ pub mod rate_limit;
 pub mod router;
 pub mod security;
 pub mod server;
+pub mod state_export;
 pub mod tracing_init;
 pub mod wire;
 pub mod worker_errors;

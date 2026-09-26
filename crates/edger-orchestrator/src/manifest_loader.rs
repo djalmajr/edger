@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use edger_core::{AdminWorkerInfo, CoreError, WorkerManifest, WorkerOrigin, WorkerVisibility};
 use serde::{Deserialize, Serialize};
 
-use crate::deploy::clear_worker_staged;
+use crate::deploy::{claim_worker_mutation_slot, clear_worker_staged};
 use crate::manifest_index_stub::ManifestIndex;
 
 const ENTRYPOINT_CANDIDATES: [&str; 6] = [
@@ -111,6 +111,15 @@ pub(crate) fn persist_default_version(
 ) -> Result<AdminWorkerInfo, CoreError> {
     let candidate = index.validate_promotion(name, version)?;
     let source = PathBuf::from(&candidate.source);
+    // Segura o slot da versão (D36) durante a escrita do ponteiro e do
+    // marcador `staged`: o export de estado não pode capturar o
+    // `.edger-defaults/` e a versão no meio do promote. O install já entra
+    // com o slot; este aqui cobre o promote HTTP/MCP que roda sozinho.
+    let _slot = claim_worker_mutation_slot(
+        source.parent().unwrap_or_else(|| Path::new("")),
+        name,
+        version,
+    )?;
     let path = default_version_path(index, name, &source)?;
     let directory = path
         .parent()
