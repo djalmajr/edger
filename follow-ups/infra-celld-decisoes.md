@@ -256,7 +256,8 @@ arquivo é o registro. A resposta ao planner está em
   - **Artefato:** `bun run build:celld` num clone descartável do planner em
     `5557cfb`, com as `vars` públicas do artefato (`ENV=local`,
     `APP_URL=http://localhost:3000`). Vai por `rsync` para
-    `/var/lib/celld-artifacts/planner/<commit>/` no nó.
+    `/var/lib/celld-artifacts/planner/current/` no nó, com o commit em
+    `current.commit` (apagado antes do `rsync` e regravado depois).
   - **Job `celld-planner-deploy`:**
     - monta esse diretório por `hostPath` somente leitura;
     - copia para um `emptyDir`;
