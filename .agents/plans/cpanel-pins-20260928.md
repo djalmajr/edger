@@ -28,10 +28,11 @@ O operador marcou quatro ajustes na versão 0.3.2-rc.5: nome de worker longo na 
 - [x] `PATCH` seguro e diálogo de edição com persistência, anti-escalada e invalidação de cache, testados.
 - [x] Ações de chave alinhadas, tabela no DataGrid e coluna de permissões compacta, conferidos em navegador real.
 - [ ] Tela de chaves e paginação traduzidas nos três idiomas, conferidas no navegador.
-- [ ] Revisão independente, gates e deploy de lab-dev.
+- [x] Revisão independente, gates e deploy de lab-dev.
 
 ## Verificação
 
 - Testes DOM de cPanel e testes Rust de API keys e sessão; mutações de UI devem falhar com regressões observáveis.
 - Gate JS, Rust workspace, Helm, planejamento e CI da PR.
-- No lab-dev: ConfigMap com as duas flags `false`, seção desabilitada; edição da key validada com credencial de teste controlada, sem exibir segredo em logs; inspeção visual dos badges e nomes longos.
+- No lab-dev: ConfigMap e sessão com as duas flags `false` confirmados; inspeção visual autenticada da seção, badges e nomes longos e prova remota de edição de key com credencial descartável ainda pendentes.
+- Após o deploy rc.6, chart, imagem, flags e rotas HTTPS foram verificados. A prova remota de edição com key descartável não foi executada porque a revisão automática exigiu autorização específica para criar/revogar credencial no lab-dev. A inspeção visual autenticada após o upgrade fica para o operador; veja `planning/edger/status/evidence/release-0.3.2-rc.6-2026-09-28.md`.
