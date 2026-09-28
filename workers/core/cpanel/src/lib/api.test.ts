@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   adminLogout,
@@ -267,9 +267,45 @@ describe("admin login client", () => {
 
 describe("clearSession", () => {
   const originalFetch = globalThis.fetch;
+  let originalSessionStorage: PropertyDescriptor | undefined;
+
+  function createSessionStorage(): Storage {
+    const entries = new Map<string, string>();
+    return {
+      get length() {
+        return entries.size;
+      },
+      clear: () => entries.clear(),
+      getItem: (key) => entries.get(String(key)) ?? null,
+      key: (index) => Array.from(entries.keys())[index] ?? null,
+      removeItem: (key) => entries.delete(String(key)),
+      setItem: (key, value) => entries.set(String(key), String(value)),
+    };
+  }
+
+  beforeEach(() => {
+    originalSessionStorage = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "sessionStorage",
+    );
+    Object.defineProperty(globalThis, "sessionStorage", {
+      configurable: true,
+      value: createSessionStorage(),
+      writable: true,
+    });
+  });
+
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    sessionStorage.clear();
+    if (originalSessionStorage) {
+      Object.defineProperty(
+        globalThis,
+        "sessionStorage",
+        originalSessionStorage,
+      );
+    } else {
+      Reflect.deleteProperty(globalThis, "sessionStorage");
+    }
   });
 
   it("clears the local session before any network answer and still revokes when the network works", async () => {
