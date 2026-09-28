@@ -42,6 +42,8 @@ pub struct AdminMutationResponse {
 #[serde(rename_all = "camelCase")]
 pub struct AdminSessionResponse {
     pub principal: ApiKeyPrincipal,
+    pub tenant_routing_enabled: bool,
+    pub weighted_routing_enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -129,6 +131,13 @@ pub struct CreateApiKeyRequest {
     /// exceção viva: o health-check manual exige `role` igual a `admin` além de
     /// `workers:read` — ver `follow-ups/api-keys-evolucoes.md`.
     pub role: Option<String>,
+}
+
+/// Update only the permission set of an existing key.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateApiKeyPermissionsRequest {
+    pub permissions: Vec<String>,
 }
 
 fn star_scope() -> Vec<String> {

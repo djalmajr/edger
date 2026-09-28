@@ -1,4 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  getCoreRowModel,
+  getPaginationRowModel,
+  getSortedRowModel,
+  type ColumnDef,
+  type SortingState,
+  useReactTable,
+} from "@tanstack/react-table";
 import { Badge } from "@edger/ui/components/ui/badge";
 import { Button } from "@edger/ui/components/ui/button";
 import {
@@ -12,14 +20,6 @@ import {
 import { Input } from "@edger/ui/components/ui/input";
 import { Label } from "@edger/ui/components/ui/label";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@edger/ui/components/ui/table";
-import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -27,10 +27,18 @@ import {
 import {
   CheckIcon,
   CopyIcon,
+  PencilIcon,
   PlusIcon,
   Trash2Icon,
 } from "@edger/ui/icons/lucide";
 import * as React from "react";
+import {
+  DataGrid,
+  DataGridColumnHeader,
+  DEFAULT_PAGE_SIZE,
+} from "./data-grid";
+import { EditKeyDialog } from "./edit-key-dialog";
+import { PermissionBadges } from "./permission-badges";
 import {
   apiJson,
   canManageKeys,
@@ -40,37 +48,43 @@ import {
   type CreateKeyRequest,
   type Principal,
 } from "../lib/api";
+import { useI18n } from "../lib/i18n";
 
 // A gestão segue o padrão tenancit/Studio: escopos por checkbox, o segredo
 // aparece UMA vez na criação, revogação é terminal e o delete só existe para
 // key já revogada. O servidor aplica a anti-escalada (subconjunto do criador)
 // — a UI só desabilita o que o principal visivelmente não pode conceder.
 
-function formatEpoch(seconds?: number | null) {
+function formatEpoch(seconds: number | null | undefined, locale: string) {
   if (!seconds) return "—";
-  return new Date(seconds * 1000).toLocaleString();
+  return new Date(seconds * 1000).toLocaleString(locale);
 }
 
-function keyStatus(key: ApiKey): "revoked" | "expired" | "active" {
+type KeyStatus = "revoked" | "expired" | "active";
+
+function keyStatus(key: ApiKey): KeyStatus {
   if (key.revokedAt) return "revoked";
   if (key.expiresAt && key.expiresAt * 1000 < Date.now()) return "expired";
   return "active";
 }
 
 const EXPIRY_CHOICES = [
-  { days: 0, label: "Never" },
-  { days: 30, label: "30 days" },
-  { days: 90, label: "90 days" },
-  { days: 365, label: "365 days" },
+  { days: 0, key: "keys.create.never" },
+  { days: 30, key: "keys.create.days30" },
+  { days: 90, key: "keys.create.days90" },
+  { days: 365, key: "keys.create.days365" },
 ] as const;
 
 export function ApiKeys({
   apiKey,
   principal,
+  renderPageAction,
 }: {
   apiKey: string;
   principal: Principal;
+  renderPageAction?: (action: React.ReactNode) => React.ReactNode;
 }) {
+  const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const manageable = canManageKeys(principal);
   const keysQuery = useQuery({
@@ -85,6 +99,8 @@ export function ApiKeys({
   const [createOpen, setCreateOpen] = React.useState(false);
   const [revealed, setRevealed] = React.useState<CreatedKey | null>(null);
   const [confirmDelete, setConfirmDelete] = React.useState<ApiKey | null>(null);
+  const [editingKey, setEditingKey] = React.useState<ApiKey | null>(null);
+  const [sorting, setSorting] = React.useState<SortingState>([]);
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["cpanel", "keys"] });
@@ -105,112 +121,210 @@ export function ApiKeys({
     onSettled: invalidate,
   });
 
+  const columns = React.useMemo<ColumnDef<ApiKey>[]>(
+    () => [
+      {
+        accessorKey: "name",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label={t("keys.name")} />
+        ),
+        cell: ({ row }) => (
+          <span className="block truncate" title={row.original.name}>
+            {row.original.name}
+          </span>
+        ),
+        size: 140,
+      },
+      {
+        accessorKey: "keyPrefix",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label={t("keys.key")} />
+        ),
+        cell: ({ row }) => (
+          <code className="block truncate text-xs" title={row.original.keyPrefix}>
+            {row.original.keyPrefix}…
+          </code>
+        ),
+        size: 140,
+      },
+      {
+        accessorFn: (key) => key.permissions.join(", "),
+        id: "permissions",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label={t("keys.permissions")} />
+        ),
+        cell: ({ row }) => (
+          <PermissionBadges permissions={row.original.permissions} />
+        ),
+        size: 256,
+      },
+      {
+        accessorFn: (key) => key.workers.join(", "),
+        id: "workers",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label={t("keys.workers")} />
+        ),
+        cell: ({ row }) => {
+          const workers = row.original.workers.join(", ");
+          return (
+            <code className="block truncate text-xs" title={workers}>
+              {workers}
+            </code>
+          );
+        },
+        size: 140,
+      },
+      {
+        accessorFn: keyStatus,
+        id: "status",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label={t("keys.status")} />
+        ),
+        cell: ({ row }) => {
+          const status = keyStatus(row.original);
+          return (
+            <Badge variant={status === "active" ? "default" : "outline"}>
+              {status === "active"
+                ? t("keys.active")
+                : status === "revoked"
+                  ? t("keys.revoked")
+                  : t("keys.expired")}
+            </Badge>
+          );
+        },
+        size: 96,
+      },
+      {
+        accessorKey: "lastUsedAt",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label={t("keys.lastUsed")} />
+        ),
+        cell: ({ row }) => {
+          const value = formatEpoch(row.original.lastUsedAt, locale);
+          return (
+            <span className="block truncate text-xs text-muted-foreground" title={value}>
+              {value}
+            </span>
+          );
+        },
+        size: 154,
+      },
+      {
+        accessorKey: "expiresAt",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label={t("keys.expires")} />
+        ),
+        cell: ({ row }) => {
+          const value = formatEpoch(row.original.expiresAt, locale);
+          return (
+            <span className="block truncate text-xs text-muted-foreground" title={value}>
+              {value}
+            </span>
+          );
+        },
+        size: 154,
+      },
+      {
+        id: "actions",
+        enableSorting: false,
+        header: () => <span className="sr-only">{t("keys.actions")}</span>,
+        cell: ({ row }) => {
+          const key = row.original;
+          const status = keyStatus(key);
+          return (
+            <div className="flex min-w-20 justify-end gap-1">
+              {status === "active" && (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        aria-label={t("keys.editPermissions").replace(
+                          "{name}",
+                          key.name,
+                        )}
+                        onClick={() => setEditingKey(key)}
+                        size="icon"
+                        variant="ghost"
+                      />
+                    }
+                  >
+                    <PencilIcon />
+                  </TooltipTrigger>
+                  <TooltipContent>{t("keys.edit.title")}</TooltipContent>
+                </Tooltip>
+              )}
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      aria-label={t("keys.deleteAccessible").replace(
+                        "{name}",
+                        key.name,
+                      )}
+                      onClick={() => setConfirmDelete(key)}
+                      size="icon"
+                      variant="ghost"
+                    />
+                  }
+                >
+                  <Trash2Icon />
+                </TooltipTrigger>
+                <TooltipContent>{t("keys.deleteTooltip")}</TooltipContent>
+              </Tooltip>
+            </div>
+          );
+        },
+        size: 104,
+      },
+    ],
+    [locale, t],
+  );
+
+  const table = useReactTable({
+    columns,
+    data: keysQuery.data ?? [],
+    getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    initialState: { pagination: { pageIndex: 0, pageSize: DEFAULT_PAGE_SIZE } },
+    onSortingChange: setSorting,
+    state: { sorting },
+  });
+
+  const newKeyButton = (
+    <Button onClick={() => setCreateOpen(true)}>
+      <PlusIcon /> {t("keys.new")}
+    </Button>
+  );
+
   if (!manageable) {
     return (
       <p className="text-sm text-muted-foreground">
-        This account has no keys:manage permission.
+        {t("keys.noManagement")}
       </p>
     );
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2">
+      {renderPageAction?.(newKeyButton)}
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">
-          Control-plane API keys. The secret is shown once at creation;
-          revocation is permanent.
+          {t("keys.lead")}
         </p>
-        <Button onClick={() => setCreateOpen(true)}>
-          <PlusIcon /> New key
-        </Button>
+        {!renderPageAction && newKeyButton}
       </div>
 
       {keysQuery.error ? (
         <p className="text-sm text-destructive">
-          {(keysQuery.error as Error).message}
+          {t("keys.loadError")}
         </p>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Key</TableHead>
-              <TableHead>Permissions</TableHead>
-              <TableHead>Workers</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Last used</TableHead>
-              <TableHead>Expires</TableHead>
-              <TableHead aria-label="Actions" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {(keysQuery.data ?? []).map((key) => {
-              const status = keyStatus(key);
-              return (
-                <TableRow key={key.id}>
-                  <TableCell className="font-medium">{key.name}</TableCell>
-                  <TableCell>
-                    <code className="text-xs">{key.keyPrefix}…</code>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex max-w-64 flex-wrap gap-1">
-                      {key.permissions.map((permission) => (
-                        <Badge key={permission} variant="secondary">
-                          {permission}
-                        </Badge>
-                      ))}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <code className="text-xs">{key.workers.join(", ")}</code>
-                  </TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={status === "active" ? "default" : "outline"}
-                    >
-                      {status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {formatEpoch(key.lastUsedAt)}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {formatEpoch(key.expiresAt)}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex justify-end gap-1">
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={
-                            <Button
-                              aria-label={`Delete ${key.name}`}
-                              onClick={() => setConfirmDelete(key)}
-                              size="icon"
-                              variant="ghost"
-                            />
-                          }
-                        >
-                          <Trash2Icon />
-                        </TooltipTrigger>
-                        <TooltipContent>Delete (cannot be undone)</TooltipContent>
-                      </Tooltip>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-            {keysQuery.data?.length === 0 && (
-              <TableRow>
-                <TableCell
-                  className="text-center text-sm text-muted-foreground"
-                  colSpan={8}
-                >
-                  No API keys yet.
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
+        <DataGrid
+          emptyText={keysQuery.isLoading ? t("keys.loading") : t("keys.empty")}
+          fixedLayout
+          table={table}
+        />
       )}
 
       <CreateKeyDialog
@@ -227,21 +341,33 @@ export function ApiKeys({
 
       <RevealDialog created={revealed} onClose={() => setRevealed(null)} />
 
+      {editingKey && (
+        <EditKeyDialog
+          apiKey={apiKey}
+          keyInfo={editingKey}
+          onClose={() => setEditingKey(null)}
+          onSaved={() => void invalidate()}
+          principal={principal}
+        />
+      )}
+
       <Dialog
         onOpenChange={(open) => !open && setConfirmDelete(null)}
         open={Boolean(confirmDelete)}
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete key</DialogTitle>
+            <DialogTitle>{t("keys.delete.title")}</DialogTitle>
             <DialogDescription>
-              Delete “{confirmDelete?.name}”? The credential stops working
-              immediately and this cannot be undone.
+              {t("keys.delete.description").replace(
+                "{name}",
+                confirmDelete?.name ?? "",
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button onClick={() => setConfirmDelete(null)} variant="outline">
-              Cancel
+              {t("keys.cancel")}
             </Button>
             <Button
               onClick={() => {
@@ -250,7 +376,7 @@ export function ApiKeys({
               }}
               variant="destructive"
             >
-              Delete
+              {t("keys.delete.confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -272,6 +398,7 @@ function CreateKeyDialog({
   onCreated: (created: CreatedKey) => void;
   principal: Principal;
 }) {
+  const { t } = useI18n();
   const [name, setName] = React.useState("");
   const [permissions, setPermissions] = React.useState<string[]>([
     "workers:read",
@@ -314,15 +441,12 @@ function CreateKeyDialog({
           e os dois escopos —, então pede a largura maior. */}
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>New API key</DialogTitle>
-          <DialogDescription>
-            A non-root creator can only grant a subset of its own permissions
-            and scopes — the server enforces it.
-          </DialogDescription>
+          <DialogTitle>{t("keys.create.title")}</DialogTitle>
+          <DialogDescription>{t("keys.create.description")}</DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <Label htmlFor="key-name">Name</Label>
+            <Label htmlFor="key-name">{t("keys.create.name")}</Label>
             <Input
               id="key-name"
               onChange={(event) => setName(event.target.value)}
@@ -331,7 +455,9 @@ function CreateKeyDialog({
             />
           </div>
           <fieldset className="space-y-1.5">
-            <legend className="text-sm font-medium">Permissions</legend>
+            <legend className="text-sm font-medium">
+              {t("keys.create.permissions")}
+            </legend>
             <div className="grid grid-cols-2 gap-1.5">
               {PERMISSION_CATALOG.map((permission) => {
                 const grantable =
@@ -366,7 +492,9 @@ function CreateKeyDialog({
               um rótulo quebrar — em tela estreita a largura acima não salva. */}
           <div className="grid grid-cols-2 items-end gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="key-namespaces">Namespaces (CSV)</Label>
+              <Label htmlFor="key-namespaces">
+                {t("keys.create.namespaces")}
+              </Label>
               <Input
                 id="key-namespaces"
                 onChange={(event) => setNamespaces(event.target.value)}
@@ -375,17 +503,17 @@ function CreateKeyDialog({
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="key-workers">Workers (CSV, suffix glob)</Label>
+              <Label htmlFor="key-workers">{t("keys.create.workers")}</Label>
               <Input
                 id="key-workers"
                 onChange={(event) => setWorkers(event.target.value)}
-                placeholder="* or p-abc*"
+                placeholder={t("keys.create.workersPlaceholder")}
                 value={workers}
               />
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label>Expiry</Label>
+            <Label>{t("keys.create.expiry")}</Label>
             <div className="flex gap-1.5">
               {EXPIRY_CHOICES.map((choice) => (
                 <Button
@@ -395,20 +523,20 @@ function CreateKeyDialog({
                   type="button"
                   variant={expiryDays === choice.days ? "default" : "outline"}
                 >
-                  {choice.label}
+                  {t(choice.key)}
                 </Button>
               ))}
             </div>
           </div>
           {create.error && (
             <p className="text-sm text-destructive">
-              {(create.error as Error).message}
+              {t("keys.create.error")}
             </p>
           )}
         </div>
         <DialogFooter>
           <Button onClick={onClose} variant="outline">
-            Cancel
+            {t("keys.cancel")}
           </Button>
           <Button
             disabled={
@@ -427,7 +555,7 @@ function CreateKeyDialog({
               })
             }
           >
-            Create
+            {t("keys.create.submit")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -442,6 +570,7 @@ function RevealDialog({
   created: CreatedKey | null;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const [copied, setCopied] = React.useState(false);
   React.useEffect(() => {
     if (created) setCopied(false);
@@ -450,18 +579,15 @@ function RevealDialog({
     <Dialog onOpenChange={(open) => !open && onClose()} open={Boolean(created)}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Key created</DialogTitle>
-          <DialogDescription>
-            Copy it now — the secret is not stored and will never be shown
-            again.
-          </DialogDescription>
+          <DialogTitle>{t("keys.reveal.title")}</DialogTitle>
+          <DialogDescription>{t("keys.reveal.description")}</DialogDescription>
         </DialogHeader>
         <div className="flex items-center gap-2">
           <code className="min-w-0 flex-1 break-all rounded bg-muted px-2 py-1.5 text-xs">
             {created?.rawKey}
           </code>
           <Button
-            aria-label="Copy key"
+            aria-label={t("keys.reveal.copy")}
             onClick={() => {
               if (created)
                 void navigator.clipboard
@@ -475,7 +601,7 @@ function RevealDialog({
           </Button>
         </div>
         <DialogFooter>
-          <Button onClick={onClose}>Done</Button>
+          <Button onClick={onClose}>{t("keys.reveal.done")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

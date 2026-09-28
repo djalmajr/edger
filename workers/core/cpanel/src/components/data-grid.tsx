@@ -23,17 +23,20 @@ import {
   ChevronsUpDown,
   ChevronUpIcon,
 } from "@edger/ui/icons/lucide";
+import { useI18n } from "../lib/i18n";
 
 export const DEFAULT_PAGE_SIZE = 15;
 export const PAGE_SIZE_OPTIONS = [15, 30, 60] as const;
 
 export function DataGrid<TData>({
   emptyText,
+  fixedLayout = false,
   onRowClick,
   rowLabel,
   table,
 }: {
   emptyText: string;
+  fixedLayout?: boolean;
   onRowClick?: (row: TData) => void;
   rowLabel?: (row: TData) => string;
   table: TanstackTable<TData>;
@@ -41,12 +44,26 @@ export function DataGrid<TData>({
   return (
     <div className="flex w-full flex-col gap-2.5 overflow-auto">
       <div className="overflow-hidden rounded-md border">
-        <Table>
+        <Table
+          style={
+            fixedLayout
+              ? {
+                  tableLayout: "fixed",
+                  minWidth: table.getTotalSize(),
+                  width: "100%",
+                }
+              : undefined
+          }
+        >
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
-                  <TableHead key={header.id} colSpan={header.colSpan}>
+                  <TableHead
+                    key={header.id}
+                    colSpan={header.colSpan}
+                    style={fixedLayout ? { width: header.getSize() } : undefined}
+                  >
                     {header.isPlaceholder
                       ? null
                       : flexRender(
@@ -80,7 +97,14 @@ export function DataGrid<TData>({
                   tabIndex={onRowClick ? 0 : undefined}
                 >
                   {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id}>
+                    <TableCell
+                      key={cell.id}
+                      style={
+                        fixedLayout
+                          ? { width: cell.column.getSize() }
+                          : undefined
+                      }
+                    >
                       {flexRender(
                         cell.column.columnDef.cell,
                         cell.getContext(),
@@ -139,6 +163,7 @@ function DataGridPagination<TData>({
 }: {
   table: TanstackTable<TData>;
 }) {
+  const { t } = useI18n();
   const pageCount = Math.max(table.getPageCount(), 1);
   const pageIndex = table.getState().pagination.pageIndex;
   const pageSize = table.getState().pagination.pageSize;
@@ -154,9 +179,28 @@ function DataGridPagination<TData>({
       pageCount={pageCount}
       pageIndex={pageIndex}
       pageSize={pageSize}
+      labels={{
+        firstPage: t("grid.firstPage"),
+        lastPage: t("grid.lastPage"),
+        nextPage: t("grid.nextPage"),
+        pageSummary: t("grid.pageSummary")
+          .replace("{page}", String(pageIndex + 1))
+          .replace("{count}", String(pageCount)),
+        previousPage: t("grid.previousPage"),
+        rowsPerPage: t("grid.rowsPerPage"),
+      }}
     />
   );
 }
+
+type PaginationLabels = {
+  firstPage: string;
+  lastPage: string;
+  nextPage: string;
+  pageSummary: string;
+  previousPage: string;
+  rowsPerPage: string;
+};
 
 export function PaginationControls({
   canNextPage,
@@ -169,6 +213,7 @@ export function PaginationControls({
   pageCount,
   pageIndex,
   pageSize,
+  labels,
 }: {
   canNextPage: boolean;
   canPreviousPage: boolean;
@@ -180,7 +225,16 @@ export function PaginationControls({
   pageCount: number;
   pageIndex: number;
   pageSize: number;
+  labels?: PaginationLabels;
 }) {
+  const resolvedLabels: PaginationLabels = labels ?? {
+    firstPage: "First page",
+    lastPage: "Last page",
+    nextPage: "Next page",
+    pageSummary: `Page ${pageIndex + 1} of ${pageCount}`,
+    previousPage: "Previous page",
+    rowsPerPage: "Rows per page",
+  };
   const sizeOptions = PAGE_SIZE_OPTIONS.map((value) => ({
     label: String(value),
     value: String(value),
@@ -188,11 +242,11 @@ export function PaginationControls({
   return (
     <div className="flex w-full flex-wrap items-center justify-end gap-3 overflow-auto p-1 sm:gap-4">
       <div className="font-medium text-sm">
-        Page {pageIndex + 1} of {pageCount}
+        {resolvedLabels.pageSummary}
       </div>
       <div className="flex items-center gap-2">
         <Button
-          aria-label="First page"
+          aria-label={resolvedLabels.firstPage}
           className="hidden size-8 lg:inline-flex"
           disabled={!canPreviousPage}
           onClick={onFirstPage}
@@ -202,7 +256,7 @@ export function PaginationControls({
           <ChevronsLeftIcon />
         </Button>
         <Button
-          aria-label="Previous page"
+          aria-label={resolvedLabels.previousPage}
           className="size-8"
           disabled={!canPreviousPage}
           onClick={onPreviousPage}
@@ -212,7 +266,7 @@ export function PaginationControls({
           <ChevronLeftIcon />
         </Button>
         <Button
-          aria-label="Next page"
+          aria-label={resolvedLabels.nextPage}
           className="size-8"
           disabled={!canNextPage}
           onClick={onNextPage}
@@ -222,7 +276,7 @@ export function PaginationControls({
           <ChevronRightIcon />
         </Button>
         <Button
-          aria-label="Last page"
+          aria-label={resolvedLabels.lastPage}
           className="hidden size-8 lg:inline-flex"
           disabled={!canNextPage}
           onClick={onLastPage}
@@ -233,7 +287,7 @@ export function PaginationControls({
         </Button>
       </div>
       <Combobox
-        aria-label="Rows per page"
+        aria-label={resolvedLabels.rowsPerPage}
         contentClassName="w-max! min-w-max! max-w-none!"
         onValueChange={(value) => onPageSizeChange(Number(value))}
         options={sizeOptions}

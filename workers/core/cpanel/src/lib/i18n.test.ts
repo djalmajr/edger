@@ -156,12 +156,25 @@ describe("cPanel i18n", () => {
     expect(translate("en-US", "routing.confirmDeleteBody")).toContain(
       "not an empty tenant list",
     );
-    expect(translate("pt-BR", "routing.flags")).toContain("setup Rancher");
-    expect(translate("pt-BR", "routing.flags")).toContain("não diz se estão ligadas");
-    expect(translate("en-US", "routing.flags")).toContain("Rancher or install setup");
-    expect(translate("en-US", "routing.flags")).toContain("does not say whether they are on");
-    expect(translate("es-ES", "routing.flags")).toContain("setup Rancher");
-    expect(translate("es-ES", "routing.flags")).toContain("no dice si están encendidas");
+    const routingFlagsPt = translate("pt-BR", "routing.flags");
+    expect(routingFlagsPt).toContain("setup Rancher");
+    expect(routingFlagsPt).toContain("restrição por tenant");
+    expect(routingFlagsPt).toContain("divisão por peso");
+    expect(routingFlagsPt).toContain("só afeta requisições");
+    expect(routingFlagsPt).toContain("opção de roteamento ponderado está ligada");
+
+    const routingFlagsEn = translate("en-US", "routing.flags");
+    expect(routingFlagsEn).toContain("Rancher or installation setup");
+    expect(routingFlagsEn).toContain("Tenant restrictions affect requests only");
+    expect(routingFlagsEn).toContain("Weighted routing affects requests only");
+    expect(routingFlagsEn).toContain("option is enabled");
+
+    const routingFlagsEs = translate("es-ES", "routing.flags");
+    expect(routingFlagsEs).toContain("setup Rancher");
+    expect(routingFlagsEs).toContain("restricción por tenant");
+    expect(routingFlagsEs).toContain("enrutamiento ponderado");
+    expect(routingFlagsEs).toContain("solo afecta las peticiones");
+    expect(routingFlagsEs).toContain("está activada");
     expect(translate("en-US", "routing.confirmApply")).toBe("Save configuration");
     expect(translate("en-US", "routing.saved")).toContain("when the matching options are on");
     expect(translate("en-US", "routing.saved")).not.toContain("not active");

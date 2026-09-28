@@ -16,8 +16,25 @@ if ((process.versions as { bun?: string }).bun) {
     };
   };
   bunTest.mock.module("@edger/ui/icons/lucide", () => ({
+    ActivityIcon: Icon,
+    BoxIcon: Icon,
+    CheckIcon: Icon,
+    ChevronDownIcon: Icon,
+    ChevronLeftIcon: Icon,
+    ChevronRightIcon: Icon,
+    ChevronsLeftIcon: Icon,
+    ChevronsRightIcon: Icon,
+    ChevronsUpDown: Icon,
+    CircleAlertIcon: Icon,
+    CircleCheckIcon: Icon,
+    CopyIcon: Icon,
+    CpuIcon: Icon,
+    ListIcon: Icon,
+    PencilIcon: Icon,
     PlusIcon: Icon,
+    RouteIcon: Icon,
     Trash2Icon: Icon,
+    ChevronUpIcon: Icon,
     XIcon: Icon,
   }));
 }

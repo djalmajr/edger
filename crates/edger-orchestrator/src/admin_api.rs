@@ -10,6 +10,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, delete, get, patch, post};
 use axum::{Json, Router};
+use edger_core::admin::UpdateApiKeyPermissionsRequest;
 use edger_core::{
     principal_can_access_worker, principal_has_permission, require_same_origin, root_principal,
     AdminApiKeysResponse, AdminCatalogItem, AdminCatalogResponse, AdminErrorResponse,
@@ -109,7 +110,10 @@ pub fn router() -> Router<OrchestratorState> {
         .route("/api/admin/state/export", get(state_export_route))
         .route("/api/admin/keys", get(list_api_keys).post(create_api_key))
         .route("/api/admin/keys/{id}/revoke", post(revoke_api_key))
-        .route("/api/admin/keys/{id}", delete(delete_api_key))
+        .route(
+            "/api/admin/keys/{id}",
+            patch(update_api_key_permissions).delete(delete_api_key),
+        )
         .route(
             "/api/admin/login",
             post(login_route).layer(DefaultBodyLimit::max(CONSOLE_BODY_LIMIT)),
@@ -284,6 +288,28 @@ async fn revoke_api_key(
     }
 }
 
+async fn update_api_key_permissions(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+    body: Bytes,
+) -> Response {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "keys:manage")?;
+        validate_admin_mutation_security("PATCH", &headers, &principal)?;
+        let service = key_service(&state)?;
+        let request: UpdateApiKeyPermissionsRequest = serde_json::from_slice(&body)
+            .map_err(|err| CoreError::new("VALIDATION_ERROR", format!("invalid body: {err}")))?;
+        service.update_permissions(&principal, id, request.permissions)
+    }
+    .await;
+    match result {
+        Ok(key) => Json(key).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
 async fn delete_api_key(
     State(state): State<OrchestratorState>,
     headers: HeaderMap,
@@ -310,7 +336,12 @@ async fn delete_api_key(
 
 async fn session(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
     match authenticate(&state, &headers).await {
-        Ok(principal) => Json(AdminSessionResponse { principal }).into_response(),
+        Ok(principal) => Json(AdminSessionResponse {
+            principal,
+            tenant_routing_enabled: state.server.tenant_routing_enabled(),
+            weighted_routing_enabled: state.server.weighted_routing_enabled(),
+        })
+        .into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
 }
@@ -2503,6 +2534,7 @@ pub(crate) fn map_error_status(err: &CoreError) -> StatusCode {
         | "DEPLOY_PUBLIC_VERSION_IMMUTABLE"
         | "DEPLOY_HEALTH_CHECK_FAILED"
         | "HEALTH_CHECK_NOT_CONFIGURED"
+        | "KEY_REVOKED"
         | "KEY_NOT_REVOKED" => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }

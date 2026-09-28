@@ -1286,7 +1286,8 @@ mod tests {
         fs::create_dir_all(&user).unwrap();
         fs::create_dir_all(&overlay).unwrap();
         static_worker(&user, "app@1.0.0", "app", "1.0.0");
-        let index = load_manifests_from_roots(&[], Some(&overlay), &[user.clone()]).unwrap();
+        let index =
+            load_manifests_from_roots(&[], Some(&overlay), std::slice::from_ref(&user)).unwrap();
         let policy = allowlist_policy("app");
         persist_routing_policy(&index, &policy).unwrap();
 
@@ -1323,7 +1324,7 @@ mod tests {
 #[cfg(test)]
 thread_local! {
     static POLICY_PUT_DURING_RESCAN: std::cell::RefCell<Option<RoutingPolicy>> =
-        std::cell::RefCell::new(None);
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]

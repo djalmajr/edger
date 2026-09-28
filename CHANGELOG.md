@@ -4,6 +4,21 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
+## [0.3.2-rc.6]
+
+- The cPanel overview now follows the selected language and shortens long
+  worker identifiers in the table while preserving the full value on hover.
+- The routing policy editor reflects the runtime feature flags and stays
+  disabled in lab-dev while tenant and weighted routing are off.
+- API key permissions can be edited without replacing the secret; the server
+  checks the editor's grants and refreshes authorization after an update.
+- Permission badges in the API key table are limited to two lines with a
+  count and accessible list of hidden permissions.
+- The API key list uses the shared DataGrid with a bounded permissions column;
+  its creation action shares the page action row, and the page follows the
+  selected language.
+- Token sign-in shows progress only on its own button.
+
 ## [0.3.2-rc.5]
 
 - Tenant routing adds opt-in per-app tenant allowlists resolved through

@@ -44,15 +44,31 @@ const choiceClass =
 export function RoutingPolicyPanel({
   apiKey,
   principal,
+  tenantRoutingEnabled,
   versions,
+  weightedRoutingEnabled,
 }: {
   apiKey: string;
   principal: Principal;
+  tenantRoutingEnabled: boolean;
   versions: Worker[];
+  weightedRoutingEnabled: boolean;
 }) {
   const { t } = useI18n();
   const headingId = React.useId();
   if (!can(principal, "workers:read")) return null;
+  if (!tenantRoutingEnabled && !weightedRoutingEnabled) {
+    return (
+      <section aria-labelledby={headingId} className="grid gap-2 border-t p-3">
+        <h2 className="font-heading text-sm font-medium" id={headingId}>
+          {t("routing.title")}
+        </h2>
+        <p className="max-w-prose text-sm text-muted-foreground">
+          {t("routing.disabledInstance")}
+        </p>
+      </section>
+    );
+  }
   const block = routingPolicyBlock(versions);
   if (block !== "ok") {
     return (

@@ -46,7 +46,9 @@ export function AdminLogin({
   const [token, setToken] = React.useState("");
   const [showToken, setShowToken] = React.useState(false);
   const [tokenOpen, setTokenOpen] = React.useState(false);
-  const [busy, setBusy] = React.useState(false);
+  const [submittingForm, setSubmittingForm] = React.useState<
+    "password" | "token" | null
+  >(null);
   const [error, setError] = React.useState("");
 
   // The seed claim is only shown when the runtime confirms it; an unknown or
@@ -91,10 +93,10 @@ export function AdminLogin({
     event: React.FormEvent<HTMLFormElement>,
   ): Promise<void> {
     event.preventDefault();
-    if (busy) return;
+    if (submittingForm !== null) return;
     const name = username.trim();
     if (!name || !password) return;
-    setBusy(true);
+    setSubmittingForm("password");
     setError("");
     try {
       const token = await login(name, password);
@@ -106,7 +108,7 @@ export function AdminLogin({
       // Fixed copy per status: the password never reaches the error surface.
       setError(describeLoginError(reason));
     } finally {
-      setBusy(false);
+      setSubmittingForm(null);
     }
   }
 
@@ -116,10 +118,10 @@ export function AdminLogin({
     event: React.FormEvent<HTMLFormElement>,
   ): Promise<void> {
     event.preventDefault();
-    if (busy) return;
+    if (submittingForm !== null) return;
     const value = token.trim();
     if (!value) return;
-    setBusy(true);
+    setSubmittingForm("token");
     setError("");
     try {
       await loadAll(value);
@@ -133,7 +135,7 @@ export function AdminLogin({
             : t("auth.loginFailed"),
       );
     } finally {
-      setBusy(false);
+      setSubmittingForm(null);
     }
   }
 
@@ -204,11 +206,15 @@ export function AdminLogin({
                   </InputGroup>
                 </div>
                 <Button
-                  disabled={busy || !username.trim() || !password}
+                  disabled={
+                    submittingForm !== null || !username.trim() || !password
+                  }
                   type="submit"
                 >
                   <LogInGlyph />
-                  {busy ? t("auth.entering") : t("auth.enter")}
+                  {submittingForm === "password"
+                    ? t("auth.entering")
+                    : t("auth.enter")}
                 </Button>
               </form>
             )}
@@ -248,11 +254,13 @@ export function AdminLogin({
                   </InputGroupButton>
                 </InputGroup>
                 <Button
-                  disabled={busy || !token.trim()}
+                  disabled={submittingForm !== null || !token.trim()}
                   type="submit"
                   variant="outline"
                 >
-                  {busy ? t("auth.entering") : t("auth.enter")}
+                  {submittingForm === "token"
+                    ? t("auth.entering")
+                    : t("auth.enter")}
                 </Button>
               </form>
             )}

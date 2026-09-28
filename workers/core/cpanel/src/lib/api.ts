@@ -94,6 +94,10 @@ export type CreateKeyRequest = {
   expiresAt?: number;
 };
 
+export type UpdateKeyPermissionsRequest = {
+  permissions: string[];
+};
+
 export type CreatedKey = { key: ApiKey; rawKey: string };
 export type Worker = {
   defaultVersion?: string | null;
@@ -161,7 +165,9 @@ export type RuntimeData = {
     workers?: RuntimeWorker[];
   } | null;
   principal: Principal;
+  tenantRoutingEnabled?: boolean;
   workerErrors: Record<string, { count?: number; latest?: { code?: string } }>;
+  weightedRoutingEnabled?: boolean;
   workers: Worker[];
 };
 
@@ -243,7 +249,11 @@ export async function apiDownload(
 }
 
 export async function loadAll(apiKey: string): Promise<RuntimeData> {
-  const session = await apiJson<{ principal: Principal }>(
+  const session = await apiJson<{
+    principal: Principal;
+    tenantRoutingEnabled?: unknown;
+    weightedRoutingEnabled?: unknown;
+  }>(
     apiKey,
     "/api/admin/session",
   );
@@ -262,7 +272,14 @@ export async function loadAll(apiKey: string): Promise<RuntimeData> {
       "/metrics/stats",
     ).catch(() => null),
   ]);
-  return { metricsStats, principal: session.principal, workerErrors, workers };
+  return {
+    metricsStats,
+    principal: session.principal,
+    tenantRoutingEnabled: session.tenantRoutingEnabled === true,
+    workerErrors,
+    weightedRoutingEnabled: session.weightedRoutingEnabled === true,
+    workers,
+  };
 }
 
 export function kindLabel(kind: unknown) {

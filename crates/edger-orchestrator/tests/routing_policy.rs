@@ -444,7 +444,8 @@ fn delete_failure_on_a_later_root_keeps_the_allowlist() {
     fs::create_dir_all(&user).unwrap();
     fs::create_dir_all(&overlay).unwrap();
     static_worker(&user, "app@1.0.0", "app", "1.0.0");
-    let index = load_manifests_from_roots(&[], Some(&overlay), &[user.clone()]).unwrap();
+    let index =
+        load_manifests_from_roots(&[], Some(&overlay), std::slice::from_ref(&user)).unwrap();
     let policy = parse_routing_policy(
         br#"{"name":"app","tenantAccess":{"mode":"allowlist","tenants":["acme"]}}"#,
     )

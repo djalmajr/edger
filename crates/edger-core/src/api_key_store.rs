@@ -24,6 +24,12 @@ pub trait ApiKeyStore: Send + Sync {
     fn lookup_by_key(&self, raw_key: &str) -> Result<Option<ApiKeyPrincipal>, CoreError>;
     fn list_keys(&self) -> Result<Vec<AdminApiKeyInfo>, CoreError>;
     fn get_key(&self, id: u64) -> Result<Option<AdminApiKeyInfo>, CoreError>;
+    /// Troca somente as permissões; retorna KEY_REVOKED para keys terminais.
+    fn update_key_permissions(
+        &self,
+        id: u64,
+        permissions: &[String],
+    ) -> Result<AdminApiKeyInfo, CoreError>;
     fn insert_key(&self, new_key: NewApiKey<'_>) -> Result<u64, CoreError>;
     /// Revogação TERMINAL (sem reativação). `false` = id inexistente.
     fn revoke_key(&self, id: u64) -> Result<bool, CoreError>;

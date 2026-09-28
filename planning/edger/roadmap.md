@@ -62,8 +62,8 @@
 | Fase 22: Workers Core e WebIDE | [`epics/22-core-workers-webide/`](epics/22-core-workers-webide/00-overview.md) | 8 | **completed** (estrutura, overlay, imagem mínima e workbench WebIDE validados) | Fase 14, Fase 21 |
 | Fase 23: Secrets versionados | [`epics/23-secrets-versionados/`](epics/23-secrets-versionados/00-overview.md) | 1 | planned (contrato, threat model e provider E2E) | Fase 15, Fase 22 |
 | Fase 24: Frameworks Deno SSR | [`epics/24-frameworks-deno-ssr/`](epics/24-frameworks-deno-ssr/00-overview.md) | 3 | **completed** (nove frameworks oficiais mais NestJS, Fastify e Koa; Remix experimental, Lume estático) | Fase 14, Fase 15 |
-| Fase 25: Tenant routing e rollout ponderado | [`epics/25-tenant-routing/`](epics/25-tenant-routing/00-overview.md) | 4 | **implementado e revisado localmente** (Rancher UI e carga em cluster pendentes; sem deploy) | Fase 11, Fase 14, Tenancit identify |
-| Fase 26: Autenticação da console | [`epics/26-console-auth/`](epics/26-console-auth/00-overview.md) | 4 | implementada e verificada localmente; sem release | Fase 12, API keys do control plane |
+| Fase 25: Tenant routing e rollout ponderado | [`epics/25-tenant-routing/`](epics/25-tenant-routing/00-overview.md) | 4 | **rc.5 publicada no lab-dev, flags desligadas** (Rancher UI e carga com flags ligadas em cluster pendentes) | Fase 11, Fase 14, Tenancit identify |
+| Fase 26: Autenticação da console | [`epics/26-console-auth/`](epics/26-console-auth/00-overview.md) | 4 | **rc.5 publicada e login por senha validado no lab-dev**; fluxo visual completo de gestão ainda pendente | Fase 12, API keys do control plane |
 
 ## Suggested sequence
 1. Fase 1 (Fundação) -- Alinha o skeleton real e estabelece cultura (AGENTS, testes, gate). Alta prioridade porque desbloqueia tudo e evita dívida técnica.

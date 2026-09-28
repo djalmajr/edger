@@ -14,6 +14,7 @@ import {
   isSessionToken,
   isValidUsername,
   kindLabel,
+  loadAll,
   listUsers,
   login,
   loginOptions,
@@ -58,6 +59,41 @@ describe("cPanel API helpers", () => {
   it("orders semantic versions numerically", () => {
     expect(compareSemver("1.10.0", "1.2.9")).toBeGreaterThan(0);
     expect(compareSemver("2.0.0", "2.0.0")).toBe(0);
+  });
+
+  it("loads effective routing flags and fails closed for absent or malformed values", async () => {
+    const originalFetch = globalThis.fetch;
+    const sessions = [
+      { tenantRoutingEnabled: true, weightedRoutingEnabled: false },
+      { tenantRoutingEnabled: "true", weightedRoutingEnabled: null },
+      {},
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith("/api/admin/session")) {
+        return Response.json({ principal: { isRoot: true }, ...sessions.shift() });
+      }
+      if (path.endsWith("/api/admin/workers")) return Response.json({ workers: [] });
+      if (path.endsWith("/api/admin/workers/error-summary")) {
+        return Response.json({ summary: {} });
+      }
+      if (path.endsWith("/metrics/stats")) return Response.json({});
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    globalThis.fetch = fetchMock;
+    try {
+      const enabled = await loadAll("root-key");
+      expect(enabled.tenantRoutingEnabled).toBe(true);
+      expect(enabled.weightedRoutingEnabled).toBe(false);
+      const malformed = await loadAll("root-key");
+      expect(malformed.tenantRoutingEnabled).toBe(false);
+      expect(malformed.weightedRoutingEnabled).toBe(false);
+      const absent = await loadAll("root-key");
+      expect(absent.tenantRoutingEnabled).toBe(false);
+      expect(absent.weightedRoutingEnabled).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

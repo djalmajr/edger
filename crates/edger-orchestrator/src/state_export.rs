@@ -462,7 +462,7 @@ static TEST_BUILD_PAUSE_END: std::sync::Mutex<Option<BuildPause>> = std::sync::M
 /// ar (testes paralelos não consomem o gancho do outro nem travam no meio
 /// do `build_zip` com ele armado).
 #[cfg(test)]
-static TEST_BUILD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static TEST_BUILD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
 struct BuildPause {
@@ -501,7 +501,7 @@ mod tests {
     /// mutações com `STATE_EXPORT_IN_PROGRESS` até a montagem terminar.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn guard_survives_future_drop_until_build_finishes() {
-        let _lock = TEST_BUILD_LOCK.lock().unwrap();
+        let _lock = TEST_BUILD_LOCK.lock().await;
 
         let root = tempfile::tempdir().unwrap();
         let worker = root.path().join("hook-app@1.0.0");
@@ -572,7 +572,7 @@ mod tests {
     /// `edger-state-*.zip` fica no diretório temporário usado pelo teste.
     #[test]
     fn failure_during_build_removes_temp_zip() {
-        let _lock = TEST_BUILD_LOCK.lock().unwrap();
+        let _lock = TEST_BUILD_LOCK.blocking_lock();
 
         let temp = tempfile::tempdir().unwrap();
         // Raiz de usuário que é um ARQUIVO: o `read_dir` falha no meio do
@@ -632,7 +632,7 @@ mod tests {
     /// `TempPath` apaga o ZIP.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelled_export_leaves_zero_zips() {
-        let _lock = TEST_BUILD_LOCK.lock().unwrap();
+        let _lock = TEST_BUILD_LOCK.lock().await;
 
         let root = tempfile::tempdir().unwrap();
         let worker = root.path().join("hook-app@1.0.0");

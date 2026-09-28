@@ -41,6 +41,11 @@ Para desenvolvimento local, `ROOT_API_KEY` cria um principal sintético root:
 curl -H 'authorization: Bearer test-root' http://127.0.0.1:19080/hello-world
 ----
 
+`GET /api/admin/session` exige uma credencial válida e retorna `principal`,
+`tenantRoutingEnabled` e `weightedRoutingEnabled`. Os dois últimos campos são
+booleanos que refletem as flags efetivas de roteamento da instância em
+execução.
+
 ==== Dispatch de workers
 
 [cols="1,2,3",options="header"]
@@ -105,8 +110,8 @@ absoluta, sem `userinfo`) e, senão, do header `Host`.
 
 ==== Gestão de api-keys
 
-O control plane emite api-keys persistentes sob `/api/admin/keys`. As quatro
-rotas exigem a permission `keys:manage`, e as três mutações passam pela
+O control plane emite api-keys persistentes sob `/api/admin/keys`. As cinco
+rotas exigem a permission `keys:manage`, e as quatro mutações passam pela
 validação de segurança de mutação do Admin API: requisição vinda de browser
 (com `Origin`, `Sec-Fetch-Mode` ou `Sec-Fetch-Site`) precisa de `Origin`
 compatível com `Host`. Instância sem store de keys responde `503` com
@@ -133,11 +138,25 @@ estado operacional explícito, não um `404` mentiroso.
   contrapartida de reativação. Repetir não reescreve o timestamp original;
   id inexistente responde `404`.
 
+| `PATCH`
+| `/api/admin/keys/{id}`
+| Atualiza somente `permissions`; responde `200` com a metadata atualizada.
+  Exige o corpo estrito `{"permissions":[...]}`. Campos desconhecidos,
+  permission inválida ou lista vazia respondem `400` com `VALIDATION_ERROR`;
+  concessão fora das permissões ou do escopo do editor responde `403` com
+  `KEY_GRANT_DENIED`; id inexistente responde `404` com `NOT_FOUND`, e key
+  revogada responde `409` com `KEY_REVOKED`.
+
 | `DELETE`
 | `/api/admin/keys/{id}`
 | Apaga a linha. Exige revogação prévia: key ainda viva responde `409` com
   `KEY_NOT_REVOKED`.
 |===
+
+No `PATCH`, `name`, `role`, `namespaces`, `workers`, `expiresAt` e o segredo
+não são alterados. A validação compara as novas permissions com o catálogo e
+com as permissões do editor, considerando também os namespaces e workers já
+associados à key. Após a gravação, o cache de autenticação é invalidado.
 
 Corpo do create:
 

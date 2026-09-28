@@ -2328,7 +2328,7 @@ mod tests {
             .reset_user_password_tx(id, &hash_password(STRONG_2).unwrap(), 1_700_000_601)
             .unwrap_err();
         assert_eq!(err.code, "STORE_ERROR");
-        assert!(matches!(service.login(ip_b(), "alice", OP_PASSWORD), Ok(_)));
+        assert!(service.login(ip_b(), "alice", OP_PASSWORD).is_ok());
         assert!(matches!(
             service.login(ip_b(), "alice", STRONG_2).unwrap_err(),
             ConsoleAuthError::InvalidCredentials

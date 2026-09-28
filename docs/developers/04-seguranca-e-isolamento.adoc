@@ -109,7 +109,7 @@ anti-escalada.
   O resultado sai filtrado pelo escopo da key, não só pela permission.
 
 | `keys:manage`
-| Os quatro endpoints de api-keys e, no cPanel, a tela API Keys.
+| Os cinco endpoints de api-keys e, no cPanel, a tela API Keys.
 |===
 
 O gate é o `require_permission` de cada handler, e o principal root passa por
@@ -126,9 +126,10 @@ sempre pôde; `files:delete` nunca entra, porque era capacidade inexistente.
 A migração é idempotente: com `user_version >= 1` a abertura é no-op.
 
 Os endpoints de gestão são `GET /api/admin/keys`, `POST /api/admin/keys`,
-`POST /api/admin/keys/{id}/revoke` e `DELETE /api/admin/keys/{id}`. Todos
-exigem `keys:manage`, e as mutações ainda passam pela checagem de same-origin
-quando a request vem de browser.
+`POST /api/admin/keys/{id}/revoke`, `PATCH /api/admin/keys/{id}` e
+`DELETE /api/admin/keys/{id}`. Todos exigem `keys:manage`, e as quatro
+mutações ainda passam pela checagem de same-origin quando a request vem de
+browser.
 
 ==== Escopo por namespace e por worker
 
@@ -188,10 +189,11 @@ fora do root de install, o nome é confrontado com o escopo da key e um pacote
 fora do escopo é recusado com `403` `FORBIDDEN` antes de qualquer efeito. Aqui
 o nome veio do próprio chamador; não há o que esconder.
 
-==== Anti-escalada na criação de keys
+==== Anti-escalada na criação e edição de keys
 
-`validate_key_grant` é puro, vive em `edger-core` e roda no create antes do
-insert: quem concede não dá o que não tem.
+`validate_key_grant` é puro e vive em `edger-core`. Roda na criação antes do
+insert e na edição antes de atualizar permissions: quem concede não dá o que
+não tem.
 
 [cols="1,3",options="header"]
 |===
@@ -200,12 +202,17 @@ insert: quem concede não dá o que não tem.
 | Permission fora do `PERMISSION_CATALOG`
 | `400` `VALIDATION_ERROR`. `"*"` cai aqui, inclusive vindo de root.
 
-| Permission que o criador não possui
+| Permission que o criador ou editor do PATCH não possui
 | `403` `KEY_GRANT_DENIED`.
 
-| `namespaces` e `workers` concedidos
+| `namespaces` e `workers` concedidos na criação
 | Liberados quando o criador é root ou tem `"*"` no escopo correspondente;
   fora disso, exigem pertinência literal na lista do criador.
+
+| Permissions editadas em uma key
+| Precisam pertencer ao catálogo e ao conjunto do editor. A validação também
+  considera os `namespaces` e `workers` existentes na key; o PATCH não altera
+  esses escopos.
 
 | Lista de permissions, namespaces ou workers vazia
 | `400` `VALIDATION_ERROR`; escopo amplo se escreve explicitamente como `"*"`.
@@ -216,9 +223,12 @@ Não há subsunção de glob: um criador com `workers: ["p-abc*"]` concede
 glob contém outro é a esperteza que vira bug de segurança, e recusar custa
 apenas uma entrada a mais na lista.
 
-A anti-escalada cobre o create e só ele. Listar, revogar e apagar não filtram
-por escopo: qualquer portador de `keys:manage` enxerga e derruba as keys da
-instância inteira, inclusive as de outro tenant.
+`PATCH /api/admin/keys/{id}` aceita somente `{"permissions":[...]}`; campos
+adicionais são recusados. Uma key revogada responde `409` com `KEY_REVOKED`.
+O PATCH altera apenas permissions e invalida o cache de autenticação após
+gravar. Listar, revogar e apagar não filtram por escopo: qualquer portador de
+`keys:manage` enxerga e derruba as keys da instância inteira, inclusive as de
+outro tenant.
 
 ==== Isolamento JS/TS
 
