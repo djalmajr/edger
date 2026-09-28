@@ -24,6 +24,14 @@ impl IsolateFactory for StubFactory {
 }
 
 fn build_app(root: &std::path::Path) -> axum::Router {
+    build_app_with_routing_flags(root, false, false)
+}
+
+fn build_app_with_routing_flags(
+    root: &std::path::Path,
+    tenant_routing_enabled: bool,
+    weighted_routing_enabled: bool,
+) -> axum::Router {
     let dir = root.join("app");
     fs::create_dir_all(&dir).unwrap();
     fs::write(
@@ -34,6 +42,12 @@ fn build_app(root: &std::path::Path) -> axum::Router {
     fs::write(dir.join("index.html"), "test").unwrap();
     let index = load_manifests_from_roots(&[], None, &[root.to_path_buf()]).unwrap();
     let server = ServerState::new_unready();
+    if tenant_routing_enabled {
+        server.enable_tenant_routing();
+    }
+    if weighted_routing_enabled {
+        server.enable_weighted_routing();
+    }
     let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(StubFactory));
     server.mark_ready(pool.clone());
     build_pipeline(OrchestratorState {
@@ -42,6 +56,33 @@ fn build_app(root: &std::path::Path) -> axum::Router {
         index,
         auth: ControlAuth::with_static_key("test-root"),
     })
+}
+
+#[tokio::test]
+async fn session_reports_effective_routing_flags() {
+    let root = tempfile::tempdir().unwrap();
+    let app = build_app(root.path());
+    let (status, json) = send(app.clone(), "GET", "/api/admin/session", true, "").await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert!(json.get("principal").is_some());
+    assert_eq!(json["tenantRoutingEnabled"], false);
+    assert_eq!(json["weightedRoutingEnabled"], false);
+    let (status, _) = send(app, "GET", "/api/admin/session", false, "").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let root = tempfile::tempdir().unwrap();
+    let app = build_app_with_routing_flags(root.path(), true, false);
+    let (status, json) = send(app, "GET", "/api/admin/session", true, "").await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["tenantRoutingEnabled"], true);
+    assert_eq!(json["weightedRoutingEnabled"], false);
+
+    let root = tempfile::tempdir().unwrap();
+    let app = build_app_with_routing_flags(root.path(), false, true);
+    let (status, json) = send(app, "GET", "/api/admin/session", true, "").await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["tenantRoutingEnabled"], false);
+    assert_eq!(json["weightedRoutingEnabled"], true);
 }
 
 async fn send(

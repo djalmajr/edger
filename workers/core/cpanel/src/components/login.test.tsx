@@ -47,6 +47,14 @@ function storeOnAuthenticated() {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe("AdminLogin", () => {
   beforeAll(() => {
     // bun evaluates all test files' modules before any test runs; a sibling
@@ -118,6 +126,118 @@ describe("AdminLogin", () => {
           "ses-abc",
     );
     expect(sessionCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows progress only on the token form and restores both buttons after failure", async () => {
+    localStorage.setItem("edger.cpanel.locale", "pt-BR");
+    const onAuthenticated = storeOnAuthenticated();
+    const pendingSession = deferred<Response>();
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ passwordEnabled: true, rootSeeded: true }),
+      )
+      .mockReturnValueOnce(pendingSession.promise);
+    renderLogin(onAuthenticated);
+
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Entrar com token" }),
+    );
+    await user.type(screen.getByLabelText("Usuário"), "root");
+    await user.type(screen.getByLabelText("Senha"), "fake-password");
+    await user.type(screen.getByLabelText("Token"), "fake-token");
+
+    const passwordForm = screen.getByLabelText("Senha").closest("form");
+    const tokenForm = screen.getByLabelText("Token").closest("form");
+    if (!passwordForm || !tokenForm) throw new Error("login form not found");
+    await user.click(within(tokenForm).getByRole("button", { name: "Entrar" }));
+
+    expect(
+      within(tokenForm)
+        .getByRole("button", { name: "Entrando…" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    expect(
+      within(passwordForm)
+        .getByRole("button", { name: "Entrar" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    expect(
+      within(passwordForm).queryByRole("button", { name: "Entrando…" }),
+    ).toBeNull();
+
+    pendingSession.resolve(
+      jsonResponse({ message: "unauthorized" }, { status: 401 }),
+    );
+    await screen.findByText("Token inválido.");
+    expect(
+      within(tokenForm)
+        .getByRole("button", { name: "Entrar" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+    expect(
+      within(passwordForm)
+        .getByRole("button", { name: "Entrar" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+    expect(onAuthenticated).not.toHaveBeenCalled();
+  });
+
+  it("shows progress only on the password form and restores both buttons after failure", async () => {
+    localStorage.setItem("edger.cpanel.locale", "pt-BR");
+    const onAuthenticated = storeOnAuthenticated();
+    const pendingLogin = deferred<Response>();
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ passwordEnabled: true, rootSeeded: true }),
+      )
+      .mockReturnValueOnce(pendingLogin.promise);
+    renderLogin(onAuthenticated);
+
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Entrar com token" }),
+    );
+    await user.type(screen.getByLabelText("Usuário"), "root");
+    await user.type(screen.getByLabelText("Senha"), "fake-password");
+    await user.type(screen.getByLabelText("Token"), "fake-token");
+
+    const passwordForm = screen.getByLabelText("Senha").closest("form");
+    const tokenForm = screen.getByLabelText("Token").closest("form");
+    if (!passwordForm || !tokenForm) throw new Error("login form not found");
+    await user.click(
+      within(passwordForm).getByRole("button", { name: "Entrar" }),
+    );
+
+    expect(
+      within(passwordForm)
+        .getByRole("button", { name: "Entrando…" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    expect(
+      within(tokenForm)
+        .getByRole("button", { name: "Entrar" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    expect(
+      within(tokenForm).queryByRole("button", { name: "Entrando…" }),
+    ).toBeNull();
+
+    pendingLogin.resolve(
+      jsonResponse({ message: "invalid credentials" }, { status: 401 }),
+    );
+    await screen.findByText("Usuário ou senha inválidos.");
+    expect(
+      within(passwordForm)
+        .getByRole("button", { name: "Entrar" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+    expect(
+      within(tokenForm)
+        .getByRole("button", { name: "Entrar" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+    expect(onAuthenticated).not.toHaveBeenCalled();
   });
 
   it("treats 401 as invalid credentials and never shows the password", async () => {

@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -20,7 +21,7 @@ use edger_core::{
     validate_key_grant, AdminApiKeyCreatedResponse, AdminApiKeyInfo, ApiKeyPrincipal, ApiKeyStore,
     CoreError, CreateApiKeyRequest, NewApiKey, PERMISSION_CATALOG,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -316,6 +317,47 @@ impl ApiKeyStore for SqliteApiKeyStore {
         }
     }
 
+    fn update_key_permissions(
+        &self,
+        id: u64,
+        permissions: &[String],
+    ) -> Result<AdminApiKeyInfo, CoreError> {
+        let permissions_json = serde_json::to_string(permissions).map_err(json_err)?;
+        let mut conn = self.conn.lock().map_err(|_| lock_err())?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_err)?;
+        let revoked_at: Option<i64> = tx
+            .query_row(
+                "SELECT revoked_at FROM api_keys WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err)?
+            .ok_or_else(|| CoreError::new("NOT_FOUND", format!("api key {id} not found")))?;
+        if revoked_at.is_some() {
+            return Err(CoreError::new(
+                "KEY_REVOKED",
+                "revoked api keys cannot be edited",
+            ));
+        }
+        tx.execute(
+            "UPDATE api_keys SET permissions = ?2 WHERE id = ?1 AND revoked_at IS NULL",
+            params![id, permissions_json],
+        )
+        .map_err(db_err)?;
+        let key = {
+            let mut stmt = tx
+                .prepare(&format!("SELECT {KEY_COLUMNS} FROM api_keys WHERE id = ?1"))
+                .map_err(db_err)?;
+            let row = stmt.query_row(params![id], map_key_row).map_err(db_err)?;
+            info_from_row(row)?
+        };
+        tx.commit().map_err(db_err)?;
+        Ok(key)
+    }
+
     fn insert_key(&self, new_key: NewApiKey<'_>) -> Result<u64, CoreError> {
         let hash = Self::hash_key(new_key.raw_key);
         let prefix = Self::key_prefix(new_key.raw_key);
@@ -398,8 +440,11 @@ impl ApiKeyStore for SqliteApiKeyStore {
 /// ciclo de gestão com a anti-escalada aplicada ANTES do insert.
 pub struct ApiKeyService {
     store: SqliteApiKeyStore,
-    cache: RwLock<HashMap<String, (ApiKeyPrincipal, Instant)>>,
+    cache: RwLock<HashMap<String, (ApiKeyPrincipal, Instant, u64)>>,
+    cache_generation: AtomicU64,
     last_touch: RwLock<HashMap<u64, Instant>>,
+    #[cfg(test)]
+    after_store_lookup: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl ApiKeyService {
@@ -415,7 +460,10 @@ impl ApiKeyService {
         Self {
             store,
             cache: RwLock::new(HashMap::new()),
+            cache_generation: AtomicU64::new(0),
             last_touch: RwLock::new(HashMap::new()),
+            #[cfg(test)]
+            after_store_lookup: Mutex::new(None),
         }
     }
 
@@ -435,21 +483,38 @@ impl ApiKeyService {
     /// callers that must distinguish database errors from invalid keys.
     pub fn try_authenticate(&self, raw_key: &str) -> Result<Option<ApiKeyPrincipal>, CoreError> {
         let cache_key = SqliteApiKeyStore::hash_key(raw_key);
+        let lookup_generation = self.cache_generation.load(Ordering::SeqCst);
         if let Ok(cache) = self.cache.read() {
-            if let Some((principal, at)) = cache.get(&cache_key) {
-                if at.elapsed() < CACHE_TTL {
+            if let Some((principal, at, generation)) = cache.get(&cache_key) {
+                if *generation == lookup_generation && at.elapsed() < CACHE_TTL {
                     let principal = principal.clone();
                     drop(cache);
-                    self.touch(principal.id);
-                    return Ok(Some(principal));
+                    if self.cache_generation.load(Ordering::SeqCst) == lookup_generation {
+                        self.touch(principal.id);
+                        return Ok(Some(principal));
+                    }
                 }
             }
         }
         let Some(principal) = self.store.lookup_by_key(raw_key)? else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(hook) = self
+            .after_store_lookup
+            .lock()
+            .ok()
+            .and_then(|mut hook| hook.take())
+        {
+            hook();
+        }
         if let Ok(mut cache) = self.cache.write() {
-            cache.insert(cache_key, (principal.clone(), Instant::now()));
+            if self.cache_generation.load(Ordering::SeqCst) == lookup_generation {
+                cache.insert(
+                    cache_key,
+                    (principal.clone(), Instant::now(), lookup_generation),
+                );
+            }
         }
         self.touch(principal.id);
         Ok(Some(principal))
@@ -470,6 +535,7 @@ impl ApiKeyService {
     }
 
     fn clear_cache(&self) {
+        self.cache_generation.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut cache) = self.cache.write() {
             cache.clear();
         }
@@ -517,6 +583,33 @@ impl ApiKeyService {
             .get_key(id)?
             .ok_or_else(|| CoreError::new("STORE_ERROR", "inserted key vanished"))?;
         Ok(AdminApiKeyCreatedResponse { key, raw_key })
+    }
+
+    pub fn update_permissions(
+        &self,
+        editor: &ApiKeyPrincipal,
+        id: u64,
+        permissions: Vec<String>,
+    ) -> Result<AdminApiKeyInfo, CoreError> {
+        let existing = self
+            .store
+            .get_key(id)?
+            .ok_or_else(|| CoreError::new("NOT_FOUND", format!("api key {id} not found")))?;
+        if existing.revoked_at.is_some() {
+            return Err(CoreError::new(
+                "KEY_REVOKED",
+                "revoked api keys cannot be edited",
+            ));
+        }
+        validate_key_grant(
+            editor,
+            &permissions,
+            &existing.namespaces,
+            &existing.workers,
+        )?;
+        let updated = self.store.update_key_permissions(id, &permissions)?;
+        self.clear_cache();
+        Ok(updated)
     }
 
     pub fn list(&self) -> Result<Vec<AdminApiKeyInfo>, CoreError> {
@@ -581,6 +674,21 @@ fn lock_err() -> CoreError {
 mod tests {
     use super::*;
     use edger_core::root_principal;
+    use std::sync::mpsc::{self, Receiver, SyncSender};
+
+    fn pause_next_lookup_before_cache_publish(
+        service: &ApiKeyService,
+    ) -> (Receiver<()>, SyncSender<()>) {
+        let (lookup_done_tx, lookup_done_rx) = mpsc::sync_channel(0);
+        let (resume_tx, resume_rx) = mpsc::sync_channel(0);
+        *service.after_store_lookup.lock().unwrap() = Some(Box::new(move || {
+            lookup_done_tx.send(()).unwrap();
+            resume_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("test resumes the paused lookup");
+        }));
+        (lookup_done_rx, resume_tx)
+    }
 
     fn request(name: &str, permissions: &[&str]) -> CreateApiKeyRequest {
         CreateApiKeyRequest {
@@ -719,6 +827,60 @@ mod tests {
         assert!(service.delete(id).unwrap());
         assert!(!service.revoke(id).unwrap());
         assert!(!service.delete(id).unwrap());
+    }
+
+    #[test]
+    fn cache_invalidation_prevents_paused_lookup_from_republishing_old_grants() {
+        let service = std::sync::Arc::new(ApiKeyService::in_memory().unwrap());
+        let created = service
+            .create(
+                &root_principal(),
+                request("mutable", &["workers:read", "workers:invoke"]),
+            )
+            .unwrap();
+        let id = created.key.id;
+        let raw_key = created.raw_key;
+
+        // The store read completes with both grants, then the lookup pauses
+        // before it can acquire the cache write lock and publish that result.
+        let (lookup_done, resume) = pause_next_lookup_before_cache_publish(&service);
+        let lookup_service = std::sync::Arc::clone(&service);
+        let lookup_key = raw_key.clone();
+        let lookup = std::thread::spawn(move || lookup_service.try_authenticate(&lookup_key));
+        lookup_done
+            .recv_timeout(Duration::from_secs(5))
+            .expect("lookup reached the pre-publish pause");
+
+        service
+            .update_permissions(&root_principal(), id, vec!["workers:read".into()])
+            .unwrap();
+        resume.send(()).unwrap();
+        let pre_edit_result = lookup.join().unwrap().unwrap().unwrap();
+        assert!(pre_edit_result
+            .permissions
+            .contains(&"workers:invoke".to_string()));
+
+        // The old result was returned only to its already-running caller; it
+        // was not cached. A new authentication reads the reduced grants.
+        let after_edit = service.try_authenticate(&raw_key).unwrap().unwrap();
+        assert_eq!(after_edit.permissions, vec!["workers:read"]);
+
+        // Repeat the interleaving for revocation and make sure the paused
+        // principal cannot survive as a usable cache entry.
+        service.clear_cache();
+        let (lookup_done, resume) = pause_next_lookup_before_cache_publish(&service);
+        let lookup_service = std::sync::Arc::clone(&service);
+        let lookup_key = raw_key.clone();
+        let lookup = std::thread::spawn(move || lookup_service.try_authenticate(&lookup_key));
+        lookup_done
+            .recv_timeout(Duration::from_secs(5))
+            .expect("lookup reached the pre-publish pause before revoke");
+
+        assert!(service.revoke(id).unwrap());
+        assert!(service.delete(id).unwrap());
+        resume.send(()).unwrap();
+        assert!(lookup.join().unwrap().unwrap().is_some());
+        assert!(service.try_authenticate(&raw_key).unwrap().is_none());
     }
 
     #[test]

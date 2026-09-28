@@ -424,7 +424,7 @@ mod tests {
             total_bytes >= body.len(),
             "target must fit the base payload"
         );
-        body.extend(std::iter::repeat(b' ').take(total_bytes - body.len()));
+        body.extend(std::iter::repeat_n(b' ', total_bytes - body.len()));
         body
     }
 

@@ -1,6 +1,6 @@
 # Epic 26: autenticação por senha no cPanel
 
-**Origin:** `planning/edger/roadmap.md`; pedido do operador em 2026-09-27, tela de referência do appliance em `apps/apigate/web/src/components/app-shell.tsx`. **Estado:** implementada e verificada localmente; sem commit, publicação ou deploy.
+**Origin:** `planning/edger/roadmap.md`; pedido do operador em 2026-09-27, tela de referência do appliance em `apps/apigate/web/src/components/app-shell.tsx`. **Estado:** rc.5 publicada e implantada no lab-dev, com fluxo de senha validado externamente.
 
 ## Contexto
 
@@ -50,4 +50,4 @@ Registrar em `planning/edger/status/evidence/console-auth-2026-09-27.md` após i
 
 ## Status
 
-Implementação local verificada por testes, revisão independente e smoke HTTP no binário. O Browser confirmou a tela de login e o favicon; o fluxo visual autenticado de gestão será validado pelo operador no servidor local. Nenhum release ou deploy foi realizado nesta fase.
+Implementação local verificada por testes, revisão independente e smoke HTTP no binário. A rc.5 foi publicada e implantada no lab-dev em 2026-09-28; login root por senha, listagem de usuários, logout e revogação da sessão passaram por HTTPS. A root key anterior continuou válida. O Browser confirmou a tela de login e o favicon; o fluxo visual autenticado de gestão ainda será validado pelo operador. Evidência: `.herdr-agents/wF/reports/labdev-rc5-deploy-20260928.md`.

@@ -766,7 +766,9 @@ function Workers({
                 <RoutingPolicyPanel
                   apiKey={apiKey}
                   principal={principal}
+                  tenantRoutingEnabled={data.tenantRoutingEnabled === true}
                   versions={group.versions}
+                  weightedRoutingEnabled={data.weightedRoutingEnabled === true}
                 />
                 </>
               )}
@@ -2156,7 +2158,7 @@ function Shell({
                 {can(data.principal, "workers:install") && (
                   <Button onClick={() => void refresh()} variant="outline">
                     <RefreshCwIcon />
-                    Refresh
+                    {t("overview.refresh")}
                   </Button>
                 )}
                 <div className="contents" ref={setPageActionsElement} />
@@ -2192,7 +2194,11 @@ function Shell({
               />
             )}
             {route.view === "keys" && (
-              <ApiKeys apiKey={apiKey} principal={data.principal} />
+              <ApiKeys
+                apiKey={apiKey}
+                principal={data.principal}
+                renderPageAction={(action) => <PageActions>{action}</PageActions>}
+              />
             )}
             {route.view === "users" && (
               <ConsoleUsers apiKey={apiKey} principal={data.principal} />

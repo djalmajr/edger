@@ -45,6 +45,7 @@ function jsonResponse(body: unknown, status = 200) {
 function renderPanel(
   versions: Worker[] = catalog,
   principal: Principal = root,
+  flags = { tenantRoutingEnabled: true, weightedRoutingEnabled: true },
 ) {
   localStorage.setItem("edger.cpanel.locale", "en-US");
   const client = new QueryClient({
@@ -56,7 +57,9 @@ function renderPanel(
         <RoutingPolicyPanel
           apiKey="root-key"
           principal={principal}
+          tenantRoutingEnabled={flags.tenantRoutingEnabled}
           versions={versions}
+          weightedRoutingEnabled={flags.weightedRoutingEnabled}
         />
       </I18nProvider>
     </QueryClientProvider>,
@@ -89,8 +92,11 @@ describe("routing policy panel", () => {
     renderPanel();
     expect(await screen.findByText(/does not authenticate the visitor/)).toBeTruthy();
     expect(screen.getByText(/80\/20/)).toBeTruthy();
-    expect(screen.getByText(/Rancher or install setup/)).toBeTruthy();
-    expect(screen.getByText(/does not say whether they are on/)).toBeTruthy();
+    expect(
+      screen.getByText(
+        "This screen stores the app policy. Tenant restrictions affect requests only when the tenant option is enabled in the Rancher or installation setup. Weighted routing affects requests only when the weighted routing option is enabled.",
+      ),
+    ).toBeTruthy();
     expect(screen.getAllByText(/Tenancit is not configured/).length).toBeGreaterThan(0);
     expect(screen.getByText(/empty tenant list is not a substitute/)).toBeTruthy();
     expect(screen.getByText("1.0.0", { selector: "span" })).toBeTruthy();
@@ -98,6 +104,29 @@ describe("routing policy panel", () => {
     const url = requestedUrl(fetchMock.mock.calls[0]);
     expect(url.pathname.endsWith("/api/admin/routing-policy")).toBe(true);
     expect(url.searchParams.get("name")).toBe("shop");
+  });
+
+  it("shows disabled state without reading a policy when both runtime flags are off", () => {
+    stubPolicy({ policy: null });
+    renderPanel(catalog, root, {
+      tenantRoutingEnabled: false,
+      weightedRoutingEnabled: false,
+    });
+    expect(screen.getByRole("heading", { name: "Routing policy" })).toBeTruthy();
+    expect(screen.getByText("Routing policy is disabled on this instance.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Save configuration" })).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { tenantRoutingEnabled: true, weightedRoutingEnabled: false },
+    { tenantRoutingEnabled: false, weightedRoutingEnabled: true },
+  ])("keeps the editor enabled when either runtime flag is on", async (flags) => {
+    stubPolicy({ policy: null });
+    renderPanel(catalog, root, flags);
+    expect(await screen.findByText(/No routing policy is stored/)).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalled();
+    expect(requestedUrl(fetchMock.mock.calls[0]).pathname.endsWith("/api/admin/routing-policy")).toBe(true);
   });
 
   it("shows a loading status and then an error that can be retried", async () => {

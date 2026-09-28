@@ -35,7 +35,8 @@ import {
   type RuntimeData,
   type RuntimeWorker,
 } from "../lib/api";
-import { buildOverviewSummary } from "../lib/overview";
+import { type AttentionItem, buildOverviewSummary } from "../lib/overview";
+import { type TranslationKey, useI18n } from "../lib/i18n";
 
 export function Overview({
   apiKey,
@@ -50,6 +51,7 @@ export function Overview({
   onWorker(name: string, version: string): void;
   onWorkers(): void;
 }) {
+  const { locale, t } = useI18n();
   const seriesQuery = useQuery({
     queryKey: ["cpanel", "overview", "series"],
     queryFn: () =>
@@ -85,49 +87,75 @@ export function Overview({
     seriesQuery.data?.partialWindow;
   return (
     <div className="grid gap-4">
-      {partial && <Badge variant="secondary">Partial window</Badge>}
+      {partial && (
+        <Badge variant="secondary">{t("overview.partialWindow")}</Badge>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
-          description={`${summary.routable} routable versions`}
+          description={message(
+            t,
+            summary.routable === 1
+              ? "overview.routableVersion"
+              : "overview.routableVersions",
+            { count: summary.routable },
+          )}
           icon={BoxIcon}
-          label="Apps"
+          label={t("overview.apps")}
           value={String(summary.apps)}
         />
         <MetricCard
-          description="Loaded by this runtime"
+          description={t("overview.loadedByRuntime")}
           icon={RouteIcon}
-          label="Worker versions"
+          label={t("overview.workerVersions")}
           value={String(summary.versions)}
         />
         <MetricCard
-          description={`${summary.errors5m} errors · ${summary.p95Ms == null ? "no latency data" : `${summary.p95Ms} ms p95`}`}
+          description={message(
+            t,
+            summary.errors5m === 1
+              ? "overview.errorAndLatency"
+              : "overview.errorsAndLatency",
+            {
+              count: summary.errors5m,
+              latency:
+                summary.p95Ms == null
+                  ? t("overview.noLatencyData")
+                  : `${summary.p95Ms} ms p95`,
+            },
+          )}
           icon={ActivityIcon}
-          label="Requests · 5 min"
+          label={t("overview.requestsFiveMinutes")}
           value={String(summary.requests5m)}
         />
         <MetricCard
-          description={`${summary.processes.queued} queued · ${summary.processes.terminating} terminating`}
+          description={message(t, "overview.queuedAndTerminating", {
+            queued: summary.processes.queued,
+            terminating: summary.processes.terminating,
+          })}
           icon={CpuIcon}
-          label="Processes"
-          value={`${summary.processes.active} active · ${summary.processes.idle} idle`}
+          label={t("overview.processes")}
+          value={message(t, "overview.activeAndIdle", {
+            active: summary.processes.active,
+            idle: summary.processes.idle,
+          })}
         />
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            Needs attention
+            {t("overview.needsAttention")}
             {summary.attention.length > 0 && (
               <Badge variant="secondary">{summary.attention.length}</Badge>
             )}
           </CardTitle>
           <CardDescription>
-            Routing, passive health, recent errors and capacity pressure.
+            {t("overview.attentionDescription")}
           </CardDescription>
           <CardAction>
             <Button onClick={onWorkers} size="sm" variant="outline">
-              Review workers
+              {t("overview.attentionReview")}
             </Button>
           </CardAction>
         </CardHeader>
@@ -135,8 +163,7 @@ export function Overview({
           {summary.attention.length === 0 ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <CircleCheckIcon className="size-4 text-emerald-600" />
-              No disabled, degraded or failing versions and no recent capacity
-              signals.
+              {t("overview.attentionEmpty")}
             </div>
           ) : (
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
@@ -160,7 +187,7 @@ export function Overview({
                       {item.version ? `@${item.version}` : ""}
                     </strong>
                     <small className="text-muted-foreground">
-                      {item.detail}
+                      {attentionDetail(item, t)}
                     </small>
                   </span>
                   <ChevronRightIcon className="my-auto size-4 shrink-0 text-muted-foreground" />
@@ -174,27 +201,27 @@ export function Overview({
       <div className="grid gap-4 lg:grid-cols-4">
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle>Runtime capacity</CardTitle>
+            <CardTitle>{t("overview.runtimeCapacity")}</CardTitle>
             <CardDescription>
-              Current process and queue snapshot from this instance.
+              {t("overview.currentSnapshot")}
             </CardDescription>
             <CardAction>
-              <Badge variant="outline">Live · /metrics/stats</Badge>
+              <Badge variant="outline">{t("overview.liveMetrics")}</Badge>
             </CardAction>
           </CardHeader>
           <CardContent className="grid grid-cols-2 gap-5 sm:grid-cols-3">
             {[
-              ["Active", summary.processes.active],
-              ["Idle", summary.processes.idle],
-              ["Queued", summary.processes.queued],
-              ["Max processes", summary.processes.max],
+              [t("overview.active"), summary.processes.active],
+              [t("overview.idle"), summary.processes.idle],
+              [t("overview.queued"), summary.processes.queued],
+              [t("overview.maxProcesses"), summary.processes.max],
               [
-                "Cache hit rate",
+                t("overview.cacheHitRate"),
                 summary.cacheHitRate == null
-                  ? "No data"
+                  ? t("overview.noData")
                   : `${summary.cacheHitRate}%`,
               ],
-              ["Spawn p50", `${pool.spawnLatencyMsP50 ?? 0} ms`],
+              [t("overview.spawnP50"), `${pool.spawnLatencyMsP50 ?? 0} ms`],
             ].map(([label, value]) => (
               <Stat key={String(label)} label={String(label)} value={value} />
             ))}
@@ -203,16 +230,16 @@ export function Overview({
 
         <Card>
           <CardHeader>
-            <CardTitle>Health distribution</CardTitle>
-            <CardDescription>Passive five-minute window.</CardDescription>
+            <CardTitle>{t("overview.healthDistribution")}</CardTitle>
+            <CardDescription>{t("overview.passiveWindow")}</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 text-sm">
             {[
-              ["Healthy", summary.health.healthy, "bg-emerald-500"],
-              ["Degraded", summary.health.degraded, "bg-amber-500"],
-              ["Failing", summary.health.failing, "bg-rose-500"],
+              [t("overview.healthy"), summary.health.healthy, "bg-emerald-500"],
+              [t("overview.degraded"), summary.health.degraded, "bg-amber-500"],
+              [t("overview.failing"), summary.health.failing, "bg-rose-500"],
               [
-                "Unobserved",
+                t("overview.unobserved"),
                 summary.health.unobserved,
                 "bg-muted-foreground/40",
               ],
@@ -228,14 +255,14 @@ export function Overview({
 
         <Card>
           <CardHeader>
-            <CardTitle>Access context</CardTitle>
+            <CardTitle>{t("overview.accessContext")}</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-3 text-sm">
             {[
-              ["Principal", data.principal.name],
-              ["Role", data.principal.role],
-              ["Namespaces", data.principal.namespaces?.join(", ")],
-              ["Control plane", "root-key gate"],
+              [t("overview.principal"), data.principal.name],
+              [t("overview.role"), data.principal.role],
+              [t("overview.namespaces"), data.principal.namespaces?.join(", ")],
+              [t("overview.controlPlane"), t("overview.rootKeyGate")],
             ].map(([label, value]) => (
               <div
                 className="flex justify-between gap-3 border-b pb-2 last:border-0"
@@ -252,13 +279,13 @@ export function Overview({
       <div className="grid gap-4 xl:grid-cols-3">
         <Card className="xl:col-span-2">
           <CardHeader>
-            <CardTitle>Workers at a glance</CardTitle>
+            <CardTitle>{t("overview.workersAtGlance")}</CardTitle>
             <CardDescription>
-              Highest request volume since the current runtime snapshot reset.
+              {t("overview.workerDescription")}
             </CardDescription>
             <CardAction>
               <Button onClick={onWorkers} size="sm" variant="outline">
-                All workers
+                {t("overview.allWorkers")}
               </Button>
             </CardAction>
           </CardHeader>
@@ -267,11 +294,17 @@ export function Overview({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Worker</TableHead>
-                    <TableHead>Health</TableHead>
-                    <TableHead className="text-right">Requests</TableHead>
-                    <TableHead className="text-right">P95</TableHead>
-                    <TableHead className="text-right">Queue</TableHead>
+                    <TableHead>{t("overview.tableWorker")}</TableHead>
+                    <TableHead>{t("overview.tableHealth")}</TableHead>
+                    <TableHead className="text-right">
+                      {t("overview.tableRequests")}
+                    </TableHead>
+                    <TableHead className="text-right">
+                      {t("overview.tableP95")}
+                    </TableHead>
+                    <TableHead className="text-right">
+                      {t("overview.tableQueue")}
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -283,11 +316,16 @@ export function Overview({
                     >
                       <TableCell>
                         <span className="font-mono text-xs">
-                          {worker.name}@{worker.version}
+                          <span
+                            className="block max-w-[18rem] truncate"
+                            title={`${worker.name}@${worker.version}`}
+                          >
+                            {worker.name}@{worker.version}
+                          </span>
                         </span>
                       </TableCell>
                       <TableCell>
-                        <HealthIndicator worker={worker} />
+                        <HealthIndicator worker={worker} t={t} />
                       </TableCell>
                       <TableCell className="text-right">
                         {worker.requestTotal ?? 0}
@@ -306,7 +344,7 @@ export function Overview({
                         className="h-24 text-center text-muted-foreground"
                         colSpan={5}
                       >
-                        No runtime worker metrics yet.
+                        {t("overview.noWorkerMetrics")}
                       </TableCell>
                     </TableRow>
                   )}
@@ -318,13 +356,13 @@ export function Overview({
 
         <Card>
           <CardHeader>
-            <CardTitle>Recent activity</CardTitle>
+            <CardTitle>{t("overview.recentActivity")}</CardTitle>
             <CardDescription>
-              Latest bounded operational events retained locally.
+              {t("overview.eventsDescription")}
             </CardDescription>
             <CardAction>
               <Button onClick={onLogs} size="sm" variant="outline">
-                View logs
+                {t("overview.viewLogs")}
               </Button>
             </CardAction>
           </CardHeader>
@@ -339,23 +377,25 @@ export function Overview({
                 <ListIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                 <span className="min-w-0 flex-1">
                   <strong className="block truncate text-sm">
-                    {event.kind ?? event.source ?? "runtime event"}
+                    {event.kind ?? event.source ?? t("overview.runtimeEvent")}
                   </strong>
                   <small className="block truncate text-muted-foreground">
                     {event.worker
-                      ? `${event.worker}@${event.version ?? "latest"}`
-                      : "runtime"}
+                      ? `${event.worker}@${event.version ?? t("overview.latestVersion")}`
+                      : t("overview.runtime")}
                     {event.outcome ? ` · ${event.outcome}` : ""}
                   </small>
                 </span>
                 <time className="shrink-0 text-xs text-muted-foreground">
-                  {event.atMs ? formatAge(event.atMs) : "recent"}
+                  {event.atMs
+                    ? formatAge(event.atMs, locale)
+                    : t("overview.recent")}
                 </time>
               </button>
             ))}
             {!eventsQuery.isLoading && events.length === 0 && (
               <p className="py-8 text-center text-sm text-muted-foreground">
-                No recent operational events.
+                {t("overview.eventsEmpty")}
               </p>
             )}
           </CardContent>
@@ -403,7 +443,13 @@ function Stat({ label, value }: { label: string; value: unknown }) {
   );
 }
 
-function HealthIndicator({ worker }: { worker: RuntimeWorker }) {
+function HealthIndicator({
+  worker,
+  t,
+}: {
+  worker: RuntimeWorker;
+  t(key: TranslationKey): string;
+}) {
   const status = worker.health?.status ?? "unobserved";
   const color =
     status === "healthy"
@@ -416,17 +462,66 @@ function HealthIndicator({ worker }: { worker: RuntimeWorker }) {
   return (
     <span className="inline-flex items-center gap-2 text-sm capitalize">
       <span className={`size-2 rounded-full ${color}`} />
-      {status}
+      {status === "healthy"
+        ? t("overview.healthy")
+        : status === "degraded"
+          ? t("overview.degraded")
+          : status === "failing"
+            ? t("overview.failing")
+            : status === "unobserved"
+              ? t("overview.unobserved")
+              : status}
     </span>
   );
 }
 
-function formatAge(timestamp: number) {
-  if (!timestamp) return "recently";
+function attentionDetail(
+  item: AttentionItem,
+  t: (key: TranslationKey) => string,
+) {
+  switch (item.detail.type) {
+    case "disabled":
+      return t("overview.attention.disabled");
+    case "health":
+      return t(
+        item.detail.status === "failing"
+          ? "overview.attention.failing"
+          : "overview.attention.degraded",
+      );
+    case "capacity":
+      return message(t, "overview.attention.capacity", {
+        queued: item.detail.queued,
+        rejected: item.detail.rejected,
+        timedOut: item.detail.timedOut,
+      });
+    case "recent-error":
+      return `${message(
+        t,
+        item.detail.count === 1
+          ? "overview.attention.oneError"
+          : "overview.attention.manyErrors",
+        { count: item.detail.count },
+      )}${item.detail.code ? ` · ${item.detail.code}` : ""}`;
+  }
+}
+
+function message(
+  t: (key: TranslationKey) => string,
+  key: TranslationKey,
+  values: Record<string, number | string>,
+) {
+  return Object.entries(values).reduce(
+    (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)),
+    t(key),
+  );
+}
+
+function formatAge(timestamp: number, locale: string) {
   const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 5) return "just now";
-  if (seconds < 60) return `${seconds}s ago`;
+  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+  if (seconds < 5) return formatter.format(0, "second");
+  if (seconds < 60) return formatter.format(-seconds, "second");
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  return `${Math.floor(minutes / 60)}h ago`;
+  if (minutes < 60) return formatter.format(-minutes, "minute");
+  return formatter.format(-Math.floor(minutes / 60), "hour");
 }

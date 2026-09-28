@@ -621,7 +621,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "edger-core"
-version = "0.3.2-rc.5"
+version = "0.3.2-rc.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -637,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "edger-isolation"
-version = "0.3.2-rc.5"
+version = "0.3.2-rc.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "edger-mcp"
-version = "0.3.2-rc.5"
+version = "0.3.2-rc.6"
 dependencies = [
  "anyhow",
  "base64",
@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "edger-orchestrator"
-version = "0.3.2-rc.5"
+version = "0.3.2-rc.6"
 dependencies = [
  "anyhow",
  "argon2",
@@ -718,7 +718,7 @@ dependencies = [
 
 [[package]]
 name = "edger-worker"
-version = "0.3.2-rc.5"
+version = "0.3.2-rc.6"
 dependencies = [
  "anyhow",
  "async-trait",

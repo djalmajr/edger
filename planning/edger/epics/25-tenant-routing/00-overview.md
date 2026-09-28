@@ -1,6 +1,6 @@
 # Epic 25: disponibilidade de apps por tenant e rollout ponderado
 
-**Origem:** pedido do operador em 2026-09-26; `planning/edger/roadmap.md`; contrato do Tenancit em `docs/developers/03-contratos-http.adoc` no repositório irmão. **Estado:** em andamento local na branch `feat/tenant-routing`; sem publicação.
+**Origem:** pedido do operador em 2026-09-26; `planning/edger/roadmap.md`; contrato do Tenancit em `docs/developers/03-contratos-http.adoc` no repositório irmão. **Estado:** publicado na rc.5 e implantado no lab-dev com as duas flags desligadas; prova de roteamento ligado em cluster pendente.
 **Origin:** `planning/edger/roadmap.md`, pedido do operador de 2026-09-26.
 
 ## Contexto
@@ -84,4 +84,4 @@ flowchart LR
 
 ## Status
 
-Implementação, gate Rust/JS, refinement Mode 1, revisão independente, smoke HTTP local com binário real, fluxo de configuração/reversão no cPanel via browser e integração com servidor Tenancit real local concluídos (2026-09-26); [evidência](../../status/evidence/tenant-routing-2026-09-26.md). O contrato Tenancit foi recebido em `.herdr-agents/wF/from-tenancit-tenant-routing-design-20260926.md`; a autenticação de usuário segue no worker. Não houve validação do formulário Rancher nem de carga/observabilidade em cluster ou produção.
+Implementação, gate Rust/JS, refinement Mode 1, revisão independente, smoke HTTP local com binário real, fluxo de configuração/reversão no cPanel via browser e integração com servidor Tenancit real local concluídos (2026-09-26); [evidência](../../status/evidence/tenant-routing-2026-09-26.md). A rc.5 foi publicada e implantada no lab-dev em 2026-09-28 com ambas as flags desligadas; veja `.herdr-agents/wF/reports/labdev-rc5-deploy-20260928.md`. O contrato Tenancit foi recebido em `.herdr-agents/wF/from-tenancit-tenant-routing-design-20260926.md`; a autenticação de usuário segue no worker. Não houve validação do formulário Rancher nem de carga/observabilidade com as flags ligadas em cluster ou produção.

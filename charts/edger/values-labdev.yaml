@@ -26,6 +26,12 @@
 
 replicaCount: 1
 
+tenantRouting:
+  enabled: false
+
+weightedRouting:
+  enabled: false
+
 image:
   # Publicada pelo workflow do GitHub em tag SemVer, como o tenancit — o
   # labdev puxa o ghcr público direto, sem pull secret. O digest vem do chart
@@ -54,9 +60,8 @@ ingress:
   # (/apps/meu-crm → /meu-crm chega ao Edger, qualquer que seja o nome —
   # basename escolhido no Studio ou legado p-<id>) e envia
   # X-Forwarded-Prefix, que o Edger ≥0.2.1 honra ao compor o base_href.
-  # A Admin API fica FORA do ingress de propósito: o Studio fala com ela
-  # pelo service interno, e superfície de controle não precisa de rota
-  # pública.
+  # O mesmo prefixo expõe /apps/api/admin/* e /apps/api/mcp. Essas rotas
+  # continuam protegidas por credencial; o Studio usa o service interno.
   path: /apps/
   pathType: ImplementationSpecific
   annotations:

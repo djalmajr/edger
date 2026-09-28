@@ -89,6 +89,186 @@ async fn create_key(app: Router, creator: &str, body: Value) -> (StatusCode, Val
     .await
 }
 
+async fn patch_key(app: Router, editor: &str, id: u64, body: &str) -> (StatusCode, Value, String) {
+    send(
+        app,
+        "PATCH",
+        &format!("/api/admin/keys/{id}"),
+        Some(editor),
+        Body::from(body.to_owned()),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn permissions_patch_updates_only_permissions_and_invalidates_auth_cache() {
+    let app = build_pipeline(keyed_state());
+    let (_, created, _) = create_key(
+        app.clone(),
+        ROOT_KEY,
+        json!({
+            "name": "gerente-editavel",
+            "permissions": ["keys:manage", "workers:read"],
+            "namespaces": ["@acme"],
+            "workers": ["hello"],
+            "expiresAt": 4_000_000_000_u64,
+            "role": "operator"
+        }),
+    )
+    .await;
+    let raw_key = created["rawKey"].as_str().unwrap().to_owned();
+    let id = created["key"]["id"].as_u64().unwrap();
+
+    // Preenche cache e captura todos os campos mutáveis preservados.
+    let (status, _, _) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/keys",
+        Some(&raw_key),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, listed, list_text) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/keys",
+        Some(ROOT_KEY),
+        Body::empty(),
+    )
+    .await;
+    let original = listed["keys"][0].clone();
+    assert!(!list_text.contains(&raw_key));
+    assert!(!list_text.to_lowercase().contains("hash"));
+
+    let (status, updated, text) = patch_key(
+        app.clone(),
+        &raw_key,
+        id,
+        r#"{"permissions":["workers:read"]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(updated["permissions"], json!(["workers:read"]));
+    assert!(!text.contains(&raw_key));
+    assert!(!text.to_lowercase().contains("hash"));
+
+    // A key previamente autenticada perde keys:manage no próximo request.
+    let (status, denied, _) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/keys",
+        Some(&raw_key),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(denied["code"], "FORBIDDEN");
+
+    let (status, listed, text) =
+        send(app, "GET", "/api/admin/keys", Some(ROOT_KEY), Body::empty()).await;
+    assert_eq!(status, StatusCode::OK);
+    let current = &listed["keys"][0];
+    for field in [
+        "id",
+        "name",
+        "keyPrefix",
+        "role",
+        "namespaces",
+        "workers",
+        "createdAt",
+        "lastUsedAt",
+        "expiresAt",
+        "revokedAt",
+    ] {
+        assert_eq!(current[field], original[field], "field changed: {field}");
+    }
+    assert_eq!(current["permissions"], json!(["workers:read"]));
+    assert!(!text.contains(&raw_key));
+    assert!(!text.to_lowercase().contains("hash"));
+}
+
+#[tokio::test]
+async fn permissions_patch_validates_grants_payload_existence_and_revocation() {
+    let app = build_pipeline(keyed_state());
+    let (_, manager, _) = create_key(
+        app.clone(),
+        ROOT_KEY,
+        json!({ "name": "manager", "permissions": ["keys:manage", "workers:read"] }),
+    )
+    .await;
+    let manager_key = manager["rawKey"].as_str().unwrap();
+    let (_, target, _) = create_key(
+        app.clone(),
+        ROOT_KEY,
+        json!({ "name": "target", "permissions": ["workers:read"] }),
+    )
+    .await;
+    let id = target["key"]["id"].as_u64().unwrap();
+
+    // Root pode adicionar permissão e a resposta contém somente o preview.
+    let (status, response, text) = patch_key(
+        app.clone(),
+        ROOT_KEY,
+        id,
+        r#"{"permissions":["workers:read","workers:invoke"]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        response["permissions"],
+        json!(["workers:read", "workers:invoke"])
+    );
+    assert!(response.get("rawKey").is_none());
+    assert!(response.get("keyHash").is_none());
+    assert!(!text.contains(target["rawKey"].as_str().unwrap()));
+    assert!(!text.to_lowercase().contains("hash"));
+
+    let (status, body, _) = patch_key(
+        app.clone(),
+        manager_key,
+        id,
+        r#"{"permissions":["workers:install"]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "KEY_GRANT_DENIED");
+
+    for body in [
+        r#"{"permissions":[]}"#,
+        r#"{"permissions":["permission:unknown"]}"#,
+        r#"{"permissions":["workers:read"],"name":"changed"}"#,
+        r#"{"permissions":["workers:read"]"#,
+    ] {
+        let (status, _, _) = patch_key(app.clone(), ROOT_KEY, id, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    }
+
+    let (status, body, _) = patch_key(
+        app.clone(),
+        ROOT_KEY,
+        9999,
+        r#"{"permissions":["workers:read"]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "NOT_FOUND");
+
+    let (status, _, _) = send(
+        app.clone(),
+        "POST",
+        &format!("/api/admin/keys/{id}/revoke"),
+        Some(ROOT_KEY),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _) =
+        patch_key(app, ROOT_KEY, id, r#"{"permissions":["workers:read"]}"#).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "KEY_REVOKED");
+}
+
 #[tokio::test]
 async fn key_lifecycle_create_use_revoke_delete() {
     let state = keyed_state();
@@ -532,6 +712,11 @@ async fn keys_endpoints_are_503_without_store() {
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["code"], "KEYS_STORE_UNAVAILABLE");
+
+    let (status, body, _) =
+        patch_key(app, ROOT_KEY, 1, r#"{"permissions":["workers:read"]}"#).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["code"], "KEYS_STORE_UNAVAILABLE");
 }
 
 #[tokio::test]
@@ -549,6 +734,17 @@ async fn browser_mutation_requires_same_origin() {
         .body(Body::from(
             json!({ "name": "csrf", "permissions": ["workers:read"] }).to_string(),
         ))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri("/api/admin/keys/1")
+        .header("authorization", format!("Bearer {ROOT_KEY}"))
+        .header("origin", "https://evil.local")
+        .header("host", "edger.local")
+        .body(Body::from(r#"{"permissions":["workers:read"]}"#))
         .unwrap();
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);

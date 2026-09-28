@@ -7,7 +7,11 @@ export type OverviewSeriesPoint = {
 };
 
 export type AttentionItem = {
-  detail: string;
+  detail:
+    | { type: "disabled" }
+    | { type: "health"; status: "degraded" | "failing" }
+    | { type: "capacity"; queued: number; rejected: number; timedOut: number }
+    | { type: "recent-error"; code?: string; count: number };
   kind: "capacity" | "disabled" | "health" | "recent-error";
   name: string;
   severity: "critical" | "warning";
@@ -39,7 +43,7 @@ export function buildOverviewSummary(
   for (const worker of data.workers) {
     if (worker.status === "disabled") {
       attention.push({
-        detail: "Version is not routable",
+        detail: { type: "disabled" },
         kind: "disabled",
         name: worker.name,
         severity: "warning",
@@ -59,10 +63,7 @@ export function buildOverviewSummary(
 
     if (status === "degraded" || status === "failing") {
       attention.push({
-        detail:
-          status === "failing"
-            ? "Passive health is failing"
-            : "Passive health is degraded",
+        detail: { type: "health", status },
         kind: "health",
         name: worker.name,
         severity: status === "failing" ? "critical" : "warning",
@@ -75,7 +76,7 @@ export function buildOverviewSummary(
     const queued = worker.queued ?? 0;
     if (rejected > 0 || timedOut > 0 || queued > 0) {
       attention.push({
-        detail: `${queued} queued · ${rejected} rejected · ${timedOut} timed out`,
+        detail: { type: "capacity", queued, rejected, timedOut },
         kind: "capacity",
         name: worker.name,
         severity: "warning",
@@ -87,7 +88,11 @@ export function buildOverviewSummary(
   for (const [name, value] of Object.entries(data.workerErrors)) {
     if ((value.count ?? 0) === 0) continue;
     attention.push({
-      detail: `${value.count} recent error${value.count === 1 ? "" : "s"}${value.latest?.code ? ` · ${value.latest.code}` : ""}`,
+      detail: {
+        type: "recent-error",
+        code: value.latest?.code,
+        count: value.count ?? 0,
+      },
       kind: "recent-error",
       name,
       severity: "warning",
