@@ -1,12 +1,13 @@
-# Deployment: EdgeR em Kubernetes (stateless + HPA)
+# Deployment: EdgeR em Kubernetes
 
 **Status:** chart de referência criado e validado em cluster real em 2026-07-03
 pela Story 17.F (`planning/edger/epics/17-edger-minimalista/06-deployment-k8s.md`).
 
 O chart vive em `charts/edger/` e segue o formato Rancher Apps & Marketplace com
-`questions.yaml`. O deploy é **stateless**: Deployment, Service, ConfigMap,
-Secret opcional, Ingress opcional e HPA opcional; sem StatefulSet, PVC, banco ou
-Turso.
+`questions.yaml`. Usa Deployment, Service, ConfigMap, Secrets opcionais, Ingress
+e HPA opcionais. Com `userWorkers.persistence.enabled`, os workers e o SQLite
+do plano de controle ficam no PVC RWO; o Deployment usa `Recreate` e uma
+réplica. Sem persistência, o estado local não sobrevive à substituição do Pod.
 
 ## Auth
 
@@ -15,9 +16,58 @@ Turso.
 - Ambos montam a chave em `/var/run/secrets/edger-root/root-key` e configuram
   `EDGER_ROOT_KEY_FILE` para esse caminho. A rotação acontece atualizando o
   Secret; o runtime relê o arquivo sem restart.
+- `consoleAuth.rootPasswordSecret.name` referencia um Secret existente e
+  opcional para a senha inicial de `root`; `key` escolhe a entrada do Secret
+  (default `password`). O chart monta o arquivo read-only e define apenas
+  `EDGER_ROOT_PASSWORD_FILE`, nunca o valor da senha em values ou ConfigMap.
+  A senha só semeia `root` quando ainda não existe usuário `root`; após o
+  primeiro boot, alterar o Secret não substitui a senha já armazenada.
+  Usuários e sessões compartilham o SQLite de API keys (`EDGER_API_KEYS_DB`),
+  portanto exigem persistência do volume para sobreviver ao ciclo do Pod.
+  Sem esse Secret, a entrada por token continua disponível.
 - OIDC genérico está implementado e fica opt-in via `oidc.enabled`, `oidc.issuer`,
   `oidc.audience`, `oidc.rolesClaim` e `oidc.requiredRole`, renderizados como
   `EDGER_OIDC_*`.
+
+## Roteamento: tenant e split A/B
+
+O chart expõe duas flags independentes, desligadas por padrão, que habilitam
+as duas metades da política de roteamento por app:
+
+- `tenantRouting.enabled` (bool, `false`): allowlist de tenant. Com a flag
+  ligada, o EdgeR resolve o hostname do request na Consumer API do Tenancit
+  e só serve apps cuja política liste o slug de tenant identificado. A
+  renderização falha sem `tenantRouting.tenancit.identifyUrl` (URL HTTPS
+  exata do endpoint `/v1/identify` no cluster real, sem query/fragment/
+  userinfo; HTTP só em loopback) e sem a referência do Secret existente
+  (`tokenSecret.name` + `tokenSecret.key`) com o token do API client
+  `tenant:identify`.
+- `weightedRouting.enabled` (bool, `false`): split A/B de versões. Com a flag
+  ligada, requests sem versão explícita seguem os pesos da política do app;
+  pode ser ligada sozinha.
+
+O ConfigMap sempre passa `EDGER_TENANT_ROUTING_ENABLED` e
+`EDGER_WEIGHTED_ROUTING_ENABLED` ("true"/"false") e passa
+`EDGER_TENANCIT_IDENTIFY_URL` apenas com tenant ligado. O token do Tenancit
+nunca entra no ConfigMap, nos values da release ou nos logs: o Secret
+existente é montado read-only em caminho fixo
+(`/var/run/secrets/edger-tenancit/token`) e o Deployment define apenas
+`EDGER_TENANCIT_TOKEN_FILE` com esse path. Com as flags off, a renderização
+padrão não referencia Tenancit em env, volume ou Secret.
+O EdgeR lê esse arquivo no startup; após rotacionar o Secret, reinicie o Pod
+para carregar o token novo.
+
+Limites (sem afirmação de produção):
+
+- O domínio identificado **não autentica o usuário**: é contexto de domínio
+  que decide quais tenants alcançam o app; a autenticação/autorização dos
+  dados continua sendo responsabilidade de cada worker.
+- A política de roteamento é local ao processo/PVC (índice em memória,
+  persistida no PVC de workers); o chart continua single-replica, então não
+  há sincronização multi-réplica a garantir — mas também não há o que
+  distribuir ainda.
+- Não assumir que `traffic`/allowlist já está publicado: sem política, vale o
+  roteamento atual.
 
 ## Operação
 

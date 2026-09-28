@@ -2,7 +2,7 @@
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, HeaderMap, Request, Response, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{any, get};
 use axum::{Json, Router};
@@ -17,11 +17,17 @@ use tower_http::trace::TraceLayer;
 use crate::admin_api;
 use crate::auth::ControlAuth;
 use crate::manifest_index_stub::ManifestIndex;
-use crate::metrics::{cron_metrics_prometheus, metrics_stats_response, pool_metrics_prometheus};
+use crate::metrics::{
+    cron_metrics_prometheus, metrics_stats_response, pool_metrics_prometheus,
+    tenant_routing_metrics_prometheus,
+};
 use crate::observability::{OperationalEventInput, OperationalEventLevel, OperationalEventSource};
 use crate::operational_log::log_operational_error;
 use crate::router::{
     resolve_host_route_with_internal, resolve_route_with_internal, ReservedPath, ResolvedRoute,
+};
+use crate::routing_policy::{
+    cohort_for_cookie_header, cohort_set_cookie, RoutingPolicy, TenantAccess,
 };
 use crate::server::{
     request_id_from_headers, request_id_middleware, request_metrics_middleware, ServerState,
@@ -62,6 +68,14 @@ pub fn build_pipeline(state: OrchestratorState) -> Router {
         )
         .merge(admin_api::router())
         .fallback(any(pipeline_handler))
+        // Domínio com dono é inteiro do app (D6): aplicada depois do fallback
+        // para que, num Host com dono, toda a requisição vá para o worker
+        // dono antes das rotas fixas do control plane. As layers de métricas,
+        // request-id e tracing continuam envolvendo a requisição.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            owned_host_middleware,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             metrics_state,
             request_metrics_middleware,
@@ -103,11 +117,26 @@ async fn ready_handler(State(state): State<OrchestratorState>) -> impl IntoRespo
     }
 }
 
-async fn metrics_handler(State(state): State<OrchestratorState>) -> impl IntoResponse {
+// D7: /metrics e /metrics/stats expõem nome e versão de cada app instalado,
+// então exigem credencial com observability:read (ou a root). No modo
+// aberto (sem root key) o `authenticate` já devolve a root e nada muda.
+async fn metrics_handler(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+) -> Response<Body> {
+    if let Err(err) = admin_api::authenticate(&state, &headers)
+        .await
+        .and_then(|principal| admin_api::require_permission(&principal, "observability:read"))
+    {
+        return admin_api::admin_error(admin_api::map_error_status(&err), &err, &headers);
+    }
     let mut body = pool_metrics_prometheus(&state.pool.get_metrics());
     body.push_str(&cron_metrics_prometheus(&state.server.cron_metrics()));
     body.push_str(&crate::metrics::http_metrics_prometheus(
         &state.server.http_metrics(),
+    ));
+    body.push_str(&tenant_routing_metrics_prometheus(
+        &state.server.tenant_routing_metrics(),
     ));
     (
         [(
@@ -116,13 +145,67 @@ async fn metrics_handler(State(state): State<OrchestratorState>) -> impl IntoRes
         )],
         body,
     )
+        .into_response()
 }
 
-async fn metrics_stats_handler(State(state): State<OrchestratorState>) -> impl IntoResponse {
-    Json(metrics_stats_response(
-        &state.pool.get_metrics(),
-        &state.pool.worker_stats(),
-    ))
+async fn metrics_stats_handler(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+) -> Response<Body> {
+    if let Err(err) = admin_api::authenticate(&state, &headers)
+        .await
+        .and_then(|principal| admin_api::require_permission(&principal, "observability:read"))
+    {
+        return admin_api::admin_error(admin_api::map_error_status(&err), &err, &headers);
+    }
+    (
+        StatusCode::OK,
+        Json(metrics_stats_response(
+            &state.pool.get_metrics(),
+            &state.pool.worker_stats(),
+        )),
+    )
+        .into_response()
+}
+
+/// A autoridade da requisição para fins de roteamento (D20): em HTTP/2 ela
+/// vem do pseudo-header `:authority` — o hyper a expõe em
+/// `uri().authority()` — e o header `Host` pode não existir. No
+/// request-target em forma absoluta a autoridade do URI prevalece sobre o
+/// `Host` (RFC 9112 §3.2.2, RFC 9113 §8.3.1). Do request-target usamos só o
+/// `host[:port]` — `userinfo@` não faz parte da autoridade (D20, revisada);
+/// o ramo do header `Host` continua devolvendo o valor cru, que o
+/// `normalize_host_alias` valida.
+fn request_authority(req: &Request<Body>) -> Option<String> {
+    if let Some(authority) = req.uri().authority() {
+        return match authority.port_u16() {
+            Some(port) => Some(format!("{}:{}", authority.host(), port)),
+            None => Some(authority.host().to_string()),
+        };
+    }
+    req.headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+/// Num Host com dono, o domínio é inteiro do app (D6): a requisição vai
+/// direto para o pipeline do worker dono, sem passar pelas rotas fixas do
+/// control plane. Hosts sem dono seguem o app normal (rotas fixas + fallback).
+async fn owned_host_middleware(
+    State(state): State<OrchestratorState>,
+    req: Request<Body>,
+    next: axum::middleware::Next,
+) -> Response<Body> {
+    let host = request_authority(&req);
+    if host
+        .as_deref()
+        .is_some_and(|host| state.index.host_owner(host).is_some())
+    {
+        pipeline_handler(State(state), req).await
+    } else {
+        next.run(req).await
+    }
 }
 
 async fn pipeline_handler(
@@ -158,19 +241,25 @@ async fn handle_request(
     } else {
         false
     };
-    let host = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok());
+    let host = request_authority(&req);
     if let Some(route) =
-        resolve_host_route_with_internal(&path, host, &state.index, allow_internal)?
+        resolve_host_route_with_internal(&path, host.as_deref(), &state.index, allow_internal)?
     {
-        return dispatch_resolved_route(state, req, request_id, &path, route).await;
+        return dispatch_resolved_route(
+            state,
+            req,
+            request_id,
+            &path,
+            route,
+            allow_internal,
+            host.as_deref(),
+        )
+        .await;
     }
 
     let route = resolve_route_with_internal(&path, None, &state.index, allow_internal)?;
 
-    dispatch_resolved_route(state, req, request_id, &path, route).await
+    dispatch_resolved_route(state, req, request_id, &path, route, allow_internal, None).await
 }
 
 async fn dispatch_resolved_route(
@@ -179,6 +268,8 @@ async fn dispatch_resolved_route(
     request_id: String,
     _path: &str,
     route: ResolvedRoute,
+    allow_internal: bool,
+    route_host: Option<&str>,
 ) -> Result<Response<Body>, CoreError> {
     // Data plane is OPEN (Epic 17): the edger does not authenticate worker
     // requests. The worker receives the raw request (Authorization intact) and
@@ -187,6 +278,16 @@ async fn dispatch_resolved_route(
         ResolvedRoute::Reserved { kind } => handle_reserved(kind),
         ResolvedRoute::PluginBase { plugin, remainder } => {
             let worker = state.index.resolve_plugin_worker(&plugin)?;
+            let base = plugin.base.clone();
+            let input = CohortInput {
+                version_pinned: false,
+                required_host: None,
+                required_plugin_base: Some(base.clone()),
+                authority: request_authority(&req),
+                cookie_header: cookie_header_from(&req),
+            };
+            let (worker, trusted_tenant, cohort_cookie) =
+                prepare_worker(state, worker, allow_internal, input).await?;
             let kind_hint = worker.kind.clone();
             dispatch_worker(
                 state,
@@ -197,12 +298,23 @@ async fn dispatch_resolved_route(
                     rewritten_path: normalize_rewritten_path(&remainder),
                     kind_hint: Some(kind_hint),
                     principal: None,
-                    base_path: Some(plugin.base),
+                    base_path: Some(base),
+                    trusted_tenant,
+                    cohort_cookie,
                 },
             )
             .await
         }
         ResolvedRoute::HomepageFallback { worker } => {
+            let input = CohortInput {
+                version_pinned: false,
+                required_host: None,
+                required_plugin_base: None,
+                authority: request_authority(&req),
+                cookie_header: cookie_header_from(&req),
+            };
+            let (worker, trusted_tenant, cohort_cookie) =
+                prepare_worker(state, worker, allow_internal, input).await?;
             dispatch_worker(
                 state,
                 req,
@@ -213,6 +325,8 @@ async fn dispatch_resolved_route(
                     kind_hint: None,
                     principal: None,
                     base_path: None,
+                    trusted_tenant,
+                    cohort_cookie,
                 },
             )
             .await
@@ -221,7 +335,17 @@ async fn dispatch_resolved_route(
             worker,
             rewritten_path,
             kind_hint,
+            version_pinned,
         } => {
+            let input = CohortInput {
+                version_pinned,
+                required_host: route_host.map(str::to_string),
+                required_plugin_base: None,
+                authority: request_authority(&req),
+                cookie_header: cookie_header_from(&req),
+            };
+            let (worker, trusted_tenant, cohort_cookie) =
+                prepare_worker(state, worker, allow_internal, input).await?;
             dispatch_worker(
                 state,
                 req,
@@ -232,10 +356,129 @@ async fn dispatch_resolved_route(
                     kind_hint: Some(kind_hint),
                     principal: None,
                     base_path: None,
+                    trusted_tenant,
+                    cohort_cookie,
                 },
             )
             .await
         }
+    }
+}
+
+struct CohortInput {
+    version_pinned: bool,
+    required_host: Option<String>,
+    required_plugin_base: Option<String>,
+    authority: Option<String>,
+    cookie_header: Option<String>,
+}
+
+/// One `RoutingPolicy` snapshot feeds the tenant gate and, only after it
+/// approves, the weight split. A concurrent PUT cannot change the weights
+/// seen by this request. `edger_cohort` is never copied into `x-tenant-id`.
+/// Cookie bytes are copied before any await so the request is not borrowed
+/// across the tenant lookup.
+async fn prepare_worker(
+    state: &OrchestratorState,
+    worker: WorkerRef,
+    allow_internal: bool,
+    input: CohortInput,
+) -> Result<(WorkerRef, Option<String>, Option<String>), CoreError> {
+    let CohortInput {
+        version_pinned,
+        required_host,
+        required_plugin_base,
+        authority,
+        cookie_header,
+    } = input;
+    let policy = if state.server.tenant_routing_enabled() || state.server.weighted_routing_enabled()
+    {
+        state.index.routing_policy(&worker.name)?
+    } else {
+        None
+    };
+    let trusted_tenant =
+        tenant_for_worker(state, authority, &worker, allow_internal, policy.as_ref()).await?;
+    if version_pinned || allow_internal || !state.server.weighted_routing_enabled() {
+        return Ok((worker, trusted_tenant, None));
+    }
+    let Some(policy) = policy.as_ref().filter(|policy| policy.traffic.is_some()) else {
+        return Ok((worker, trusted_tenant, None));
+    };
+    let (cohort, minted) = cohort_for_cookie_header(cookie_header.as_deref());
+    let Some(selected) = state.index.select_weighted_worker(
+        &worker.name,
+        &cohort,
+        policy,
+        required_host.as_deref(),
+        required_plugin_base.as_deref(),
+    )?
+    else {
+        return Ok((worker, trusted_tenant, None));
+    };
+    let cohort_cookie = minted.then(|| cohort_set_cookie(&cohort));
+    Ok((selected, trusted_tenant, cohort_cookie))
+}
+
+fn cookie_header_from(req: &Request<Body>) -> Option<String> {
+    req.headers()
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+/// Domain availability is checked for the logical app, independently of the
+/// version selected for this request. User authorization remains in the worker.
+async fn tenant_for_worker(
+    state: &OrchestratorState,
+    authority: Option<String>,
+    _worker: &WorkerRef,
+    allow_internal: bool,
+    policy: Option<&RoutingPolicy>,
+) -> Result<Option<String>, CoreError> {
+    // Cron and other root-authenticated internal invocations carry no visitor
+    // domain. The public `@version` route still passes the tenant gate.
+    // `policy` is the snapshot already loaded for this request's logical app.
+    if allow_internal {
+        return Ok(None);
+    }
+    if !state.server.tenant_routing_enabled() {
+        return Ok(None);
+    }
+    let Some(policy) = policy else {
+        return Ok(None);
+    };
+    let TenantAccess::Allowlist { tenants } = &policy.tenant_access else {
+        return Ok(None);
+    };
+    let metrics = state.server.tenant_routing_metrics();
+    let authority = authority.ok_or_else(|| {
+        metrics.denied();
+        CoreError::new("TENANT_NOT_FOUND", "application not available")
+    })?;
+    let client = state.server.tenant_identity_client().ok_or_else(|| {
+        metrics.unavailable();
+        CoreError::new("TENANT_IDENTITY_UNAVAILABLE", "tenant identity unavailable")
+    })?;
+    let tenant = client.identify(&authority).await.map_err(|err| match err {
+        crate::tenant_identity::IdentifyError::NotFound => {
+            metrics.denied();
+            CoreError::new("TENANT_NOT_FOUND", "application not available")
+        }
+        crate::tenant_identity::IdentifyError::Unavailable => {
+            metrics.unavailable();
+            CoreError::new("TENANT_IDENTITY_UNAVAILABLE", "tenant identity unavailable")
+        }
+    })?;
+    if tenants.iter().any(|allowed| allowed == &tenant) {
+        metrics.allowed();
+        Ok(Some(tenant))
+    } else {
+        metrics.denied();
+        Err(CoreError::new(
+            "TENANT_NOT_FOUND",
+            "application not available",
+        ))
     }
 }
 
@@ -246,6 +489,8 @@ struct DispatchParams {
     kind_hint: Option<ExecutionKind>,
     principal: Option<edger_core::ApiKeyPrincipal>,
     base_path: Option<String>,
+    trusted_tenant: Option<String>,
+    cohort_cookie: Option<String>,
 }
 
 pub(crate) async fn invoke_worker(
@@ -272,6 +517,8 @@ pub(crate) async fn invoke_worker(
             kind_hint: Some(kind_hint),
             principal: Some(principal),
             base_path: Some(format!("/{}", name.trim_end_matches('/'))),
+            trusted_tenant: None,
+            cohort_cookie: None,
         },
     )
     .await
@@ -302,7 +549,19 @@ async fn dispatch_worker(
         kind_hint,
         principal,
         base_path,
+        trusted_tenant,
+        cohort_cookie,
     } = params;
+
+    // No request header can assert tenant identity. Only the authenticated
+    // service-to-service lookup above may supply this value to a worker.
+    req.headers_mut().remove("x-tenant-id");
+    if let Some(tenant) = trusted_tenant {
+        req.headers_mut().insert(
+            "x-tenant-id",
+            HeaderValue::from_str(&tenant).expect("validated Tenancit slug is a header value"),
+        );
+    }
 
     // Per-worker admission ceiling (Epic 20.08): protects an individual worker
     // from a single abusive caller exhausting its queue/slots before the pool's
@@ -479,10 +738,16 @@ async fn dispatch_worker(
         response_status,
     );
 
-    match worker_response {
-        edger_core::WorkerResponse::Buffered(response) => serialized_to_axum(response),
-        edger_core::WorkerResponse::Streamed(streamed) => crate::wire::streamed_to_axum(streamed),
+    let mut response = match worker_response {
+        edger_core::WorkerResponse::Buffered(response) => serialized_to_axum(response)?,
+        edger_core::WorkerResponse::Streamed(streamed) => crate::wire::streamed_to_axum(streamed)?,
+    };
+    if let Some(cookie) = cohort_cookie {
+        if let Ok(value) = HeaderValue::from_str(&cookie) {
+            response.headers_mut().append(header::SET_COOKIE, value);
+        }
     }
+    Ok(response)
 }
 
 fn trace_id_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
@@ -580,14 +845,17 @@ fn map_error_status(err: &CoreError) -> StatusCode {
     match err.code.as_str() {
         "UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
         "FORBIDDEN" => StatusCode::FORBIDDEN,
-        "NOT_FOUND" => StatusCode::NOT_FOUND,
+        "NOT_FOUND" | "TENANT_NOT_FOUND" => StatusCode::NOT_FOUND,
         "COLLISION" => StatusCode::CONFLICT,
         "PAYLOAD_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
         "HEADER_TOO_LARGE" => StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
         "HEADER_INVALID" => StatusCode::BAD_REQUEST,
         "WORKER_QUEUE_FULL" => StatusCode::TOO_MANY_REQUESTS,
         "RATE_LIMITED" => StatusCode::TOO_MANY_REQUESTS,
-        "WORKER_QUEUE_TIMEOUT" => StatusCode::SERVICE_UNAVAILABLE,
+        "WORKER_QUEUE_TIMEOUT"
+        | "TENANT_IDENTITY_UNAVAILABLE"
+        | "LOCK_ERROR"
+        | "ROUTING_UNAVAILABLE" => StatusCode::SERVICE_UNAVAILABLE,
         "WORKER_CIRCUIT_OPEN" => StatusCode::SERVICE_UNAVAILABLE,
         "VALIDATION_ERROR" | "PARSE_ERROR" | "BODY_ERROR" => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -921,5 +1189,72 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ok.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn weighted_homepage_dispatch_uses_the_cohort_version() {
+        let root = tempfile::tempdir().unwrap();
+        for (directory, version) in [("v1", "1.0.0"), ("v2", "2.0.0")] {
+            let dir = root.path().join(directory);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("manifest.yaml"),
+                format!(
+                    "name: app\nversion: '{version}'\nentrypoint: index.ts\nkind: fetch\nbase: /\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("index.ts"),
+                "export default () => new Response('ok')",
+            )
+            .unwrap();
+        }
+        let index =
+            crate::load_manifests_from_roots(&[], None, &[root.path().to_path_buf()]).unwrap();
+        let policy = crate::parse_routing_policy(
+            br#"{"name":"app","tenantAccess":{"mode":"public"},"traffic":{"versions":[{"version":"1.0.0","weight":100}]}}"#,
+        )
+        .unwrap();
+        crate::persist_routing_policy(&index, &policy).unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(None));
+
+        struct Rec(Arc<std::sync::Mutex<Option<String>>>);
+        impl IsolateFactory for Rec {
+            fn create_isolate(
+                &self,
+                worker_ref: &edger_core::WorkerRef,
+            ) -> Box<dyn edger_core::Isolate> {
+                *self.0.lock().unwrap() = Some(worker_ref.version.clone());
+                Box::new(MockIsolate::new())
+            }
+        }
+
+        let server = ServerState::new_unready();
+        server.enable_weighted_routing();
+        let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(Rec(seen.clone())));
+        server.mark_ready(pool.clone());
+        let state = OrchestratorState {
+            server,
+            pool,
+            index,
+            auth: ControlAuth::with_static_key("root-key"),
+        };
+        assert_eq!(state.index.homepage().unwrap().version, "2.0.0");
+        let response = handle_request(
+            &state,
+            Request::builder().uri("/").body(Body::empty()).unwrap(),
+            "req-home".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(seen.lock().unwrap().as_deref(), Some("1.0.0"));
+        assert!(response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .any(|value| value.to_str().unwrap_or("").starts_with("edger_cohort=")));
+        assert_eq!(state.index.default_version("app"), None);
     }
 }

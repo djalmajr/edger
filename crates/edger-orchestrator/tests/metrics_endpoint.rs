@@ -12,7 +12,7 @@ use edger_core::{
     Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig, WorkerManifest,
 };
 use edger_orchestrator::{
-    build_pipeline, ControlAuth, ManifestIndex, OrchestratorState, ServerState,
+    build_pipeline, ApiKeyService, ControlAuth, ManifestIndex, OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -121,6 +121,8 @@ impl Isolate for RequestIdEchoIsolate {
 }
 
 fn test_state() -> OrchestratorState {
+    // O store de keys fica ligado para as chaves escopadas (egk_)
+    // autenticarem de verdade (D7: observability:read).
     let mut index = ManifestIndex::new();
     index
         .insert(
@@ -139,10 +141,87 @@ fn test_state() -> OrchestratorState {
     server.mark_ready(pool.clone());
 
     OrchestratorState {
-        auth: ControlAuth::with_static_key("test-root"),
+        auth: ControlAuth::with_static_key("test-root")
+            .with_key_service(Arc::new(ApiKeyService::in_memory().unwrap())),
         index,
         pool,
         server,
+    }
+}
+
+// D7: /metrics e /metrics/stats exigem credencial com observability:read (ou
+// a root) quando há root key configurada; no modo aberto o authenticate já
+// devolve a root e nada muda.
+#[tokio::test]
+async fn metrics_require_observability_read() {
+    let app = build_pipeline(test_state());
+
+    let unauthenticated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    // Key criada pela Admin API só com workers:read autentica, mas não
+    // autoriza.
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/keys")
+                .header("authorization", "Bearer test-root")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": "scoped-reader",
+                        "permissions": ["workers:read"],
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created_bytes = axum::body::to_bytes(created.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created_json: serde_json::Value = serde_json::from_slice(&created_bytes).unwrap();
+    let scoped_key = created_json["rawKey"].as_str().expect("rawKey once");
+
+    let forbidden = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .header("authorization", format!("Bearer {scoped_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+    for uri in ["/metrics", "/metrics/stats"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("authorization", "Bearer test-root")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
     }
 }
 
@@ -187,6 +266,7 @@ async fn metrics_endpoint_is_prometheus_text_without_secrets() {
         .oneshot(
             Request::builder()
                 .uri("/metrics")
+                .header("authorization", "Bearer test-root")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -236,6 +316,7 @@ async fn metrics_reflect_worker_pool_cache_hit_after_dispatch() {
         .oneshot(
             Request::builder()
                 .uri("/metrics")
+                .header("authorization", "Bearer test-root")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -303,6 +384,7 @@ async fn metrics_stats_returns_pool_and_worker_snapshot_without_secrets() {
         .oneshot(
             Request::builder()
                 .uri("/metrics/stats")
+                .header("authorization", "Bearer test-root")
                 .body(Body::empty())
                 .unwrap(),
         )

@@ -18,7 +18,8 @@ use serde::Serialize;
 use crate::manifest_index_stub::ManifestIndex;
 use crate::manifest_loader::{
     clear_persisted_default_version, load_worker_manifest_with_name_fallback,
-    reload_persisted_default_versions, scan_worker_manifests,
+    read_persisted_routing_policies, reload_persisted_default_versions,
+    reload_routing_policies_for_rescan, scan_worker_manifests,
 };
 use crate::observability::{
     OperationalEventInput, OperationalEventLevel, OperationalEventSource, OperationalStore,
@@ -125,8 +126,17 @@ pub(crate) struct WorkerMutationSlot {
     key: String,
 }
 
-static MUTATIONS_IN_FLIGHT: LazyLock<Mutex<HashSet<String>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+/// Plano de mutações (D36): slots por versão + a flag de export de estado.
+/// Um Mutex só: o export só pode começar sem mutações em curso, e enquanto a
+/// flag está marcada, mutação nova falha com `STATE_EXPORT_IN_PROGRESS`.
+#[derive(Debug, Default)]
+struct MutationPlane {
+    in_flight: HashSet<String>,
+    exporting: bool,
+}
+
+static MUTATION_PLANE: LazyLock<Mutex<MutationPlane>> =
+    LazyLock::new(|| Mutex::new(MutationPlane::default()));
 
 pub(crate) fn claim_worker_mutation_slot(
     root: &Path,
@@ -139,10 +149,18 @@ pub(crate) fn claim_worker_mutation_slot(
     // e chaves distintas quebrariam a exclusão mútua.
     let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let key = format!("{}|{name}@{version}", root.display());
-    let mut in_flight = MUTATIONS_IN_FLIGHT
+    let mut plane = MUTATION_PLANE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !in_flight.insert(key.clone()) {
+    if plane.exporting {
+        return Err(CoreError::new(
+            "STATE_EXPORT_IN_PROGRESS",
+            format!(
+                "a state export is in progress; {name}@{version} can only be mutated after it finishes"
+            ),
+        ));
+    }
+    if !plane.in_flight.insert(key.clone()) {
         return Err(CoreError::new(
             "DEPLOY_IN_PROGRESS",
             format!("another mutation of {name}@{version} is in flight; retry after it settles"),
@@ -153,10 +171,52 @@ pub(crate) fn claim_worker_mutation_slot(
 
 impl Drop for WorkerMutationSlot {
     fn drop(&mut self) {
-        MUTATIONS_IN_FLIGHT
+        MUTATION_PLANE
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .in_flight
             .remove(&self.key);
+    }
+}
+
+/// Export de estado em curso (D36): enquanto o guard vive, as mutações novas
+/// falham com `STATE_EXPORT_IN_PROGRESS`; o `Drop` devolve o plano ao
+/// normal.
+#[derive(Debug)]
+pub(crate) struct StateExportGuard;
+
+impl Drop for StateExportGuard {
+    fn drop(&mut self) {
+        MUTATION_PLANE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .exporting = false;
+    }
+}
+
+/// Inicia um export de estado (D36): espera (poll curto, SEM segurar o
+/// mutex) até o plano ficar sem mutações em curso e só então marca
+/// `exporting`. No timeout, `STATE_BUSY`. O limite vem do caller (30 s na
+/// rota; curto nos testes).
+pub(crate) async fn begin_state_export(timeout: Duration) -> Result<StateExportGuard, CoreError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        {
+            let mut plane = MUTATION_PLANE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !plane.exporting && plane.in_flight.is_empty() {
+                plane.exporting = true;
+                return Ok(StateExportGuard);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(CoreError::new(
+                "STATE_BUSY",
+                "state mutations are in flight; the export could not start within the wait limit",
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -721,6 +781,10 @@ pub fn rescan_workers(index: &ManifestIndex, dry_run: bool) -> Result<RescanRepo
     let removed = indexed.difference(&disk_keys).cloned().collect::<Vec<_>>();
     let unchanged = indexed.intersection(&disk_keys).count();
 
+    // Leitura antes de qualquer mutação: arquivo inválido falha o rescan
+    // com a allowlist que já está na memória ainda no lugar. O snapshot
+    // desta leitura não é o que o rescan aplica.
+    read_persisted_routing_policies(index)?;
     if !dry_run {
         let mut index = index.clone();
         for (key, dir, manifest, origin) in disk {
@@ -734,6 +798,11 @@ pub fn rescan_workers(index: &ManifestIndex, dry_run: bool) -> Result<RescanRepo
                 .ok_or_else(|| CoreError::new("DEPLOY_INTERNAL", "malformed worker key"))?;
             index.remove_worker(name, version)?;
         }
+        #[cfg(test)]
+        crate::manifest_loader::run_rescan_before_policy_restore_for_test(&index);
+        // Releitura sob o mesmo guard de PUT/DELETE. Um PUT entre a leitura
+        // inicial e este ponto fica no disco e entra na tabela.
+        reload_routing_policies_for_rescan(&index)?;
         reload_persisted_default_versions(&index);
     }
 
@@ -810,9 +879,34 @@ const RELEASE_TIMEOUT: Duration = Duration::from_secs(300);
 pub async fn run_pending_releases(index: &ManifestIndex) -> Result<usize, CoreError> {
     let mut ran = 0;
     for worker in index.worker_refs() {
-        if worker.config.enabled && run_release(&worker.dir, &worker.config).await? {
+        if !worker.config.enabled {
+            continue;
+        }
+        // O rescan roda a command e grava o marcador `.edger-release`: pega o
+        // slot da versão (D36) para o export de estado não capturar o
+        // diretório no meio da escrita. O slot fica AQUI (e não em
+        // `run_release`) porque o caminho de install já o segura e chama
+        // `run_release` direto.
+        let _slot = match claim_worker_mutation_slot(
+            worker.dir.parent().unwrap_or_else(|| Path::new("")),
+            &worker.name,
+            &worker.version,
+        ) {
+            Ok(slot) => slot,
+            Err(error) => {
+                tracing::warn!(
+                    worker = %worker.name,
+                    version = %worker.version,
+                    code = %error.code,
+                    "skipping pending release: the version mutation slot is held"
+                );
+                continue;
+            }
+        };
+        if run_release(&worker.dir, &worker.config).await? {
             ran += 1;
         }
+        // `_slot` cai no fim da iteração.
     }
     Ok(ran)
 }
@@ -823,7 +917,28 @@ pub async fn run_pending_releases_with_events(
 ) -> Result<usize, CoreError> {
     let mut ran = 0;
     for worker in index.worker_refs() {
-        if worker.config.enabled && run_release_for_worker(&worker, events).await? {
+        if !worker.config.enabled {
+            continue;
+        }
+        // Slot por versão: mesma justificativa de `run_pending_releases`
+        // (o rescan também escreve o marcador `.edger-release`).
+        let _slot = match claim_worker_mutation_slot(
+            worker.dir.parent().unwrap_or_else(|| Path::new("")),
+            &worker.name,
+            &worker.version,
+        ) {
+            Ok(slot) => slot,
+            Err(error) => {
+                tracing::warn!(
+                    worker = %worker.name,
+                    version = %worker.version,
+                    code = %error.code,
+                    "skipping pending release: the version mutation slot is held"
+                );
+                continue;
+            }
+        };
+        if run_release_for_worker(&worker, events).await? {
             ran += 1;
         }
     }
@@ -1318,5 +1433,28 @@ mod release_tests {
         assert!(run_release(dir.path(), &config).await.is_err());
         // No marker on failure — the deploy must not be considered released.
         assert!(!dir.path().join(".edger-release").exists());
+    }
+
+    #[tokio::test]
+    async fn state_export_gate_serializes_export_with_mutations() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // 1. Slot preso: o início do export com limite curto dá STATE_BUSY.
+        let slot = claim_worker_mutation_slot(dir.path(), "gate-app", "1.0.0").unwrap();
+        let error = begin_state_export(Duration::from_millis(200))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "STATE_BUSY");
+
+        // 2. Export ativo: o claim dá STATE_EXPORT_IN_PROGRESS.
+        drop(slot);
+        let guard = begin_state_export(Duration::from_secs(5)).await.unwrap();
+        let error = claim_worker_mutation_slot(dir.path(), "gate-app", "1.0.0").unwrap_err();
+        assert_eq!(error.code, "STATE_EXPORT_IN_PROGRESS");
+
+        // 3. Depois do Drop do guard, o claim volta a funcionar.
+        drop(guard);
+        let slot = claim_worker_mutation_slot(dir.path(), "gate-app", "1.0.0").unwrap();
+        drop(slot);
     }
 }

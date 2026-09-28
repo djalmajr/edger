@@ -238,11 +238,49 @@ fn validate_dependency_graph_json(worker_dir: &Path, raw: &[u8]) -> Result<(), S
         .get("modules")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| "Deno dependency graph has no modules array".to_string())?;
+    // D29: a dependência só de tipo (JSDoc `import(...)`) aparece no grafo do
+    // `deno info` mas o `deno bundle` a descarta e o runtime nunca a carrega;
+    // módulos só alcançáveis por arestas de tipo não devem falhar aqui.
+    let roots: HashSet<String> = graph
+        .get("roots")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_string)
+        .collect();
+    let mut code_targets: HashSet<String> = modules
+        .iter()
+        .filter_map(|module| module.get("dependencies"))
+        .filter_map(serde_json::Value::as_array)
+        .flatten()
+        .filter_map(|dependency| {
+            dependency
+                .get("code")
+                .and_then(|code| code.get("specifier"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    if let Some(redirects) = graph
+        .get("redirects")
+        .and_then(serde_json::Value::as_object)
+    {
+        let redirected: HashSet<String> = redirects
+            .iter()
+            .filter(|(from, _)| code_targets.contains(from.as_str()))
+            .filter_map(|(_, to)| to.as_str().map(str::to_string))
+            .collect();
+        code_targets.extend(redirected);
+    }
     for module in modules {
         let Some(specifier) = module.get("specifier").and_then(serde_json::Value::as_str) else {
             continue;
         };
         if !specifier.starts_with("file:") {
+            continue;
+        }
+        if !roots.contains(specifier) && !code_targets.contains(specifier) {
             continue;
         }
         let local = module
@@ -761,8 +799,20 @@ mod tests {
         std::fs::write(&secret, "export const secret = 1;").unwrap();
         let worker = worker.canonicalize().unwrap();
         let graph = serde_json::json!({
+            "roots": [format!("file://{}", entry.display())],
             "modules": [
-                {"specifier": format!("file://{}", entry.display()), "local": entry},
+                {
+                    "specifier": format!("file://{}", entry.display()),
+                    "local": entry,
+                    "dependencies": [
+                        {
+                            "specifier": "../beta/secret.ts",
+                            "code": {
+                                "specifier": format!("file://{}", secret.display())
+                            }
+                        }
+                    ]
+                },
                 {"specifier": format!("file://{}", secret.display()), "local": secret}
             ]
         });
@@ -788,5 +838,157 @@ mod tests {
         });
 
         validate_dependency_graph_json(&worker, graph.to_string().as_bytes()).unwrap();
+    }
+
+    // D29: Q2-1 do levantamento — dependência só de tipo (JSDoc) para um
+    // alvo fora do worker que não resolve: o módulo-alvo tem `error` e sem
+    // `local`, e a aresta é `type`. O bundle descarta o tipo, então o grafo
+    // é válido.
+    #[test]
+    fn type_only_dependency_outside_worker_is_ignored() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = root.path().join("worker");
+        std::fs::create_dir_all(&worker).unwrap();
+        let entry = worker.join("index.js");
+        std::fs::write(&entry, "Deno.serve(() => null);").unwrap();
+        let worker = worker.canonicalize().unwrap();
+        let type_target = format!("file://{}/types/index", root.path().display());
+        let graph = serde_json::json!({
+            "roots": [format!("file://{}", entry.display())],
+            "modules": [
+                {
+                    "specifier": type_target,
+                    "error": format!("Module not found \"{type_target}\".")
+                },
+                {
+                    "kind": "esm",
+                    "dependencies": [
+                        {
+                            "specifier": "../types/index",
+                            "type": {
+                                "specifier": type_target,
+                                "span": {
+                                    "start": {"line": 0, "character": 18},
+                                    "end": {"line": 0, "character": 34}
+                                }
+                            }
+                        }
+                    ],
+                    "local": entry,
+                    "size": 172,
+                    "mediaType": "JavaScript",
+                    "specifier": format!("file://{}", entry.display())
+                }
+            ],
+            "redirects": {},
+            "npmPackages": {}
+        });
+
+        validate_dependency_graph_json(&worker, graph.to_string().as_bytes()).unwrap();
+    }
+
+    // D29: Q2-3 do levantamento — import de tipo com extensão explícita
+    // resolve para um `.d.ts` fora do worker_dir (`local` + `mediaType: "Dts"`);
+    // como a aresta é `type`, o módulo é ignorado e o grafo é válido.
+    #[test]
+    fn type_only_dependency_resolved_outside_worker_is_ignored() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = root.path().join("worker");
+        let types_dir = root.path().join("types");
+        std::fs::create_dir_all(&worker).unwrap();
+        std::fs::create_dir_all(&types_dir).unwrap();
+        let entry = worker.join("index.js");
+        let dts = types_dir.join("index.d.ts");
+        std::fs::write(&entry, "Deno.serve(() => null);").unwrap();
+        std::fs::write(&dts, "export type X = { ok: boolean };\n").unwrap();
+        let worker = worker.canonicalize().unwrap();
+        let graph = serde_json::json!({
+            "roots": [format!("file://{}", entry.display())],
+            "modules": [
+                {
+                    "kind": "esm",
+                    "local": dts,
+                    "size": 30,
+                    "mediaType": "Dts",
+                    "specifier": format!("file://{}", dts.display())
+                },
+                {
+                    "kind": "esm",
+                    "dependencies": [
+                        {
+                            "specifier": "../types/index.d.ts",
+                            "type": {
+                                "specifier": format!("file://{}", dts.display()),
+                                "span": {
+                                    "start": {"line": 0, "character": 18},
+                                    "end": {"line": 0, "character": 44}
+                                }
+                            }
+                        }
+                    ],
+                    "local": entry,
+                    "size": 172,
+                    "mediaType": "JavaScript",
+                    "specifier": format!("file://{}", entry.display())
+                }
+            ],
+            "redirects": {},
+            "npmPackages": {}
+        });
+
+        validate_dependency_graph_json(&worker, graph.to_string().as_bytes()).unwrap();
+    }
+
+    // D29: mesma forma do caso resolvido acima, mas com aresta `code`: o
+    // alvo fica no conjunto de alvos de código e continua sendo recusado.
+    #[test]
+    fn code_dependency_outside_worker_is_still_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = root.path().join("worker");
+        let types_dir = root.path().join("types");
+        std::fs::create_dir_all(&worker).unwrap();
+        std::fs::create_dir_all(&types_dir).unwrap();
+        let entry = worker.join("index.js");
+        let dts = types_dir.join("index.d.ts");
+        std::fs::write(&entry, "Deno.serve(() => null);").unwrap();
+        std::fs::write(&dts, "export type X = { ok: boolean };\n").unwrap();
+        let worker = worker.canonicalize().unwrap();
+        let graph = serde_json::json!({
+            "roots": [format!("file://{}", entry.display())],
+            "modules": [
+                {
+                    "kind": "esm",
+                    "local": dts,
+                    "size": 30,
+                    "mediaType": "Dts",
+                    "specifier": format!("file://{}", dts.display())
+                },
+                {
+                    "kind": "esm",
+                    "dependencies": [
+                        {
+                            "specifier": "../types/index.d.ts",
+                            "code": {
+                                "specifier": format!("file://{}", dts.display()),
+                                "span": {
+                                    "start": {"line": 0, "character": 18},
+                                    "end": {"line": 0, "character": 44}
+                                }
+                            }
+                        }
+                    ],
+                    "local": entry,
+                    "size": 172,
+                    "mediaType": "JavaScript",
+                    "specifier": format!("file://{}", entry.display())
+                }
+            ],
+            "redirects": {},
+            "npmPackages": {}
+        });
+
+        let error =
+            validate_dependency_graph_json(&worker, graph.to_string().as_bytes()).unwrap_err();
+        assert!(error.contains("escapes worker_dir"), "{error}");
     }
 }

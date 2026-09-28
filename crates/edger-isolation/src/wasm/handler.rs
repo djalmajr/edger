@@ -292,7 +292,7 @@ fn build_wasi_context(wasi: &WasiConfig) -> WasiP1Ctx {
     }
     if wasi.allow_env {
         let mut env = wasi.env.iter().collect::<Vec<_>>();
-        env.sort_by(|(left, _), (right, _)| left.cmp(right));
+        env.sort_by_key(|(left, _)| *left);
         for (key, value) in env {
             builder.env(key, value);
         }

@@ -228,8 +228,10 @@ fn unknown_host_keeps_existing_path_fallback() {
     }
 }
 
+// Domínio com dono é inteiro do app (D6): os caminhos reservados não se
+// aplicam quando o Host tem dono.
 #[test]
-fn reserved_path_wins_over_known_host() {
+fn known_host_owns_reserved_paths() {
     let mut index = build_index();
     index
         .insert(
@@ -238,15 +240,67 @@ fn reserved_path_wins_over_known_host() {
         )
         .unwrap();
 
-    let route = resolve_host_route("/api/admin/session", Some("app.example.test"), &index)
-        .unwrap()
-        .expect("reserved route");
-    assert_eq!(
-        route,
-        ResolvedRoute::Reserved {
-            kind: ReservedPath::Api
+    for path in ["/api/admin/session", "/health", "/.well-known/x"] {
+        let route = resolve_host_route(path, Some("app.example.test"), &index)
+            .unwrap()
+            .expect("owned host serves every path");
+        match route {
+            ResolvedRoute::Worker {
+                worker,
+                rewritten_path,
+                ..
+            } => {
+                assert_eq!(worker.name, "hosted", "{path}");
+                assert_eq!(rewritten_path, path, "{path}");
+            }
+            other => panic!("expected worker for {path}, got {other:?}"),
         }
-    );
+    }
+}
+
+#[test]
+fn unknown_host_keeps_reserved_paths() {
+    let index = build_index();
+    for host in [None, Some("unknown.example.test")] {
+        let route = resolve_host_route("/api/x", host, &index).unwrap();
+        assert_eq!(
+            route,
+            Some(ResolvedRoute::Reserved {
+                kind: ReservedPath::Api
+            })
+        );
+    }
+}
+
+// D20 (P2): a porta sai ANTES do ponto final de DNS —
+// "App.Example.test.:19080" resolve para o dono do alias `app.example.test`.
+#[test]
+fn host_alias_normalizes_trailing_dot_before_port() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/w/hosted"),
+            host_manifest("hosted", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+
+    let worker = index.worker_for_host("App.Example.test.:19080").unwrap();
+    assert_eq!(worker.name, "hosted");
+}
+
+#[test]
+fn owned_host_without_served_version_is_not_found() {
+    let mut index = build_index();
+    index
+        .insert(
+            PathBuf::from("/workers/hosted"),
+            host_manifest("hosted", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+    index.set_worker_enabled("hosted", None, false).unwrap();
+
+    let err = resolve_host_route("/", Some("app.example.test"), &index).unwrap_err();
+    assert_eq!(err.code, "NOT_FOUND");
 }
 
 #[test]
@@ -260,8 +314,8 @@ fn disabled_host_worker_is_not_resolved_by_host_alias() {
         .unwrap();
     index.set_worker_enabled("hosted", None, false).unwrap();
 
-    let route = resolve_host_route("/", Some("app.example.test"), &index).unwrap();
-    assert_eq!(route, None);
+    let err = resolve_host_route("/", Some("app.example.test"), &index).unwrap_err();
+    assert_eq!(err.code, "NOT_FOUND");
 }
 
 #[test]
@@ -447,6 +501,113 @@ fn duplicate_host_alias_is_a_collision() {
         )
         .unwrap_err();
     assert_eq!(err.code, "COLLISION");
+}
+
+// O host pertence ao nome do worker: versões do mesmo nome podem repetir o
+// alias, e a versão que responde é a que o nome serve no momento.
+#[test]
+fn same_worker_versions_share_a_host_alias() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/w/hosted-1"),
+            host_manifest("hosted", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+    index
+        .insert(
+            PathBuf::from("/w/hosted-2"),
+            host_manifest("hosted", "2.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+
+    let worker = index.worker_for_host("app.example.test").unwrap();
+
+    assert_eq!(worker.name, "hosted");
+    assert_eq!(worker.version, "2.0.0");
+}
+
+#[test]
+fn host_alias_falls_back_when_served_version_is_disabled() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/w/hosted-1"),
+            host_manifest("hosted", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+    index
+        .insert(
+            PathBuf::from("/w/hosted-2"),
+            host_manifest("hosted", "2.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+    index
+        .set_worker_enabled("hosted", Some("2.0.0"), false)
+        .unwrap();
+
+    let worker = index.worker_for_host("app.example.test").unwrap();
+
+    assert_eq!(worker.name, "hosted");
+    assert_eq!(worker.version, "1.0.0");
+}
+
+#[test]
+fn host_alias_requires_the_served_version_to_declare_it() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/w/hosted-1"),
+            host_manifest("hosted", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+    index
+        .insert(
+            PathBuf::from("/w/hosted-2"),
+            host_manifest("hosted", "2.0.0", Vec::new()),
+        )
+        .unwrap();
+
+    assert_eq!(index.worker_for_host("app.example.test"), None);
+}
+
+#[test]
+fn host_alias_claim_follows_the_versions_that_declare_it() {
+    let mut index = ManifestIndex::new();
+    index
+        .insert(
+            PathBuf::from("/w/a-1"),
+            host_manifest("a", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+    index
+        .insert(
+            PathBuf::from("/w/a-2"),
+            host_manifest("a", "2.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+
+    index.remove_worker("a", "1.0.0").unwrap();
+    let err = index
+        .insert(
+            PathBuf::from("/w/b-1"),
+            host_manifest("b", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "COLLISION");
+
+    index.remove_worker("a", "2.0.0").unwrap();
+    index
+        .insert(
+            PathBuf::from("/w/b-1"),
+            host_manifest("b", "1.0.0", vec!["app.example.test"]),
+        )
+        .unwrap();
+
+    let worker = index.worker_for_host("app.example.test").unwrap();
+
+    assert_eq!(worker.name, "b");
+    assert_eq!(worker.version, "1.0.0");
 }
 
 #[test]

@@ -12,7 +12,7 @@
 //! o hot path não virar write amplification.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -30,17 +30,26 @@ pub const API_KEY_PREFIX: &str = "egk_";
 
 const CACHE_TTL: Duration = Duration::from_secs(60);
 const TOUCH_THROTTLE: Duration = Duration::from_secs(60);
+const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 
 pub struct SqliteApiKeyStore {
     conn: Mutex<Connection>,
+    /// Caminho do arquivo de banco (None em memória). O export de estado (D36)
+    /// usa o caminho para excluir o arquivo bruto do zip e para apontar a
+    /// cópia consistente produzida por `VACUUM INTO`.
+    path: Option<PathBuf>,
 }
 
 impl SqliteApiKeyStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, CoreError> {
+        let path = path.as_ref();
         let mut conn = Connection::open(path).map_err(db_err)?;
+        conn.busy_timeout(Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS))
+            .map_err(db_err)?;
         Self::init_schema(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            path: Some(path.to_path_buf()),
         })
     }
 
@@ -49,7 +58,27 @@ impl SqliteApiKeyStore {
         Self::init_schema(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            path: None,
         })
+    }
+
+    /// Caminho do arquivo de banco, se o store persiste em arquivo.
+    pub fn db_path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// Cópia consistente do banco em `target` (D36): `VACUUM INTO` produz um
+    /// arquivo completo e válido do ponto de vista transacional, executado
+    /// pela própria conexão (segurando o Mutex do store). O destino deve
+    /// ainda não existir; o caller usa um caminho temporário.
+    pub fn export_to(&self, target: &Path) -> Result<(), CoreError> {
+        let conn = self.conn.lock().map_err(|_| lock_err())?;
+        conn.execute(
+            "VACUUM INTO ?1",
+            params![target.to_string_lossy().into_owned()],
+        )
+        .map_err(db_err)?;
+        Ok(())
     }
 
     fn init_schema(conn: &mut Connection) -> Result<(), CoreError> {
@@ -393,6 +422,18 @@ impl ApiKeyService {
     /// Principal vivo para a credencial, ou None (inexistente/revogada/
     /// expirada — indistinguíveis de propósito: 401 é 401).
     pub fn authenticate(&self, raw_key: &str) -> Option<ApiKeyPrincipal> {
+        match self.try_authenticate(raw_key) {
+            Ok(principal) => principal,
+            Err(err) => {
+                tracing::warn!(code = %err.code, "api key lookup failed: {}", err.message);
+                None
+            }
+        }
+    }
+
+    /// Authenticate while preserving store failures for HTTP control-plane
+    /// callers that must distinguish database errors from invalid keys.
+    pub fn try_authenticate(&self, raw_key: &str) -> Result<Option<ApiKeyPrincipal>, CoreError> {
         let cache_key = SqliteApiKeyStore::hash_key(raw_key);
         if let Ok(cache) = self.cache.read() {
             if let Some((principal, at)) = cache.get(&cache_key) {
@@ -400,22 +441,18 @@ impl ApiKeyService {
                     let principal = principal.clone();
                     drop(cache);
                     self.touch(principal.id);
-                    return Some(principal);
+                    return Ok(Some(principal));
                 }
             }
         }
-        let principal = match self.store.lookup_by_key(raw_key) {
-            Ok(principal) => principal?,
-            Err(err) => {
-                tracing::warn!(code = %err.code, "api key lookup failed: {}", err.message);
-                return None;
-            }
+        let Some(principal) = self.store.lookup_by_key(raw_key)? else {
+            return Ok(None);
         };
         if let Ok(mut cache) = self.cache.write() {
             cache.insert(cache_key, (principal.clone(), Instant::now()));
         }
         self.touch(principal.id);
-        Some(principal)
+        Ok(Some(principal))
     }
 
     fn touch(&self, id: u64) {
@@ -498,6 +535,16 @@ impl ApiKeyService {
         let found = self.store.delete_key(id)?;
         self.clear_cache();
         Ok(found)
+    }
+
+    /// Caminho do arquivo de banco do store, se persistir em arquivo (D36).
+    pub fn db_path(&self) -> Option<PathBuf> {
+        self.store.db_path().map(|path| path.to_path_buf())
+    }
+
+    /// Cópia consistente do banco em `target` via `VACUUM INTO` (D36).
+    pub fn export_db(&self, target: &Path) -> Result<(), CoreError> {
+        self.store.export_to(target)
     }
 }
 

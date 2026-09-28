@@ -13,6 +13,9 @@ use edger_core::{
 };
 
 use crate::router::PluginRef;
+use crate::routing_policy::{
+    cohort_bucket, version_for_weight_bucket, RoutingPolicy, RoutingPolicyTable,
+};
 
 #[derive(Clone, Debug)]
 pub struct ManifestEntry {
@@ -20,6 +23,9 @@ pub struct ManifestEntry {
     pub plugin_base: Option<String>,
     pub origin: WorkerOrigin,
     pub staged: bool,
+    /// Hosts normalizados que o manifesto desta versão declara. O host
+    /// pertence ao nome do worker; a versão que responde precisa listá-lo.
+    pub hosts: Vec<String>,
 }
 
 /// Minimal manifest index used by `resolve_route`.
@@ -32,13 +38,19 @@ pub struct ManifestIndex {
 struct ManifestIndexState {
     entries: HashMap<String, Vec<ManifestEntry>>,
     default_versions: HashMap<String, String>,
-    host_routes: HashMap<String, WorkerRef>,
+    // host normalizado -> nome do worker dono do domínio; a versão que
+    // responde é a que o nome serve no momento e precisa declarar o host.
+    host_routes: HashMap<String, String>,
     plugins: Vec<PluginRef>,
     homepage: Option<WorkerRef>,
     shell: Option<WorkerRef>,
     core_bundled_roots: Vec<PathBuf>,
     core_overlay_root: Option<PathBuf>,
     user_roots: Vec<PathBuf>,
+    /// Política por nome completo. Ausência = comportamento antigo.
+    /// Remover ou reinserir uma versão não reescreve este mapa: o snapshot
+    /// guarda os nomes originais e não transfere peso para outra versão.
+    routing_policies: RoutingPolicyTable,
 }
 
 impl ManifestIndex {
@@ -61,7 +73,7 @@ impl ManifestIndex {
         manifest: WorkerManifest,
         origin: WorkerOrigin,
     ) -> Result<(), CoreError> {
-        let worker = create_worker_ref(dir, manifest.clone())?;
+        let mut worker = create_worker_ref(dir, manifest.clone())?;
         let staged = crate::deploy::worker_is_staged(&worker.dir)?;
         validate_origin_identity(&worker.name, manifest.base.as_deref(), origin)?;
         let key = worker.name.clone();
@@ -78,8 +90,15 @@ impl ManifestIndex {
         }
 
         let host_aliases = normalize_host_aliases(&manifest.hosts)?;
+        // O domínio pertence ao nome do worker: colide apenas se o dono
+        // registrado for outro nome. Versões do mesmo nome podem repetir o
+        // host desde a instalação, inclusive staged (reserva para o promote).
         for host in &host_aliases {
-            if state.host_routes.contains_key(host) {
+            if state
+                .host_routes
+                .get(host)
+                .is_some_and(|owner| owner.as_str() != worker.name)
+            {
                 return Err(CoreError::new(
                     "COLLISION",
                     format!("duplicate host route: {host}"),
@@ -102,27 +121,55 @@ impl ManifestIndex {
             });
             state
                 .plugins
-                .sort_by(|a, b| b.base.len().cmp(&a.base.len()));
+                .sort_by_key(|a| std::cmp::Reverse(a.base.len()));
         }
-        for host in host_aliases {
-            state.host_routes.insert(host, worker.clone());
-        }
-
+        // cPanel: o boot carrega o bundled antes do overlay (D8 item 3), então
+        // uma versão habilitada e não staged mais ANTIGA não pode desabilitar a
+        // versão habilitada e não staged mais NOVA: entra desabilitada e as
+        // existentes não mudam. Versão semver inválida mantém o comportamento
+        // atual (a última inserida vence).
         if key == "cpanel" && worker.config.enabled && !staged {
-            if let Some(entries) = state.entries.get_mut(&key) {
+            let newer_active_exists = state.entries.get(&key).is_some_and(|entries| {
+                has_newer_enabled_non_staged_version(entries, &worker.version)
+            });
+            if newer_active_exists {
+                worker.config.enabled = false;
+            } else if let Some(entries) = state.entries.get_mut(&key) {
                 for entry in entries {
                     entry.worker.config.enabled = false;
                 }
             }
         }
 
-        state.entries.entry(key).or_default().push(ManifestEntry {
-            plugin_base,
-            origin,
-            worker,
-            staged,
-        });
+        state
+            .entries
+            .entry(key.clone())
+            .or_default()
+            .push(ManifestEntry {
+                plugin_base,
+                origin,
+                worker,
+                staged,
+                hosts: host_aliases,
+            });
+        rebuild_host_routes(&mut state, &key);
         Ok(())
+    }
+
+    /// D19: `true` só quando `name == "cpanel"` e existe outra entrada com
+    /// semver estritamente maior que `version`, habilitada e não staged.
+    /// Versões que não são semver (a consultada ou a existente) não contam.
+    pub fn cpanel_version_is_older_than_active(&self, name: &str, version: &str) -> bool {
+        if name != "cpanel" {
+            return false;
+        }
+        let Ok(state) = self.inner.read() else {
+            return false;
+        };
+        state
+            .entries
+            .get(name)
+            .is_some_and(|entries| has_newer_enabled_non_staged_version(entries, version))
     }
 
     /// Atomically replace the indexed manifest for one existing version while
@@ -175,11 +222,11 @@ impl ManifestIndex {
             ));
         }
         for host in &host_aliases {
-            if state.host_routes.get(host).is_some_and(|existing| {
-                existing.name != previous.worker.name
-                    || existing.version != previous.worker.version
-                    || existing.dir != previous.worker.dir
-            }) {
+            if state
+                .host_routes
+                .get(host)
+                .is_some_and(|owner| owner.as_str() != worker.name)
+            {
                 return Err(CoreError::new(
                     "COLLISION",
                     format!("duplicate host route: {host}"),
@@ -193,12 +240,14 @@ impl ManifestIndex {
             plugin_base,
             origin,
             staged,
+            hosts: host_aliases,
         };
         state
             .entries
             .get_mut(&key)
             .expect("replacement bucket exists")[position] = replacement.clone();
-        register_entry_routes(&mut state, &replacement, &manifest, host_aliases);
+        register_entry_routes(&mut state, &replacement, &manifest);
+        rebuild_host_routes(&mut state, &key);
         Ok(previous)
     }
 
@@ -359,11 +408,26 @@ impl ManifestIndex {
         None
     }
 
+    /// O dono do host registrado no `host_routes` (o nome do worker), esteja
+    /// ou não alguma versão servindo no momento. `None` para host não
+    /// reivindicado ou alias inválido.
+    pub fn host_owner(&self, host: &str) -> Option<String> {
+        let normalized = normalize_host_alias(host).ok()??;
+        let state = self.inner.read().ok()?;
+        state.host_routes.get(&normalized).cloned()
+    }
+
     pub fn worker_for_host(&self, host: &str) -> Option<WorkerRef> {
         let normalized = normalize_host_alias(host).ok()??;
         let state = self.inner.read().ok()?;
-        let worker = state.host_routes.get(&normalized)?;
-        state.worker_ref_is_enabled(worker).then(|| worker.clone())
+        // O host pertence ao nome do worker; a versão que responde é a que o
+        // nome serve no momento e precisa declarar o host no manifesto.
+        let name = state.host_routes.get(&normalized)?;
+        let entry = served_entry(&state, name)?;
+        entry
+            .hosts
+            .contains(&normalized)
+            .then(|| entry.worker.clone())
     }
 
     pub fn homepage(&self) -> Option<WorkerRef> {
@@ -557,10 +621,10 @@ impl ManifestIndex {
         {
             state.default_versions.remove(name);
         }
+        // A política permanece como foi gravada. A versão retirada continua
+        // nomeada no snapshot; não há fallback para outra versão do nome.
         let removed_dir = removed.worker.dir.clone();
-        state.host_routes.retain(|_, worker| {
-            !(worker.name == name && worker.version == version && worker.dir == removed_dir)
-        });
+        rebuild_host_routes(&mut state, name);
         state
             .plugins
             .retain(|plugin| !(plugin.name == name && plugin.dir == removed_dir));
@@ -619,7 +683,14 @@ impl ManifestIndex {
                 format!("core worker {name} must keep at least one enabled default version"),
             ));
         }
-        if name == "cpanel" && enabled {
+        // D23: a versão alvo staged não é servida; habilitá-la muda só o
+        // flag dela — derrubar as demais versões do cPanel é papel do
+        // promote (`set_default_version`).
+        let target_is_staged = bucket
+            .iter()
+            .find(|entry| entry.worker.version == target_version)
+            .is_some_and(|entry| entry.staged);
+        if name == "cpanel" && enabled && !target_is_staged {
             for entry in bucket.iter_mut() {
                 entry.worker.config.enabled = entry.worker.version == target_version;
             }
@@ -735,6 +806,124 @@ impl ManifestIndex {
             state.default_versions.clear();
         }
     }
+
+    /// Snapshot atual do nome. `Ok(None)` é ausência de política (comportamento
+    /// antigo). Lock envenenado é erro, para não parecer ausência e abrir o gate.
+    pub fn routing_policy(&self, name: &str) -> Result<Option<RoutingPolicy>, CoreError> {
+        let state = self.inner.read().map_err(|_| lock_err())?;
+        Ok(state.routing_policies.get(name))
+    }
+
+    /// Escolhe uma versão do mesmo app. Não grava `defaultVersion`.
+    /// `Ok(None)` mantém a versão já resolvida (sem traffic, ou app core).
+    /// Qualquer versão da política inelegível para esta rota falha a seleção
+    /// inteira: não rebalanceia o peso nem cai no default.
+    pub fn select_weighted_worker(
+        &self,
+        name: &str,
+        cohort: &str,
+        policy: &RoutingPolicy,
+        required_host: Option<&str>,
+        required_plugin_base: Option<&str>,
+    ) -> Result<Option<WorkerRef>, CoreError> {
+        let Some(traffic) = policy.traffic.as_ref() else {
+            return Ok(None);
+        };
+        if policy.name != name {
+            return Err(routing_unavailable());
+        }
+        let state = self.inner.read().map_err(|_| lock_err())?;
+        let Some(bucket) = state.entries.get(name) else {
+            return Err(routing_unavailable());
+        };
+        if bucket
+            .iter()
+            .any(|entry| entry.origin != WorkerOrigin::User)
+        {
+            return Ok(None);
+        }
+        let host = match required_host {
+            Some(host) => Some(
+                normalize_host_alias(host)
+                    .map_err(|_| routing_unavailable())?
+                    .ok_or_else(routing_unavailable)?,
+            ),
+            None => None,
+        };
+        for version in &traffic.versions {
+            let Some(entry) = bucket
+                .iter()
+                .find(|entry| entry.worker.version == version.version)
+            else {
+                return Err(routing_unavailable());
+            };
+            if !entry.worker.config.enabled
+                || entry.staged
+                || crate::deploy::worker_is_staged(&entry.worker.dir)
+                    .map_err(|_| routing_unavailable())?
+                || entry.worker.config.visibility != WorkerVisibility::Public
+            {
+                return Err(routing_unavailable());
+            }
+            if let Some(host) = host.as_ref() {
+                if !entry.hosts.iter().any(|candidate| candidate == host) {
+                    return Err(routing_unavailable());
+                }
+            }
+            if let Some(base) = required_plugin_base {
+                if entry.plugin_base.as_deref() != Some(base) {
+                    return Err(routing_unavailable());
+                }
+            }
+        }
+        let chosen = version_for_weight_bucket(traffic, cohort_bucket(name, cohort))
+            .ok_or_else(routing_unavailable)?;
+        bucket
+            .iter()
+            .find(|entry| entry.worker.version == chosen)
+            .map(|entry| entry.worker.clone())
+            .map(Some)
+            .ok_or_else(routing_unavailable)
+    }
+
+    /// Elegibilidade contra o índice corrente. Uma versão ausente, staged,
+    /// interna ou desabilitada falha; o snapshot não é reescrito.
+    pub fn validate_routing_policy(&self, policy: &RoutingPolicy) -> Result<(), CoreError> {
+        policy.check_invariants()?;
+        let state = self.inner.read().map_err(|_| lock_err())?;
+        check_routing_policy_eligibility(&state, policy, true)
+    }
+
+    /// Troca o snapshot do nome sob o write lock, depois da validação.
+    /// Não mexe em `default_versions`.
+    pub(crate) fn apply_routing_policy(&self, policy: RoutingPolicy) -> Result<(), CoreError> {
+        policy.check_invariants()?;
+        let mut state = self.inner.write().map_err(|_| lock_err())?;
+        check_routing_policy_eligibility(&state, &policy, true)?;
+        state.routing_policies.insert(policy);
+        Ok(())
+    }
+
+    pub(crate) fn clear_routing_policy(&self, name: &str) -> Result<(), CoreError> {
+        let mut state = self.inner.write().map_err(|_| lock_err())?;
+        state.routing_policies.remove(name);
+        Ok(())
+    }
+
+    /// Substitui o mapa inteiro só depois de aceitar cada documento.
+    /// Falha de elegibilidade ou lock deixa o mapa anterior, inclusive a allowlist.
+    pub(crate) fn restore_routing_policy_table(
+        &self,
+        policies: RoutingPolicyTable,
+    ) -> Result<(), CoreError> {
+        let mut state = self.inner.write().map_err(|_| lock_err())?;
+        for policy in policies.iter() {
+            policy.check_invariants()?;
+            check_routing_policy_eligibility(&state, policy, false)?;
+        }
+        state.routing_policies = policies;
+        Ok(())
+    }
 }
 
 fn validate_promotion_entry(
@@ -776,11 +965,6 @@ fn validate_promotion_entry(
 }
 
 fn unregister_entry_routes(state: &mut ManifestIndexState, entry: &ManifestEntry) {
-    state.host_routes.retain(|_, worker| {
-        worker.name != entry.worker.name
-            || worker.version != entry.worker.version
-            || worker.dir != entry.worker.dir
-    });
     state
         .plugins
         .retain(|plugin| plugin.name != entry.worker.name || plugin.dir != entry.worker.dir);
@@ -800,11 +984,74 @@ fn unregister_entry_routes(state: &mut ManifestIndexState, entry: &ManifestEntry
     }
 }
 
+/// Existe uma entrada habilitada e não staged com semver estritamente maior
+/// que `version`? A comparação só vale com semver válidos nos dois lados
+/// (D8 item 3 / D19): sem semver não há "mais antigo", e o comportamento
+/// atual (a última inserida vence) se mantém.
+fn has_newer_enabled_non_staged_version(entries: &[ManifestEntry], version: &str) -> bool {
+    semver::Version::parse(version).is_ok_and(|target| {
+        entries.iter().any(|entry| {
+            entry.worker.config.enabled
+                && !entry.staged
+                && semver::Version::parse(&entry.worker.version)
+                    .is_ok_and(|existing| existing > target)
+        })
+    })
+}
+
+/// Reafirma o mapa de dominios de um nome: remove as entradas cujo dono é
+/// `name` e reinsere a união dos `hosts` de todas as versões ainda indexadas.
+fn rebuild_host_routes(state: &mut ManifestIndexState, name: &str) {
+    state.host_routes.retain(|_, owner| owner.as_str() != name);
+    let Some(bucket) = state.entries.get(name) else {
+        return;
+    };
+    for entry in bucket {
+        for host in &entry.hosts {
+            state.host_routes.insert(host.clone(), name.to_string());
+        }
+    }
+}
+
+/// A versão que o nome serve no momento, com a mesma regra de
+/// `resolve_worker(name, None)`: valem as entradas habilitadas e não staged;
+/// o default explícito vale se for uma delas; senão, a maior versão.
+/// Sem versão servida (ou semver sem match) não há host route.
+fn served_entry<'a>(state: &'a ManifestIndexState, name: &str) -> Option<&'a ManifestEntry> {
+    let bucket = state.entries.get(name)?;
+    let enabled: Vec<&ManifestEntry> = bucket
+        .iter()
+        .filter(|entry| entry.worker.config.enabled && !entry.staged)
+        .collect();
+    if enabled.is_empty() {
+        return None;
+    }
+    let versions: Vec<&str> = enabled
+        .iter()
+        .map(|entry| entry.worker.version.as_str())
+        .collect();
+    let resolved_version = match state
+        .default_versions
+        .get(name)
+        .filter(|version| {
+            enabled
+                .iter()
+                .any(|entry| entry.worker.version == version.as_str())
+        })
+        .cloned()
+    {
+        Some(version) => version,
+        None => resolve_semver(versions, None).ok()?,
+    };
+    enabled
+        .into_iter()
+        .find(|entry| entry.worker.version == resolved_version)
+}
+
 fn register_entry_routes(
     state: &mut ManifestIndexState,
     entry: &ManifestEntry,
     manifest: &WorkerManifest,
-    host_aliases: Vec<String>,
 ) {
     if entry.plugin_base.as_deref() == Some("/") {
         state.homepage = Some(entry.worker.clone());
@@ -818,10 +1065,7 @@ fn register_entry_routes(
         });
         state
             .plugins
-            .sort_by(|left, right| right.base.len().cmp(&left.base.len()));
-    }
-    for host in host_aliases {
-        state.host_routes.insert(host, entry.worker.clone());
+            .sort_by_key(|left| std::cmp::Reverse(left.base.len()));
     }
 }
 
@@ -842,7 +1086,7 @@ fn activate_staged_entry_routes(state: &mut ManifestIndexState, entry: &Manifest
     state.plugins.insert(0, plugin);
     state
         .plugins
-        .sort_by(|left, right| right.base.len().cmp(&left.base.len()));
+        .sort_by_key(|left| std::cmp::Reverse(left.base.len()));
 }
 
 impl ManifestIndexState {
@@ -958,12 +1202,14 @@ fn normalize_host_aliases(hosts: &[String]) -> Result<Vec<String>, CoreError> {
 }
 
 fn normalize_host_alias(host: &str) -> Result<Option<String>, CoreError> {
-    let trimmed = host.trim().trim_end_matches('.');
-    if trimmed.is_empty() {
+    // A porta sai antes do ponto final de DNS (D20): `ZERO.EXAMPLE.:443`
+    // precisa resolver como `zero.example`.
+    let without_port = strip_host_port(host.trim()).trim_end_matches('.');
+    if without_port.is_empty() {
         return Ok(None);
     }
-    if trimmed.contains("://")
-        || trimmed
+    if without_port.contains("://")
+        || without_port
             .chars()
             .any(|ch| ch.is_whitespace() || matches!(ch, '/' | '\\' | '*' | '[' | ']' | '@'))
     {
@@ -972,8 +1218,7 @@ fn normalize_host_alias(host: &str) -> Result<Option<String>, CoreError> {
             format!("invalid host route: {host}"),
         ));
     }
-    let without_port = strip_host_port(trimmed);
-    if without_port.is_empty() || without_port.contains(':') {
+    if without_port.contains(':') {
         return Err(CoreError::new(
             "VALIDATION_ERROR",
             format!("invalid host route: {host}"),
@@ -995,6 +1240,87 @@ fn strip_host_port(host: &str) -> &str {
 
 fn lock_err() -> CoreError {
     CoreError::new("LOCK_ERROR", "manifest index lock poisoned")
+}
+
+fn routing_unavailable() -> CoreError {
+    CoreError::new("ROUTING_UNAVAILABLE", "application not available")
+}
+
+#[cfg(test)]
+fn poison_manifest_index_lock(index: &ManifestIndex) {
+    let index = index.clone();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = index.inner.write().expect("manifest index lock");
+        panic!("poison manifest index lock");
+    }));
+}
+
+const RESERVED_ROUTING_NAMES: [&str; 2] = ["cpanel", "webide"];
+
+fn check_routing_policy_eligibility(
+    state: &ManifestIndexState,
+    policy: &RoutingPolicy,
+    require_indexed_name: bool,
+) -> Result<(), CoreError> {
+    if RESERVED_ROUTING_NAMES.contains(&policy.name.as_str()) {
+        return Err(CoreError::new(
+            "CORE_NAME_RESERVED",
+            format!("worker name is reserved for a core app: {}", policy.name),
+        ));
+    }
+    let bucket = state.entries.get(&policy.name);
+    if bucket.is_some_and(|entries| {
+        entries
+            .iter()
+            .any(|entry| entry.origin != WorkerOrigin::User)
+    }) {
+        return Err(CoreError::new(
+            "CORE_BUNDLED_IMMUTABLE",
+            format!("core worker {} cannot have a routing policy", policy.name),
+        ));
+    }
+    if !require_indexed_name {
+        return Ok(());
+    }
+    let Some(bucket) = bucket else {
+        return Err(CoreError::new(
+            "NOT_FOUND",
+            format!("worker not found: {}", policy.name),
+        ));
+    };
+    let Some(traffic) = &policy.traffic else {
+        return Ok(());
+    };
+    for version in &traffic.versions {
+        let Some(entry) = bucket
+            .iter()
+            .find(|entry| entry.worker.version == version.version)
+        else {
+            return Err(CoreError::new(
+                "NOT_FOUND",
+                format!("worker {}@{} does not exist", policy.name, version.version),
+            ));
+        };
+        if entry.staged {
+            return Err(CoreError::new(
+                "PROMOTE_STAGED_MARKER_PRESENT",
+                format!("worker {}@{} is staged", policy.name, version.version),
+            ));
+        }
+        if entry.worker.config.visibility == WorkerVisibility::Internal {
+            return Err(CoreError::new(
+                "PROMOTE_INTERNAL_VERSION",
+                format!("worker {}@{} is internal", policy.name, version.version),
+            ));
+        }
+        if !entry.worker.config.enabled {
+            return Err(CoreError::validation(
+                "routingPolicy.traffic",
+                format!("worker {}@{} is disabled", policy.name, version.version),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn resolve_semver(available: Vec<&str>, requested: Option<&str>) -> Result<String, CoreError> {
@@ -1078,12 +1404,37 @@ mod tests {
     use super::*;
     use edger_core::WorkerManifest;
 
+    use crate::routing_policy::parse_routing_policy;
+
     fn manifest(name: &str, version: &str) -> WorkerManifest {
         WorkerManifest {
             name: name.into(),
             version: Some(version.into()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn poisoned_lock_is_not_a_missing_routing_policy() {
+        let mut index = ManifestIndex::new();
+        index
+            .insert(PathBuf::from("/w/app"), manifest("app", "1.0.0"))
+            .unwrap();
+        let policy = parse_routing_policy(
+            br#"{"name":"app","tenantAccess":{"mode":"allowlist","tenants":["acme"]}}"#,
+        )
+        .unwrap();
+        index.apply_routing_policy(policy).unwrap();
+        assert!(index.routing_policy("app").unwrap().is_some());
+
+        poison_manifest_index_lock(&index);
+
+        let err = index.routing_policy("app").unwrap_err();
+        assert_eq!(err.code, "LOCK_ERROR", "{err}");
+        assert!(
+            !matches!(index.routing_policy("app"), Ok(None)),
+            "a poisoned index must not look like a missing policy"
+        );
     }
 
     #[test]
@@ -1276,6 +1627,116 @@ mod tests {
                 .unwrap()
                 .status,
             "disabled"
+        );
+    }
+
+    // D8 item 3: um cPanel mais antigo inserido depois (overlay carregado
+    // após o bundled no boot) não pode desabilitar a versão mais nova ativa.
+    #[test]
+    fn inserting_older_enabled_cpanel_keeps_the_newer_default() {
+        let mut index = ManifestIndex::new();
+        index
+            .insert_with_origin(
+                PathBuf::from("/w/cpanel-v2"),
+                manifest("cpanel", "2.0.0"),
+                WorkerOrigin::CoreBundled,
+            )
+            .unwrap();
+        index
+            .insert_with_origin(
+                PathBuf::from("/w/cpanel-v1"),
+                manifest("cpanel", "1.0.0"),
+                WorkerOrigin::CoreOverlay,
+            )
+            .unwrap();
+
+        assert_eq!(
+            index.resolve_worker("cpanel", None).unwrap().version,
+            "2.0.0"
+        );
+        let workers = index.admin_workers();
+        assert_eq!(
+            workers
+                .iter()
+                .find(|worker| worker.name == "cpanel" && worker.version == "1.0.0")
+                .unwrap()
+                .status,
+            "disabled"
+        );
+    }
+
+    // D19: o install usa esta consulta para não reativar um cPanel mais
+    // antigo que o ativo.
+    #[test]
+    fn cpanel_version_is_older_than_active_follows_semver_and_scope() {
+        let mut index = ManifestIndex::new();
+        index
+            .insert_with_origin(
+                PathBuf::from("/w/cpanel-2"),
+                manifest("cpanel", "2.0.0"),
+                WorkerOrigin::CoreBundled,
+            )
+            .unwrap();
+        index
+            .insert(PathBuf::from("/w/other-1"), manifest("other", "1.0.0"))
+            .unwrap();
+
+        // mais antiga que a ativa → true
+        assert!(index.cpanel_version_is_older_than_active("cpanel", "1.0.0"));
+        // mais nova que a ativa → false
+        assert!(!index.cpanel_version_is_older_than_active("cpanel", "2.1.0"));
+        // worker que não é cpanel → false
+        assert!(!index.cpanel_version_is_older_than_active("other", "1.0.0"));
+        // versão que não é semver → false
+        assert!(!index.cpanel_version_is_older_than_active("cpanel", "next"));
+    }
+
+    // D23: habilitar uma versão STAGED do cPanel muda só o flag dela — a
+    // versão ativa continua servida até o promote.
+    #[test]
+    fn enabling_staged_cpanel_keeps_the_active_version_enabled() {
+        let root = tempfile::tempdir().unwrap();
+        let active_dir = root.path().join("cpanel-1");
+        std::fs::create_dir_all(&active_dir).unwrap();
+        let mut index = ManifestIndex::new();
+        index
+            .insert_with_origin(
+                active_dir,
+                manifest("cpanel", "1.0.0"),
+                WorkerOrigin::CoreBundled,
+            )
+            .unwrap();
+        let staged_dir = root.path().join("cpanel-2");
+        std::fs::create_dir_all(&staged_dir).unwrap();
+        std::fs::write(
+            staged_dir.join(".edger-revision"),
+            "revision-v2\nstaged=true\n",
+        )
+        .unwrap();
+        index
+            .insert_with_origin(
+                staged_dir,
+                manifest("cpanel", "2.0.0"),
+                WorkerOrigin::CoreOverlay,
+            )
+            .unwrap();
+
+        index
+            .set_worker_enabled("cpanel", Some("2.0.0"), true)
+            .unwrap();
+
+        assert_eq!(
+            index.resolve_worker("cpanel", None).unwrap().version,
+            "1.0.0"
+        );
+        let workers = index.admin_workers();
+        assert_eq!(
+            workers
+                .iter()
+                .find(|worker| worker.name == "cpanel" && worker.version == "1.0.0")
+                .unwrap()
+                .status,
+            "loaded"
         );
     }
 

@@ -37,11 +37,14 @@ O que fazer: declarar o backend em `crates/edger-orchestrator/Cargo.toml`
 O dependabot abriu dois PRs parciais e desalinhados: um levava a imagem base
 para 1.97 e o outro a action para "1.100", versão que não existe.
 
-Os cinco pontos que declaram a toolchain e precisam subir juntos:
+Os seis pontos que declaram a toolchain e precisam subir juntos:
 
 * `Dockerfile` (estágio builder)
 * `Dockerfile.cross`
 * `.github/workflows/ci.yml` — três usos de `dtolnay/rust-toolchain@1.88`
 * `Cargo.toml` da raiz — `rust-version = "1.88"`, herdado por todas as crates
+* `.gitlab-ci.yml` (jobs `test` e `project-gates`)
 
 Subir só um deixa o compilador do build diferente do compilador do CI.
+
+Feito na 0.3.2-rc.4 (2026-09-25): todos em 1.98.

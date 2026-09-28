@@ -37,7 +37,7 @@ stages:
 test:
   stage: test
   <<: *gates
-  image: rust:1.88-bookworm
+  image: rust:1.98-bookworm
   variables:
     CARGO_HOME: "$CI_PROJECT_DIR/.cargo-ci"
     CARGO_TERM_COLOR: always
@@ -98,7 +98,7 @@ helm:
 project-gates:
   stage: test
   <<: *gates
-  image: rust:1.88-bookworm
+  image: rust:1.98-bookworm
   variables:
     CARGO_HOME: "$CI_PROJECT_DIR/.cargo-ci"
     BUN_INSTALL: "$CI_PROJECT_DIR/.bun-ci"

@@ -2,6 +2,7 @@
 
 use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
@@ -64,6 +65,13 @@ pub struct ControlAuth {
     /// Store de api-keys persistentes (`egk_`). `None` = instância sem
     /// store (open mode, ou boot sem EDGER_API_KEYS_DB utilizável).
     keys: Option<Arc<crate::api_keys::ApiKeyService>>,
+    /// Console por senha: root user + sessões `ses-` persistentes
+    /// (`EDGER_ROOT_PASSWORD_FILE` / `EDGER_API_KEYS_DB`). `None` = instância
+    /// sem a feature (open mode fresco, ou boot sem store utilizável).
+    console: Option<Arc<crate::console_auth::ConsoleAuthService>>,
+    /// Se o store de console tem usuário root (computado na ligação; a
+    /// semente só acontece no boot, então o flag é estável no processo).
+    console_seeded: Arc<AtomicBool>,
 }
 
 impl ControlAuthConfig {
@@ -102,6 +110,8 @@ impl ControlAuth {
             file_state: Arc::default(),
             oidc,
             keys: None,
+            console: None,
+            console_seeded: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -113,6 +123,33 @@ impl ControlAuth {
 
     pub fn key_service(&self) -> Option<&Arc<crate::api_keys::ApiKeyService>> {
         self.keys.as_ref()
+    }
+
+    /// Liga o store de console (root user + sessões `ses-`) — chamado no
+    /// boot depois do store de keys, no MESMO caminho de banco.
+    pub fn with_console_service(
+        mut self,
+        console: Arc<crate::console_auth::ConsoleAuthService>,
+    ) -> Self {
+        let seeded = match console.has_root_user() {
+            Ok(seeded) => seeded,
+            Err(err) => {
+                // Falha fechada: sem saber se há root no store, o gate de
+                // open mode continua FECHADO.
+                tracing::warn!(
+                    code = %err.code,
+                    "console root user check failed, gate stays closed: {}", err.message
+                );
+                true
+            }
+        };
+        self.console_seeded.store(seeded, Ordering::SeqCst);
+        self.console = Some(console);
+        self
+    }
+
+    pub fn console_service(&self) -> Option<&Arc<crate::console_auth::ConsoleAuthService>> {
+        self.console.as_ref()
     }
 
     pub fn from_env() -> Result<Self, ControlAuthConfigError> {
@@ -133,6 +170,8 @@ impl ControlAuth {
             file_state: Arc::default(),
             oidc: Some(OidcValidator::new(config, source)),
             keys: None,
+            console: None,
+            console_seeded: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -147,10 +186,18 @@ impl ControlAuth {
 
         // Keys persistentes: o prefixo discriminante decide — um egk_ que
         // não autentica NÃO cai no OIDC (não é JWT), falha aqui mesmo.
+        // Sessões da console (ses-…) têm o mesmo comportamento: prefixo
+        // disjunto de egk_ e de JWT, e sem store a sessão é negada na hora.
         if let Some(credential) = extract_api_key(headers) {
             if credential.starts_with(crate::api_keys::API_KEY_PREFIX) {
                 let keys = self.keys.as_ref()?;
                 return keys.authenticate(&credential);
+            }
+            if credential.starts_with(crate::console_auth::SESSION_PREFIX) {
+                return self
+                    .console
+                    .as_ref()
+                    .and_then(|console| console.authenticate_session(&credential));
             }
         }
 
@@ -165,7 +212,16 @@ impl ControlAuth {
         }
     }
 
+    /// Gate de open mode: sem root key, sem OIDC e sem root user no store de
+    /// console. A senha semeada FECHA o gate mesmo sem as demais credenciais
+    /// (open mode só existe quando não há NENHUMA credencial).
     pub fn is_open(&self) -> bool {
+        self.is_open_without_console() && !self.console_seeded.load(Ordering::SeqCst)
+    }
+
+    /// Gate de credenciais estáticas (root key/OIDC) — usado no boot ANTES do
+    /// store de console estar ligado.
+    pub fn is_open_without_console(&self) -> bool {
         matches!(self.config.root_key_source, RootKeySource::Open) && self.config.oidc.is_none()
     }
 
@@ -375,5 +431,190 @@ mod tests {
             validate_oidc_pair(Some("issuer".into()), Some("audience".into())).unwrap(),
             Some(("issuer".into(), "audience".into()))
         );
+    }
+
+    #[tokio::test]
+    async fn seeded_console_closes_open_gate_and_session_authenticates_as_root() {
+        use crate::console_auth::ConsoleAuthService;
+
+        let service = Arc::new(ConsoleAuthService::in_memory().unwrap());
+        service.seed_root_if_empty(Some("Str0ng!Passw0rd")).unwrap();
+        let auth = ControlAuth::new(ControlAuthConfig::default()).with_console_service(service);
+        // Sem root key/OIDC, MAS com root semeado: o gate NÃO fica aberto.
+        assert!(auth.is_open_without_console());
+        assert!(!auth.is_open());
+
+        let token = auth
+            .console_service()
+            .unwrap()
+            .login(
+                std::net::IpAddr::from([10u8, 0, 0, 1]),
+                "root",
+                "Str0ng!Passw0rd",
+            )
+            .unwrap();
+
+        // Sessão autentica via Bearer E via X-API-Key, virando root.
+        for header in ["authorization", "x-api-key"] {
+            let mut headers = HeaderMap::new();
+            if header == "authorization" {
+                headers.insert(
+                    "authorization",
+                    HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+                );
+            } else {
+                headers.insert("x-api-key", HeaderValue::from_str(&token).unwrap());
+            }
+            let principal = auth.authenticate_headers(&headers).await.unwrap();
+            assert!(principal.is_root, "via {header}");
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_console_keeps_open_gate_and_rejects_unknown_session() {
+        use crate::console_auth::ConsoleAuthService;
+
+        let service = Arc::new(ConsoleAuthService::in_memory().unwrap());
+        // Sem semente: banco vazio, nenhum usuário criado.
+        assert!(!service.has_root_user().unwrap());
+        let auth = ControlAuth::new(ControlAuthConfig::default()).with_console_service(service);
+        assert!(auth.is_open());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer ses-nao-existe"),
+        );
+        assert!(auth.authenticate_headers(&headers).await.is_none());
+    }
+
+    /// Convivência OIDC: com console ligado e OIDC configurado, o JWT segue
+    /// validando pelo OIDC e o prefixo `ses-` NUNCA cai no OIDC (disjoint de
+    /// JWT, que sempre começa com `eyJ`).
+    #[tokio::test]
+    async fn oidc_and_console_session_coexist() {
+        use crate::console_auth::ConsoleAuthService;
+        use crate::oidc::{JwksSource, OidcDiscovery, OidcError};
+        use async_trait::async_trait;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        use jsonwebtoken::jwk::JwkSet;
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        use rand::thread_rng;
+        use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+        use rsa::traits::PublicKeyParts;
+        use rsa::{RsaPrivateKey, RsaPublicKey};
+        use serde_json::{json, Value};
+        use std::collections::VecDeque;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::{Arc, Mutex};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        const AUDIENCE: &str = "edger-control";
+        const ISSUER: &str = "https://issuer.example.test";
+
+        struct StaticJwks {
+            jwks: Arc<Mutex<VecDeque<JwkSet>>>,
+            calls: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl JwksSource for StaticJwks {
+            async fn discovery(&self, _issuer: &str) -> Result<OidcDiscovery, OidcError> {
+                Ok(OidcDiscovery {
+                    jwks_uri: "https://issuer.example.test/jwks".into(),
+                })
+            }
+
+            async fn jwks(&self, _uri: &str) -> Result<JwkSet, OidcError> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(self.jwks.lock().unwrap().front().unwrap().clone())
+            }
+        }
+
+        let mut rng = thread_rng();
+        let private_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let public_key = RsaPublicKey::from(&private_key);
+        let private_pem = private_key.to_pkcs8_pem(LineEnding::LF).unwrap();
+        let n = URL_SAFE_NO_PAD.encode(public_key.n().to_bytes_be());
+        let e = URL_SAFE_NO_PAD.encode(public_key.e().to_bytes_be());
+        let jwks: JwkSet = serde_json::from_value(json!({
+            "keys": [{
+                "alg": "RS256", "e": e, "kid": "kid-1", "kty": "RSA", "n": n, "use": "sig"
+            }]
+        }))
+        .unwrap();
+        let source = Arc::new(StaticJwks {
+            jwks: Arc::new(Mutex::new(VecDeque::from([jwks]))),
+            calls: Arc::default(),
+        });
+
+        let config = OidcConfig {
+            admin_role: Some("edger-admin".into()),
+            audience: AUDIENCE.into(),
+            issuer: ISSUER.into(),
+            namespaces_claim: "namespaces".into(),
+            required_role: None,
+            roles_claim: Some("groups".into()),
+        };
+        let auth = ControlAuth::with_oidc_source(config, source.clone())
+            .with_console_service(Arc::new(ConsoleAuthService::in_memory().unwrap()));
+
+        // `ses-` com OIDC ativo: NUNCA cai no OIDC (e sem sessão no store).
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer ses-qualquer-coisa"),
+        );
+        assert!(auth.authenticate_headers(&headers).await.is_none());
+        // O OIDC não foi consultado por causa do prefixo (0 chamadas JWKS).
+        assert_eq!(source.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // JWT válido com o papel admin segue validando (convivência).
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims: Value = json!({
+            "aud": AUDIENCE, "exp": now + 3600, "iat": now, "iss": ISSUER,
+            "nbf": now.saturating_sub(1), "sub": "user-1", "groups": ["edger-admin"]
+        });
+        let token = encode(
+            &Header {
+                alg: Algorithm::RS256,
+                kid: Some("kid-1".into()),
+                ..Default::default()
+            },
+            &claims,
+            &EncodingKey::from_rsa_pem(private_pem.as_bytes()).unwrap(),
+        )
+        .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        let principal = auth.authenticate_headers(&headers).await.unwrap();
+        assert!(
+            principal.is_root,
+            "OIDC admin role must keep authenticating"
+        );
+    }
+
+    #[test]
+    fn is_open_reflects_console_seed_state_with_static_key() {
+        use crate::console_auth::ConsoleAuthService;
+
+        // Root key configurada: fechado, com ou sem console.
+        let keyed = ControlAuth::with_static_key("root-secret");
+        assert!(!keyed.is_open());
+        let seeded = Arc::new(ConsoleAuthService::in_memory().unwrap());
+        seeded.seed_root_if_empty(Some("Str0ng!Passw0rd")).unwrap();
+        assert!(!keyed.clone().with_console_service(seeded.clone()).is_open());
+        // Sem root key e sem seed: o gate segue aberto (sem credencial nenhuma).
+        let unseeded = ConsoleAuthService::in_memory().unwrap();
+        let open =
+            ControlAuth::new(ControlAuthConfig::default()).with_console_service(Arc::new(unseeded));
+        assert!(open.is_open());
     }
 }

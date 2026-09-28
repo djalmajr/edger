@@ -21,7 +21,7 @@
 - Do not publish extension crates to crates.io manually.
 
 ## Launch / Workers
-- edger entry: `ROOT_API_KEY=test-root PORT=19080 RUNTIME_WORKER_DIRS=workers/examples EDGER_CORE_WORKER_DIR=workers/core EDGER_CORE_WORKER_OVERLAY_DIR=.edger/core-worker-overlays cargo run -p edger-orchestrator --bin edger`
+- edger entry: `ROOT_API_KEY=test-root EDGER_BIND=127.0.0.1 PORT=19080 RUNTIME_WORKER_DIRS=workers/examples EDGER_CORE_WORKER_DIR=workers/core EDGER_CORE_WORKER_OVERLAY_DIR=.edger/core-worker-overlays cargo run -p edger-orchestrator --bin edger`
 - Worker dir **must** have `index.{ts,js,mjs}` compatible with:
   - `Deno.serve(handlerOrOptions)`
   - or `export default { fetch(req) {} }`
@@ -30,6 +30,12 @@
 - JS/TS workers execute by default on a **persistent Deno process** per worker over a Unix domain socket (Epic 15): the module is imported once and served across requests (warm p50 ~1.6ms end-to-end, ~25x vs v1). Per-worker heap cap via `--v8-flags=--max-old-space-size` (from `ResourceLimits::from_config`); response bodies read as bounded streams (`EDGER_STREAM_MAX_BYTES`/`EDGER_STREAM_IDLE_MS`) so infinite/SSE streams never hang the process. `deno` on PATH or `EDGER_DENO_BIN`; sandboxed with `deno run --no-prompt` (read limited to worker dir + Deno cache, write/run/ffi denied, `--allow-net`/`--allow-env`/`--allow-sys` for npm compat; network configurable via `EDGER_DENO_ALLOW_NET`).
 - **Legacy fallback:** `EDGER_JS_RUNTIME=bridge` forces the v1 per-request CLI bridge (`deno run` per request, bounded-first-chunk streaming). It is retained as an emergency fallback only; the persistent process is the supported path. Embedding `deno_core` was evaluated and rejected in favor of the durable multi-process design; do not reintroduce a Bun adapter.
 - Workers may export `routes` (Bun.serve-style: exact > `:param` > `*` wildcard, per-method maps, `fetch` fallback) in addition to `Deno.serve`/default fetch.
+
+## Tenant routing and weighted rollout (Epic 25)
+- `EDGER_TENANT_ROUTING_ENABLED` and `EDGER_WEIGHTED_ROUTING_ENABLED` are independent opt-ins, both off by default. Tenant off requires no Tenancit URL or token.
+- Tenant allowlists are policies per full app name in `.edger-routing`; only root may PUT/DELETE them. `GET /v1/identify` confirms hostname-to-tenant context, not user membership. A restricted app fails closed if identify fails; worker auth still protects people and data. Never trust visitor `x-tenant-id`.
+- Weighted routing uses an opaque session cohort on versionless public routes; explicit `@version` bypasses weights but still passes an enabled tenant gate. Rancher setup exposes both flags and requires an existing Tenancit token Secret only when tenant routing is on.
+- The feature is implemented and tested locally in `planning/edger/docs/tenant-routing.md` and `planning/edger/status/evidence/tenant-routing-2026-09-26.md`; no production publication is implied. Policy files are local to one instance, so multi-replica coordination is still required.
 
 ## Discipline
 - Planning maturity: `/agile-refinement` Mode 1 on `planning/edger/` + `refinement-lint.py` (see `planning/edger/scripts/run-gates.sh`). Only the orchestrator agent calls ai-memory tools; subagents must not.

@@ -38,6 +38,7 @@ Start the runtime with a development-only control-plane key:
 
 ```bash
 ROOT_API_KEY=dev-only-change-me \
+EDGER_BIND=127.0.0.1 \
 PORT=19080 \
 RUNTIME_WORKER_DIRS=workers/examples \
 EDGER_CORE_WORKER_DIR=workers/core \

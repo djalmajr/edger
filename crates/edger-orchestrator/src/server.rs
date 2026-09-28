@@ -1,7 +1,7 @@
 //! HTTP server — health/readiness probes and request tracing (story 05.01).
 
 use std::future::Future;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -20,7 +20,8 @@ use uuid::Uuid;
 
 use crate::cron::CronMetrics;
 use crate::metrics::{
-    cron_metrics_prometheus, http_metrics_prometheus, pool_metrics_prometheus, HttpMetrics,
+    cron_metrics_prometheus, http_metrics_prometheus, pool_metrics_prometheus,
+    tenant_routing_metrics_prometheus, HttpMetrics, TenantRoutingMetrics,
 };
 
 /// Listener configuration (addr from `PORT` env in the binary).
@@ -31,17 +32,26 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     pub fn from_port(port: u16) -> Self {
+        Self::from_bind(IpAddr::from([0, 0, 0, 0]), port)
+    }
+
+    /// Build the listener config from an explicit IP (e.g. `EDGER_BIND`) and port.
+    pub fn from_bind(ip: IpAddr, port: u16) -> Self {
         Self {
-            addr: SocketAddr::from(([0, 0, 0, 0], port)),
+            addr: SocketAddr::new(ip, port),
         }
     }
 }
 
 struct ServerStateInner {
     ready: AtomicBool,
+    tenant_routing_enabled: AtomicBool,
+    weighted_routing_enabled: AtomicBool,
     pool: std::sync::RwLock<Option<WorkerPool>>,
+    tenant_identity: std::sync::RwLock<Option<crate::tenant_identity::TenantIdentityClient>>,
     cron_metrics: CronMetrics,
     http_metrics: HttpMetrics,
+    tenant_routing_metrics: TenantRoutingMetrics,
     operational_events: crate::observability::OperationalStore,
     worker_errors: crate::worker_errors::WorkerErrorLog,
 }
@@ -57,9 +67,13 @@ impl ServerState {
         Self {
             inner: Arc::new(ServerStateInner {
                 ready: AtomicBool::new(false),
+                tenant_routing_enabled: AtomicBool::new(false),
+                weighted_routing_enabled: AtomicBool::new(false),
                 pool: std::sync::RwLock::new(None),
+                tenant_identity: std::sync::RwLock::new(None),
                 cron_metrics: CronMetrics::default(),
                 http_metrics: HttpMetrics::default(),
+                tenant_routing_metrics: TenantRoutingMetrics::default(),
                 operational_events: crate::observability::OperationalStore::default(),
                 worker_errors: crate::worker_errors::WorkerErrorLog::default(),
             }),
@@ -69,6 +83,42 @@ impl ServerState {
     pub fn mark_ready(&self, pool: WorkerPool) {
         *self.inner.pool.write().expect("pool lock") = Some(pool);
         self.inner.ready.store(true, Ordering::SeqCst);
+    }
+
+    pub fn set_tenant_identity_client(&self, client: crate::tenant_identity::TenantIdentityClient) {
+        *self
+            .inner
+            .tenant_identity
+            .write()
+            .expect("tenant identity lock") = Some(client);
+    }
+
+    pub fn enable_tenant_routing(&self) {
+        self.inner
+            .tenant_routing_enabled
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub fn tenant_routing_enabled(&self) -> bool {
+        self.inner.tenant_routing_enabled.load(Ordering::SeqCst)
+    }
+
+    pub fn enable_weighted_routing(&self) {
+        self.inner
+            .weighted_routing_enabled
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub fn weighted_routing_enabled(&self) -> bool {
+        self.inner.weighted_routing_enabled.load(Ordering::SeqCst)
+    }
+
+    pub fn tenant_identity_client(&self) -> Option<crate::tenant_identity::TenantIdentityClient> {
+        self.inner
+            .tenant_identity
+            .read()
+            .expect("tenant identity lock")
+            .clone()
     }
 
     pub fn is_ready(&self) -> bool {
@@ -100,6 +150,10 @@ impl ServerState {
 
     pub fn http_metrics(&self) -> HttpMetrics {
         self.inner.http_metrics.clone()
+    }
+
+    pub fn tenant_routing_metrics(&self) -> TenantRoutingMetrics {
+        self.inner.tenant_routing_metrics.clone()
     }
 
     pub fn worker_errors(&self) -> crate::worker_errors::WorkerErrorLog {
@@ -135,6 +189,9 @@ async fn metrics(State(state): State<ServerState>) -> impl IntoResponse {
     let mut body = pool_metrics_prometheus(&metrics);
     body.push_str(&cron_metrics_prometheus(&state.cron_metrics()));
     body.push_str(&http_metrics_prometheus(&state.http_metrics()));
+    body.push_str(&tenant_routing_metrics_prometheus(
+        &state.tenant_routing_metrics(),
+    ));
     (
         [(
             header::CONTENT_TYPE,
@@ -203,14 +260,18 @@ pub fn router(state: ServerState) -> Router {
         .with_state(state)
 }
 
-/// Bind and serve until the shutdown signal resolves.
+/// Bind and serve until the shutdown signal resolves. `into_make_service_with_connect_info` expõe
+/// o IP REAL da conexão (peer do listener) aos handlers como `ConnectInfo` —
+/// é a única fonte de IP confiável: headers de cliente (`X-Forwarded-For`,
+/// `X-Real-IP`) nunca são usados para rate limit de credencial.
 pub async fn serve<S>(config: ServerConfig, app: Router, shutdown_signal: S) -> anyhow::Result<()>
 where
     S: Future<Output = ()> + Send + 'static,
 {
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
     info!(%config.addr, "edger listening");
-    axum::serve(listener, app)
+    let make_service = app.into_make_service_with_connect_info::<SocketAddr>();
+    axum::serve(listener, make_service)
         .with_graceful_shutdown(shutdown_signal)
         .await?;
     Ok(())
@@ -224,6 +285,35 @@ pub fn port_from_env() -> u16 {
         .unwrap_or(3000)
 }
 
+/// Parse the `EDGER_BIND` value into a listening IP (default `0.0.0.0`).
+pub fn parse_bind_ip(value: Option<&str>) -> Result<std::net::IpAddr, String> {
+    match value {
+        Some(raw) if !raw.trim().is_empty() => raw.trim().parse().map_err(|_| {
+            format!("EDGER_BIND must be an IP address such as 127.0.0.1 or 0.0.0.0, got {raw:?}")
+        }),
+        _ => Ok(IpAddr::from([0, 0, 0, 0])),
+    }
+}
+
+/// Parse the `EDGER_BIND` value (raw env bytes) into a listening IP (default `0.0.0.0`).
+/// Fails when the variable is set to bytes that are not valid UTF-8 text.
+pub fn parse_bind_os(value: Option<&std::ffi::OsStr>) -> Result<IpAddr, String> {
+    match value {
+        None => parse_bind_ip(None),
+        Some(v) => match v.to_str() {
+            Some(s) => parse_bind_ip(Some(s)),
+            None => Err(format!(
+                "EDGER_BIND must be valid UTF-8 text with an IP address such as 127.0.0.1 or 0.0.0.0, got {v:?}"
+            )),
+        },
+    }
+}
+
+/// Read the listening IP from the `EDGER_BIND` env (default `0.0.0.0`).
+pub fn bind_ip_from_env() -> Result<IpAddr, String> {
+    parse_bind_os(std::env::var_os("EDGER_BIND").as_deref())
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::*;
@@ -232,5 +322,69 @@ mod unit_tests {
     fn unready_state_is_not_ready() {
         let state = ServerState::new_unready();
         assert!(!state.is_ready());
+    }
+
+    #[test]
+    fn parse_bind_ip_defaults_to_wildcard() {
+        let wildcard = IpAddr::from([0, 0, 0, 0]);
+        assert_eq!(parse_bind_ip(None).unwrap(), wildcard);
+        assert_eq!(parse_bind_ip(Some("")).unwrap(), wildcard);
+        assert_eq!(parse_bind_ip(Some("  ")).unwrap(), wildcard);
+    }
+
+    #[test]
+    fn parse_bind_ip_accepts_ipv4_and_ipv6() {
+        assert_eq!(
+            parse_bind_ip(Some("127.0.0.1")).unwrap(),
+            "127.0.0.1".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            parse_bind_ip(Some("::1")).unwrap(),
+            "::1".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            parse_bind_ip(Some(" 0.0.0.0 ")).unwrap(),
+            IpAddr::from([0, 0, 0, 0])
+        );
+    }
+
+    #[test]
+    fn parse_bind_ip_rejects_hostnames() {
+        let err = parse_bind_ip(Some("localhost")).unwrap_err();
+        assert!(err.contains("EDGER_BIND"), "got: {err}");
+        assert!(err.contains("localhost"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_bind_os_maps_none_to_wildcard() {
+        assert_eq!(parse_bind_os(None).unwrap(), IpAddr::from([0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn parse_bind_os_accepts_utf8_ip() {
+        assert_eq!(
+            parse_bind_os(Some(std::ffi::OsStr::new("127.0.0.1"))).unwrap(),
+            "127.0.0.1".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_bind_ip_accepts_ipv6_unspecified() {
+        assert_eq!(parse_bind_ip(Some("::")).unwrap(), IpAddr::from([0u16; 8]));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn parse_bind_os_rejects_non_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let err = parse_bind_os(Some(std::ffi::OsStr::from_bytes(b"\xff"))).unwrap_err();
+        assert!(err.contains("EDGER_BIND"), "got: {err}");
+        assert!(err.contains("UTF-8"), "got: {err}");
+    }
+
+    #[test]
+    fn from_bind_builds_socket_addr_from_ip_and_port() {
+        let config = ServerConfig::from_bind("127.0.0.1".parse::<IpAddr>().unwrap(), 19080);
+        assert_eq!(config.addr.to_string(), "127.0.0.1:19080");
     }
 }

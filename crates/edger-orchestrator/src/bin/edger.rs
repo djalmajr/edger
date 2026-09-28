@@ -8,7 +8,8 @@
 //!   (default `.edger/core-worker-overlays`)
 //! - `ROOT_API_KEY` — control-plane root key (optional)
 //! - `EDGER_ROOT_KEY_FILE` — file-backed control-plane root key (takes precedence over `ROOT_API_KEY`)
-//! - `EDGER_API_KEYS_DB` — SQLite das api-keys persistentes (default `.edger/api-keys.db`; só inicializa com auth configurada)
+//! - `EDGER_API_KEYS_DB` — SQLite das api-keys persistentes (default `.edger/api-keys.db`; só inicializa com auth configurada; o console por senha usa o MESMO arquivo)
+//! - `EDGER_ROOT_PASSWORD_FILE` — arquivo com a senha inicial do root da console (semeia o root SOMENTE quando o usuário `root` não existe — operadores pré-existentes não bloqueiam a semente; arquivo configurado e inválido/vazio/fora da política de força falha o boot; nunca usa o root token como senha nem cria senha default)
 //! - `EDGER_OIDC_ISSUER` — opt-in control-plane OIDC issuer; unset disables OIDC
 //! - `EDGER_OIDC_AUDIENCE` — required audience when `EDGER_OIDC_ISSUER` is set
 //! - `EDGER_OIDC_NAMESPACES_CLAIM` — optional dotted namespace claim path (default `namespaces`)
@@ -16,8 +17,13 @@
 //! - `EDGER_OIDC_ADMIN_ROLE` — optional role that marks an OIDC principal as root
 //! - `EDGER_OIDC_REQUIRED_ROLE` — optional role required inside `EDGER_OIDC_ROLES_CLAIM`
 //! - `EDGER_CRON_ENABLED` — enable manifest `cron[]` jobs (default true)
+//! - `EDGER_TENANT_ROUTING_ENABLED` — opt in to tenant allowlists (default false)
+//! - `EDGER_WEIGHTED_ROUTING_ENABLED` — opt in to weighted version selection (default false)
+//! - `EDGER_TENANCIT_IDENTIFY_URL` — exact Tenancit Consumer API `/v1/identify` URL
+//! - `EDGER_TENANCIT_TOKEN_FILE` — file containing the `tenant:identify` API client token
 
-use std::path::PathBuf;
+use anyhow::Context;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use edger_core::ExecutionKind;
@@ -28,11 +34,12 @@ use edger_isolation::{
 use edger_orchestrator::observability::{
     OperationalEventInput, OperationalEventLevel, OperationalEventSource, OperationalStore,
 };
+use edger_orchestrator::tenant_identity::TenantIdentityClient;
 use edger_orchestrator::{
-    build_pipeline, collect_cron_registrations, init_tracing_from_env, load_manifests_from_roots,
-    parse_runtime_worker_dirs, port_from_env, prewarm_min_process_workers,
-    run_pending_releases_with_events, serve, ControlAuth, CronScheduler, CronSchedulerConfig,
-    OrchestratorState, ServerConfig, ServerState,
+    bind_ip_from_env, build_pipeline, collect_cron_registrations, init_tracing_from_env,
+    load_manifests_from_roots, parse_runtime_worker_dirs, port_from_env,
+    prewarm_min_process_workers, run_pending_releases_with_events, serve, ControlAuth,
+    CronScheduler, CronSchedulerConfig, OrchestratorState, ServerConfig, ServerState,
 };
 use edger_worker::{
     IsolateFactory, LifecycleEventSender, PoolConfig, WorkerLifecycleEvent,
@@ -86,8 +93,15 @@ async fn main() -> anyhow::Result<()> {
     let auth = ControlAuth::from_env()?;
 
     let port = port_from_env();
-    let config = ServerConfig::from_port(port);
+    let config = ServerConfig::from_bind(bind_ip_from_env().map_err(anyhow::Error::msg)?, port);
     let server = ServerState::new_unready();
+    if opt_in_flag("EDGER_TENANT_ROUTING_ENABLED")? {
+        configure_tenant_identity(&server)?;
+        server.enable_tenant_routing();
+    }
+    if opt_in_flag("EDGER_WEIGHTED_ROUTING_ENABLED")? {
+        server.enable_weighted_routing();
+    }
     let console_sender = start_console_capture(&server);
     let lifecycle_sender = start_lifecycle_capture(&server);
     let pool = WorkerPool::with_factory_and_lifecycle(
@@ -108,32 +122,43 @@ async fn main() -> anyhow::Result<()> {
     run_pending_releases_with_events(&index, &server.operational_events()).await?;
     prewarm_min_process_workers(&index, &pool).await?;
 
-    if auth.is_open() {
-        tracing::warn!(
-            "control-plane auth is open because neither ROOT_API_KEY nor EDGER_ROOT_KEY_FILE is configured"
-        );
+    // Console por senha (root user + sessões `ses-` persistentes): mesmo
+    // arquivo de banco das api-keys. A semente vem de EDGER_ROOT_PASSWORD_FILE
+    // (somente quando o usuário `root` não existe — operadores pré-existentes
+    // não bloqueiam a semente); arquivo configurado e inválido/vazio/fora da
+    // política de força falha o boot — nunca senha default nem root
+    // token como senha.
+    let console_seed = match non_empty_env("EDGER_ROOT_PASSWORD_FILE").map(PathBuf::from) {
+        Some(path) => match edger_orchestrator::console_auth::load_seed_password(&path) {
+            Ok(seed) => seed,
+            Err(err) => anyhow::bail!("EDGER_ROOT_PASSWORD_FILE: {err}"),
+        },
+        None => None,
+    };
+    let db_path = std::env::var("EDGER_API_KEYS_DB")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".edger/api-keys.db"));
+    if let Some(parent) = db_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            tracing::warn!(path = %parent.display(), error = %err, "api keys dir not creatable");
+        }
     }
 
-    // Keys persistentes (egk_): só fazem sentido com auth configurada — em
-    // open mode tudo já é root e o store nem inicializa. Falha de open vira
+    // Keys persistentes (egk_) e console por senha: só fazem sentido com
+    // credencial configurada (root key/OIDC ou senha semeada) — em open mode
+    // fresco tudo já é root e os stores nem inicializam. Falha de open vira
     // warn, não crash: uma instância sem o PVC continua servindo com root.
-    let auth = if auth.is_open() {
-        auth
+    let auth = if auth.is_open_without_console() {
+        // Open mode (sem root key/OIDC): a senha é credencial — o wiring do
+        // console decide seed/adoção/falha (nunca degrada para open).
+        wire_console_open_mode(auth, &db_path, console_seed.as_deref())?
     } else {
-        let db_path = std::env::var("EDGER_API_KEYS_DB")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(".edger/api-keys.db"));
-        if let Some(parent) = db_path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            if let Err(err) = std::fs::create_dir_all(parent) {
-                tracing::warn!(path = %parent.display(), error = %err, "api keys dir not creatable");
-            }
-        }
-        match edger_orchestrator::api_keys::ApiKeyService::open(&db_path) {
+        let auth = match edger_orchestrator::api_keys::ApiKeyService::open(&db_path) {
             Ok(service) => {
                 tracing::info!(path = %db_path.display(), "api key store ready");
                 auth.with_key_service(std::sync::Arc::new(service))
@@ -142,8 +167,41 @@ async fn main() -> anyhow::Result<()> {
                 tracing::warn!(path = %db_path.display(), code = %err.code, "api key store unavailable: {}", err.message);
                 auth
             }
+        };
+        match edger_orchestrator::ConsoleAuthService::open(&db_path) {
+            Ok(service) => {
+                match service.seed_root_if_empty(console_seed.as_deref()) {
+                    Ok(true) => {
+                        tracing::info!(path = %db_path.display(), "console root user seeded from EDGER_ROOT_PASSWORD_FILE");
+                    }
+                    Ok(false) => {
+                        if console_seed.is_some() {
+                            tracing::warn!(
+                                "root user already present; EDGER_ROOT_PASSWORD_FILE ignored"
+                            );
+                        }
+                    }
+                    Err(err) => anyhow::bail!("cannot seed console root user: {err}"),
+                }
+                auth.with_console_service(std::sync::Arc::new(service))
+            }
+            Err(err) => {
+                if console_seed.is_some() {
+                    // Senha explicitamente configurada: não cai para open
+                    // mode silenciosamente — falha fechada no boot.
+                    anyhow::bail!("cannot open console store at {}: {err}", db_path.display());
+                }
+                tracing::warn!(path = %db_path.display(), code = %err.code, "console store unavailable: {}", err.message);
+                auth
+            }
         }
     };
+
+    if auth.is_open() {
+        tracing::warn!(
+            "control-plane auth is open because neither ROOT_API_KEY, EDGER_ROOT_KEY_FILE, OIDC, nor a seeded console root is configured"
+        );
+    }
 
     let state = OrchestratorState {
         server: server.clone(),
@@ -173,6 +231,31 @@ async fn main() -> anyhow::Result<()> {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(15), drain).await;
     }
     serve_result
+}
+
+fn configure_tenant_identity(server: &ServerState) -> anyhow::Result<()> {
+    let endpoint = std::env::var("EDGER_TENANCIT_IDENTIFY_URL")
+        .context("EDGER_TENANCIT_IDENTIFY_URL is required when tenant routing is enabled")?;
+    let token_file = std::env::var("EDGER_TENANCIT_TOKEN_FILE")
+        .context("EDGER_TENANCIT_TOKEN_FILE is required when tenant routing is enabled")?;
+    let endpoint = reqwest::Url::parse(&endpoint).context("invalid Tenancit identify URL")?;
+    let token = std::fs::read_to_string(&token_file).context("cannot read Tenancit token file")?;
+    let token = token.trim_end_matches(['\r', '\n']);
+    let client = TenantIdentityClient::new(endpoint, token).map_err(anyhow::Error::msg)?;
+    server.set_tenant_identity_client(client);
+    Ok(())
+}
+
+fn opt_in_flag(name: &str) -> anyhow::Result<bool> {
+    match std::env::var(name) {
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Err(_) => anyhow::bail!("{name} must be true or false"),
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            _ => anyhow::bail!("{name} must be true or false"),
+        },
+    }
 }
 
 fn start_console_capture(server: &ServerState) -> Option<ConsoleLogSender> {
@@ -343,6 +426,75 @@ fn non_empty_env(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Wiring do console em open mode (sem root key/OIDC) — P1: nenhuma degradação
+/// silenciosa para API admin aberta.
+///
+/// - Semente válida (`EDGER_ROOT_PASSWORD_FILE`): a senha é a única
+///   credencial — cria/abre o store e semeia o root; o gate fecha. Store ou
+///   seed que falhe neste modo falha o boot (NUNCA segue aberto).
+/// - Sem semente e DB existente: adota o store se ele ABRIR e RESPONDER a
+///   consulta; erro de open/consulta do banco pré-existente falha o boot.
+///   Com root no banco o gate fecha; sem root continua open (sem credencial
+///   de senha nenhuma).
+/// - Sem arquivo e sem semente: open mode legado preservado (nenhuma
+///   credencial configurada).
+fn wire_console_open_mode(
+    auth: ControlAuth,
+    db_path: &Path,
+    seed: Option<&str>,
+) -> anyhow::Result<ControlAuth> {
+    if let Some(seed) = seed {
+        let service = edger_orchestrator::ConsoleAuthService::open(db_path).map_err(|err| {
+            anyhow::anyhow!("cannot open console store at {}: {err}", db_path.display())
+        })?;
+        match service.seed_root_if_empty(Some(seed)) {
+            Ok(true) => {
+                tracing::info!(
+                    path = %db_path.display(),
+                    "console root user seeded from EDGER_ROOT_PASSWORD_FILE; control-plane auth is not open"
+                );
+            }
+            Ok(false) => {
+                tracing::warn!("root user already present; EDGER_ROOT_PASSWORD_FILE ignored");
+            }
+            Err(err) => {
+                anyhow::bail!("cannot seed console root user: {err}")
+            }
+        }
+        return Ok(auth.with_console_service(Arc::new(service)));
+    }
+    if !db_path.exists() {
+        // Open mode legado: sem arquivo, sem semente, sem root key/OIDC.
+        return Ok(auth);
+    }
+    let service = edger_orchestrator::ConsoleAuthService::open(db_path).map_err(|err| {
+        anyhow::anyhow!(
+            "cannot open existing console store at {}: {err}",
+            db_path.display()
+        )
+    })?;
+    match service.has_root_user() {
+        Ok(true) => {
+            tracing::warn!(
+                path = %db_path.display(),
+                "console root user present; control-plane auth is not open"
+            );
+            Ok(auth.with_console_service(Arc::new(service)))
+        }
+        Ok(false) => {
+            // Store sem root: não há credencial de senha — segue open.
+            Ok(auth)
+        }
+        Err(err) => {
+            tracing::warn!(code = %err.code, "console root user check failed: {}", err.message);
+            anyhow::bail!(
+                "cannot verify console root user at {}: {err}",
+                db_path.display()
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,5 +516,107 @@ mod tests {
 
         std::env::remove_var("EDGER_CRON_ENABLED");
         assert!(env_flag_default_true("EDGER_CRON_ENABLED"));
+    }
+
+    #[test]
+    fn tenant_and_weighted_routing_are_explicit_opt_ins() {
+        let _guard = env_lock().lock().unwrap();
+        for name in [
+            "EDGER_TENANT_ROUTING_ENABLED",
+            "EDGER_WEIGHTED_ROUTING_ENABLED",
+        ] {
+            std::env::remove_var(name);
+            assert!(!opt_in_flag(name).unwrap());
+            std::env::set_var(name, "true");
+            assert!(opt_in_flag(name).unwrap());
+            std::env::set_var(name, "0");
+            assert!(!opt_in_flag(name).unwrap());
+            std::env::set_var(name, "maybe");
+            assert!(opt_in_flag(name).is_err());
+            std::env::remove_var(name);
+        }
+    }
+
+    // --- P1: open mode + senha como credencial (wire_console_open_mode) ---
+
+    const STRONG_PW: &str = "Str0ng!Passw0rd";
+    const STRONG_PW_2: &str = "An0ther!Passw0rd";
+
+    fn open_mode_auth() -> ControlAuth {
+        ControlAuth::new(edger_orchestrator::ControlAuthConfig::default())
+    }
+
+    #[test]
+    fn password_only_fresh_db_seeds_root_and_closes_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("api-keys.db");
+        let auth = wire_console_open_mode(open_mode_auth(), &db, Some(STRONG_PW)).unwrap();
+        // Senha única: o gate FECHA e o login do root funciona.
+        assert!(!auth.is_open(), "senha única precisa fechar o gate");
+        let service = auth.console_service().unwrap().clone();
+        assert!(service
+            .login(std::net::IpAddr::from([10u8, 0, 0, 1]), "root", STRONG_PW)
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn password_only_admin_without_credential_is_unauthenticated() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("api-keys.db");
+        let auth = wire_console_open_mode(open_mode_auth(), &db, Some(STRONG_PW)).unwrap();
+        // Sem credencial nenhuma o request não autentica — o pipeline mapeia
+        // `None` para 401 nos endpoints admin (não é open mode).
+        assert!(auth
+            .authenticate_headers(&axum::http::HeaderMap::new())
+            .await
+            .is_none());
+    }
+
+    #[test]
+    fn password_only_existing_root_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("api-keys.db");
+        // Boot anterior já semeou root com outra senha.
+        let boot = edger_orchestrator::ConsoleAuthService::open(&db).unwrap();
+        boot.seed_root_if_empty(Some(STRONG_PW_2)).unwrap();
+        let auth = wire_console_open_mode(open_mode_auth(), &db, Some(STRONG_PW)).unwrap();
+        assert!(!auth.is_open());
+        let service = auth.console_service().unwrap().clone();
+        let ip = std::net::IpAddr::from([10u8, 0, 0, 2]);
+        assert!(service.login(ip, "root", STRONG_PW_2).is_ok());
+        // A semente nova NÃO substitui a senha existente.
+        assert!(service.login(ip, "root", STRONG_PW).is_err());
+    }
+
+    #[test]
+    fn corrupted_existing_db_fails_boot_without_other_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("api-keys.db");
+        // Arquivo pré-existente que NÃO é um SQLite válido (volume corrompido).
+        std::fs::write(&db, b"this is not a sqlite database at all").unwrap();
+        // Sem semente e sem root key/OIDC: NUNCA pode degradar para open.
+        let result = wire_console_open_mode(open_mode_auth(), &db, None);
+        assert!(
+            result.is_err(),
+            "DB corrompido precisa falhar o boot, não abrir admin"
+        );
+        // Erro sem expor conteúdo do banco.
+        let message = match result {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("esperava falha de boot"),
+        };
+        assert!(!message.contains("not a sqlite"));
+    }
+
+    #[test]
+    fn no_file_and_no_seed_preserves_legacy_open_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("api-keys.db");
+        let auth = wire_console_open_mode(open_mode_auth(), &db, None).unwrap();
+        assert!(
+            auth.is_open(),
+            "sem nenhuma credencial segue open mode legado"
+        );
+        assert!(auth.console_service().is_none());
     }
 }

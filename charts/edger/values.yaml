@@ -48,6 +48,10 @@ runtime:
   jsRuntime: "process"
   coreWorkerDir: "/opt/edger/core-workers"
   coreWorkerOverlayDir: "/app/core-worker-overlays"
+  # Com a persistência de workers ligada, o overlay usa o mesmo PVC em
+  # subPath: .edger/core-overlays; o diretório .edger é invisível ao scan de
+  # workers.
+  persistCoreWorkerOverlay: true
 
 # Deve permanecer habilitado em ambientes que recebem workers pela Admin API:
 # o conteúdo sobrevive ao restart enquanto o índice é reconstruído em memória.
@@ -83,12 +87,48 @@ rootKey:
   mountPath: /var/run/secrets/edger-root
   fileName: root-key
 
+# Optional initial root password for cPanel user/password login. The Secret
+# must already exist; the chart only mounts its key read-only. The password is
+# consumed to seed root when the console user store is empty, never used as a
+# release value or written to the ConfigMap.
+consoleAuth:
+  rootPasswordSecret:
+    name: ""
+    key: password
+
 oidc:
   enabled: false
   issuer: ""
   audience: ""
   rolesClaim: ""
   requiredRole: ""
+
+# Roteamento opcional por tenant (allowlist) e split A/B de versões.
+# Opt-ins independentes, desligados por padrão: cada flag só habilita a sua
+# própria parte da política. Com tenantRouting.enabled=true o chart exige a
+# URL HTTPS exata do endpoint /v1/identify do Tenancit e um Secret existente
+# com o token do API client tenant:identify — montado read-only em caminho
+# fixo (EDGER_TENANCIT_TOKEN_FILE). O token nunca entra no ConfigMap, nos
+# values da release ou nos logs. Com a flag off, nenhum campo Tenancit é
+# lido nem exige configuração.
+tenantRouting:
+  enabled: false
+  tenancit:
+    # URL exata do endpoint Consumer API no cluster real, ex.:
+    # https://tenancit.<host>.<cluster>/v1/identify
+    identifyUrl: ""
+    tokenSecret:
+      # Nome do Secret existente no namespace; o chart nunca o cria nem
+      # armazena o token.
+      name: ""
+      # Chave do Secret que contém o token do API client tenant:identify.
+      key: ""
+
+# Split A/B: com a flag ligada, requests sem versão explícita seguem os
+# pesos das versões na política de roteamento do app (quando publicada);
+# sem política vale o roteamento atual.
+weightedRouting:
+  enabled: false
 
 resources:
   requests:

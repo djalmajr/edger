@@ -14,6 +14,16 @@ data:
   # writer garantido). Backup = snapshot do PVC.
   EDGER_API_KEYS_DB: {{ .Values.apiKeys.dbPath | default (printf "%s/.edger/api-keys.db" .Values.runtime.workerDirs) | quote }}
   EDGER_JS_RUNTIME: {{ .Values.runtime.jsRuntime | quote }}
+  # Flags de roteamento independentes, desligadas por padrão; o binário trata
+  # "true"/"false"/ausência como opt-in. Com tenantRouting.enabled=true a
+  # URL do endpoint /v1/identify passa a ser obrigatória.
+  EDGER_TENANT_ROUTING_ENABLED: {{ .Values.tenantRouting.enabled | quote }}
+  EDGER_WEIGHTED_ROUTING_ENABLED: {{ .Values.weightedRouting.enabled | quote }}
+  {{- if .Values.tenantRouting.enabled }}
+  # O token do API client Tenancit vem do Secret montado no Deployment
+  # (EDGER_TENANCIT_TOKEN_FILE); apenas a URL do endpoint entra aqui.
+  EDGER_TENANCIT_IDENTIFY_URL: {{ .Values.tenantRouting.tenancit.identifyUrl | quote }}
+  {{- end }}
   {{- if .Values.otel.enabled }}
   EDGER_OTEL_ENABLED: "true"
   EDGER_OTEL_REQUIRED: {{ .Values.otel.required | quote }}

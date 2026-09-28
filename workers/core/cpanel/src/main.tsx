@@ -54,8 +54,6 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@edger/ui/components/ui/dropdown-menu";
@@ -63,10 +61,8 @@ import { Input } from "@edger/ui/components/ui/input";
 import {
   InputGroup,
   InputGroupAddon,
-  InputGroupButton,
   InputGroupInput,
 } from "@edger/ui/components/ui/input-group";
-import { Label } from "@edger/ui/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -119,8 +115,6 @@ import {
   CpuIcon,
   DownloadIcon,
   ExternalLinkIcon,
-  EyeIcon,
-  EyeOffIcon,
   FileArchiveIcon,
   FileIcon,
   FolderIcon,
@@ -129,11 +123,8 @@ import {
   HeartPulseIcon,
   KeyRoundIcon,
   Layers3Icon,
-  LogInIcon,
   LogOutIcon,
-  MonitorIcon,
   MoreVerticalIcon,
-  MoonIcon,
   PanelsTopLeftIcon,
   PowerOffIcon,
   RefreshCwIcon,
@@ -143,18 +134,13 @@ import {
   ScrollTextIcon,
   SearchIcon,
   ShieldCheckIcon,
-  SunIcon,
   Trash2Icon,
   UploadCloudIcon,
   UploadIcon,
   WebhookIcon,
 } from "@edger/ui/icons/lucide";
 import StarIcon from "~icons/lucide/star";
-import {
-  ThemeProvider,
-  type ThemePreference,
-  useTheme,
-} from "@edger/ui/lib/theme";
+import { ThemeProvider } from "@edger/ui/lib/theme";
 
 import "./app.css";
 import {
@@ -165,9 +151,12 @@ import {
 } from "./components/data-grid";
 import { ApiKeys } from "./components/api-keys";
 import { Overview } from "./components/overview";
+import { RoutingPolicyPanel } from "./components/routing-policy";
+import { AdminLogin } from "./components/login";
+import { ChangePasswordDialog, ConsoleUsers } from "./components/console-users";
+import { LanguageMenu, ThemeMenu } from "./components/preference-menus";
 import {
   I18nProvider,
-  type Locale,
   type TranslationKey,
   useI18n,
 } from "./lib/i18n";
@@ -176,9 +165,12 @@ import {
   apiJson,
   can,
   canManageKeys,
+  clearSession,
   compareSemver,
+  isSessionToken,
   kindLabel,
   loadAll,
+  SESSION_KEY,
   type OperationalEvent,
   type Principal,
   type RuntimeData,
@@ -206,7 +198,6 @@ import {
 } from "./lib/route";
 import { servingVersion, versionActions } from "./lib/versions";
 
-const SESSION_KEY = "edger.cpanel.apiKey";
 // The mount comes from the runtime-injected <base href>; every SPA URL is
 // built under this prefix so navigation stays inside the proxy prefix.
 const cpanelBase = cpanelBasePath(workerBasePath);
@@ -254,6 +245,12 @@ const NAVIGATION = [
     icon: KeyRoundIcon,
     id: "keys" as const,
     titleKey: "nav.keys" as TranslationKey,
+  },
+  {
+    descriptionKey: "nav.users.description" as TranslationKey,
+    icon: ShieldCheckIcon,
+    id: "users" as const,
+    titleKey: "nav.users" as TranslationKey,
   },
 ];
 
@@ -331,80 +328,6 @@ function MetricCard({
         <p className="mt-1 text-xs text-muted-foreground">{description}</p>
       </CardContent>
     </Card>
-  );
-}
-
-function Login({ onAuthenticated }: { onAuthenticated(apiKey: string): void }) {
-  const [error, setError] = React.useState("");
-  const [visible, setVisible] = React.useState(false);
-  const [pending, setPending] = React.useState(false);
-  async function submit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const apiKey = String(
-      new FormData(event.currentTarget).get("apiKey") ?? "",
-    ).trim();
-    if (!apiKey) return;
-    setPending(true);
-    setError("");
-    try {
-      await loadAll(apiKey);
-      sessionStorage.setItem(SESSION_KEY, apiKey);
-      onAuthenticated(apiKey);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setPending(false);
-    }
-  }
-  return (
-    <main className="grid min-h-screen place-items-center bg-background p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <div className="flex items-center gap-3">
-            <span className="grid size-10 place-items-center rounded-lg bg-primary/15 text-primary">
-              <KeyRoundIcon className="size-5" />
-            </span>
-            <div>
-              <CardTitle>EdgeR cPanel</CardTitle>
-              <CardDescription>
-                Enter the operator key to manage this runtime.
-              </CardDescription>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <form className="grid gap-4" onSubmit={submit}>
-            <div className="grid gap-2">
-              <Label htmlFor="api-key">Root key</Label>
-              <InputGroup>
-                <InputGroupInput
-                  autoComplete="current-password"
-                  id="api-key"
-                  name="apiKey"
-                  type={visible ? "text" : "password"}
-                />
-                <InputGroupButton
-                  aria-label={visible ? "Hide root key" : "Show root key"}
-                  onClick={() => setVisible((value) => !value)}
-                  size="icon-sm"
-                >
-                  {visible ? <EyeOffIcon /> : <EyeIcon />}
-                </InputGroupButton>
-              </InputGroup>
-            </div>
-            {error && (
-              <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {error}
-              </p>
-            )}
-            <Button disabled={pending} type="submit">
-              <LogInIcon />
-              {pending ? "Connecting…" : "Connect"}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-    </main>
   );
 }
 
@@ -632,6 +555,7 @@ function Workers({
                 )}
               </button>
               {open && (
+                <>
                 <div className="border-t">
                   <Table>
                     <TableHeader>
@@ -839,6 +763,12 @@ function Workers({
                     </TableBody>
                   </Table>
                 </div>
+                <RoutingPolicyPanel
+                  apiKey={apiKey}
+                  principal={principal}
+                  versions={group.versions}
+                />
+                </>
               )}
             </Card>
           );
@@ -1961,116 +1891,27 @@ function DeployDialog({
   );
 }
 
-const LOCALE_OPTIONS: Array<{
-  flag: string;
-  label: string;
-  value: Locale;
-}> = [
-  { flag: "🇧🇷", label: "Português", value: "pt-BR" },
-  { flag: "🇺🇸", label: "English", value: "en-US" },
-  { flag: "🇪🇸", label: "Español", value: "es-ES" },
-];
-
-function LanguageMenu() {
-  const { locale, setLocale, t } = useI18n();
-  const selected =
-    LOCALE_OPTIONS.find((option) => option.value === locale) ??
-    LOCALE_OPTIONS[0];
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button
-            aria-label={t("preferences.language")}
-            className="size-8"
-            size="icon-sm"
-            title={t("preferences.language")}
-            variant="ghost"
-          />
-        }
-      >
-        <span aria-hidden className="text-xl leading-none">
-          {selected.flag}
-        </span>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent className="min-w-40" side="bottom">
-        <DropdownMenuRadioGroup
-          onValueChange={(value) => setLocale(value as Locale)}
-          value={locale}
-        >
-          {LOCALE_OPTIONS.map((option) => (
-            <DropdownMenuRadioItem key={option.value} value={option.value}>
-              <span aria-hidden className="text-base leading-none">
-                {option.flag}
-              </span>
-              {option.label}
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-function ThemeMenu() {
-  const { t } = useI18n();
-  const { resolvedTheme, setTheme, theme } = useTheme();
-  const options: Array<{ label: string; value: ThemePreference }> = [
-    { label: t("preferences.theme.light"), value: "light" },
-    { label: t("preferences.theme.dark"), value: "dark" },
-    { label: t("preferences.theme.system"), value: "system" },
-  ];
-  const currentLabel =
-    options.find((option) => option.value === theme)?.label ?? options[2].label;
-  const ThemeIcon =
-    theme === "system"
-      ? MonitorIcon
-      : resolvedTheme === "dark"
-        ? MoonIcon
-        : SunIcon;
-  const label = `${t("preferences.theme")}: ${currentLabel}`;
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button
-            aria-label={label}
-            className="size-8"
-            size="icon-sm"
-            title={label}
-            variant="ghost"
-          />
-        }
-      >
-        <ThemeIcon className="size-[1.125rem]" />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent className="min-w-32" side="bottom">
-        <DropdownMenuRadioGroup
-          onValueChange={(value) => setTheme(value as ThemePreference)}
-          value={theme}
-        >
-          {options.map((option) => (
-            <DropdownMenuRadioItem key={option.value} value={option.value}>
-              {option.label}
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
 function AccountMenu({
+  apiKey,
   logout,
+  onNewSession,
+  onRequireLogin,
   principal,
 }: {
+  apiKey: string;
   logout(): void;
+  onNewSession(token: string): void;
+  onRequireLogin(): void;
   principal: RuntimeData["principal"];
 }) {
   const { t } = useI18n();
   const name = principal.name ?? "—";
   const initials = name.slice(0, 2).toLocaleUpperCase();
   const namespaces = principal.namespaces?.join(", ") || "*";
+  const [passwordOpen, setPasswordOpen] = React.useState(false);
+  // Only `ses-` session credentials may change a password: root keys,
+  // egk_ and OIDC tokens are not user sessions and never see the item.
+  const canChangePassword = isSessionToken(apiKey);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -2105,11 +1946,27 @@ function AccountMenu({
           </DropdownMenuLabel>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
+        {canChangePassword && (
+          <>
+            <DropdownMenuItem onClick={() => setPasswordOpen(true)}>
+              <KeyRoundIcon />
+              {t("account.changePassword")}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        )}
         <DropdownMenuItem onClick={logout} variant="destructive">
           <LogOutIcon />
           {t("account.logout")}
         </DropdownMenuItem>
       </DropdownMenuContent>
+      <ChangePasswordDialog
+        apiKey={apiKey}
+        onNewSession={onNewSession}
+        onOpenChange={setPasswordOpen}
+        onRequireLogin={onRequireLogin}
+        open={passwordOpen}
+      />
     </DropdownMenu>
   );
 }
@@ -2118,10 +1975,14 @@ function Shell({
   apiKey,
   data,
   logout,
+  onNewSession,
+  onRequireLogin,
 }: {
   apiKey: string;
   data: RuntimeData;
   logout(): void;
+  onNewSession(token: string): void;
+  onRequireLogin(): void;
 }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -2184,7 +2045,8 @@ function Shell({
                   (entry.id !== "keys" ||
                     canManageKeys(data.principal)) &&
                   (entry.id !== "observability" ||
-                    can(data.principal, "observability:read")),
+                    can(data.principal, "observability:read")) &&
+                  (entry.id !== "users" || data.principal.isRoot),
               ).map((entry) => (
                 <SidebarMenuItem key={entry.id}>
                   <SidebarMenuButton
@@ -2230,7 +2092,13 @@ function Shell({
           >
             <LanguageMenu />
             <ThemeMenu />
-            <AccountMenu logout={logout} principal={data.principal} />
+            <AccountMenu
+              apiKey={apiKey}
+              logout={logout}
+              onNewSession={onNewSession}
+              onRequireLogin={onRequireLogin}
+              principal={data.principal}
+            />
           </div>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
@@ -2326,6 +2194,9 @@ function Shell({
             {route.view === "keys" && (
               <ApiKeys apiKey={apiKey} principal={data.principal} />
             )}
+            {route.view === "users" && (
+              <ConsoleUsers apiKey={apiKey} principal={data.principal} />
+            )}
             {route.view === "observability" && (
               <Observability
                 apiKey={apiKey}
@@ -2377,7 +2248,15 @@ function CpanelApp() {
       setApiKey("");
     }
   }, [apiKey, runtimeQuery.error]);
-  if (!apiKey) return <Login onAuthenticated={setApiKey} />;
+  if (!apiKey)
+    return (
+      <AdminLogin
+        onAuthenticated={(token) => {
+          sessionStorage.setItem(SESSION_KEY, token);
+          setApiKey(token);
+        }}
+      />
+    );
   if (runtimeQuery.isLoading || !runtimeQuery.data)
     return (
       <div className="grid min-h-screen place-items-center text-muted-foreground">
@@ -2389,6 +2268,21 @@ function CpanelApp() {
       apiKey={apiKey}
       data={runtimeQuery.data}
       logout={() => {
+        // `ses-` sessions are revoked best-effort; every credential kind is
+        // cleared locally before network I/O (see clearSession). The UI also
+        // returns to login immediately if the revocation request stalls.
+        void clearSession(apiKey);
+        setApiKey("");
+      }}
+      onNewSession={(token) => {
+        // A rotated session token replaces the stored credential and the
+        // auth state; the runtime query refetches under the new token.
+        sessionStorage.setItem(SESSION_KEY, token);
+        setApiKey(token);
+      }}
+      onRequireLogin={() => {
+        // The runtime did not hand back a session: end the local session and
+        // return to the sign-in screen.
         sessionStorage.removeItem(SESSION_KEY);
         setApiKey("");
       }}
