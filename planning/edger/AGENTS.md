@@ -14,7 +14,12 @@
 ## Launch
 - edger entry: `ROOT_API_KEY=test-root EDGER_BIND=127.0.0.1 PORT=19080 RUNTIME_WORKER_DIRS=workers/examples EDGER_CORE_WORKER_DIR=workers/core EDGER_CORE_WORKER_OVERLAY_DIR=.edger/core-worker-overlays cargo run -p edger-orchestrator --bin edger`
 - Worker dir must have index.{ts,js,mjs} compatible with Deno.serve or export default { fetch }
-- JS/TS workers currently execute via the Deno CLI bridge (`deno` on PATH or `EDGER_DENO_BIN`). Embedded `deno_core` remains the production target; do not reintroduce a Bun adapter.
+- JS/TS workers execute by default in persistent Deno processes (`deno` on PATH or `EDGER_DENO_BIN`); `EDGER_JS_RUNTIME=bridge` is the emergency CLI fallback. Do not reintroduce a Bun adapter.
+
+## Tenant routing and weighted rollout (Epic 25)
+- Two independent flags, `EDGER_TENANT_ROUTING_ENABLED` and `EDGER_WEIGHTED_ROUTING_ENABLED`, default off. Tenant off needs no Tenancit setup; tenant on uses `/v1/identify` with a token file from an existing Secret.
+- A tenant allowlist gates the app before worker dispatch; hostname identifies domain context, while the worker authenticates people. Explicit `@version` bypasses weights only. Policies are local files and do not synchronize replicas.
+- See `planning/edger/docs/tenant-routing.md` and `planning/edger/status/evidence/tenant-routing-2026-09-26.md` for the local contract and proof; publication and lab-dev validation require separate release evidence.
 
 <!-- ai-memory:start -->
 ## Long-term memory (ai-memory)

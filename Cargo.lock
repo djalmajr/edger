@@ -60,6 +60,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 
 [[package]]
+name = "argon2"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072"
+dependencies = [
+ "base64ct",
+ "blake2",
+ "cpufeatures",
+ "password-hash",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -183,6 +195,15 @@ name = "bitflags"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
+
+[[package]]
+name = "blake2"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "block-buffer"
@@ -578,6 +599,7 @@ dependencies = [
  "block-buffer",
  "const-oid",
  "crypto-common",
+ "subtle",
 ]
 
 [[package]]
@@ -599,7 +621,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "edger-core"
-version = "0.3.2-rc.4"
+version = "0.3.2-rc.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -615,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "edger-isolation"
-version = "0.3.2-rc.4"
+version = "0.3.2-rc.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -638,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "edger-mcp"
-version = "0.3.2-rc.4"
+version = "0.3.2-rc.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -652,9 +674,10 @@ dependencies = [
 
 [[package]]
 name = "edger-orchestrator"
-version = "0.3.2-rc.4"
+version = "0.3.2-rc.5"
 dependencies = [
  "anyhow",
+ "argon2",
  "async-trait",
  "axum",
  "base64",
@@ -664,6 +687,7 @@ dependencies = [
  "edger-isolation",
  "edger-worker",
  "futures-util",
+ "getrandom 0.4.3",
  "http",
  "hyper",
  "jsonwebtoken",
@@ -694,7 +718,7 @@ dependencies = [
 
 [[package]]
 name = "edger-worker"
-version = "0.3.2-rc.4"
+version = "0.3.2-rc.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1841,6 +1865,17 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "password-hash"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
+dependencies = [
+ "base64ct",
+ "rand_core 0.6.4",
+ "subtle",
 ]
 
 [[package]]

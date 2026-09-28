@@ -1,5 +1,6 @@
 {{- include "edger.validate" . -}}
 {{- $hasRootKey := or .Values.rootKey.value .Values.rootKey.existingSecret }}
+{{- $tenantEnabled := .Values.tenantRouting.enabled }}
 {{- $extraEnv := .Values.extraEnv }}
 {{- if kindIs "string" $extraEnv }}
 {{- $parsed := fromYamlArray $extraEnv }}
@@ -57,11 +58,15 @@ spec:
             {{- with .Values.extraEnvFrom }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- if or $hasRootKey $extraEnv (and .Values.otel.enabled .Values.otel.headersSecret.name) }}
+          {{- if or $hasRootKey .Values.consoleAuth.rootPasswordSecret.name $extraEnv $tenantEnabled (and .Values.otel.enabled .Values.otel.headersSecret.name) }}
           env:
             {{- if $hasRootKey }}
             - name: EDGER_ROOT_KEY_FILE
               value: {{ include "edger.rootKeyFilePath" . | quote }}
+            {{- end }}
+            {{- if .Values.consoleAuth.rootPasswordSecret.name }}
+            - name: EDGER_ROOT_PASSWORD_FILE
+              value: {{ include "edger.rootPasswordFilePath" . | quote }}
             {{- end }}
             {{- if and .Values.otel.enabled .Values.otel.headersSecret.name }}
             - name: OTEL_EXPORTER_OTLP_HEADERS
@@ -69,6 +74,12 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.otel.headersSecret.name | quote }}
                   key: {{ .Values.otel.headersSecret.key | quote }}
+            {{- end }}
+            {{- if $tenantEnabled }}
+            # O token vive no Secret montado em caminho fixo; apenas o path
+            # entra no pod. Nada de token em env em texto puro.
+            - name: EDGER_TENANCIT_TOKEN_FILE
+              value: {{ include "edger.tenancitTokenFilePath" . | quote }}
             {{- end }}
             {{- with $extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -94,6 +105,16 @@ spec:
             {{- if $hasRootKey }}
             - name: root-key
               mountPath: {{ .Values.rootKey.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.consoleAuth.rootPasswordSecret.name }}
+            - name: console-root-password
+              mountPath: /var/run/secrets/edger-console-root
+              readOnly: true
+            {{- end }}
+            {{- if $tenantEnabled }}
+            - name: tenancit-token
+              mountPath: {{ include "edger.tenancitTokenMountPath" . }}
               readOnly: true
             {{- end }}
           livenessProbe:
@@ -129,4 +150,22 @@ spec:
             items:
               - key: {{ .Values.rootKey.secretKey | quote }}
                 path: {{ .Values.rootKey.fileName | quote }}
+        {{- end }}
+        {{- if .Values.consoleAuth.rootPasswordSecret.name }}
+        - name: console-root-password
+          secret:
+            secretName: {{ .Values.consoleAuth.rootPasswordSecret.name | quote }}
+            items:
+              - key: {{ .Values.consoleAuth.rootPasswordSecret.key | quote }}
+                path: password
+        {{- end }}
+        {{- if $tenantEnabled }}
+        # Secret existente (o chart não o cria); a chave configurada é
+        # projetada como o arquivo fixo lido por EDGER_TENANCIT_TOKEN_FILE.
+        - name: tenancit-token
+          secret:
+            secretName: {{ .Values.tenantRouting.tenancit.tokenSecret.name | quote }}
+            items:
+              - key: {{ .Values.tenantRouting.tenancit.tokenSecret.key | quote }}
+                path: token
         {{- end }}

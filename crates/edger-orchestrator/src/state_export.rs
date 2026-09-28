@@ -24,7 +24,7 @@
 //! overlay entram pelas entradas próprias; é o estado interno do EdgeR), o
 //! arquivo do banco e os sidecars dele (`-journal`, `-wal`, `-shm`), o
 //! `.edger-swaps/`, os `.edger-install-*`, os `.edger-revision-*.tmp`, os
-//! `*.tmp` do `.edger-defaults/`, a cache do Deno quando `EDGER_DENO_CACHE_ROOT`
+//! `*.tmp` do `.edger-defaults/` e `.edger-routing/`, a cache do Deno quando `EDGER_DENO_CACHE_ROOT`
 //! aponta para dentro de uma raiz exportada, e symlinks (pulados e contados
 //! em `skippedSymlinks`).
 
@@ -397,8 +397,7 @@ fn walk_directory<W: Write + Seek>(
         }
         if dir
             .file_name()
-            .map(|dir_name| dir_name == ".edger-defaults")
-            .unwrap_or(false)
+            .is_some_and(|dir_name| dir_name == ".edger-defaults" || dir_name == ".edger-routing")
             && name_str.ends_with(".tmp")
         {
             continue;

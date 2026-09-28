@@ -111,6 +111,60 @@ struct HttpMetricsInner {
     requests: Mutex<BTreeMap<(String, u16), u64>>,
 }
 
+/// Low-cardinality tenant gate outcomes. Hostnames, slugs and tokens never
+/// become metric labels.
+#[derive(Clone, Debug, Default)]
+pub struct TenantRoutingMetrics {
+    inner: Arc<TenantRoutingMetricsInner>,
+}
+
+#[derive(Debug, Default)]
+struct TenantRoutingMetricsInner {
+    allowed: AtomicU64,
+    denied: AtomicU64,
+    unavailable: AtomicU64,
+}
+
+impl TenantRoutingMetrics {
+    pub fn allowed(&self) {
+        self.inner.allowed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn denied(&self) {
+        self.inner.denied.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn unavailable(&self) {
+        self.inner.unavailable.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub fn tenant_routing_metrics_prometheus(metrics: &TenantRoutingMetrics) -> String {
+    let mut out = String::new();
+    push_metric(
+        &mut out,
+        "edger_tenant_routing_allowed_total",
+        "counter",
+        "Requests admitted by tenant allowlist",
+        metrics.inner.allowed.load(Ordering::Relaxed),
+    );
+    push_metric(
+        &mut out,
+        "edger_tenant_routing_denied_total",
+        "counter",
+        "Requests denied by missing or disallowed tenant identity",
+        metrics.inner.denied.load(Ordering::Relaxed),
+    );
+    push_metric(
+        &mut out,
+        "edger_tenant_routing_unavailable_total",
+        "counter",
+        "Requests denied because tenant identity was unavailable",
+        metrics.inner.unavailable.load(Ordering::Relaxed),
+    );
+    out
+}
+
 impl HttpMetrics {
     pub fn record(&self, method: &str, status: u16, duration: Duration) {
         self.inner
@@ -677,6 +731,24 @@ fn push_metric(out: &mut String, name: &str, kind: &str, help: &str, value: u64)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tenant_routing_counters_have_no_tenant_or_hostname_labels() {
+        let metrics = TenantRoutingMetrics::default();
+        metrics.allowed();
+        metrics.denied();
+        metrics.unavailable();
+        let output = tenant_routing_metrics_prometheus(&metrics);
+        for name in [
+            "edger_tenant_routing_allowed_total",
+            "edger_tenant_routing_denied_total",
+            "edger_tenant_routing_unavailable_total",
+        ] {
+            assert!(output.contains(&format!("{name} 1")));
+        }
+        assert!(!output.contains('{'));
+        assert!(!output.contains("acme"));
+    }
 
     #[test]
     fn prometheus_snapshot_contains_pool_metrics_without_secret_like_labels() {

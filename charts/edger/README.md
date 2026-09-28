@@ -48,7 +48,8 @@ preference enabled in the Rancher preferences page.
 
 Apps → Charts → `edger` → **Install**. Choose the namespace and the release
 name (for example `edger`). The form is grouped into **Runtime**,
-**Networking**, **Auth**, **Resources**, **Observability** and **Scaling**.
+**Networking**, **Auth**, **Resources**, **Observability**, **Scaling** and
+**Routing**.
 
 While **Enable Ingress** is on, the Networking fields are:
 
@@ -71,13 +72,31 @@ The Auth fields are:
 - **Root Key Secret Field** — Secret data key holding the root key value
   (default `root-key`).
 - **Root Key** — required while **Root Key Secret** is empty. The chart stores
-  it in the `<release-name>-root-key` Secret, retrievable later with:
+  it in the `<release-name>-root-key` Secret.
+- **Initial Root Password Secret** — optional existing Secret used to seed the
+  `root` console user when that account does not yet exist, including a store
+  that already has operator accounts created through the root token.
+  The chart mounts the selected field read-only and passes only its path as
+  `EDGER_ROOT_PASSWORD_FILE`. The root key remains available for token login.
+- **Initial Root Password Secret Field** — field inside that existing Secret
+  (default `password`). Leaving the Secret name empty disables password
+  bootstrap.
+
+For a chart-created root key, retrieve it with:
 
 ```bash
 kubectl -n <namespace> get secret <release-name>-root-key \
   -o jsonpath='{.data.root-key}' | base64 --decode
 echo
 ```
+
+The initial password is never a chart value or ConfigMap entry. After a root
+user exists, changing the mounted Secret does not replace that user's stored
+password; use the authenticated password-change flow. Keep the API key database
+on persistent storage so users and sessions survive a restart.
+The cPanel **Users** page is root-only: root can create operator accounts with
+explicit permissions and scopes, disable them, reset passwords, and revoke
+their sessions. The root key remains a separate token credential.
 
 ### labdev example
 
@@ -123,6 +142,59 @@ enabling worker persistence switches the Deployment to `strategy: Recreate`
 (a RollingUpdate would multi-attach the RWO PVC or race two indices on the
 same node). Do not try to scale by replicas; scale vertically or wait for
 worker distribution.
+
+## Routing: tenant allowlists and A/B splits
+
+Two independent opt-ins, both **off by default**; each flag enables only its
+own half of the per-app routing policy, and with both off the render has no
+Tenancit dependency (no env, no volume, no Secret reference).
+
+- **Enable Tenant Routing** (`tenantRouting.enabled`) — gate a worker's
+  access by tenant allowlists. With it on, EdgeR resolves the request
+  hostname against the Tenancit Consumer API and only serves apps whose
+  routing policy lists the identified tenant slug.
+- **Enable Weighted Routing** (`weightedRouting.enabled`) — split versionless
+  requests across weighted app versions (A/B) from the app's routing policy.
+  It can be enabled alone.
+
+While tenant routing is on, the render **fails on purpose** until all of this
+is provided:
+
+- **Tenancit Identify URL** — the exact HTTPS URL of the Consumer API
+  endpoint in this cluster, for example
+  `https://tenancit.<host>.<cluster>/v1/identify`. The path must be exactly
+  `/v1/identify`, with no query, fragment or userinfo; plain HTTP is only
+  accepted for loopback hosts.
+- **Tenancit Token Secret** and **Tenancit Token Secret Field** — an
+  existing Kubernetes Secret holding the `tenant:identify` API client token.
+  The chart never creates that Secret and there is no form field for the
+  token: it is mounted read-only at the fixed path
+  `/var/run/secrets/edger-tenancit/token` and referenced only through
+  `EDGER_TENANCIT_TOKEN_FILE`, so the token never appears in the ConfigMap,
+  in release values or in logs. Pre-provision it in the namespace, reading
+  the value from a file:
+
+```bash
+kubectl -n <namespace> create secret generic tenancit-identify-token \
+  --from-file=token=./tenancit-token.txt
+```
+
+The ConfigMap always carries `EDGER_TENANT_ROUTING_ENABLED` and
+`EDGER_WEIGHTED_ROUTING_ENABLED` (`"true"`/`"false"`) and only carries
+`EDGER_TENANCIT_IDENTIFY_URL` while tenant routing is on.
+EdgeR reads the mounted token at startup; restart the pod after rotating the
+Secret so the client uses the new credential.
+
+Limits:
+
+- The identified domain is **domain context, not user authentication**: it
+  only decides which tenants may reach the app. Each worker keeps its own
+  authentication/authorization for its data.
+- The routing policy of an app is process-local memory backed by the workers
+  PVC; with no policy for an app the current public routing applies. Do not
+  assume a `traffic`/allowlist policy is already published.
+- The chart remains single-replica (see the topology section above), so
+  nothing in this section claims production readiness.
 
 ## Helm (terminal)
 

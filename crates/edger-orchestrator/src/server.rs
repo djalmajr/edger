@@ -20,7 +20,8 @@ use uuid::Uuid;
 
 use crate::cron::CronMetrics;
 use crate::metrics::{
-    cron_metrics_prometheus, http_metrics_prometheus, pool_metrics_prometheus, HttpMetrics,
+    cron_metrics_prometheus, http_metrics_prometheus, pool_metrics_prometheus,
+    tenant_routing_metrics_prometheus, HttpMetrics, TenantRoutingMetrics,
 };
 
 /// Listener configuration (addr from `PORT` env in the binary).
@@ -44,9 +45,13 @@ impl ServerConfig {
 
 struct ServerStateInner {
     ready: AtomicBool,
+    tenant_routing_enabled: AtomicBool,
+    weighted_routing_enabled: AtomicBool,
     pool: std::sync::RwLock<Option<WorkerPool>>,
+    tenant_identity: std::sync::RwLock<Option<crate::tenant_identity::TenantIdentityClient>>,
     cron_metrics: CronMetrics,
     http_metrics: HttpMetrics,
+    tenant_routing_metrics: TenantRoutingMetrics,
     operational_events: crate::observability::OperationalStore,
     worker_errors: crate::worker_errors::WorkerErrorLog,
 }
@@ -62,9 +67,13 @@ impl ServerState {
         Self {
             inner: Arc::new(ServerStateInner {
                 ready: AtomicBool::new(false),
+                tenant_routing_enabled: AtomicBool::new(false),
+                weighted_routing_enabled: AtomicBool::new(false),
                 pool: std::sync::RwLock::new(None),
+                tenant_identity: std::sync::RwLock::new(None),
                 cron_metrics: CronMetrics::default(),
                 http_metrics: HttpMetrics::default(),
+                tenant_routing_metrics: TenantRoutingMetrics::default(),
                 operational_events: crate::observability::OperationalStore::default(),
                 worker_errors: crate::worker_errors::WorkerErrorLog::default(),
             }),
@@ -74,6 +83,42 @@ impl ServerState {
     pub fn mark_ready(&self, pool: WorkerPool) {
         *self.inner.pool.write().expect("pool lock") = Some(pool);
         self.inner.ready.store(true, Ordering::SeqCst);
+    }
+
+    pub fn set_tenant_identity_client(&self, client: crate::tenant_identity::TenantIdentityClient) {
+        *self
+            .inner
+            .tenant_identity
+            .write()
+            .expect("tenant identity lock") = Some(client);
+    }
+
+    pub fn enable_tenant_routing(&self) {
+        self.inner
+            .tenant_routing_enabled
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub fn tenant_routing_enabled(&self) -> bool {
+        self.inner.tenant_routing_enabled.load(Ordering::SeqCst)
+    }
+
+    pub fn enable_weighted_routing(&self) {
+        self.inner
+            .weighted_routing_enabled
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub fn weighted_routing_enabled(&self) -> bool {
+        self.inner.weighted_routing_enabled.load(Ordering::SeqCst)
+    }
+
+    pub fn tenant_identity_client(&self) -> Option<crate::tenant_identity::TenantIdentityClient> {
+        self.inner
+            .tenant_identity
+            .read()
+            .expect("tenant identity lock")
+            .clone()
     }
 
     pub fn is_ready(&self) -> bool {
@@ -105,6 +150,10 @@ impl ServerState {
 
     pub fn http_metrics(&self) -> HttpMetrics {
         self.inner.http_metrics.clone()
+    }
+
+    pub fn tenant_routing_metrics(&self) -> TenantRoutingMetrics {
+        self.inner.tenant_routing_metrics.clone()
     }
 
     pub fn worker_errors(&self) -> crate::worker_errors::WorkerErrorLog {
@@ -140,6 +189,9 @@ async fn metrics(State(state): State<ServerState>) -> impl IntoResponse {
     let mut body = pool_metrics_prometheus(&metrics);
     body.push_str(&cron_metrics_prometheus(&state.cron_metrics()));
     body.push_str(&http_metrics_prometheus(&state.http_metrics()));
+    body.push_str(&tenant_routing_metrics_prometheus(
+        &state.tenant_routing_metrics(),
+    ));
     (
         [(
             header::CONTENT_TYPE,
@@ -208,14 +260,18 @@ pub fn router(state: ServerState) -> Router {
         .with_state(state)
 }
 
-/// Bind and serve until the shutdown signal resolves.
+/// Bind and serve until the shutdown signal resolves. `into_make_service_with_connect_info` expõe
+/// o IP REAL da conexão (peer do listener) aos handlers como `ConnectInfo` —
+/// é a única fonte de IP confiável: headers de cliente (`X-Forwarded-For`,
+/// `X-Real-IP`) nunca são usados para rate limit de credencial.
 pub async fn serve<S>(config: ServerConfig, app: Router, shutdown_signal: S) -> anyhow::Result<()>
 where
     S: Future<Output = ()> + Send + 'static,
 {
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
     info!(%config.addr, "edger listening");
-    axum::serve(listener, app)
+    let make_service = app.into_make_service_with_connect_info::<SocketAddr>();
+    axum::serve(listener, make_service)
         .with_graceful_shutdown(shutdown_signal)
         .await?;
     Ok(())

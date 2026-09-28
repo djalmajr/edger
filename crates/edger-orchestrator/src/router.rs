@@ -37,6 +37,8 @@ pub enum ResolvedRoute {
         worker: WorkerRef,
         rewritten_path: String,
         kind_hint: ExecutionKind,
+        /// `true` when the URL named `@versão`. That route ignores weights.
+        version_pinned: bool,
     },
     Reserved {
         kind: ReservedPath,
@@ -184,6 +186,7 @@ pub(crate) fn resolve_route_with_internal(
             Ok(ResolvedRoute::Worker {
                 kind_hint: worker.kind.clone(),
                 rewritten_path: parsed.remainder,
+                version_pinned: parsed.version.is_some(),
                 worker,
             })
         }
@@ -228,6 +231,7 @@ pub(crate) fn resolve_host_route_with_internal(
                     Ok(Some(ResolvedRoute::Worker {
                         kind_hint: worker.kind.clone(),
                         rewritten_path: normalized,
+                        version_pinned: false,
                         worker,
                     }))
                 }

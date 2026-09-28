@@ -72,6 +72,13 @@ rootKey:
   existingSecret: edger-root-key
   secretKey: root-key
 
+consoleAuth:
+  # Secret preprovisionado no namespace hyper; o valor nunca entra no chart.
+  # Semeia a senha de root uma vez quando o usuário ainda não existe.
+  rootPasswordSecret:
+    name: edger-console-root-password
+    key: password
+
 userWorkers:
   persistence:
     enabled: true

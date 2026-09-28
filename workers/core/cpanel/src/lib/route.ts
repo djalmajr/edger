@@ -8,7 +8,8 @@ export type View =
   | "observability"
   | "logs"
   | "files"
-  | "keys";
+  | "keys"
+  | "users";
 export type Target = { name: string; version: string };
 export type RouteState = { path: string; target?: Target; view: View };
 
@@ -25,6 +26,7 @@ export function readRoute(pathname: string, basePath: string): RouteState {
   if (!inside) return { path: "", view: "overview" };
   const parts = pathname.slice(basePath.length).split("/").filter(Boolean);
   if (parts[0] === "keys") return { path: "", view: "keys" };
+  if (parts[0] === "users") return { path: "", view: "users" };
   if (parts[0] === "observability")
     return { path: "", view: parts[1] === "logs" ? "logs" : "observability" };
   if (parts[0] !== "workers") return { path: "", view: "overview" };
@@ -52,6 +54,7 @@ export function routePath(route: RouteState, basePath: string): string {
   if (route.view === "overview") return `${basePath}/`;
   if (route.view === "workers" && !route.target) return `${basePath}/workers`;
   if (route.view === "keys") return `${basePath}/keys`;
+  if (route.view === "users") return `${basePath}/users`;
   if (route.view === "observability" && !route.target)
     return `${basePath}/observability`;
   if (route.view === "logs" && !route.target)

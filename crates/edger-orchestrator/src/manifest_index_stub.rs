@@ -13,6 +13,9 @@ use edger_core::{
 };
 
 use crate::router::PluginRef;
+use crate::routing_policy::{
+    cohort_bucket, version_for_weight_bucket, RoutingPolicy, RoutingPolicyTable,
+};
 
 #[derive(Clone, Debug)]
 pub struct ManifestEntry {
@@ -44,6 +47,10 @@ struct ManifestIndexState {
     core_bundled_roots: Vec<PathBuf>,
     core_overlay_root: Option<PathBuf>,
     user_roots: Vec<PathBuf>,
+    /// Política por nome completo. Ausência = comportamento antigo.
+    /// Remover ou reinserir uma versão não reescreve este mapa: o snapshot
+    /// guarda os nomes originais e não transfere peso para outra versão.
+    routing_policies: RoutingPolicyTable,
 }
 
 impl ManifestIndex {
@@ -614,6 +621,8 @@ impl ManifestIndex {
         {
             state.default_versions.remove(name);
         }
+        // A política permanece como foi gravada. A versão retirada continua
+        // nomeada no snapshot; não há fallback para outra versão do nome.
         let removed_dir = removed.worker.dir.clone();
         rebuild_host_routes(&mut state, name);
         state
@@ -796,6 +805,124 @@ impl ManifestIndex {
         if let Ok(mut state) = self.inner.write() {
             state.default_versions.clear();
         }
+    }
+
+    /// Snapshot atual do nome. `Ok(None)` é ausência de política (comportamento
+    /// antigo). Lock envenenado é erro, para não parecer ausência e abrir o gate.
+    pub fn routing_policy(&self, name: &str) -> Result<Option<RoutingPolicy>, CoreError> {
+        let state = self.inner.read().map_err(|_| lock_err())?;
+        Ok(state.routing_policies.get(name))
+    }
+
+    /// Escolhe uma versão do mesmo app. Não grava `defaultVersion`.
+    /// `Ok(None)` mantém a versão já resolvida (sem traffic, ou app core).
+    /// Qualquer versão da política inelegível para esta rota falha a seleção
+    /// inteira: não rebalanceia o peso nem cai no default.
+    pub fn select_weighted_worker(
+        &self,
+        name: &str,
+        cohort: &str,
+        policy: &RoutingPolicy,
+        required_host: Option<&str>,
+        required_plugin_base: Option<&str>,
+    ) -> Result<Option<WorkerRef>, CoreError> {
+        let Some(traffic) = policy.traffic.as_ref() else {
+            return Ok(None);
+        };
+        if policy.name != name {
+            return Err(routing_unavailable());
+        }
+        let state = self.inner.read().map_err(|_| lock_err())?;
+        let Some(bucket) = state.entries.get(name) else {
+            return Err(routing_unavailable());
+        };
+        if bucket
+            .iter()
+            .any(|entry| entry.origin != WorkerOrigin::User)
+        {
+            return Ok(None);
+        }
+        let host = match required_host {
+            Some(host) => Some(
+                normalize_host_alias(host)
+                    .map_err(|_| routing_unavailable())?
+                    .ok_or_else(routing_unavailable)?,
+            ),
+            None => None,
+        };
+        for version in &traffic.versions {
+            let Some(entry) = bucket
+                .iter()
+                .find(|entry| entry.worker.version == version.version)
+            else {
+                return Err(routing_unavailable());
+            };
+            if !entry.worker.config.enabled
+                || entry.staged
+                || crate::deploy::worker_is_staged(&entry.worker.dir)
+                    .map_err(|_| routing_unavailable())?
+                || entry.worker.config.visibility != WorkerVisibility::Public
+            {
+                return Err(routing_unavailable());
+            }
+            if let Some(host) = host.as_ref() {
+                if !entry.hosts.iter().any(|candidate| candidate == host) {
+                    return Err(routing_unavailable());
+                }
+            }
+            if let Some(base) = required_plugin_base {
+                if entry.plugin_base.as_deref() != Some(base) {
+                    return Err(routing_unavailable());
+                }
+            }
+        }
+        let chosen = version_for_weight_bucket(traffic, cohort_bucket(name, cohort))
+            .ok_or_else(routing_unavailable)?;
+        bucket
+            .iter()
+            .find(|entry| entry.worker.version == chosen)
+            .map(|entry| entry.worker.clone())
+            .map(Some)
+            .ok_or_else(routing_unavailable)
+    }
+
+    /// Elegibilidade contra o índice corrente. Uma versão ausente, staged,
+    /// interna ou desabilitada falha; o snapshot não é reescrito.
+    pub fn validate_routing_policy(&self, policy: &RoutingPolicy) -> Result<(), CoreError> {
+        policy.check_invariants()?;
+        let state = self.inner.read().map_err(|_| lock_err())?;
+        check_routing_policy_eligibility(&state, policy, true)
+    }
+
+    /// Troca o snapshot do nome sob o write lock, depois da validação.
+    /// Não mexe em `default_versions`.
+    pub(crate) fn apply_routing_policy(&self, policy: RoutingPolicy) -> Result<(), CoreError> {
+        policy.check_invariants()?;
+        let mut state = self.inner.write().map_err(|_| lock_err())?;
+        check_routing_policy_eligibility(&state, &policy, true)?;
+        state.routing_policies.insert(policy);
+        Ok(())
+    }
+
+    pub(crate) fn clear_routing_policy(&self, name: &str) -> Result<(), CoreError> {
+        let mut state = self.inner.write().map_err(|_| lock_err())?;
+        state.routing_policies.remove(name);
+        Ok(())
+    }
+
+    /// Substitui o mapa inteiro só depois de aceitar cada documento.
+    /// Falha de elegibilidade ou lock deixa o mapa anterior, inclusive a allowlist.
+    pub(crate) fn restore_routing_policy_table(
+        &self,
+        policies: RoutingPolicyTable,
+    ) -> Result<(), CoreError> {
+        let mut state = self.inner.write().map_err(|_| lock_err())?;
+        for policy in policies.iter() {
+            policy.check_invariants()?;
+            check_routing_policy_eligibility(&state, policy, false)?;
+        }
+        state.routing_policies = policies;
+        Ok(())
     }
 }
 
@@ -1115,6 +1242,87 @@ fn lock_err() -> CoreError {
     CoreError::new("LOCK_ERROR", "manifest index lock poisoned")
 }
 
+fn routing_unavailable() -> CoreError {
+    CoreError::new("ROUTING_UNAVAILABLE", "application not available")
+}
+
+#[cfg(test)]
+fn poison_manifest_index_lock(index: &ManifestIndex) {
+    let index = index.clone();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = index.inner.write().expect("manifest index lock");
+        panic!("poison manifest index lock");
+    }));
+}
+
+const RESERVED_ROUTING_NAMES: [&str; 2] = ["cpanel", "webide"];
+
+fn check_routing_policy_eligibility(
+    state: &ManifestIndexState,
+    policy: &RoutingPolicy,
+    require_indexed_name: bool,
+) -> Result<(), CoreError> {
+    if RESERVED_ROUTING_NAMES.contains(&policy.name.as_str()) {
+        return Err(CoreError::new(
+            "CORE_NAME_RESERVED",
+            format!("worker name is reserved for a core app: {}", policy.name),
+        ));
+    }
+    let bucket = state.entries.get(&policy.name);
+    if bucket.is_some_and(|entries| {
+        entries
+            .iter()
+            .any(|entry| entry.origin != WorkerOrigin::User)
+    }) {
+        return Err(CoreError::new(
+            "CORE_BUNDLED_IMMUTABLE",
+            format!("core worker {} cannot have a routing policy", policy.name),
+        ));
+    }
+    if !require_indexed_name {
+        return Ok(());
+    }
+    let Some(bucket) = bucket else {
+        return Err(CoreError::new(
+            "NOT_FOUND",
+            format!("worker not found: {}", policy.name),
+        ));
+    };
+    let Some(traffic) = &policy.traffic else {
+        return Ok(());
+    };
+    for version in &traffic.versions {
+        let Some(entry) = bucket
+            .iter()
+            .find(|entry| entry.worker.version == version.version)
+        else {
+            return Err(CoreError::new(
+                "NOT_FOUND",
+                format!("worker {}@{} does not exist", policy.name, version.version),
+            ));
+        };
+        if entry.staged {
+            return Err(CoreError::new(
+                "PROMOTE_STAGED_MARKER_PRESENT",
+                format!("worker {}@{} is staged", policy.name, version.version),
+            ));
+        }
+        if entry.worker.config.visibility == WorkerVisibility::Internal {
+            return Err(CoreError::new(
+                "PROMOTE_INTERNAL_VERSION",
+                format!("worker {}@{} is internal", policy.name, version.version),
+            ));
+        }
+        if !entry.worker.config.enabled {
+            return Err(CoreError::validation(
+                "routingPolicy.traffic",
+                format!("worker {}@{} is disabled", policy.name, version.version),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn resolve_semver(available: Vec<&str>, requested: Option<&str>) -> Result<String, CoreError> {
     let req = requested.unwrap_or("latest");
     if req == "latest" {
@@ -1196,12 +1404,37 @@ mod tests {
     use super::*;
     use edger_core::WorkerManifest;
 
+    use crate::routing_policy::parse_routing_policy;
+
     fn manifest(name: &str, version: &str) -> WorkerManifest {
         WorkerManifest {
             name: name.into(),
             version: Some(version.into()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn poisoned_lock_is_not_a_missing_routing_policy() {
+        let mut index = ManifestIndex::new();
+        index
+            .insert(PathBuf::from("/w/app"), manifest("app", "1.0.0"))
+            .unwrap();
+        let policy = parse_routing_policy(
+            br#"{"name":"app","tenantAccess":{"mode":"allowlist","tenants":["acme"]}}"#,
+        )
+        .unwrap();
+        index.apply_routing_policy(policy).unwrap();
+        assert!(index.routing_policy("app").unwrap().is_some());
+
+        poison_manifest_index_lock(&index);
+
+        let err = index.routing_policy("app").unwrap_err();
+        assert_eq!(err.code, "LOCK_ERROR", "{err}");
+        assert!(
+            !matches!(index.routing_policy("app"), Ok(None)),
+            "a poisoned index must not look like a missing policy"
+        );
     }
 
     #[test]

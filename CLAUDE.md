@@ -31,6 +31,12 @@
 - **Legacy fallback:** `EDGER_JS_RUNTIME=bridge` forces the v1 per-request CLI bridge (`deno run` per request, bounded-first-chunk streaming). It is retained as an emergency fallback only; the persistent process is the supported path. Embedding `deno_core` was evaluated and rejected in favor of the durable multi-process design; do not reintroduce a Bun adapter.
 - Workers may export `routes` (Bun.serve-style: exact > `:param` > `*` wildcard, per-method maps, `fetch` fallback) in addition to `Deno.serve`/default fetch.
 
+## Tenant routing and weighted rollout (Epic 25)
+- `EDGER_TENANT_ROUTING_ENABLED` and `EDGER_WEIGHTED_ROUTING_ENABLED` are independent opt-ins, both off by default. Tenant off requires no Tenancit URL or token.
+- Tenant allowlists are policies per full app name in `.edger-routing`; only root may PUT/DELETE them. `GET /v1/identify` confirms hostname-to-tenant context, not user membership. A restricted app fails closed if identify fails; worker auth still protects people and data. Never trust visitor `x-tenant-id`.
+- Weighted routing uses an opaque session cohort on versionless public routes; explicit `@version` bypasses weights but still passes an enabled tenant gate. Rancher setup exposes both flags and requires an existing Tenancit token Secret only when tenant routing is on.
+- The feature is implemented and tested locally in `planning/edger/docs/tenant-routing.md` and `planning/edger/status/evidence/tenant-routing-2026-09-26.md`; no production publication is implied. Policy files are local to one instance, so multi-replica coordination is still required.
+
 ## Discipline
 - Planning maturity: `/agile-refinement` Mode 1 on `planning/edger/` + `refinement-lint.py` (see `planning/edger/scripts/run-gates.sh`). Only the orchestrator agent calls ai-memory tools; subagents must not.
 - `memory_lint` (workspace `djalmajr`, project `edger`): orchestrator only, when the remote server is stable — excluded from planning gates if unstable.

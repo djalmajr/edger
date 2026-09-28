@@ -35,6 +35,10 @@
   sem materializar valores no manifesto, ZIP, logs ou respostas administrativas.
 - Objetivo 12: Executar os nove frameworks da lista oficial do Deno Deploy como
   apps declarativos, com deploy ZIP e subpath do EdgeR.
+- Objetivo 13: Restringir a disponibilidade de apps por tenant identificado pelo
+  Tenancit e distribuir tráfego entre versões elegíveis com coorte de sessão.
+- Objetivo 14: Permitir acesso ao cPanel por senha do usuário root e por token,
+  com sessões revogáveis e configuração segura da senha inicial.
 
 ## Initiatives / Epics
 | Initiative | Epic | Stories | Status | Dependency |
@@ -58,6 +62,8 @@
 | Fase 22: Workers Core e WebIDE | [`epics/22-core-workers-webide/`](epics/22-core-workers-webide/00-overview.md) | 8 | **completed** (estrutura, overlay, imagem mínima e workbench WebIDE validados) | Fase 14, Fase 21 |
 | Fase 23: Secrets versionados | [`epics/23-secrets-versionados/`](epics/23-secrets-versionados/00-overview.md) | 1 | planned (contrato, threat model e provider E2E) | Fase 15, Fase 22 |
 | Fase 24: Frameworks Deno SSR | [`epics/24-frameworks-deno-ssr/`](epics/24-frameworks-deno-ssr/00-overview.md) | 3 | **completed** (nove frameworks oficiais mais NestJS, Fastify e Koa; Remix experimental, Lume estático) | Fase 14, Fase 15 |
+| Fase 25: Tenant routing e rollout ponderado | [`epics/25-tenant-routing/`](epics/25-tenant-routing/00-overview.md) | 4 | **implementado e revisado localmente** (Rancher UI e carga em cluster pendentes; sem deploy) | Fase 11, Fase 14, Tenancit identify |
+| Fase 26: Autenticação da console | [`epics/26-console-auth/`](epics/26-console-auth/00-overview.md) | 4 | implementada e verificada localmente; sem release | Fase 12, API keys do control plane |
 
 ## Suggested sequence
 1. Fase 1 (Fundação) -- Alinha o skeleton real e estabelece cultura (AGENTS, testes, gate). Alta prioridade porque desbloqueia tudo e evita dívida técnica.
@@ -82,6 +88,12 @@
 18. Fase 24 (Frameworks Deno SSR) -- Formaliza adapters e receitas de build para
     os nove frameworks da lista do Deno Deploy e servidores Node estruturados,
     preservando o subpath e o processo warm.
+19. Fase 25 (Tenant routing e rollout ponderado) -- Introduz política por app,
+    identificação via Tenancit sem carregar secrets, allowlist antes do worker
+    e split estável por sessão; API e rollback precedem o cPanel.
+20. Fase 26 (Autenticação da console) -- Introduz usuário root e sessão
+    revogável para o cPanel, preservando o token existente como alternativa;
+    seed inicial usa arquivo de Secret fora dos values do chart.
 
 Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador podem avançar com mocks. Extensões podem começar protótipos cedo.
 
@@ -101,6 +113,10 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 - **Secrets vazarem pelo artefato ou observabilidade**: colocar valores em
   manifesto/ZIP, logs ou eventos quebra isolamento e rotação. Mitigação: Fase 23
   usa referências versionadas, resolução confiável e redaction testada.
+- **Hostname confundido com autorização de usuário**: Tenancit identify
+  confirma o cadastro do domínio, não a pessoa que acessa. Mitigação: Fase 25
+  explicita esse limite, elimina headers de tenant fornecidos pelo cliente e
+  exige autenticação adicional caso o produto precise de controle por usuário.
 - **Testes e disciplina**: Sem gate forte desde início, qualidade cai. Mitigação: Fase 1 entrega o gate obrigatório.
 - **Migração**: Usuários Buntime existentes. Mitigação: preservar contracts (fetch/routes, manifests, namespaces, TTL, shell) + docs de mapping.
 - Dependências chave: Fase 3 depende de decisões do spike; Fase 5 depende de worker+isolation; extensões dependem de registry no orquestrador.

@@ -30,6 +30,7 @@ pub const API_KEY_PREFIX: &str = "egk_";
 
 const CACHE_TTL: Duration = Duration::from_secs(60);
 const TOUCH_THROTTLE: Duration = Duration::from_secs(60);
+const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 
 pub struct SqliteApiKeyStore {
     conn: Mutex<Connection>,
@@ -43,6 +44,8 @@ impl SqliteApiKeyStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, CoreError> {
         let path = path.as_ref();
         let mut conn = Connection::open(path).map_err(db_err)?;
+        conn.busy_timeout(Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS))
+            .map_err(db_err)?;
         Self::init_schema(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -419,6 +422,18 @@ impl ApiKeyService {
     /// Principal vivo para a credencial, ou None (inexistente/revogada/
     /// expirada — indistinguíveis de propósito: 401 é 401).
     pub fn authenticate(&self, raw_key: &str) -> Option<ApiKeyPrincipal> {
+        match self.try_authenticate(raw_key) {
+            Ok(principal) => principal,
+            Err(err) => {
+                tracing::warn!(code = %err.code, "api key lookup failed: {}", err.message);
+                None
+            }
+        }
+    }
+
+    /// Authenticate while preserving store failures for HTTP control-plane
+    /// callers that must distinguish database errors from invalid keys.
+    pub fn try_authenticate(&self, raw_key: &str) -> Result<Option<ApiKeyPrincipal>, CoreError> {
         let cache_key = SqliteApiKeyStore::hash_key(raw_key);
         if let Ok(cache) = self.cache.read() {
             if let Some((principal, at)) = cache.get(&cache_key) {
@@ -426,22 +441,18 @@ impl ApiKeyService {
                     let principal = principal.clone();
                     drop(cache);
                     self.touch(principal.id);
-                    return Some(principal);
+                    return Ok(Some(principal));
                 }
             }
         }
-        let principal = match self.store.lookup_by_key(raw_key) {
-            Ok(principal) => principal?,
-            Err(err) => {
-                tracing::warn!(code = %err.code, "api key lookup failed: {}", err.message);
-                return None;
-            }
+        let Some(principal) = self.store.lookup_by_key(raw_key)? else {
+            return Ok(None);
         };
         if let Ok(mut cache) = self.cache.write() {
             cache.insert(cache_key, (principal.clone(), Instant::now()));
         }
         self.touch(principal.id);
-        Some(principal)
+        Ok(Some(principal))
     }
 
     fn touch(&self, id: u64) {

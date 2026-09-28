@@ -4,8 +4,18 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.4` (Rust 1.98 toolchain,
-rusqlite 0.40); `v0.3.2-rc.3` (tanstack public files, type-only bundle
+## [0.3.2-rc.5]
+
+- Tenant routing adds opt-in per-app tenant allowlists resolved through
+  Tenancit and weighted version rollout for requests without an explicit
+  version. Both controls remain independently disabled by default.
+- The cPanel console adds password and token sign-in plus administration of
+  console users and their access; chart configuration can reference an
+  existing Secret for the root password.
+
+Toward 0.3.2. Release candidates: `v0.3.2-rc.5` (tenant routing, weighted
+rollout, console authentication and user management); `v0.3.2-rc.4` (Rust
+1.98 toolchain, rusqlite 0.40); `v0.3.2-rc.3` (tanstack public files, type-only bundle
 deps); `v0.3.2-rc.2` (owned domains, metrics key, core-worker
 precedence); `v0.3.2-rc.1` (published and validated on labdev:
 zero-downtime host switch, 21/21 probes 200 across four promotes).

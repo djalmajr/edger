@@ -193,6 +193,10 @@ async fn state_export_zip_has_state_and_excludes_internals() {
     )
     .unwrap();
     fs::write(user_root.join(".edger-defaults").join("ptr.tmp"), "tmp").unwrap();
+    let routing = user_root.join(".edger-routing");
+    fs::create_dir_all(&routing).unwrap();
+    fs::write(routing.join("617070.json"), "{\"name\":\"app\"}").unwrap();
+    fs::write(routing.join("policy.tmp"), "partial").unwrap();
     fs::write(user_root.join(".edger").join("lixo.txt"), "interno").unwrap();
     // Symlink: pulado e contado (nada de seguir destino).
     let link_target = user_root.join("zero-app").join("index.ts");
@@ -259,6 +263,7 @@ async fn state_export_zip_has_state_and_excludes_internals() {
         "pointer de default ausente: {names:?}"
     );
     assert!(names.contains(&"core-overlay/cpanel@1.0.0/index.ts".to_string()));
+    assert!(names.contains(&"user-roots/0/.edger-routing/617070.json".to_string()));
 
     // Exclusões: estado interno, banco bruto + sidecars, transitórios.
     for name in &names {
@@ -270,6 +275,10 @@ async fn state_export_zip_has_state_and_excludes_internals() {
         assert!(
             !name.ends_with(".tmp") || !name.starts_with("user-roots/0/.edger-defaults/"),
             "tmp de pointer vazou: {name}"
+        );
+        assert!(
+            !name.ends_with(".tmp") || !name.starts_with("user-roots/0/.edger-routing/"),
+            "tmp de política vazou: {name}"
         );
         assert!(
             !name.contains(".edger-revision-"),

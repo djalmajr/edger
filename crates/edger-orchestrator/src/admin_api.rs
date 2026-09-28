@@ -1,24 +1,28 @@
 //! Admin API routes for operational inventory and root-only controls.
 
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
+use axum::http::header::{
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, RETRY_AFTER,
+};
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, delete, get, post};
+use axum::routing::{any, delete, get, patch, post};
 use axum::{Json, Router};
 use edger_core::{
-    principal_can_access_worker, principal_has_permission, root_principal, AdminApiKeysResponse,
-    AdminCatalogItem, AdminCatalogResponse, AdminErrorResponse, AdminMutationResponse,
-    AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse, ApiKeyPrincipal, CoreError,
-    CreateApiKeyRequest, SerializedRequest, WorkerOrigin, WorkerVisibility,
+    principal_can_access_worker, principal_has_permission, require_same_origin, root_principal,
+    AdminApiKeysResponse, AdminCatalogItem, AdminCatalogResponse, AdminErrorResponse,
+    AdminMutationResponse, AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse,
+    ApiKeyPrincipal, CoreError, CreateApiKeyRequest, SerializedRequest, WorkerOrigin,
+    WorkerVisibility,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::io::{Read, Seek, Write};
+use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -30,16 +34,35 @@ use crate::deploy::{
     MAX_DEPLOY_PACKAGE_BYTES,
 };
 use crate::manifest_loader::persist_default_version;
+use crate::manifest_loader::{clear_persisted_routing_policy, persist_routing_policy};
 use crate::operational_log::log_operational_error;
 use crate::pipeline::{OrchestratorState, ADMIN_CONTROL_AUTH_HEADER, ADMIN_WORKER_VERSION_HEADER};
+use crate::routing_policy::parse_routing_policy;
 use crate::security::validate_admin_mutation_security;
 use crate::server::request_id_from_headers;
+use crate::{
+    auth::extract_api_key,
+    console_auth::{ConsoleAuthError, ConsoleUserInfo, ConsoleUserPatch, SESSION_PREFIX},
+};
+
+const MAX_ROUTING_POLICY_BYTES: usize = 16 * 1024;
+
+/// Limite de corpo dos endpoints de console (login/troca de senha): JSON
+/// pequeno e delimitado — payload maior não é decodificado.
+const CONSOLE_BODY_LIMIT: usize = 4 * 1024;
 
 pub fn router() -> Router<OrchestratorState> {
     Router::new()
         .route("/api/admin/session", get(session))
         .route("/api/admin/catalog", get(catalog))
         .route("/api/admin/workers", get(list_workers))
+        .route(
+            "/api/admin/routing-policy",
+            get(get_routing_policy)
+                .put(put_routing_policy)
+                .delete(delete_routing_policy)
+                .layer(DefaultBodyLimit::max(MAX_ROUTING_POLICY_BYTES)),
+        )
         .route("/api/admin/workers/{name}", delete(delete_worker_route))
         .route(
             "/api/admin/workers/install",
@@ -87,6 +110,102 @@ pub fn router() -> Router<OrchestratorState> {
         .route("/api/admin/keys", get(list_api_keys).post(create_api_key))
         .route("/api/admin/keys/{id}/revoke", post(revoke_api_key))
         .route("/api/admin/keys/{id}", delete(delete_api_key))
+        .route(
+            "/api/admin/login",
+            post(login_route).layer(DefaultBodyLimit::max(CONSOLE_BODY_LIMIT)),
+        )
+        .route("/api/admin/login-options", get(login_options))
+        .route("/api/admin/logout", post(logout_route))
+        .route(
+            "/api/admin/me/password",
+            post(me_password).layer(DefaultBodyLimit::max(CONSOLE_BODY_LIMIT)),
+        )
+        .route(
+            "/api/admin/users",
+            get(list_users_route)
+                .post(create_user_route)
+                .layer(DefaultBodyLimit::max(CONSOLE_BODY_LIMIT)),
+        )
+        .route(
+            "/api/admin/users/{id}",
+            patch(update_user_route)
+                .delete(delete_user_route)
+                .layer(DefaultBodyLimit::max(CONSOLE_BODY_LIMIT)),
+        )
+        .route(
+            "/api/admin/users/{id}/reset-password",
+            post(reset_user_password_route).layer(DefaultBodyLimit::max(CONSOLE_BODY_LIMIT)),
+        )
+}
+
+#[derive(Deserialize)]
+struct RoutingPolicyQuery {
+    name: String,
+}
+
+async fn get_routing_policy(
+    State(state): State<OrchestratorState>,
+    Query(query): Query<RoutingPolicyQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "workers:read")?;
+        let policy = state.index.routing_policy(&query.name)?;
+        if policy.is_none() || !principal.is_root {
+            require_visible_worker(&state, &principal, &query.name, None)?;
+        }
+        Ok::<_, CoreError>(policy)
+    }
+    .await;
+    match result {
+        Ok(policy) => Json(json!({ "policy": policy })).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn put_routing_policy(
+    State(state): State<OrchestratorState>,
+    Query(query): Query<RoutingPolicyQuery>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let result = async {
+        let principal = require_root(&state, &headers).await?;
+        validate_admin_mutation_security("PUT", &headers, &principal)?;
+        let policy = parse_routing_policy(&body)?;
+        if policy.name != query.name {
+            return Err(CoreError::new(
+                "VALIDATION_ERROR",
+                "routing policy name does not match the query name",
+            ));
+        }
+        persist_routing_policy(&state.index, &policy)?;
+        Ok::<_, CoreError>(policy)
+    }
+    .await;
+    match result {
+        Ok(policy) => Json(json!({ "policy": policy })).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn delete_routing_policy(
+    State(state): State<OrchestratorState>,
+    Query(query): Query<RoutingPolicyQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let result = async {
+        let principal = require_root(&state, &headers).await?;
+        validate_admin_mutation_security("DELETE", &headers, &principal)?;
+        clear_persisted_routing_policy(&state.index, &query.name)?;
+        Ok::<_, CoreError>(())
+    }
+    .await;
+    match result {
+        Ok(()) => Json(json!({ "deleted": true })).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
 }
 
 /// O store de keys — 503 quando a instância subiu sem ele (open mode, ou
@@ -192,6 +311,496 @@ async fn delete_api_key(
 async fn session(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
     match authenticate(&state, &headers).await {
         Ok(principal) => Json(AdminSessionResponse { principal }).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+// --------------------------------------------------------------------------
+// Console por senha (root user + sessões `ses-` persistentes). O login é
+// PÚBLICO (é a porta de entrada da credencial); o logout e a troca de senha
+// só aceitam credencial válida. Senha/token nunca entram em log ou em
+// mensagem de erro.
+// --------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoginRequest {
+    username: String,
+    password: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChangePasswordRequest {
+    current: String,
+    new: String,
+}
+
+/// Requisição com cara de browser (origin/sec-fetch-*) exige origem == host;
+/// cliente sem esses headers (curl/API) não é alvo do CSRF check.
+fn browser_origin_check(headers: &HeaderMap) -> Result<(), CoreError> {
+    let browser_originated = headers.get("origin").is_some()
+        || headers.get("sec-fetch-mode").is_some()
+        || headers.get("sec-fetch-site").is_some();
+    if !browser_originated {
+        return Ok(());
+    }
+    let origin = headers.get("origin").and_then(|value| value.to_str().ok());
+    let host = headers.get("host").and_then(|value| value.to_str().ok());
+    require_same_origin(origin, host)
+}
+
+fn console_unavailable_error() -> CoreError {
+    CoreError::new(
+        "CONSOLE_STORE_UNAVAILABLE",
+        "console password auth is not configured on this instance",
+    )
+}
+
+fn rate_limited_response(retry: Duration) -> Response {
+    let retry_after = retry.as_secs().max(1).to_string();
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [
+            (RETRY_AFTER, retry_after.as_str()),
+            (CACHE_CONTROL, "no-store"),
+        ],
+        Json(AdminErrorResponse {
+            code: "RATE_LIMITED".into(),
+            message: "too many failed attempts".into(),
+        }),
+    )
+        .into_response()
+}
+
+/// Limite de cálculos de senha simultâneos esgotado (sem slot no tempo do
+/// timeout): o cálculo Argon2 não anda — negação honesta (503), nunca
+/// autenticação.
+fn console_busy_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(RETRY_AFTER, "1"), (CACHE_CONTROL, "no-store")],
+        Json(AdminErrorResponse {
+            code: "CONSOLE_BUSY".into(),
+            message: "too many concurrent password calculations".into(),
+        }),
+    )
+        .into_response()
+}
+
+/// Disponibilidade do login por senha, sem segredos: `passwordEnabled` =
+/// root ativo no store; `rootSeeded` = linha de root no store (reflete o
+/// banco, não apenas a presença do env de semente).
+async fn login_options(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
+    match state.auth.console_service() {
+        Some(console) => match (console.password_enabled(), console.has_root_user()) {
+            (Ok(password_enabled), Ok(root_seeded)) => Json(json!({
+                "passwordEnabled": password_enabled,
+                "rootSeeded": root_seeded,
+            }))
+            .into_response(),
+            (Err(err), _) | (_, Err(err)) => {
+                admin_error(StatusCode::SERVICE_UNAVAILABLE, &err, &headers)
+            }
+        },
+        None => Json(json!({ "passwordEnabled": false, "rootSeeded": false })).into_response(),
+    }
+}
+
+/// Login público: JSON limitado `{username,password}`, origem igual para
+/// browser, 401 genérica em falha (não revela se `root` existe), 429 +
+/// Retry-After no budget POR IP REAL (`ConnectInfo` do listener — `XFF`
+/// forjado não rotaciona o bucket), 503 sem store. Sucesso:
+/// `{"token":"ses-…"}` com `Cache-Control: no-store`. Sem `ConnectInfo`
+/// (teste isolado) o extractor falha: 400, login não anda (falha fechado).
+async fn login_route(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let console = match state.auth.console_service() {
+        Some(console) => console,
+        None => {
+            return admin_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &console_unavailable_error(),
+                &headers,
+            )
+        }
+    };
+    if let Err(err) = browser_origin_check(&headers) {
+        return admin_error(map_error_status(&err), &err, &headers);
+    }
+    let request: LoginRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(err) => {
+            let error = CoreError::new("VALIDATION_ERROR", format!("invalid body: {err}"));
+            return admin_error(map_error_status(&error), &error, &headers);
+        }
+    };
+    let username = request.username.trim().to_string();
+    let client_ip: IpAddr = peer.ip();
+    match console
+        .login_async(client_ip, &username, &request.password)
+        .await
+    {
+        Ok(token) => {
+            tracing::info!(username, "console login issued a session");
+            (
+                StatusCode::OK,
+                [(CACHE_CONTROL, "no-store")],
+                Json(json!({ "token": token })),
+            )
+                .into_response()
+        }
+        Err(ConsoleAuthError::InvalidCredentials) => {
+            // Mesma resposta para usuário inexistente, senha errada, usuário
+            // inativo ou root ausente — o corpo não revela o motivo.
+            tracing::warn!(username, "console login rejected");
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(AdminErrorResponse {
+                    code: "UNAUTHORIZED".into(),
+                    message: "invalid credentials".into(),
+                }),
+            )
+                .into_response()
+        }
+        Err(ConsoleAuthError::RateLimited(retry)) => rate_limited_response(retry),
+        Err(ConsoleAuthError::Busy) => console_busy_response(),
+        Err(ConsoleAuthError::InvalidRequest(message)) => {
+            let error = CoreError::new("VALIDATION_ERROR", message);
+            admin_error(map_error_status(&error), &error, &headers)
+        }
+        Err(ConsoleAuthError::Store(err)) => {
+            // Falha fechada: erro de store nunca autentica; 503 honesto.
+            let error = CoreError::new("CONSOLE_STORE_UNAVAILABLE", err.message.clone());
+            admin_error(StatusCode::SERVICE_UNAVAILABLE, &error, &headers)
+        }
+    }
+}
+
+/// Logout: revoga SOMENTE token de sessão (`ses-`). Root key/`egk_`/OIDC
+/// passam autenticados e recebem 204 sem revogação (o logout é local para
+/// eles); em open mode o principal sintético root também recebe 204.
+async fn logout_route(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
+    let principal = match authenticate(&state, &headers).await {
+        Ok(principal) => principal,
+        Err(err) => return admin_error(map_error_status(&err), &err, &headers),
+    };
+    let Some(credential) =
+        extract_api_key(&headers).filter(|credential| credential.starts_with(SESSION_PREFIX))
+    else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let Some(console) = state.auth.console_service() else {
+        // Open mode accepts the synthetic root principal, including when a
+        // caller sends a session-shaped credential. There is no session store
+        // to revoke, so logout remains an idempotent no-op.
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    match console.logout(&credential) {
+        Ok(_) => {
+            tracing::info!(username = %principal.name, "console session revoked (logout)");
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(err) => {
+            // Revogação falhou: a sessão segue viva — 503 para o cliente
+            // não descartar o token em falso.
+            let error = CoreError::new("CONSOLE_STORE_UNAVAILABLE", err.message.clone());
+            admin_error(StatusCode::SERVICE_UNAVAILABLE, &error, &headers)
+        }
+    }
+}
+
+/// Troca a senha do dono da sessão A PARTIR DA SESSÃO (não da root key,
+/// `egk_` ou OIDC) — funciona para qualquer usuário de sessão, sem depender
+/// de nome root. Valida a senha atual e a nova (política forte), rotaciona
+/// TODAS as sessões do usuário (as antigas — a corrente inclusive — morrem)
+/// e devolve o NOVO token: `{"token":"ses-…"}` com `Cache-Control: no-store`.
+/// A prova e o hash da nova senha rodam na pool de blocking sob o limite
+/// compartilhado de slots de hash (`spawn_blocking` + `Busy` => 503);
+/// a transação revalida a sessão solicitante no commit; a troca usa o mesmo
+/// budget por IP real do login.
+async fn me_password(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let console = match state.auth.console_service() {
+        Some(console) => console,
+        None => {
+            return admin_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &console_unavailable_error(),
+                &headers,
+            )
+        }
+    };
+    if let Err(err) = browser_origin_check(&headers) {
+        return admin_error(map_error_status(&err), &err, &headers);
+    }
+    // Só sessão muda a senha: credencial não-`ses-` (root key/`egk_`/OIDC)
+    // não é aceita mesmo autenticando.
+    let Some(credential) = extract_api_key(&headers) else {
+        let error = CoreError::new("UNAUTHORIZED", "missing or invalid API key");
+        return admin_error(map_error_status(&error), &error, &headers);
+    };
+    if !credential.starts_with(SESSION_PREFIX) {
+        let error = CoreError::new("FORBIDDEN", "password change requires a console session");
+        return admin_error(map_error_status(&error), &error, &headers);
+    }
+    let principal = match console.authenticate_session(&credential) {
+        Some(principal) => principal,
+        None => {
+            let error = CoreError::new("UNAUTHORIZED", "missing or invalid API key");
+            return admin_error(map_error_status(&error), &error, &headers);
+        }
+    };
+    let request: ChangePasswordRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(err) => {
+            let error = CoreError::new("VALIDATION_ERROR", format!("invalid body: {err}"));
+            return admin_error(map_error_status(&error), &error, &headers);
+        }
+    };
+    match console
+        .change_password_async(peer.ip(), &credential, &request.current, &request.new)
+        .await
+    {
+        Ok(token) => {
+            tracing::info!(username = %principal.name, "console password changed; sessions rotated");
+            (
+                StatusCode::OK,
+                [(CACHE_CONTROL, "no-store")],
+                Json(json!({ "token": token })),
+            )
+                .into_response()
+        }
+        Err(ConsoleAuthError::InvalidCredentials) => {
+            let error = CoreError::new("UNAUTHORIZED", "invalid credentials");
+            admin_error(map_error_status(&error), &error, &headers)
+        }
+        Err(ConsoleAuthError::RateLimited(retry)) => rate_limited_response(retry),
+        Err(ConsoleAuthError::Busy) => console_busy_response(),
+        Err(ConsoleAuthError::InvalidRequest(message)) => {
+            let error = CoreError::new("VALIDATION_ERROR", message);
+            admin_error(map_error_status(&error), &error, &headers)
+        }
+        Err(ConsoleAuthError::Store(err)) => {
+            let error = CoreError::new("CONSOLE_STORE_UNAVAILABLE", err.message.clone());
+            admin_error(StatusCode::SERVICE_UNAVAILABLE, &error, &headers)
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
+// Gestão de usuários adicionais da console (root-only). O root token e a
+// sessão root administram; `egk_` com `keys:manage` NÃO (nunca é root).
+// Metadados SEM hash/senha; mutações com `validate_admin_mutation_security`,
+// corpo limitado e revogação de sessões na mesma transação (desativação,
+// redução de permissões/escopos, reset e exclusão).
+// --------------------------------------------------------------------------
+
+/// Store de console quando a instância tem a feature (senão 503 honesto —
+/// gestão indisponível é estado operacional, não 404 mentiroso).
+fn console_store(
+    state: &OrchestratorState,
+) -> Result<&std::sync::Arc<crate::console_auth::ConsoleAuthService>, CoreError> {
+    state
+        .auth
+        .console_service()
+        .ok_or_else(console_unavailable_error)
+}
+
+/// Registro da resposta: o MESMO shape que o cPanel parseia inteiro
+/// (`parseAdminUser` de `workers/core/cpanel/src/lib/api.ts`) — `id`,
+/// `username`, `role`, `isRoot`, `disabled`, `createdAt` (epoch segundos),
+/// arrays `permissions`/`namespaces`/`workers`. Nunca senha/hash.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminConsoleUser {
+    id: i64,
+    username: String,
+    role: String,
+    is_root: bool,
+    disabled: bool,
+    permissions: Vec<String>,
+    namespaces: Vec<String>,
+    workers: Vec<String>,
+    created_at: i64,
+    updated_at: i64,
+}
+
+fn admin_console_user(user: &ConsoleUserInfo) -> AdminConsoleUser {
+    AdminConsoleUser {
+        id: user.id,
+        username: user.username.clone(),
+        role: user.role.clone(),
+        is_root: user.is_root,
+        disabled: !user.active,
+        permissions: user.permissions.clone(),
+        namespaces: user.namespaces.clone(),
+        workers: user.workers.clone(),
+        created_at: user.created_at,
+        updated_at: user.updated_at,
+    }
+}
+
+/// `GET /api/admin/users` — root apenas; lista metadados (sem hash/senha/
+/// sessões). A linha do root entra com `isRoot=true` (a UI a marca como
+/// imutável; as mutações a rejeitam com 403).
+async fn list_users_route(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
+    let result = async {
+        require_root(&state, &headers).await?;
+        let users = console_store(&state)?.list_users()?;
+        Ok::<_, CoreError>(
+            users
+                .into_iter()
+                .map(|user| admin_console_user(&user))
+                .collect::<Vec<_>>(),
+        )
+    }
+    .await;
+    match result {
+        Ok(users) => Json(json!({ "users": users })).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateUserRequest {
+    username: String,
+    password: String,
+    permissions: Vec<String>,
+    namespaces: Vec<String>,
+    workers: Vec<String>,
+}
+
+/// `POST /api/admin/users` — root apenas; cria com username normalizado,
+/// senha forte e permissões/escopos validados pelo catálogo. 409 no
+/// username duplicado; NUNCA devolve a senha.
+async fn create_user_route(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let result = async {
+        let principal = require_root(&state, &headers).await?;
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        let service = console_store(&state)?;
+        let request: CreateUserRequest = serde_json::from_slice(&body)
+            .map_err(|err| CoreError::new("VALIDATION_ERROR", format!("invalid body: {err}")))?;
+        service
+            .create_user(
+                &request.username,
+                &request.password,
+                &request.permissions,
+                &request.namespaces,
+                &request.workers,
+            )
+            .await
+    }
+    .await;
+    match result {
+        Ok(user) => (
+            StatusCode::CREATED,
+            Json(json!({ "user": admin_console_user(&user) })),
+        )
+            .into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateUserRequest {
+    disabled: Option<bool>,
+    permissions: Option<Vec<String>>,
+    namespaces: Option<Vec<String>>,
+    workers: Option<Vec<String>>,
+}
+
+/// `PATCH /api/admin/users/{id}` — root apenas; altera `disabled`,
+/// permissões e escopos de usuário NÃO-ROOT (root => 403). Desativação ou
+/// redução de permissões/escopos revoga as sessões na mesma transação.
+async fn update_user_route(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    body: Bytes,
+) -> Response {
+    let result = async {
+        let principal = require_root(&state, &headers).await?;
+        validate_admin_mutation_security("PATCH", &headers, &principal)?;
+        let service = console_store(&state)?;
+        let request: UpdateUserRequest = serde_json::from_slice(&body)
+            .map_err(|err| CoreError::new("VALIDATION_ERROR", format!("invalid body: {err}")))?;
+        service.update_user(
+            id,
+            &ConsoleUserPatch {
+                disabled: request.disabled,
+                permissions: request.permissions,
+                namespaces: request.namespaces,
+                workers: request.workers,
+            },
+        )
+    }
+    .await;
+    match result {
+        Ok(user) => Json(json!({ "user": admin_console_user(&user) })).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResetUserPasswordRequest {
+    password: String,
+}
+
+/// `POST /api/admin/users/{id}/reset-password` — root apenas; define nova
+/// senha forte e revoga TODAS as sessões do alvo na mesma transação.
+async fn reset_user_password_route(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    body: Bytes,
+) -> Response {
+    let result = async {
+        let principal = require_root(&state, &headers).await?;
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        let service = console_store(&state)?;
+        let request: ResetUserPasswordRequest = serde_json::from_slice(&body)
+            .map_err(|err| CoreError::new("VALIDATION_ERROR", format!("invalid body: {err}")))?;
+        service.reset_user_password(id, &request.password).await
+    }
+    .await;
+    match result {
+        Ok(user) => Json(json!({ "user": admin_console_user(&user) })).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+/// `DELETE /api/admin/users/{id}` — root apenas; remove usuário não-root e
+/// sessões na mesma transação.
+async fn delete_user_route(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Response {
+    let result = async {
+        let principal = require_root(&state, &headers).await?;
+        validate_admin_mutation_security("DELETE", &headers, &principal)?;
+        console_store(&state)?.delete_user(id)?;
+        Ok::<_, CoreError>(json!({ "id": id, "deleted": true }))
+    }
+    .await;
+    match result {
+        Ok(payload) => Json(payload).into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
 }
@@ -1688,6 +2297,24 @@ pub(crate) async fn authenticate(
         return Ok(root_principal());
     }
 
+    if let Some(credential) = extract_api_key(headers)
+        .filter(|credential| credential.starts_with(crate::api_keys::API_KEY_PREFIX))
+    {
+        if state
+            .auth
+            .root_key_for_internal_clients()
+            .is_some_and(|root_key| root_key == credential)
+        {
+            return Ok(root_principal());
+        }
+        let Some(keys) = state.auth.key_service() else {
+            return Err(CoreError::new("UNAUTHORIZED", "missing or invalid API key"));
+        };
+        return keys
+            .try_authenticate(&credential)?
+            .ok_or_else(|| CoreError::new("UNAUTHORIZED", "missing or invalid API key"));
+    }
+
     state
         .auth
         .authenticate_headers(headers)
@@ -1837,21 +2464,33 @@ pub(crate) fn require_permission(
 pub(crate) fn map_error_status(err: &CoreError) -> StatusCode {
     match err.code.as_str() {
         "BAD_REQUEST"
+        | "PARSE_ERROR"
         | "VALIDATION_ERROR"
         | "DEPLOY_INVALID_PACKAGE"
         | "DEPLOY_STAGED_REQUIRES_PUBLIC"
         | "DEPLOY_PATH_DENIED"
         | "DEPLOY_VISIBILITY_IMMUTABLE"
+        | "CORE_NAME_RESERVED"
         | "PROMOTE_VERSION_REQUIRED"
         | "PROMOTE_INVALID_VERSION"
+        | "PROMOTE_STAGED_MARKER_PRESENT"
         | "PROMOTE_INTERNAL_VERSION" => StatusCode::BAD_REQUEST,
         "UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
-        "CSRF_DENIED" | "FORBIDDEN" | "KEY_GRANT_DENIED" => StatusCode::FORBIDDEN,
+        "CSRF_DENIED" | "FORBIDDEN" | "KEY_GRANT_DENIED" | "USER_IMMUTABLE" => {
+            StatusCode::FORBIDDEN
+        }
         "STATE_EXPORT_IN_PROGRESS" => StatusCode::CONFLICT,
-        "KEYS_STORE_UNAVAILABLE" | "STATE_BUSY" => StatusCode::SERVICE_UNAVAILABLE,
+        "CONSOLE_STORE_UNAVAILABLE"
+        | "KEYS_STORE_UNAVAILABLE"
+        | "STORE_ERROR"
+        | "STATE_BUSY"
+        | "LOCK_ERROR"
+        | "CONSOLE_BUSY" => StatusCode::SERVICE_UNAVAILABLE,
+        "RATE_LIMITED" => StatusCode::TOO_MANY_REQUESTS,
         "DOWNLOAD_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
-        "COLLISION"
+        "USERNAME_TAKEN"
+        | "COLLISION"
         | "DEPLOY_REVISION_REQUIRED"
         | "DEPLOY_IN_PROGRESS"
         | "DEPLOY_REVISION_UNKNOWN"
@@ -1903,10 +2542,7 @@ mod state_export_stream_tests {
             buf: &mut ReadBuf<'_>,
         ) -> Poll<std::io::Result<()>> {
             if self.pos >= self.data.len() {
-                return Poll::Ready(Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "injected read failure",
-                )));
+                return Poll::Ready(Err(std::io::Error::other("injected read failure")));
             }
             let remaining = self.data.len() - self.pos;
             let count = remaining.min(buf.remaining());
@@ -1972,5 +2608,73 @@ mod state_export_stream_tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert!(!zip_path.exists());
+    }
+}
+
+#[cfg(test)]
+mod api_key_auth_tests {
+    use super::{authenticate, map_error_status};
+    use crate::api_keys::ApiKeyService;
+    use crate::auth::ControlAuth;
+    use crate::manifest_index_stub::ManifestIndex;
+    use crate::pipeline::OrchestratorState;
+    use crate::server::ServerState;
+    use edger_isolation::MockIsolate;
+    use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    struct TestFactory;
+
+    impl IsolateFactory for TestFactory {
+        fn create_isolate(
+            &self,
+            _worker_ref: &edger_core::WorkerRef,
+        ) -> Box<dyn edger_core::Isolate> {
+            Box::new(MockIsolate::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn locked_api_key_store_waits_then_returns_service_unavailable_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("shared-auth.db");
+        let keys = Arc::new(ApiKeyService::open(&db).unwrap());
+        let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(TestFactory));
+        let server = ServerState::new_unready();
+        server.mark_ready(pool.clone());
+        let state = OrchestratorState {
+            server,
+            pool,
+            index: ManifestIndex::new(),
+            auth: ControlAuth::with_static_key("test-root").with_key_service(keys),
+        };
+        let lock = rusqlite::Connection::open(&db).unwrap();
+        lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-api-key",
+            axum::http::HeaderValue::from_static("egk_lock-probe"),
+        );
+        assert_eq!(
+            super::extract_api_key(&headers).as_deref(),
+            Some("egk_lock-probe")
+        );
+        assert!(!state.auth.is_open());
+        assert!(state.auth.key_service().is_some());
+        assert_ne!(
+            state.auth.root_key_for_internal_clients().as_deref(),
+            Some("egk_lock-probe")
+        );
+
+        let started = Instant::now();
+        let error = authenticate(&state, &headers).await.unwrap_err();
+        assert_eq!(error.code, "STORE_ERROR");
+        assert_eq!(
+            map_error_status(&error),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert!(started.elapsed() >= Duration::from_secs(4));
+        lock.execute_batch("ROLLBACK").unwrap();
     }
 }

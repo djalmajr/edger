@@ -18,7 +18,8 @@ use serde::Serialize;
 use crate::manifest_index_stub::ManifestIndex;
 use crate::manifest_loader::{
     clear_persisted_default_version, load_worker_manifest_with_name_fallback,
-    reload_persisted_default_versions, scan_worker_manifests,
+    read_persisted_routing_policies, reload_persisted_default_versions,
+    reload_routing_policies_for_rescan, scan_worker_manifests,
 };
 use crate::observability::{
     OperationalEventInput, OperationalEventLevel, OperationalEventSource, OperationalStore,
@@ -780,6 +781,10 @@ pub fn rescan_workers(index: &ManifestIndex, dry_run: bool) -> Result<RescanRepo
     let removed = indexed.difference(&disk_keys).cloned().collect::<Vec<_>>();
     let unchanged = indexed.intersection(&disk_keys).count();
 
+    // Leitura antes de qualquer mutação: arquivo inválido falha o rescan
+    // com a allowlist que já está na memória ainda no lugar. O snapshot
+    // desta leitura não é o que o rescan aplica.
+    read_persisted_routing_policies(index)?;
     if !dry_run {
         let mut index = index.clone();
         for (key, dir, manifest, origin) in disk {
@@ -793,6 +798,11 @@ pub fn rescan_workers(index: &ManifestIndex, dry_run: bool) -> Result<RescanRepo
                 .ok_or_else(|| CoreError::new("DEPLOY_INTERNAL", "malformed worker key"))?;
             index.remove_worker(name, version)?;
         }
+        #[cfg(test)]
+        crate::manifest_loader::run_rescan_before_policy_restore_for_test(&index);
+        // Releitura sob o mesmo guard de PUT/DELETE. Um PUT entre a leitura
+        // inicial e este ponto fica no disco e entra na tabela.
+        reload_routing_policies_for_rescan(&index)?;
         reload_persisted_default_versions(&index);
     }
 

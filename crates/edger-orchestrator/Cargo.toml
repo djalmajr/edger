@@ -30,8 +30,10 @@ edger-worker = { path = "../edger-worker" }
 edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "multiproc"] }
 anyhow.workspace = true
 async-trait.workspace = true
+argon2 = "0.5"
 bytes.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+getrandom = "0.4"
 saffron = "0.1.0"
 serde.workspace = true
 serde_json.workspace = true
@@ -64,6 +66,7 @@ tempfile = "3"
 base64 = "0.22"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "multiproc"] }
+rusqlite.workspace = true
 rand = "0.8"
 rsa = { version = "0.9", features = ["pem"] }
 serde_json.workspace = true

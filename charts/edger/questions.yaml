@@ -134,6 +134,44 @@ questions:
     max: 1
     group: Scaling
 
+  - variable: tenantRouting.enabled
+    label: Enable Tenant Routing
+    description: Gate worker access by tenant allowlists resolved through the Tenancit /v1/identify Consumer API. The identified domain is domain context, not user authentication; each worker keeps its own authentication.
+    type: boolean
+    default: false
+    group: Routing
+
+  - variable: tenantRouting.tenancit.identifyUrl
+    label: Tenancit Identify URL
+    description: Exact HTTPS URL of the Tenancit Consumer API endpoint /v1/identify in this cluster, for example https://tenancit.example.com/v1/identify. Required while tenant routing is enabled.
+    type: string
+    default: ""
+    show_if: "tenantRouting.enabled=true"
+    group: Routing
+
+  - variable: tenantRouting.tenancit.tokenSecret.name
+    label: Tenancit Token Secret
+    description: Existing Kubernetes Secret holding the tenant:identify API client token. The chart mounts it read-only; the token is never stored in the ConfigMap or in release values.
+    type: string
+    default: ""
+    show_if: "tenantRouting.enabled=true"
+    group: Routing
+
+  - variable: tenantRouting.tenancit.tokenSecret.key
+    label: Tenancit Token Secret Field
+    description: Secret data key holding the tenant:identify API client token.
+    type: string
+    default: ""
+    show_if: "tenantRouting.enabled=true"
+    group: Routing
+
+  - variable: weightedRouting.enabled
+    label: Enable Weighted Routing
+    description: Route versionless requests across weighted app versions (A/B split) defined in the app's routing policy. Independent of tenant routing.
+    type: boolean
+    default: false
+    group: Routing
+
   - variable: service.port
     label: Service Port
     description: Port exposed by the Kubernetes Service and the EdgeR HTTP listener.
@@ -231,6 +269,20 @@ questions:
     default: ""
     required: true
     show_if: "rootKey.existingSecret="
+    group: Auth
+
+  - variable: consoleAuth.rootPasswordSecret.name
+    label: Initial Root Password Secret
+    description: Optional existing Secret for first-boot root password login in the cPanel. The chart mounts it read-only and never stores the password in release values.
+    type: string
+    default: ""
+    group: Auth
+
+  - variable: consoleAuth.rootPasswordSecret.key
+    label: Initial Root Password Secret Field
+    description: Secret data key containing the initial root password. Used only when the console user store has no root user.
+    type: string
+    default: password
     group: Auth
 
   - variable: oidc.enabled
