@@ -177,6 +177,9 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Dependencies
 
+- Wasmtime and wasmtime-wasi 36.0.16 patch the RustSec advisories
+  RUSTSEC-2026-0316 and RUSTSEC-2026-0314 while keeping the current major.
+
 - `tokio` 1.53.1, `bytes` 1.12.1, `thiserror` 2.0.21 and `futures-core`
   0.3.34.
 - `docker/login-action` v4 and `docker/metadata-action` v6 in the release

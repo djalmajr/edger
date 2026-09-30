@@ -41,6 +41,6 @@ semver = "1"
 rusqlite = { version = "0.40", features = ["bundled", "fallible_uint"] }
 libsql = { version = "0.10.0-pre.4", default-features = false, features = ["core", "remote", "sync", "tls"] }
 sha2 = "0.10"
-wasmtime = { version = "36.0.12", default-features = false, features = ["cranelift", "runtime", "std", "wat"] }
-wasmtime-wasi = "36.0.12"
+wasmtime = { version = "36.0.16", default-features = false, features = ["cranelift", "runtime", "std", "wat"] }
+wasmtime-wasi = "36.0.16"
 wat = "1.252"
