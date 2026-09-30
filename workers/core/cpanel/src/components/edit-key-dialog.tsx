@@ -87,7 +87,7 @@ export function EditKeyDialog({
                     }
                     type="checkbox"
                   />
-                  <code className="text-xs">{permission}</code>
+                  <span className="text-xs">{permission}</span>
                 </label>
               );
             })}

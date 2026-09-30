@@ -1,10 +1,12 @@
 import * as React from "react";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ApiKey, Principal } from "../lib/api";
 import { I18nProvider, type Locale } from "../lib/i18n";
+// Registers the shared bun-only union mocks (icon barrel + dropdown-menu)
+// before any consumer loads; inert under the vite-backed runner.
+import "./bun-ui-mocks";
 
 const nodeRequire = createRequire(import.meta.url);
 const bunTest = (process.versions as { bun?: string }).bun
@@ -86,6 +88,9 @@ bunTest?.mock.module("@edger/ui/components/ui/tooltip", () => ({
       ? React.cloneElement(render, undefined, children)
       : React.createElement(React.Fragment, null, children),
 }));
+// The shared ./bun-ui-mocks fixture (imported above) registers the
+// process-wide union surface for the icon barrel and the dropdown-menu
+// stubs; this file keeps only the module-specific stubs above.
 if (!("happyDOM" in globalThis)) {
   GlobalRegistrator.register({ url: "http://localhost/cpanel/" });
 }
@@ -189,7 +194,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function renderKeys(
+async function renderKeys(
   principal: Principal = rootPrincipal,
   locale: Locale = "en-US",
   renderPageAction?: (action: React.ReactNode) => React.ReactNode,
@@ -198,7 +203,7 @@ function renderKeys(
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
   });
-  return render(
+  render(
     <I18nProvider>
       <QueryClientProvider client={client}>
         <ApiKeys
@@ -209,6 +214,11 @@ function renderKeys(
       </QueryClientProvider>
     </I18nProvider>,
   );
+  // React Query notifies store changes via setTimeout(0); drain a
+  // macrotask inside act so the initial query commit stays within act.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
 }
 
 describe("PermissionBadges", () => {
@@ -296,7 +306,15 @@ describe("ApiKeys permission editing", () => {
     fetchMock.mockResolvedValue(jsonResponse({ keys }));
     globalThis.fetch = fetchMock;
 
-    renderKeys(
+    // The permissions column is hidden by default; this test reads its
+    // cells, so restore the stored preference that shows it — the same
+    // persisted path the column menu writes.
+    localStorage.setItem(
+      "edger.cpanel.columns.keys",
+      JSON.stringify({ permissions: true }),
+    );
+
+    await renderKeys(
       rootPrincipal,
       "pt-BR",
       (action) => <div data-testid="page-actions-slot">{action}</div>,
@@ -335,6 +353,19 @@ describe("ApiKeys permission editing", () => {
     expect(workerCell?.classList.contains("truncate")).toBe(true);
     expect(workerCell?.title).toBe(longWorker);
 
+    // Elastic layout (opt-in on name): the main column absorbs the surplus
+    // width, so the tail columns (status/dates/actions) keep their defined
+    // px instead of sharing the leftover uniformly.
+    expect(
+      (table.querySelector("thead th:first-child") as HTMLElement).style.width,
+    ).toBe("");
+    const nameCell = table.querySelector("tbody tr td:first-child") as HTMLElement;
+    expect(nameCell.style.width).toBe("");
+    const statusCell = table.querySelector(
+      "tbody tr td:nth-child(5)",
+    ) as HTMLElement;
+    expect(statusCell.style.width).toBe("96px");
+
     await userEvent.click(screen.getByRole("button", { name: "Nome" }));
     expect(within(table).getByText("key-00")).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Próxima página" }));
@@ -351,10 +382,51 @@ describe("ApiKeys permission editing", () => {
   ] as const)("localizes the empty keys page for %s", async (locale, action, empty) => {
     fetchMock.mockResolvedValue(jsonResponse({ keys: [] }));
     globalThis.fetch = fetchMock;
-    renderKeys(rootPrincipal, locale);
+    await renderKeys(rootPrincipal, locale);
 
     expect(await screen.findByRole("button", { name: action })).toBeTruthy();
     expect(screen.getByText(empty, { exact: false })).toBeTruthy();
+  });
+
+  it("hides the permissions column by default and restores it from the columns menu", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ keys: [makeKey()] }));
+    globalThis.fetch = fetchMock;
+    await renderKeys();
+    const table = screen.getByRole("table");
+    // Default: the permissions data is hidden, the other columns and the
+    // actions stay put, and the hidden column reserves no width.
+    expect(
+      within(table).queryByRole("columnheader", { name: "Permissions" }),
+    ).toBeNull();
+    expect(
+      within(table).getByRole("columnheader", { name: "Name" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Edit permissions for studio-key" }),
+    ).toBeTruthy();
+    expect(table.style.minWidth).toBe("928px");
+    expect(
+      screen.getByRole("button", { name: "Show and hide columns" }),
+    ).toBeTruthy();
+    if ((process.versions as { bun?: string }).bun) {
+      // The bun fixture renders the dropdown as a DOM stub, so the toggle is
+      // exercised end-to-end there; the vite runner cannot operate the real
+      // base-ui menu under happy-dom (same limit as the combobox).
+      const user = userEvent.setup();
+      await user.click(
+        screen.getByRole("button", { name: "Show and hide columns" }),
+      );
+      await user.click(
+        screen.getByRole("menuitemcheckbox", { name: "Permissions" }),
+      );
+      expect(
+        within(table).getByRole("columnheader", { name: "Permissions" }),
+      ).toBeTruthy();
+      expect(table.style.minWidth).toBe("1184px");
+      expect(
+        JSON.parse(localStorage.getItem("edger.cpanel.columns.keys")!),
+      ).toEqual({ permissions: true });
+    }
   });
 
   it("edits only permissions, keeps unauthorized existing permissions removable, and refetches the table", async () => {
@@ -373,7 +445,14 @@ describe("ApiKeys permission editing", () => {
     });
     globalThis.fetch = fetchMock;
 
-    renderKeys({
+    // The permissions column is hidden by default; the refetched table must
+    // show the new grants, so restore the stored preference that shows it.
+    localStorage.setItem(
+      "edger.cpanel.columns.keys",
+      JSON.stringify({ permissions: true }),
+    );
+
+    await renderKeys({
       isRoot: false,
       name: "limited-editor",
       permissions: ["keys:manage", "workers:read", "workers:invoke"],
@@ -430,7 +509,7 @@ describe("ApiKeys permission editing", () => {
     );
     globalThis.fetch = fetchMock;
 
-    renderKeys();
+    await renderKeys();
     const user = userEvent.setup();
     await screen.findByText("studio-key");
     await user.click(
@@ -446,34 +525,88 @@ describe("ApiKeys permission editing", () => {
   });
 });
 
+describe("ApiKeys search", () => {
+  afterEach(() => {
+    cleanup();
+    fetchMock.mockReset();
+    globalThis.fetch = originalFetch;
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  it("filters by name, prefix, namespaces or workers case-insensitively, clears to everything, and shows the empty text when nothing matches", async () => {
+    const keys = [
+      makeKey({
+        id: 1,
+        keyPrefix: "egk_bill",
+        name: "billing-sync",
+        namespaces: ["billing"],
+        workers: ["billing-api"],
+      }),
+      makeKey({
+        id: 2,
+        keyPrefix: "egk_ci",
+        name: "ci-runner",
+        namespaces: ["ci"],
+        workers: ["ci-pipeline"],
+      }),
+      makeKey({
+        id: 3,
+        keyPrefix: "egk_studio",
+        name: "studio-key",
+        namespaces: ["*"],
+        workers: ["*"],
+      }),
+    ];
+    fetchMock.mockResolvedValue(jsonResponse({ keys }));
+    globalThis.fetch = fetchMock;
+    await renderKeys();
+
+    const table = screen.getByRole("table");
+    // The search box sits at the top of the content, before the grid.
+    const search = screen.getByRole("textbox", { name: "Search API keys" });
+    expect(search.compareDocumentPosition(table)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    const user = userEvent.setup();
+
+    // Case-insensitive and trimmed: uppercase and surrounding whitespace
+    // still match the name, prefix, namespace and worker fields.
+    await user.type(search, "  BILLING ");
+    expect(within(table).getAllByRole("row")).toHaveLength(2);
+    expect(within(table).getByText("billing-sync")).toBeTruthy();
+    expect(within(table).queryByText("ci-runner")).toBeNull();
+    expect(within(table).queryByText("studio-key")).toBeNull();
+
+    // Clearing restores every key.
+    await user.clear(search);
+    expect(within(table).getAllByRole("row")).toHaveLength(4);
+    expect(within(table).getByText("ci-runner")).toBeTruthy();
+    expect(within(table).getByText("studio-key")).toBeTruthy();
+
+    // A term with no match empties the grid with the specific search text.
+    await user.type(search, "no-such-key");
+    expect(within(table).getAllByRole("row")).toHaveLength(2);
+    expect(within(table).queryByText("billing-sync")).toBeNull();
+    expect(
+      screen.getByText("No API keys match the search.", { exact: false }),
+    ).toBeTruthy();
+    // The original empty message only appears without a search term: clear
+    // the field and the zero-keys text comes back (same empty list, no term).
+    await user.clear(search);
+    expect(within(table).getAllByRole("row")).toHaveLength(4);
+    expect(
+      screen.queryByText("No API keys match the search."),
+    ).toBeNull();
+  });
+});
+
 beforeAll(async () => {
   if (!("happyDOM" in globalThis)) {
     GlobalRegistrator.register({ url: "http://localhost/cpanel/" });
   }
-  const icons = () => {
-    const icon = () => React.createElement("span", { "aria-hidden": true });
-    return {
-      ChevronDownIcon: icon,
-      ChevronLeftIcon: icon,
-      ChevronRightIcon: icon,
-      ChevronUpIcon: icon,
-      CheckIcon: icon,
-      CopyIcon: icon,
-      ChevronsLeftIcon: icon,
-      ChevronsRightIcon: icon,
-      ChevronsUpDown: icon,
-      PencilIcon: icon,
-      PlusIcon: icon,
-      Trash2Icon: icon,
-    };
-  };
-  if (bunTest) {
-    bunTest.mock.module("@edger/ui/icons/lucide", icons);
-    bunTest.mock.module(
-      fileURLToPath(new URL("../../../../ui/src/icons/lucide.ts", import.meta.url)),
-      icons,
-    );
-  }
+  // The icon barrel mock is registered process-wide by the shared
+  // ./bun-ui-mocks fixture (module scope, before this runs).
   const modules = await Promise.all([
     import("./api-keys"),
     import("./permission-badges"),

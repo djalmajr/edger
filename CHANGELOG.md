@@ -4,36 +4,78 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-## [0.3.2-rc.6]
-
-- The cPanel overview now follows the selected language and shortens long
-  worker identifiers in the table while preserving the full value on hover.
-- The routing policy editor reflects the runtime feature flags and stays
-  disabled in lab-dev while tenant and weighted routing are off.
-- API key permissions can be edited without replacing the secret; the server
-  checks the editor's grants and refreshes authorization after an update.
-- Permission badges in the API key table are limited to two lines with a
-  count and accessible list of hidden permissions.
-- The API key list uses the shared DataGrid with a bounded permissions column;
-  its creation action shares the page action row, and the page follows the
-  selected language.
-- Token sign-in shows progress only on its own button.
-
-## [0.3.2-rc.5]
-
-- Tenant routing adds opt-in per-app tenant allowlists resolved through
-  Tenancit and weighted version rollout for requests without an explicit
-  version. Both controls remain independently disabled by default.
-- The cPanel console adds password and token sign-in plus administration of
-  console users and their access; chart configuration can reference an
-  existing Secret for the root password.
-
-Toward 0.3.2. Release candidates: `v0.3.2-rc.5` (tenant routing, weighted
+Toward 0.3.2. Release candidates: `v0.3.2-rc.6` (cPanel language and API key
+management, routing flag state); `v0.3.2-rc.5` (tenant routing, weighted
 rollout, console authentication and user management); `v0.3.2-rc.4` (Rust
-1.98 toolchain, rusqlite 0.40); `v0.3.2-rc.3` (tanstack public files, type-only bundle
-deps); `v0.3.2-rc.2` (owned domains, metrics key, core-worker
-precedence); `v0.3.2-rc.1` (published and validated on labdev:
+1.98 toolchain, rusqlite 0.40); `v0.3.2-rc.3` (tanstack public files,
+type-only bundle deps); `v0.3.2-rc.2` (owned domains, metrics key,
+core-worker precedence); `v0.3.2-rc.1` (published and validated on labdev:
 zero-downtime host switch, 21/21 probes 200 across four promotes).
+
+### Added
+
+- cPanel column visibility controls for API Keys and Users: permissions are
+  hidden by default, choices persist independently per table in the browser,
+  and management actions remain visible. API Keys keeps compact trailing
+  columns while the name column absorbs extra space.
+- cPanel searches API Keys and Users locally, with case-insensitive matching,
+  pagination reset and localized empty-search results.
+- Log filters support combinations of severity levels, combined with text search.
+- The routing policy section stays hidden while both routing feature flags are off.
+- Workers alert badges explain their disabled-version and recorded-error
+  counts in a localized tooltip anchored to the corner badge, available on hover
+  and keyboard focus without affecting the expansion button.
+- `EDGER_BIND` environment variable: the listening IP of the HTTP server
+  (IPv4 or IPv6), default `0.0.0.0`. An invalid value fails the start with a
+  clear message; the port stays in `PORT`.
+- `GET /api/admin/state/export` (root only): a consistent, online backup of
+  the EdgeR state while the process is up. The response is a zip streamed
+  from a temporary file (no 64 MiB download limit) with `user-roots/<i>/`
+  (each user worker root, in index order), `core-overlay/` (the core worker
+  overlay root, when present), `api-keys.db` (a consistent copy made with
+  `VACUUM INTO` on the store's connection, only when a key store is
+  configured) and `edger-state.json` (format, EdgeR version, creation date
+  and the source paths). Transient deploy files, the raw database file and
+  its sidecars, the top-level `.edger/` of the user roots and symlinks are
+  excluded. The export waits up to 30 s for in-flight mutations to settle
+  and answers `503 STATE_BUSY` when they do not; a mutation attempted while
+  an export is running answers `409 STATE_EXPORT_IN_PROGRESS`. Restore is
+  offline and documented (stop, extract the zip into the paths recorded in
+  `edger-state.json`, start again): `docs/developers/06-operacao-e-testes.adoc`
+  and the chart README.
+- Tenant routing (opt-in, `EDGER_TENANT_ROUTING_ENABLED`, off by default):
+  per-app tenant allowlists keyed by the app's full name, stored under
+  `.edger-routing` and changed only by root
+  (`PUT`/`DELETE /api/admin/routing-policy?name=<full-name>`). The allowed
+  tenant slugs come from Tenancit's `/v1/identify` hostname directory: the
+  confirmed slug is domain context, not authentication of the visitor, and
+  a restricted app fails closed when the identity is missing, divergent or
+  unavailable. With the flag off, no Tenancit URL or token is required and
+  the EdgeR never calls it; with the flag on,
+  `EDGER_TENANCIT_IDENTIFY_URL` and `EDGER_TENANCIT_TOKEN_FILE` are
+  mandatory. The policy file is local to one instance; a multi-replica
+  deployment still requires a shared store or control before enabling.
+- Weighted version rollout (opt-in, `EDGER_WEIGHTED_ROUTING_ENABLED`, off by
+  default): requests without an explicit `@version` are distributed across
+  the eligible versions (public, enabled, non-staged) by an opaque session
+  cohort cookie, with the selection bucket derived from the cohort and app
+  name — the same session keeps the same choice, and weights express the expected distribution
+  of sessions, not of every request. An explicit `@version` bypasses the
+  split but still passes the tenant gate when it is enabled. With the flag
+  off, the cohort cookie is not issued and the current `defaultVersion`
+  serves.
+- cPanel console sign-in by password or token, driven by the
+  `login-options` contract and following the selected language, plus
+  administration of console users (root only): create, edit, enable/disable,
+  password reset and delete, with the operator's own grants and immediate
+  session revocation on disable; the root is seeded when absent. Chart
+  configuration can reference an existing Secret for the root password
+  (`consoleAuth.rootPasswordSecret`).
+- In-place editing of API key permissions (`PATCH /api/admin/keys/{id}`):
+  the grants change without replacing the secret. The server validates the
+  requested grants against the permission catalog, applies the
+  anti-escalation rule, refuses a revoked key, and refreshes authorization
+  immediately after an update.
 
 ### Changed
 
@@ -97,27 +139,14 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   explicitly promoted; a promoted version remains the default.
   `runtime.persistCoreWorkerOverlay: false` keeps the previous `emptyDir`
   behavior.
-
-### Added
-
-- `EDGER_BIND` environment variable: the listening IP of the HTTP server
-  (IPv4 or IPv6), default `0.0.0.0`. An invalid value fails the start with a
-  clear message; the port stays in `PORT`.
-- `GET /api/admin/state/export` (root only): a consistent, online backup of
-  the EdgeR state while the process is up. The response is a zip streamed
-  from a temporary file (no 64 MiB download limit) with `user-roots/<i>/`
-  (each user worker root, in index order), `core-overlay/` (the core worker
-  overlay root, when present), `api-keys.db` (a consistent copy made with
-  `VACUUM INTO` on the store's connection, only when a key store is
-  configured) and `edger-state.json` (format, EdgeR version, creation date
-  and the source paths). Transient deploy files, the raw database file and
-  its sidecars, the top-level `.edger/` of the user roots and symlinks are
-  excluded. The export waits up to 30 s for in-flight mutations to settle
-  and answers `503 STATE_BUSY` when they do not; a mutation attempted while
-  an export is running answers `409 STATE_EXPORT_IN_PROGRESS`. Restore is
-  offline and documented (stop, extract the zip into the paths recorded in
-  `edger-state.json`, start again): `docs/developers/06-operacao-e-testes.adoc`
-  and the chart README.
+- cPanel overview: follows the selected language and shortens long worker
+  identifiers in the table while preserving the full value on hover.
+- The routing policy editor reflects the effective runtime feature flags
+  and stays disabled in lab-dev while tenant and weighted routing are off.
+- cPanel API keys: the list uses the shared DataGrid with a bounded
+  permissions column, the creation action shares the page action row,
+  permission badges are limited to two lines with a count and an accessible
+  list of hidden permissions, and the page follows the selected language.
 
 ### Fixed
 
@@ -147,8 +176,14 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   reachable only through type edges of `deno info --json` (redirects
   included). Code imports to files outside the worker directory are still
   refused.
+- The two console sign-in modes (password and token) no longer share the
+  button progress state: each button shows progress only for its own
+  request.
 
 ### Dependencies
+
+- Wasmtime and wasmtime-wasi 36.0.16 patch the RustSec advisories
+  RUSTSEC-2026-0316 and RUSTSEC-2026-0314 while keeping the current major.
 
 - `tokio` 1.53.1, `bytes` 1.12.1, `thiserror` 2.0.21 and `futures-core`
   0.3.34.
@@ -166,6 +201,30 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.6]
+
+- The cPanel overview now follows the selected language and shortens long
+  worker identifiers in the table while preserving the full value on hover.
+- The routing policy editor reflects the runtime feature flags and stays
+  disabled in lab-dev while tenant and weighted routing are off.
+- API key permissions can be edited without replacing the secret; the server
+  checks the editor's grants and refreshes authorization after an update.
+- Permission badges in the API key table are limited to two lines with a
+  count and accessible list of hidden permissions.
+- The API key list uses the shared DataGrid with a bounded permissions column;
+  its creation action shares the page action row, and the page follows the
+  selected language.
+- Token sign-in shows progress only on its own button.
+
+## [0.3.2-rc.5]
+
+- Tenant routing adds opt-in per-app tenant allowlists resolved through
+  Tenancit and weighted version rollout for requests without an explicit
+  version. Both controls remain independently disabled by default.
+- The cPanel console adds password and token sign-in plus administration of
+  console users and their access; chart configuration can reference an
+  existing Secret for the root password.
 
 ## [0.3.1] - 2026-09-25
 

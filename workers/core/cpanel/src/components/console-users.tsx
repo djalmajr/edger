@@ -1,4 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  getCoreRowModel,
+  getPaginationRowModel,
+  getSortedRowModel,
+  type ColumnDef,
+  type SortingState,
+  type VisibilityState,
+  useReactTable,
+} from "@tanstack/react-table";
 import { Badge } from "@edger/ui/components/ui/badge";
 import { Button } from "@edger/ui/components/ui/button";
 import {
@@ -11,15 +20,23 @@ import {
 } from "@edger/ui/components/ui/dialog";
 import { Input } from "@edger/ui/components/ui/input";
 import { Label } from "@edger/ui/components/ui/label";
+import { PlusIcon } from "@edger/ui/icons/lucide";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@edger/ui/components/ui/table";
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@edger/ui/components/ui/tooltip";
 import * as React from "react";
+
+// Row actions are compact icon buttons (the global TooltipProvider is
+// mounted by main.tsx). Icons come from the virtual unplugin-icons modules
+// — not the @edger/ui barrel — because the barrel's frozen export surface
+// would not carry the new icon names under the bun test runner.
+import KeyRound from "~icons/lucide/key-round";
+import Pencil from "~icons/lucide/pencil";
+import Trash2 from "~icons/lucide/trash-2";
+import UserCheck from "~icons/lucide/user-check";
+import UserX from "~icons/lucide/user-x";
 
 import {
   ApiError,
@@ -37,24 +54,43 @@ import {
   type Principal,
 } from "../lib/api";
 import { useI18n } from "../lib/i18n";
-
-// Barrel-free on purpose: the component joins the DOM test graph, and the
-// @edger/ui icon barrel cannot be imported there under the bun runner. Row
-// actions are text buttons, so no icons are needed.
+import {
+  ColumnVisibilityMenu,
+  columnVisibilityStorageKey,
+  useColumnVisibility,
+} from "./column-visibility";
+import {
+  DataGrid,
+  DataGridColumnHeader,
+  DEFAULT_PAGE_SIZE,
+} from "./data-grid";
+import { PermissionBadges } from "./permission-badges";
 
 // Story 26.04: additional password users over the `/api/admin/users`
 // backend. Root-only on the server; the UI hides what the principal cannot
 // do and never substitutes the server-side validation. Passwords ride the
 // request body only — never URLs, errors, or logs.
 
-function formatEpoch(seconds?: number | null) {
+function formatEpoch(seconds?: number | null, locale = "en-US") {
   if (!seconds) return "—";
-  return new Date(seconds * 1000).toLocaleString();
+  return new Date(seconds * 1000).toLocaleString(locale);
 }
 
 function describeError(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
+
+// Columns the user can hide from the view menu; the actions column is always
+// present. The ids mirror the column definitions below.
+const HIDEABLE_USER_COLUMNS = [
+  "username",
+  "status",
+  "permissions",
+  "namespaces",
+  "workers",
+  "createdAt",
+] as const;
+const DEFAULT_USER_COLUMN_VISIBILITY: VisibilityState = { permissions: false };
 
 const csv = (value: string) =>
   value
@@ -93,7 +129,7 @@ function PermissionsField({
                 }
                 type="checkbox"
               />
-              <code className="text-xs">{permission}</code>
+              <span className="text-xs">{permission}</span>
             </label>
           );
         })}
@@ -105,23 +141,32 @@ function PermissionsField({
 export function ConsoleUsers({
   apiKey,
   principal,
+  renderPageAction,
 }: {
   apiKey: string;
   principal: Principal;
+  renderPageAction?: (action: React.ReactNode) => React.ReactNode;
 }) {
   const { t } = useI18n();
   // The server is the real barrier: a non-root principal sees only the
-  // notice, and the routes answer 401/403 for anything but root.
+  // notice, and the routes answer 401/403 for anything but root. The page
+  // action slot is only passed down once that root gate has passed.
   if (!principal.isRoot) {
     return (
       <p className="text-sm text-muted-foreground">{t("users.noManagement")}</p>
     );
   }
-  return <UsersPanel apiKey={apiKey} />;
+  return <UsersPanel apiKey={apiKey} renderPageAction={renderPageAction} />;
 }
 
-function UsersPanel({ apiKey }: { apiKey: string }) {
-  const { t } = useI18n();
+function UsersPanel({
+  apiKey,
+  renderPageAction,
+}: {
+  apiKey: string;
+  renderPageAction?: (action: React.ReactNode) => React.ReactNode;
+}) {
+  const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const usersQuery = useQuery({
     queryFn: () => listUsers(apiKey),
@@ -134,6 +179,8 @@ function UsersPanel({ apiKey }: { apiKey: string }) {
   const [disableTarget, setDisableTarget] = React.useState<AdminUser | null>(
     null,
   );
+  const [sorting, setSorting] = React.useState<SortingState>([]);
+  const [search, setSearch] = React.useState("");
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["cpanel", "users"] });
   const disableMutation = useMutation({
@@ -157,15 +204,279 @@ function UsersPanel({ apiKey }: { apiKey: string }) {
       void invalidate();
     },
   });
-  const users = usersQuery.data ?? [];
+
+  // Shared DataGrid, the same shape as the API keys screen: 15 rows per page
+  // (15/30/60 options), bounded fixed-layout columns, long values truncated
+  // with the full value in the title, and compact permission badges.
+  const columns = React.useMemo<ColumnDef<AdminUser>[]>(
+    () => [
+      {
+        accessorKey: "username",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label={t("users.username")} />
+        ),
+        cell: ({ row }) => {
+          const user = row.original;
+          return (
+            <span className="flex min-w-0 items-center gap-2">
+              <span className="truncate text-sm" title={user.username}>
+                {user.username}
+              </span>
+              {user.isRoot && <Badge variant="secondary">root</Badge>}
+            </span>
+          );
+        },
+        size: 180,
+      },
+      {
+        accessorFn: (user) => (user.disabled ? "disabled" : "active"),
+        id: "status",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label={t("users.status")} />
+        ),
+        cell: ({ row }) => (
+          <Badge variant={row.original.disabled ? "outline" : "default"}>
+            {row.original.disabled ? t("users.disabled") : t("users.active")}
+          </Badge>
+        ),
+        size: 100,
+      },
+      {
+        accessorFn: (user) => user.permissions.join(", "),
+        id: "permissions",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label={t("users.permissions")} />
+        ),
+        cell: ({ row }) => (
+          <PermissionBadges permissions={row.original.permissions} />
+        ),
+        size: 240,
+      },
+      {
+        accessorFn: (user) => user.namespaces.join(", "),
+        id: "namespaces",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label={t("account.namespaces")} />
+        ),
+        cell: ({ row }) => {
+          const namespaces = row.original.namespaces.join(", ");
+          return (
+            <code className="block truncate text-xs" title={namespaces}>
+              {namespaces}
+            </code>
+          );
+        },
+        size: 120,
+      },
+      {
+        accessorFn: (user) => user.workers.join(", "),
+        id: "workers",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label={t("keys.workers")} />
+        ),
+        cell: ({ row }) => {
+          const workers = row.original.workers.join(", ");
+          return (
+            <code className="block truncate text-xs" title={workers}>
+              {workers}
+            </code>
+          );
+        },
+        size: 120,
+      },
+      {
+        accessorKey: "createdAt",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label={t("users.created")} />
+        ),
+        cell: ({ row }) => {
+          const value = formatEpoch(row.original.createdAt, locale);
+          return (
+            <span
+              className="block truncate text-sm text-muted-foreground"
+              title={value}
+            >
+              {value}
+            </span>
+          );
+        },
+        size: 154,
+      },
+      {
+        id: "actions",
+        enableSorting: false,
+        header: () => <span className="sr-only">{t("keys.actions")}</span>,
+        cell: ({ row }) => {
+          const user = row.original;
+          // The root row is immutable: no mutable buttons, as before the
+          // DataGrid migration.
+          if (user.isRoot) {
+            return <span className="sr-only">{t("users.noManagement")}</span>;
+          }
+          // Compact icon actions on one row: the accessible name stays the
+          // existing translated label, the tooltip explains each action, and
+          // the icons are decorative (aria-hidden).
+          return (
+            <div className="flex justify-end gap-1">
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      aria-label={t("users.edit")}
+                      onClick={() => setEditTarget(user)}
+                      size="icon-sm"
+                      variant="ghost"
+                    />
+                  }
+                >
+                  <Pencil aria-hidden />
+                </TooltipTrigger>
+                <TooltipContent>{t("users.edit.title")}</TooltipContent>
+              </Tooltip>
+              {user.disabled ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        aria-label={t("users.enable")}
+                        disabled={enableMutation.isPending}
+                        onClick={() => enableMutation.mutate(user)}
+                        size="icon-sm"
+                        variant="ghost"
+                      />
+                    }
+                  >
+                    <UserCheck aria-hidden />
+                  </TooltipTrigger>
+                  <TooltipContent>{t("users.enable")}</TooltipContent>
+                </Tooltip>
+              ) : (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        aria-label={t("users.disable")}
+                        onClick={() => setDisableTarget(user)}
+                        size="icon-sm"
+                        variant="ghost"
+                      />
+                    }
+                  >
+                    <UserX aria-hidden />
+                  </TooltipTrigger>
+                  <TooltipContent>{t("users.disable.title")}</TooltipContent>
+                </Tooltip>
+              )}
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      aria-label={t("users.resetPassword")}
+                      onClick={() => setResetTarget(user)}
+                      size="icon-sm"
+                      variant="ghost"
+                    />
+                  }
+                >
+                  <KeyRound aria-hidden />
+                </TooltipTrigger>
+                <TooltipContent>{t("users.reset.title")}</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      aria-label={t("users.delete")}
+                      onClick={() => setDeleteTarget(user)}
+                      size="icon-sm"
+                      variant="ghost"
+                    />
+                  }
+                >
+                  <Trash2 aria-hidden />
+                </TooltipTrigger>
+                <TooltipContent>{t("users.delete.title")}</TooltipContent>
+              </Tooltip>
+            </div>
+          );
+        },
+        size: 160,
+      },
+    ],
+    [enableMutation, locale, t],
+  );
+
+  const { columnVisibility, onColumnVisibilityChange } = useColumnVisibility({
+    columnIds: HIDEABLE_USER_COLUMNS,
+    defaultVisibility: DEFAULT_USER_COLUMN_VISIBILITY,
+    storageKey: columnVisibilityStorageKey("users"),
+  });
+  const visibilityColumns = React.useMemo(
+    () => [
+      { id: "username", label: t("users.username") },
+      { id: "status", label: t("users.status") },
+      { id: "permissions", label: t("users.permissions") },
+      { id: "namespaces", label: t("account.namespaces") },
+      { id: "workers", label: t("keys.workers") },
+      { id: "createdAt", label: t("users.created") },
+    ],
+    [t],
+  );
+
+  // Local, case-insensitive filter over username, namespaces and workers.
+  // An empty term (or only whitespace) shows every user.
+  const filteredUsers = React.useMemo(() => {
+    const term = search.trim().toLowerCase();
+    const users = usersQuery.data ?? [];
+    if (!term) return users;
+    return users.filter((user) =>
+      [
+        user.username,
+        user.namespaces.join(", "),
+        user.workers.join(", "),
+      ].some((field) => field.toLowerCase().includes(term)),
+    );
+  }, [usersQuery.data, search]);
+
+  const table = useReactTable({
+    columns,
+    data: filteredUsers,
+    getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    initialState: { pagination: { pageIndex: 0, pageSize: DEFAULT_PAGE_SIZE } },
+    onColumnVisibilityChange,
+    onSortingChange: setSorting,
+    state: { columnVisibility, sorting },
+  });
+
+  const pageActions = (
+    <>
+      <ColumnVisibilityMenu columns={visibilityColumns} table={table} />
+      <Button onClick={() => setCreateOpen(true)}>
+        <PlusIcon aria-hidden /> {t("users.new")}
+      </Button>
+    </>
+  );
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-sm text-muted-foreground">{t("users.lead")}</p>
-        <Button onClick={() => setCreateOpen(true)}>
-          {t("users.new")}
-        </Button>
-      </div>
+      {renderPageAction?.(pageActions)}
+      {!renderPageAction && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {pageActions}
+        </div>
+      )}
+      <Input
+        aria-label={t("users.search")}
+        className="max-w-xs"
+        onChange={(event) => {
+          setSearch(event.target.value);
+          table.setPageIndex(0);
+        }}
+        placeholder={t("users.search")}
+        value={search}
+      />
       {usersQuery.isLoading && (
         <p className="text-sm text-foreground" role="status">
           {t("users.loading")}
@@ -187,113 +498,11 @@ function UsersPanel({ apiKey }: { apiKey: string }) {
         </p>
       )}
       {!usersQuery.isLoading && !usersQuery.error && (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>{t("users.username")}</TableHead>
-              <TableHead>{t("users.status")}</TableHead>
-              <TableHead>{t("users.permissions")}</TableHead>
-              <TableHead>{t("users.namespaces")}</TableHead>
-              <TableHead>{t("users.workers")}</TableHead>
-              <TableHead>{t("users.created")}</TableHead>
-              <TableHead aria-label="Actions" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {users.map((user) => (
-              <TableRow key={user.id}>
-                <TableCell className="font-medium">
-                  <span className="flex items-center gap-2">
-                    {user.username}
-                    {user.isRoot && (
-                      <Badge variant="secondary">root</Badge>
-                    )}
-                  </span>
-                </TableCell>
-                <TableCell>
-                  <Badge variant={user.disabled ? "outline" : "default"}>
-                    {user.disabled ? t("users.disabled") : t("users.active")}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <div className="flex max-w-64 flex-wrap gap-1">
-                    {user.permissions.map((permission) => (
-                      <Badge key={permission} variant="secondary">
-                        {permission}
-                      </Badge>
-                    ))}
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <code className="text-xs">{user.namespaces.join(", ")}</code>
-                </TableCell>
-                <TableCell>
-                  <code className="text-xs">{user.workers.join(", ")}</code>
-                </TableCell>
-                <TableCell className="text-xs text-muted-foreground">
-                  {formatEpoch(user.createdAt)}
-                </TableCell>
-                <TableCell>
-                  {user.isRoot ? (
-                    <span className="sr-only">{t("users.noManagement")}</span>
-                  ) : (
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        onClick={() => setEditTarget(user)}
-                        size="sm"
-                        variant="outline"
-                      >
-                        {t("users.edit")}
-                      </Button>
-                      {user.disabled ? (
-                        <Button
-                          disabled={enableMutation.isPending}
-                          onClick={() => enableMutation.mutate(user)}
-                          size="sm"
-                          variant="outline"
-                        >
-                          {t("users.enable")}
-                        </Button>
-                      ) : (
-                        <Button
-                          onClick={() => setDisableTarget(user)}
-                          size="sm"
-                          variant="outline"
-                        >
-                          {t("users.disable")}
-                        </Button>
-                      )}
-                      <Button
-                        onClick={() => setResetTarget(user)}
-                        size="sm"
-                        variant="outline"
-                      >
-                        {t("users.resetPassword")}
-                      </Button>
-                      <Button
-                        onClick={() => setDeleteTarget(user)}
-                        size="sm"
-                        variant="destructive"
-                      >
-                        {t("users.delete")}
-                      </Button>
-                    </div>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-            {users.length === 0 && (
-              <TableRow>
-                <TableCell
-                  className="text-center text-sm text-muted-foreground"
-                  colSpan={7}
-                >
-                  {t("users.empty")}
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
+        <DataGrid
+          emptyText={search.trim() ? t("users.noResults") : t("users.empty")}
+          fixedLayout
+          table={table}
+        />
       )}
       <CreateUserDialog
         apiKey={apiKey}
@@ -563,7 +772,7 @@ function EditUserDialog({
         <div className="space-y-4">
           <div className="space-y-1.5">
             <Label>{t("users.username")}</Label>
-            <code className="text-sm">{user.username}</code>
+            <span className="text-sm">{user.username}</span>
           </div>
           <PermissionsField name={t("users.permissions")} value={permissions} onChange={setPermissions} />
           <div className="grid grid-cols-2 items-end gap-3">

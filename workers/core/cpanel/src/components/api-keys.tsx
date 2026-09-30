@@ -5,6 +5,7 @@ import {
   getSortedRowModel,
   type ColumnDef,
   type SortingState,
+  type VisibilityState,
   useReactTable,
 } from "@tanstack/react-table";
 import { Badge } from "@edger/ui/components/ui/badge";
@@ -32,6 +33,11 @@ import {
   Trash2Icon,
 } from "@edger/ui/icons/lucide";
 import * as React from "react";
+import {
+  ColumnVisibilityMenu,
+  columnVisibilityStorageKey,
+  useColumnVisibility,
+} from "./column-visibility";
 import {
   DataGrid,
   DataGridColumnHeader,
@@ -75,6 +81,19 @@ const EXPIRY_CHOICES = [
   { days: 365, key: "keys.create.days365" },
 ] as const;
 
+// Columns the user can hide from the view menu; the actions column is always
+// present. The ids mirror the column definitions below.
+const HIDEABLE_KEY_COLUMNS = [
+  "name",
+  "keyPrefix",
+  "permissions",
+  "workers",
+  "status",
+  "lastUsedAt",
+  "expiresAt",
+] as const;
+const DEFAULT_KEY_COLUMN_VISIBILITY: VisibilityState = { permissions: false };
+
 export function ApiKeys({
   apiKey,
   principal,
@@ -101,6 +120,7 @@ export function ApiKeys({
   const [confirmDelete, setConfirmDelete] = React.useState<ApiKey | null>(null);
   const [editingKey, setEditingKey] = React.useState<ApiKey | null>(null);
   const [sorting, setSorting] = React.useState<SortingState>([]);
+  const [search, setSearch] = React.useState("");
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["cpanel", "keys"] });
@@ -280,21 +300,60 @@ export function ApiKeys({
     [locale, t],
   );
 
+  const { columnVisibility, onColumnVisibilityChange } = useColumnVisibility({
+    columnIds: HIDEABLE_KEY_COLUMNS,
+    defaultVisibility: DEFAULT_KEY_COLUMN_VISIBILITY,
+    storageKey: columnVisibilityStorageKey("keys"),
+  });
+  const visibilityColumns = React.useMemo(
+    () => [
+      { id: "name", label: t("keys.name") },
+      { id: "keyPrefix", label: t("keys.key") },
+      { id: "permissions", label: t("keys.permissions") },
+      { id: "workers", label: t("keys.workers") },
+      { id: "status", label: t("keys.status") },
+      { id: "lastUsedAt", label: t("keys.lastUsed") },
+      { id: "expiresAt", label: t("keys.expires") },
+    ],
+    [t],
+  );
+
+  // Local, case-insensitive filter over the visible key fields (name, key
+  // prefix, namespaces, workers); the secret itself is never searched or
+  // displayed. An empty term (or only whitespace) shows every key.
+  const filteredKeys = React.useMemo(() => {
+    const term = search.trim().toLowerCase();
+    const keys = keysQuery.data ?? [];
+    if (!term) return keys;
+    return keys.filter((key) =>
+      [
+        key.name,
+        key.keyPrefix,
+        key.namespaces.join(", "),
+        key.workers.join(", "),
+      ].some((field) => field.toLowerCase().includes(term)),
+    );
+  }, [keysQuery.data, search]);
+
   const table = useReactTable({
     columns,
-    data: keysQuery.data ?? [],
+    data: filteredKeys,
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
     getSortedRowModel: getSortedRowModel(),
     initialState: { pagination: { pageIndex: 0, pageSize: DEFAULT_PAGE_SIZE } },
+    onColumnVisibilityChange,
     onSortingChange: setSorting,
-    state: { sorting },
+    state: { columnVisibility, sorting },
   });
 
-  const newKeyButton = (
-    <Button onClick={() => setCreateOpen(true)}>
-      <PlusIcon /> {t("keys.new")}
-    </Button>
+  const pageActions = (
+    <>
+      <ColumnVisibilityMenu columns={visibilityColumns} table={table} />
+      <Button onClick={() => setCreateOpen(true)}>
+        <PlusIcon /> {t("keys.new")}
+      </Button>
+    </>
   );
 
   if (!manageable) {
@@ -307,13 +366,23 @@ export function ApiKeys({
 
   return (
     <div className="space-y-4">
-      {renderPageAction?.(newKeyButton)}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm text-muted-foreground">
-          {t("keys.lead")}
-        </p>
-        {!renderPageAction && newKeyButton}
-      </div>
+      {renderPageAction?.(pageActions)}
+      {!renderPageAction && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {pageActions}
+        </div>
+      )}
+
+      <Input
+        aria-label={t("keys.search")}
+        className="max-w-xs"
+        onChange={(event) => {
+          setSearch(event.target.value);
+          table.setPageIndex(0);
+        }}
+        placeholder={t("keys.search")}
+        value={search}
+      />
 
       {keysQuery.error ? (
         <p className="text-sm text-destructive">
@@ -321,7 +390,14 @@ export function ApiKeys({
         </p>
       ) : (
         <DataGrid
-          emptyText={keysQuery.isLoading ? t("keys.loading") : t("keys.empty")}
+          elasticColumnId="name"
+          emptyText={
+            keysQuery.isLoading
+              ? t("keys.loading")
+              : search.trim()
+                ? t("keys.noResults")
+                : t("keys.empty")
+          }
           fixedLayout
           table={table}
         />
@@ -482,7 +558,7 @@ function CreateKeyDialog({
                       }
                       type="checkbox"
                     />
-                    <code className="text-xs">{permission}</code>
+                    <span className="text-xs">{permission}</span>
                   </label>
                 );
               })}
