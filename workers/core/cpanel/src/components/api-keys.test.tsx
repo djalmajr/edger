@@ -525,6 +525,82 @@ describe("ApiKeys permission editing", () => {
   });
 });
 
+describe("ApiKeys search", () => {
+  afterEach(() => {
+    cleanup();
+    fetchMock.mockReset();
+    globalThis.fetch = originalFetch;
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  it("filters by name, prefix, namespaces or workers case-insensitively, clears to everything, and shows the empty text when nothing matches", async () => {
+    const keys = [
+      makeKey({
+        id: 1,
+        keyPrefix: "egk_bill",
+        name: "billing-sync",
+        namespaces: ["billing"],
+        workers: ["billing-api"],
+      }),
+      makeKey({
+        id: 2,
+        keyPrefix: "egk_ci",
+        name: "ci-runner",
+        namespaces: ["ci"],
+        workers: ["ci-pipeline"],
+      }),
+      makeKey({
+        id: 3,
+        keyPrefix: "egk_studio",
+        name: "studio-key",
+        namespaces: ["*"],
+        workers: ["*"],
+      }),
+    ];
+    fetchMock.mockResolvedValue(jsonResponse({ keys }));
+    globalThis.fetch = fetchMock;
+    await renderKeys();
+
+    const table = screen.getByRole("table");
+    // The search box sits at the top of the content, before the grid.
+    const search = screen.getByRole("textbox", { name: "Search API keys" });
+    expect(search.compareDocumentPosition(table)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    const user = userEvent.setup();
+
+    // Case-insensitive and trimmed: uppercase and surrounding whitespace
+    // still match the name, prefix, namespace and worker fields.
+    await user.type(search, "  BILLING ");
+    expect(within(table).getAllByRole("row")).toHaveLength(2);
+    expect(within(table).getByText("billing-sync")).toBeTruthy();
+    expect(within(table).queryByText("ci-runner")).toBeNull();
+    expect(within(table).queryByText("studio-key")).toBeNull();
+
+    // Clearing restores every key.
+    await user.clear(search);
+    expect(within(table).getAllByRole("row")).toHaveLength(4);
+    expect(within(table).getByText("ci-runner")).toBeTruthy();
+    expect(within(table).getByText("studio-key")).toBeTruthy();
+
+    // A term with no match empties the grid with the specific search text.
+    await user.type(search, "no-such-key");
+    expect(within(table).getAllByRole("row")).toHaveLength(2);
+    expect(within(table).queryByText("billing-sync")).toBeNull();
+    expect(
+      screen.getByText("No API keys match the search.", { exact: false }),
+    ).toBeTruthy();
+    // The original empty message only appears without a search term: clear
+    // the field and the zero-keys text comes back (same empty list, no term).
+    await user.clear(search);
+    expect(within(table).getAllByRole("row")).toHaveLength(4);
+    expect(
+      screen.queryByText("No API keys match the search."),
+    ).toBeNull();
+  });
+});
+
 beforeAll(async () => {
   if (!("happyDOM" in globalThis)) {
     GlobalRegistrator.register({ url: "http://localhost/cpanel/" });

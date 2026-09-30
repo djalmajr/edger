@@ -18,8 +18,13 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   hidden by default, choices persist independently per table in the browser,
   and management actions remain visible. API Keys keeps compact trailing
   columns while the name column absorbs extra space.
+- cPanel searches API Keys and Users locally, with case-insensitive matching,
+  pagination reset and localized empty-search results.
+- Log filters support combinations of severity levels, combined with text search.
+- The routing policy section stays hidden while both routing feature flags are off.
 - Workers alert badges explain their disabled-version and recorded-error
-  counts in a localized tooltip available on hover and keyboard focus.
+  counts in a localized tooltip anchored to the corner badge, available on hover
+  and keyboard focus without affecting the expansion button.
 - `EDGER_BIND` environment variable: the listening IP of the HTTP server
   (IPv4 or IPv6), default `0.0.0.0`. An invalid value fails the start with a
   clear message; the port stays in `PORT`.

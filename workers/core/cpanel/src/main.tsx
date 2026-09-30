@@ -333,8 +333,9 @@ function MetricCard({
 }
 
 // Explains the group attention badge (disabled versions + registered
-// errors). The group header button is the tooltip trigger: it is already
-// focusable, so no nested button or tabIndex is introduced, and the
+// errors). The badge span itself is the tooltip trigger (rendered outside
+// the header button via the render prop): tabIndex makes it keyboard-
+// focusable, so no interactive element nests inside the button. The
 // breakdown text is linked with aria-describedby (PageTitleHelp pattern).
 function WorkersBadgeTooltip({
   description,
@@ -346,7 +347,11 @@ function WorkersBadgeTooltip({
   const descriptionId = React.useId();
   return (
     <Tooltip>
-      <TooltipTrigger aria-describedby={descriptionId} render={children} />
+      <TooltipTrigger
+        aria-describedby={descriptionId}
+        render={children}
+        tabIndex={0}
+      />
       <TooltipContent
         className="whitespace-normal"
         id={descriptionId}
@@ -381,6 +386,13 @@ function Workers({
   const queryClient = useQueryClient();
   const { t } = useI18n();
   const principal = data.principal;
+  // The routing policy section only exists while at least one runtime
+  // routing feature is on: with both flags off the panel is not mounted at
+  // all (no policy API call) and no disabled-policy message is shown. Each
+  // control inside the panel still follows its own flag.
+  const routingPolicyEnabled =
+    data.tenantRoutingEnabled === true ||
+    data.weightedRoutingEnabled === true;
   const canDeploy = can(principal, "workers:install");
   const canBrowseFiles = can(principal, "files:read");
   const canObserve = can(principal, "observability:read");
@@ -550,7 +562,7 @@ function Workers({
             .replace("{errors}", String(errors));
           const headerButton = (
             <button
-              className="flex w-full items-center gap-3 p-3 text-left"
+              className="flex min-w-0 flex-1 items-center gap-3 text-left"
               onClick={() =>
                 setExpanded((current) => {
                   const next = new Set(current);
@@ -579,23 +591,25 @@ function Workers({
                   <span className="font-mono">{defaultVersion}</span>
                 </Badge>
               )}
-              {showBadge && (
-                <Badge variant="outline">
-                  <CircleAlertIcon />
-                  {disabled + errors}
-                </Badge>
-              )}
             </button>
           );
+          // The attention badge lives outside the header button as a sibling
+          // (a focusable element nested in a button is invalid HTML) and is
+          // the tooltip trigger; the button area alone expands/collapses.
+          const alertBadge = showBadge ? (
+            <WorkersBadgeTooltip description={badgeDescription}>
+              <Badge variant="outline">
+                <CircleAlertIcon />
+                {disabled + errors}
+              </Badge>
+            </WorkersBadgeTooltip>
+          ) : null;
           return (
             <Card className="gap-0 py-0" key={group.name}>
-              {showBadge ? (
-                <WorkersBadgeTooltip description={badgeDescription}>
-                  {headerButton}
-                </WorkersBadgeTooltip>
-              ) : (
-                headerButton
-              )}
+              <div className="flex w-full items-center gap-3 p-3">
+                {headerButton}
+                {alertBadge}
+              </div>
               {open && (
                 <>
                 <div className="border-t">
@@ -805,13 +819,17 @@ function Workers({
                     </TableBody>
                   </Table>
                 </div>
-                <RoutingPolicyPanel
-                  apiKey={apiKey}
-                  principal={principal}
-                  tenantRoutingEnabled={data.tenantRoutingEnabled === true}
-                  versions={group.versions}
-                  weightedRoutingEnabled={data.weightedRoutingEnabled === true}
-                />
+                {routingPolicyEnabled && (
+                  <RoutingPolicyPanel
+                    apiKey={apiKey}
+                    principal={principal}
+                    tenantRoutingEnabled={data.tenantRoutingEnabled === true}
+                    versions={group.versions}
+                    weightedRoutingEnabled={
+                      data.weightedRoutingEnabled === true
+                    }
+                  />
+                )}
                 </>
               )}
             </Card>
@@ -1041,7 +1059,7 @@ function Observability({
 }
 
 function Logs({ apiKey, target }: { apiKey: string; target?: Target }) {
-  const [level, setLevel] = React.useState("all");
+  const [levels, setLevels] = React.useState<string[]>([]);
   const [query, setQuery] = React.useState("");
   const [selectedEvent, setSelectedEvent] =
     React.useState<OperationalEvent | null>(null);
@@ -1071,7 +1089,8 @@ function Logs({ apiKey, target }: { apiKey: string; target?: Target }) {
   });
   const events = (eventsQuery.data?.events ?? []).filter(
     (event) =>
-      (level === "all" || event.level === level) &&
+      (levels.length === 0 ||
+        levels.some((selected) => event.level === selected)) &&
       (!query ||
         JSON.stringify(event).toLowerCase().includes(query.toLowerCase())),
   );
@@ -1162,7 +1181,7 @@ function Logs({ apiKey, target }: { apiKey: string; target?: Target }) {
   });
   React.useEffect(() => {
     table.setPageIndex(0);
-  }, [level, query, table]);
+  }, [levels, query, table]);
   const detailFields = selectedEvent
     ? [
         ["ID", selectedEvent.id],
@@ -1218,15 +1237,22 @@ function Logs({ apiKey, target }: { apiKey: string; target?: Target }) {
               />
             </InputGroup>
             <Select
-              value={level}
-              onValueChange={(value) => setLevel(value ?? "all")}
+              multiple
+              value={levels}
+              onValueChange={(value) => setLevels(value)}
             >
-              <SelectTrigger aria-label="Filter by log level" className="w-32">
-                <SelectValue>{levelLabels[level]}</SelectValue>
+              <SelectTrigger aria-label="Filter by log levels" className="w-32">
+                <SelectValue>
+                  {levels.length === 0
+                    ? levelLabels.all
+                    : levels
+                        .map((value) => levelLabels[value])
+                        .join(", ")}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
-                  {["all", "info", "warn", "error"].map((value) => (
+                  {["info", "warn", "error"].map((value) => (
                     <SelectItem key={value} value={value}>
                       {levelLabels[value]}
                     </SelectItem>

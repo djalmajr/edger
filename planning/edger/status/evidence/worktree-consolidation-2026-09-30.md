@@ -32,3 +32,19 @@ Dois itens foram marcados partial pelo auditor por remoção dos parágrafos key
 ## Bloqueio novo no CI
 
 PR #71 aberto com commit 255162a. CI inicial passou Rust, OTLP, frontend/planejamento, Helm e secret scan. Advisories falhou por RUSTSEC-2026-0316 (wasmtime36.0.15) e RUSTSEC-2026-0314 (wasmtime-wasi36.0.15). Correção mínima em curso: patch36.0.16 da mesma major, conforme avisos oficiais GHSA-jqpg-j7w6-42pr e GHSA-j2g9-4prp-pf6h. Não ignorar advisories. Provas Rust anteriores não cobrem essa atualização e serão reexecutadas após o lockfile final.
+
+## Fechamento das emendas antes do merge
+
+Wasmtime36.0.16: autor release-qwen-20260930T100357.md; revisão independente review-cpanel-claude-20260930T100952.md PASS zero achados. cargo-deny advisories/licenses OK sem ignores. Mesmas features e listas de dependências; 23 pacotes36.0.16 e13Cranelift0.123.16. Gate Rust completo reexecutado e PASS, logs /tmp/edger-pr71-{rust-tests,clippy,fmt}.log. Avisos cargo-deny spin yanked e saffron license são preexistentes, reproduzidos também no baseline.
+
+Pins adicionais: trigger no badge; política oculta quando ambas flags off (pin6dd70b75-3734-453c-aac5-4f07258eb562/capturef34ea9a1-7697-4431-9ce1-c93c3d69b8c9); logs multi (pinc4044d69-028a-4c24-80c5-7a9a6b317ee1/capture226190a6-b6a3-4983-b278-b17183395660); buscaUsers/Keys (pin3dd421ff-4a0a-41a1-acf7-4c335c6fbb84/capturea05df59f-08a9-41e0-9d46-9005fb7d342d).
+
+Autor Workers/Logs cpanel-qwen-20260930T101408.md; revisão review-cpanel-claude-20260930T103244.md PASS0. Autor busca release-qwen-20260930T101236.md e emenda103238; revisão review-cpanel-claude-20260930T103601.md PASS0. Resultado final176 Bun/159 Vitest/typecheck PASS. O partial de Bun da busca foi fechado: executar a partir de workers passa; a falha101/58 era execução a partir de cpanel com descoberta/harness diferente. Fixtures não foram alteradas para contornar isso.
+
+Browser real após build final (/tmp/edger-pr71-cpanel-build.log):
+- Badge span foco/hover fora do botão, aria-describedby/id iguais. Hover no nome não abre tooltip. Badge x1292..1333; tooltip x1087..1355 e y245, junto ao canto direito. Escape fecha; botão expande/recolhe normalmente, sem interativo aninhado.
+- Expandir WebIDE com flags reais off: tabela aparece, política ausente e zero chamadas routing-policy.
+- BuscaUsers: página2 (2 linhas)→root (1 linha, próxima página disabled); inexistente mostra noResults, limpar restaura15 linhas. Keys: busca inexistente mostra noResults, limpar restaura lista. Dados locais sintéticos; nenhum usuário/chave alterado.
+- Logs: respostas HTTP interceptadas apenas no browser com35 eventos sintéticos (sem persistência/alteração de backend). Warning+Error elimina info; combinado com disk exibe12 eventos esperados; removerWarning deixaError e desmarcarError retornaAll levels. Página reseta da segunda para primeira ao mudar filtro. Interceptação removida e página recarregada com API real ao fim.
+
+Screenshots em /Users/djalmajr/Developer/djalmajr/edger/output/playwright/: edger-badge-corner-20260930.png, edger-search-keys-20260930.png, edger-log-multiselect-20260930.png. Browser não é prova de produção.

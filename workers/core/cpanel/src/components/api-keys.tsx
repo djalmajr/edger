@@ -120,6 +120,7 @@ export function ApiKeys({
   const [confirmDelete, setConfirmDelete] = React.useState<ApiKey | null>(null);
   const [editingKey, setEditingKey] = React.useState<ApiKey | null>(null);
   const [sorting, setSorting] = React.useState<SortingState>([]);
+  const [search, setSearch] = React.useState("");
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["cpanel", "keys"] });
@@ -317,9 +318,26 @@ export function ApiKeys({
     [t],
   );
 
+  // Local, case-insensitive filter over the visible key fields (name, key
+  // prefix, namespaces, workers); the secret itself is never searched or
+  // displayed. An empty term (or only whitespace) shows every key.
+  const filteredKeys = React.useMemo(() => {
+    const term = search.trim().toLowerCase();
+    const keys = keysQuery.data ?? [];
+    if (!term) return keys;
+    return keys.filter((key) =>
+      [
+        key.name,
+        key.keyPrefix,
+        key.namespaces.join(", "),
+        key.workers.join(", "),
+      ].some((field) => field.toLowerCase().includes(term)),
+    );
+  }, [keysQuery.data, search]);
+
   const table = useReactTable({
     columns,
-    data: keysQuery.data ?? [],
+    data: filteredKeys,
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
     getSortedRowModel: getSortedRowModel(),
@@ -355,6 +373,17 @@ export function ApiKeys({
         </div>
       )}
 
+      <Input
+        aria-label={t("keys.search")}
+        className="max-w-xs"
+        onChange={(event) => {
+          setSearch(event.target.value);
+          table.setPageIndex(0);
+        }}
+        placeholder={t("keys.search")}
+        value={search}
+      />
+
       {keysQuery.error ? (
         <p className="text-sm text-destructive">
           {t("keys.loadError")}
@@ -362,7 +391,13 @@ export function ApiKeys({
       ) : (
         <DataGrid
           elasticColumnId="name"
-          emptyText={keysQuery.isLoading ? t("keys.loading") : t("keys.empty")}
+          emptyText={
+            keysQuery.isLoading
+              ? t("keys.loading")
+              : search.trim()
+                ? t("keys.noResults")
+                : t("keys.empty")
+          }
           fixedLayout
           table={table}
         />

@@ -552,6 +552,63 @@ describe("ConsoleUsers", () => {
     }
   });
 
+  it("searches username, namespaces and workers, resets to page one from a later page, and recovers the list on clear", async () => {
+    globalThis.fetch = fetchMock;
+    const users = [
+      makeUser({ id: 1, isRoot: true, permissions: ["*"], role: "root", username: "root" }),
+      ...Array.from({ length: 30 }, (_, index) =>
+        makeUser({ id: 2 + index, username: `user-${String(index).padStart(2, "0")}` }),
+      ),
+      // Its username does not contain the probe; only the namespace does.
+      makeUser({ id: 99, namespaces: ["platform-x"], username: "zeta", workers: ["w-edge"] }),
+    ];
+    stubJson(fetchMock, { users });
+    renderUsers();
+    // 32 users -> 3 pages at the default size of 15.
+    expect(await screen.findByText("Page 1 of 3")).toBeTruthy();
+    const table = screen.getByRole("table");
+    const search = screen.getByRole("textbox", { name: "Search users" });
+    // The search box sits at the top of the content, before the grid.
+    expect(search.compareDocumentPosition(table)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    const user = userEvent.setup();
+
+    // Paginate first: page two hides the page-one rows.
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    expect(screen.getByText("Page 2 of 3")).toBeTruthy();
+    expect(screen.getByText("user-14")).toBeTruthy();
+    expect(screen.queryByText("user-07")).toBeNull();
+
+    // Searching from page two resets to page one and narrows to the match.
+    await user.type(search, "user-07");
+    expect(screen.getByText("Page 1 of 1")).toBeTruthy();
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(screen.getByText("user-07")).toBeTruthy();
+
+    // Extending the term to a no-match shows the specific search empty text...
+    await user.type(search, "zzz");
+    expect(
+      screen.getByText("No users match the search.", { exact: false }),
+    ).toBeTruthy();
+    expect(screen.queryByText("user-07")).toBeNull();
+
+    // ...and clearing recovers the full list back on page one, with the
+    // original empty message only reserved for a zero-users list.
+    await user.clear(search);
+    expect(screen.getByText("Page 1 of 3")).toBeTruthy();
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(15);
+    expect(screen.getByText("user-00")).toBeTruthy();
+    expect(
+      screen.queryByText("No users match the search."),
+    ).toBeNull();
+
+    // Namespaces are searchable even when no username matches.
+    await user.type(search, "platform");
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(screen.getByText("zeta")).toBeTruthy();
+  });
+
   it("sorts by username with the header toggles", async () => {
     globalThis.fetch = fetchMock;
     stubJson(fetchMock, {

@@ -28,10 +28,10 @@ CI inicial do PR #71 detectou advisories na família Wasmtime36.0.15. Aplicar so
 
 ## Pins recebidos durante a integração
 
-- [ ] Tooltip do alerta: trigger somente no badge do canto, irmão do botão de expansão; foco/hover próximos, sem interatividade aninhada.
-- [ ] Política de roteamento ausente quando ambas flags off; qualquer flag true mantém seu controle correspondente.
-- [ ] Logs: combinar níveis info/warn/error em seleção múltipla; vazio mantém todos; combinar com busca e resetar página.
-- [ ] Busca local em Usuários e API Keys, traduzida, preservando paginação e ações.
-- [ ] Revisão executada Sonnet, build e browser das emendas, antes do merge.
+- [x] Tooltip do alerta: trigger somente no badge do canto, irmão do botão de expansão; foco/hover próximos, sem interatividade aninhada.
+- [x] Política de roteamento ausente quando ambas flags off; qualquer flag true mantém seu controle correspondente.
+- [x] Logs: combinar níveis info/warn/error em seleção múltipla; vazio mantém todos; combinar com busca e resetar página.
+- [x] Busca local em Usuários e API Keys, traduzida, preservando paginação e ações.
+- [x] Revisão executada Sonnet, build e browser das emendas, antes do merge.
 
 Perguntas respondidas: janela5min é visão rápida, API suporta até15min; recomendação de seletor1/5/15 não implementada por ser pergunta nesta rodada. src aparece na prévia por servir worktree; Docker runtime publica manifest/dist apenas, sem src.

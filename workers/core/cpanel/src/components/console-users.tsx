@@ -180,6 +180,7 @@ function UsersPanel({
     null,
   );
   const [sorting, setSorting] = React.useState<SortingState>([]);
+  const [search, setSearch] = React.useState("");
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["cpanel", "users"] });
   const disableMutation = useMutation({
@@ -422,9 +423,24 @@ function UsersPanel({
     [t],
   );
 
+  // Local, case-insensitive filter over username, namespaces and workers.
+  // An empty term (or only whitespace) shows every user.
+  const filteredUsers = React.useMemo(() => {
+    const term = search.trim().toLowerCase();
+    const users = usersQuery.data ?? [];
+    if (!term) return users;
+    return users.filter((user) =>
+      [
+        user.username,
+        user.namespaces.join(", "),
+        user.workers.join(", "),
+      ].some((field) => field.toLowerCase().includes(term)),
+    );
+  }, [usersQuery.data, search]);
+
   const table = useReactTable({
     columns,
-    data: usersQuery.data ?? [],
+    data: filteredUsers,
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
     getSortedRowModel: getSortedRowModel(),
@@ -451,6 +467,16 @@ function UsersPanel({
           {pageActions}
         </div>
       )}
+      <Input
+        aria-label={t("users.search")}
+        className="max-w-xs"
+        onChange={(event) => {
+          setSearch(event.target.value);
+          table.setPageIndex(0);
+        }}
+        placeholder={t("users.search")}
+        value={search}
+      />
       {usersQuery.isLoading && (
         <p className="text-sm text-foreground" role="status">
           {t("users.loading")}
@@ -473,7 +499,7 @@ function UsersPanel({
       )}
       {!usersQuery.isLoading && !usersQuery.error && (
         <DataGrid
-          emptyText={t("users.empty")}
+          emptyText={search.trim() ? t("users.noResults") : t("users.empty")}
           fixedLayout
           table={table}
         />
