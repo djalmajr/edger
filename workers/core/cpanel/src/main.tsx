@@ -150,6 +150,7 @@ import {
   PaginationControls,
 } from "./components/data-grid";
 import { ApiKeys } from "./components/api-keys";
+import { PageTitleHelp } from "./components/page-title-help";
 import { Overview } from "./components/overview";
 import { RoutingPolicyPanel } from "./components/routing-policy";
 import { AdminLogin } from "./components/login";
@@ -331,6 +332,33 @@ function MetricCard({
   );
 }
 
+// Explains the group attention badge (disabled versions + registered
+// errors). The group header button is the tooltip trigger: it is already
+// focusable, so no nested button or tabIndex is introduced, and the
+// breakdown text is linked with aria-describedby (PageTitleHelp pattern).
+function WorkersBadgeTooltip({
+  description,
+  children,
+}: {
+  description: string;
+  children: React.ReactElement;
+}) {
+  const descriptionId = React.useId();
+  return (
+    <Tooltip>
+      <TooltipTrigger aria-describedby={descriptionId} render={children} />
+      <TooltipContent
+        className="whitespace-normal"
+        id={descriptionId}
+        role="tooltip"
+        side="bottom"
+      >
+        {description}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function Workers({
   apiKey,
   data,
@@ -351,6 +379,7 @@ function Workers({
   const [actionError, setActionError] = React.useState("");
   const [deleteTarget, setDeleteTarget] = React.useState<Worker | null>(null);
   const queryClient = useQueryClient();
+  const { t } = useI18n();
   const principal = data.principal;
   const canDeploy = can(principal, "workers:install");
   const canBrowseFiles = can(principal, "files:read");
@@ -515,45 +544,58 @@ function Workers({
             (worker) => worker.status === "disabled",
           ).length;
           const errors = data.workerErrors[group.name]?.count ?? 0;
+          const showBadge = disabled > 0 || errors > 0;
+          const badgeDescription = t("workers.badge.tooltip")
+            .replace("{disabled}", String(disabled))
+            .replace("{errors}", String(errors));
+          const headerButton = (
+            <button
+              className="flex w-full items-center gap-3 p-3 text-left"
+              onClick={() =>
+                setExpanded((current) => {
+                  const next = new Set(current);
+                  next.has(group.name)
+                    ? next.delete(group.name)
+                    : next.add(group.name);
+                  return next;
+                })
+              }
+              type="button"
+            >
+              {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
+              <span className="grid size-9 place-items-center rounded-lg bg-primary/15 text-primary">
+                <KindIcon className="size-5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <strong className="block truncate">{group.name}</strong>
+                <small className="text-muted-foreground">
+                  {kindLabel(group.versions[0].kind)} ·{" "}
+                  {group.versions.length} version
+                  {group.versions.length === 1 ? "" : "s"}
+                </small>
+              </span>
+              {defaultVersion && (
+                <Badge variant="secondary">
+                  <span className="font-mono">{defaultVersion}</span>
+                </Badge>
+              )}
+              {showBadge && (
+                <Badge variant="outline">
+                  <CircleAlertIcon />
+                  {disabled + errors}
+                </Badge>
+              )}
+            </button>
+          );
           return (
             <Card className="gap-0 py-0" key={group.name}>
-              <button
-                className="flex w-full items-center gap-3 p-3 text-left"
-                onClick={() =>
-                  setExpanded((current) => {
-                    const next = new Set(current);
-                    next.has(group.name)
-                      ? next.delete(group.name)
-                      : next.add(group.name);
-                    return next;
-                  })
-                }
-                type="button"
-              >
-                {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
-                <span className="grid size-9 place-items-center rounded-lg bg-primary/15 text-primary">
-                  <KindIcon className="size-5" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <strong className="block truncate">{group.name}</strong>
-                  <small className="text-muted-foreground">
-                    {kindLabel(group.versions[0].kind)} ·{" "}
-                    {group.versions.length} version
-                    {group.versions.length === 1 ? "" : "s"}
-                  </small>
-                </span>
-                {defaultVersion && (
-                  <Badge variant="secondary">
-                    <span className="font-mono">{defaultVersion}</span>
-                  </Badge>
-                )}
-                {(disabled > 0 || errors > 0) && (
-                  <Badge variant="outline">
-                    <CircleAlertIcon />
-                    {disabled + errors}
-                  </Badge>
-                )}
-              </button>
+              {showBadge ? (
+                <WorkersBadgeTooltip description={badgeDescription}>
+                  {headerButton}
+                </WorkersBadgeTooltip>
+              ) : (
+                headerButton
+              )}
               {open && (
                 <>
                 <div className="border-t">
@@ -2081,9 +2123,19 @@ function Shell({
             </ActionButton>
           )}
           <div className="min-w-0">
-            <h1 className="truncate font-heading text-lg font-medium">
-              {title}
-            </h1>
+            <div className="flex min-w-0 items-center gap-1">
+              <h1 className="truncate font-heading text-lg font-medium">
+                {title}
+              </h1>
+              {(route.view === "keys" || route.view === "users") && (
+                <PageTitleHelp
+                  content={
+                    route.view === "keys" ? t("keys.lead") : t("users.lead")
+                  }
+                  label={t("keys.help")}
+                />
+              )}
+            </div>
             <p className="truncate text-sm text-muted-foreground">
               {description}
             </p>
@@ -2201,7 +2253,11 @@ function Shell({
               />
             )}
             {route.view === "users" && (
-              <ConsoleUsers apiKey={apiKey} principal={data.principal} />
+              <ConsoleUsers
+                apiKey={apiKey}
+                principal={data.principal}
+                renderPageAction={(action) => <PageActions>{action}</PageActions>}
+              />
             )}
             {route.view === "observability" && (
               <Observability

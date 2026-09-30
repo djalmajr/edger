@@ -9,7 +9,7 @@ const { cleanup, render, screen, waitFor, within } = await import(
 const { default: userEvent } = await import("@testing-library/user-event");
 const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
 const { I18nProvider } = await import("../lib/i18n");
-const { SESSION_KEY } = await import("../lib/api");
+const { PERMISSION_CATALOG, SESSION_KEY } = await import("../lib/api");
 const { ChangePasswordDialog, ConsoleUsers } = await import("./console-users");
 
 const originalFetch = globalThis.fetch;
@@ -76,6 +76,16 @@ function renderUsers(principal: Principal = rootPrincipal) {
   );
 }
 
+// The permissions column is hidden by default. Tests that read its data
+// restore the stored preference that shows it — the same persisted path the
+// column menu writes — instead of weakening the assertions.
+function showPermissionsColumn() {
+  localStorage.setItem(
+    "edger.cpanel.columns.users",
+    JSON.stringify({ permissions: true }),
+  );
+}
+
 function renderChangePassword(
   onNewSession: (token: string) => void,
   onRequireLogin: () => void,
@@ -135,6 +145,7 @@ describe("ConsoleUsers", () => {
   it("lists users with status, permissions and scopes under the root session", async () => {
     globalThis.fetch = fetchMock;
     stubJson(fetchMock, listBody);
+    showPermissionsColumn();
     renderUsers();
     await screen.findByText("analyst-01");
     // The root row is visible but immutable: badge, no action buttons.
@@ -492,6 +503,190 @@ describe("ConsoleUsers", () => {
       workers: ["*"],
     });
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("paginates more than 15 users and changes the page size", async () => {
+    globalThis.fetch = fetchMock;
+    const manyUsers = Array.from({ length: 20 }, (_, index) =>
+      makeUser({
+        id: 100 + index,
+        username: `user-${String(index).padStart(2, "0")}`,
+      }),
+    );
+    stubJson(fetchMock, { users: manyUsers });
+    renderUsers();
+    // The real page count only renders once the list has loaded.
+    expect(await screen.findByText("Page 1 of 2")).toBeTruthy();
+    const table = screen.getByRole("table");
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(15);
+    expect(screen.queryByText("user-19")).toBeNull();
+
+    // Shared pagination: 15 rows per page by default (options 15/30/60).
+    // The bun fixture renders the page-size consumer as a native select, so
+    // the real onValueChange callback is exercised end-to-end there; the DOM
+    // test runners cannot operate the real base-ui combobox options
+    // (happy-dom limit, recorded in the report), so vitest asserts the
+    // rendered control and its selected value only.
+    const pageSizeControl = screen.getByRole("combobox", {
+      name: "Rows per page",
+    });
+    if (pageSizeControl instanceof HTMLSelectElement) {
+      // bun fixture: the combobox consumer is a native select.
+      expect(pageSizeControl.value).toBe("15");
+    } else {
+      // real combobox: the trigger shows the selected page size.
+      expect(pageSizeControl.textContent).toContain("15");
+    }
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    expect(screen.getByText("Page 2 of 2")).toBeTruthy();
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(5);
+    expect(screen.getByText("user-19")).toBeTruthy();
+
+    // Changing the page size re-paginates the grid (default reset to page 1).
+    if (pageSizeControl instanceof HTMLSelectElement) {
+      await user.selectOptions(pageSizeControl, "30");
+      expect(await screen.findByText("Page 1 of 1")).toBeTruthy();
+      expect(table.querySelectorAll("tbody tr")).toHaveLength(20);
+    }
+  });
+
+  it("sorts by username with the header toggles", async () => {
+    globalThis.fetch = fetchMock;
+    stubJson(fetchMock, {
+      users: [
+        makeUser({ id: 1, username: "charlie-03" }),
+        makeUser({ id: 2, username: "alpha-01" }),
+        makeUser({ id: 3, username: "bravo-02" }),
+      ],
+    });
+    renderUsers();
+    await screen.findByText("Page 1 of 1");
+    const table = screen.getByRole("table");
+    const rowOrder = () =>
+      [...table.querySelectorAll("tbody tr")].map((row) =>
+        row.querySelector("td [title]")?.getAttribute("title") ?? "",
+      );
+    expect(rowOrder()).toEqual(["charlie-03", "alpha-01", "bravo-02"]);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Username" }));
+    expect(rowOrder()).toEqual(["alpha-01", "bravo-02", "charlie-03"]);
+    await user.click(screen.getByRole("button", { name: "Username" }));
+    expect(rowOrder()).toEqual(["charlie-03", "bravo-02", "alpha-01"]);
+  });
+
+  it("keeps the root row immutable and exposes truncated values in full", async () => {
+    const longName = "operator-with-a-very-long-username";
+    const longWorkers = ["p-alpha", "p-beta-gamma", "p-delta-epsilon"];
+    globalThis.fetch = fetchMock;
+    showPermissionsColumn();
+    stubJson(fetchMock, {
+      users: [
+        makeUser({
+          id: 1,
+          isRoot: true,
+          permissions: ["*"],
+          role: "root",
+          username: "root",
+        }),
+        makeUser({ id: 2, username: longName, workers: longWorkers }),
+      ],
+    });
+    renderUsers();
+    await screen.findByText("Page 1 of 1");
+    const table = screen.getByRole("table");
+    const [rootRow, longRow] = table.querySelectorAll("tbody tr");
+    // The root row is visible but carries no mutable buttons.
+    expect(rootRow.textContent).toContain("root");
+    expect(within(rootRow as HTMLElement).queryByRole("button")).toBeNull();
+    // Long values truncate in the cell; the full value stays accessible in
+    // the title of the truncated element.
+    const longNameCell = longRow.querySelector("td") as HTMLElement;
+    expect(
+      longNameCell.querySelector("[title]")?.getAttribute("title"),
+    ).toBe(longName);
+    const workersCell = longRow.querySelectorAll("td")[4] as HTMLElement;
+    expect(workersCell.querySelector("code")?.getAttribute("title")).toBe(
+      longWorkers.join(", "),
+    );
+    // The non-root row keeps its four actions.
+    expect(
+      within(longRow as HTMLElement).getByRole("button", { name: "Edit" }),
+    ).toBeTruthy();
+    expect(
+      within(longRow as HTMLElement).getByRole("button", {
+        name: "Reset password",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("compacts long permission lists into the hidden-permissions badge", async () => {
+    const permissions = [...PERMISSION_CATALOG];
+    globalThis.fetch = fetchMock;
+    showPermissionsColumn();
+    stubJson(fetchMock, { users: [makeUser({ id: 2, permissions })] });
+    renderUsers();
+    await screen.findByText("Page 1 of 1");
+    const row = screen
+      .getByRole("table")
+      .querySelector("tbody tr") as HTMLElement;
+    const permissionsCell = row.querySelectorAll("td")[2] as HTMLElement;
+    const list = permissionsCell.querySelector<HTMLElement>(
+      "[data-permission-badges]",
+    )!;
+    // Zero layout width in the DOM test: the whole list collapses into the
+    // hidden-permissions badge that keeps the full accessible list.
+    expect(list.getAttribute("aria-label")).toBe(
+      `Permissions: ${permissions.join(", ")}`,
+    );
+    expect(list.textContent).toContain("+11");
+    expect(
+      list.querySelector('[aria-label^="11 hidden permissions:"]')?.getAttribute(
+        "aria-label",
+      ),
+    ).toBe(`11 hidden permissions: ${permissions.join(", ")}`);
+  });
+
+  it("hides the permissions column by default and restores it from the columns menu", async () => {
+    globalThis.fetch = fetchMock;
+    stubJson(fetchMock, listBody);
+    renderUsers();
+    await screen.findByText("Page 1 of 1");
+    const table = screen.getByRole("table");
+    // Default: the permissions data is hidden, the other columns and the
+    // actions stay put, and the hidden column reserves no width.
+    expect(
+      within(table).queryByRole("columnheader", { name: "Permissions" }),
+    ).toBeNull();
+    expect(
+      within(table).getByRole("columnheader", { name: "Username" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+    expect(table.style.minWidth).toBe("834px");
+    expect(
+      screen.getByRole("button", { name: "Show and hide columns" }),
+    ).toBeTruthy();
+    if ((process.versions as { bun?: string }).bun) {
+      // The bun fixture renders the dropdown as a DOM stub, so the toggle is
+      // exercised end-to-end there; the vite runner cannot operate the real
+      // base-ui menu under happy-dom (same limit as the combobox).
+      const user = userEvent.setup();
+      await user.click(
+        screen.getByRole("button", { name: "Show and hide columns" }),
+      );
+      await user.click(
+        screen.getByRole("menuitemcheckbox", { name: "Permissions" }),
+      );
+      expect(
+        within(table).getByRole("columnheader", { name: "Permissions" }),
+      ).toBeTruthy();
+      expect(screen.getByText("workers:read")).toBeTruthy();
+      expect(table.style.minWidth).toBe("1074px");
+      expect(
+        JSON.parse(localStorage.getItem("edger.cpanel.columns.users")!),
+      ).toEqual({ permissions: true });
+    }
   });
 });
 

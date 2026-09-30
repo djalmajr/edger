@@ -29,18 +29,31 @@ export const DEFAULT_PAGE_SIZE = 15;
 export const PAGE_SIZE_OPTIONS = [15, 30, 60] as const;
 
 export function DataGrid<TData>({
+  elasticColumnId,
   emptyText,
   fixedLayout = false,
   onRowClick,
   rowLabel,
   table,
 }: {
+  elasticColumnId?: string;
   emptyText: string;
   fixedLayout?: boolean;
   onRowClick?: (row: TData) => void;
   rowLabel?: (row: TData) => string;
   table: TanstackTable<TData>;
 }) {
+  // Opt-in elastic column: under the fixed layout it gets no explicit width,
+  // so the browser assigns it everything the table width leaves over after
+  // the px-defined columns. Non-opting grids keep the uniform distribution.
+  const isElasticColumn = (column: Column<TData, unknown>) =>
+    fixedLayout &&
+    elasticColumnId !== undefined &&
+    column.id === elasticColumnId;
+  const fixedStyle = (column: Column<TData, unknown>) =>
+    fixedLayout && !isElasticColumn(column)
+      ? { width: column.getSize() }
+      : undefined;
   return (
     <div className="flex w-full flex-col gap-2.5 overflow-auto">
       <div className="overflow-hidden rounded-md border">
@@ -49,7 +62,11 @@ export function DataGrid<TData>({
             fixedLayout
               ? {
                   tableLayout: "fixed",
-                  minWidth: table.getTotalSize(),
+                  // Sum only the visible leaf columns: a hidden column must
+                  // not reserve width in the fixed layout.
+                  minWidth: table
+                    .getVisibleLeafColumns()
+                    .reduce((sum, column) => sum + column.getSize(), 0),
                   width: "100%",
                 }
               : undefined
@@ -62,7 +79,7 @@ export function DataGrid<TData>({
                   <TableHead
                     key={header.id}
                     colSpan={header.colSpan}
-                    style={fixedLayout ? { width: header.getSize() } : undefined}
+                    style={fixedStyle(header.column)}
                   >
                     {header.isPlaceholder
                       ? null
@@ -97,14 +114,7 @@ export function DataGrid<TData>({
                   tabIndex={onRowClick ? 0 : undefined}
                 >
                   {row.getVisibleCells().map((cell) => (
-                    <TableCell
-                      key={cell.id}
-                      style={
-                        fixedLayout
-                          ? { width: cell.column.getSize() }
-                          : undefined
-                      }
-                    >
+                    <TableCell key={cell.id} style={fixedStyle(cell.column)}>
                       {flexRender(
                         cell.column.columnDef.cell,
                         cell.getContext(),
@@ -117,7 +127,7 @@ export function DataGrid<TData>({
               <TableRow>
                 <TableCell
                   className="h-24 text-center text-muted-foreground"
-                  colSpan={table.getAllColumns().length}
+                  colSpan={table.getVisibleLeafColumns().length}
                 >
                   {emptyText}
                 </TableCell>
