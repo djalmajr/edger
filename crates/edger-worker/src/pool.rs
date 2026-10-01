@@ -1,6 +1,6 @@
 //! WorkerPool — LRU cache + fetch entry point with supervisor integration.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,7 +22,7 @@ use crate::ephemeral::EphemeralGate;
 use crate::error::WorkerError;
 use crate::factory::IsolateFactory;
 use crate::instance::WorkerInstance;
-use crate::lru::{QueueEnterResult, ReservedSlot, WorkerGroup, WorkerLru};
+use crate::lru::{GroupInsertOutcome, QueueEnterResult, ReservedSlot, WorkerGroup, WorkerLru};
 use crate::metrics::{
     MetricsCollector, PoolMetrics, WorkerGroupIdentity, WorkerGroupMetrics, WorkerProcessMetrics,
     WorkerRecycleCause, WorkerRequestOutcome, WorkerStats,
@@ -38,7 +38,6 @@ struct WorkerPoolInner {
     factory: Arc<dyn IsolateFactory>,
     metrics: Arc<MetricsCollector>,
     ephemeral: EphemeralGate,
-    evicted: Mutex<HashSet<WorkerCacheKey>>,
     circuit_breakers: Mutex<HashMap<WorkerCacheKey, CircuitBreakerState>>,
     shutdown: AtomicBool,
     lifecycle_events: Option<LifecycleEventSender>,
@@ -116,7 +115,6 @@ impl WorkerPool {
                 factory,
                 metrics,
                 ephemeral,
-                evicted: Mutex::new(HashSet::new()),
                 circuit_breakers: Mutex::new(HashMap::new()),
                 shutdown: AtomicBool::new(false),
                 lifecycle_events,
@@ -252,16 +250,6 @@ impl WorkerPool {
         self.ensure_active()?;
         let key = WorkerCacheKey::from_worker_ref(worker_ref);
 
-        if self
-            .inner
-            .evicted
-            .lock()
-            .expect("evicted lock")
-            .contains(&key)
-        {
-            return Err(WorkerError::Evicted);
-        }
-
         if let Some(group) = self.inner.cache.get_group(&key) {
             if let Some(instance) = group.instances_snapshot().first() {
                 if instance.worker_ref.namespace != worker_ref.namespace {
@@ -287,22 +275,59 @@ impl WorkerPool {
             }
         }
 
-        if let Some(evicted_key) = self
+        match self
             .inner
             .cache
             .insert_group(key.clone(), Arc::clone(&group))
         {
-            if evicted_key == key {
-                return Err(WorkerError::Collision {
-                    key: format!("{key:?}"),
-                    detail: "concurrent insert".into(),
-                });
+            // A concurrent miss already owns the key: serve from the winning
+            // group and discard ours (its instances are unspawned `Creating`
+            // placeholders with no queue waiters, so dropping them is safe).
+            GroupInsertOutcome::Existing(winner) => {
+                // Revalidate the winner the same way the hit path does: the
+                // miss path never checked the group it is about to use.
+                if let Some(instance) = winner.instances_snapshot().first() {
+                    if instance.worker_ref.namespace != worker_ref.namespace {
+                        return Err(WorkerError::Collision {
+                            key: format!("{key:?}"),
+                            detail: "namespace mismatch for cache key".into(),
+                        });
+                    }
+                }
+                self.inner.metrics.record_hit();
+                return Ok(winner);
             }
-            self.inner
-                .evicted
-                .lock()
-                .expect("evicted lock")
-                .insert(evicted_key);
+            GroupInsertOutcome::Inserted { evicted } => {
+                if let Some((evicted_key, evicted_group)) = evicted {
+                    if evicted_key == key {
+                        return Err(WorkerError::Collision {
+                            key: format!("{key:?}"),
+                            detail: "concurrent insert".into(),
+                        });
+                    }
+                    // Mark the victim evicted synchronously (before any
+                    // await): the group then admits no new slots or
+                    // instances, so its instance set is fixed and queued
+                    // waiters wake up to re-resolve the identity against the
+                    // current generation (retryable `Retired`, never
+                    // `Shutdown`).
+                    evicted_group.mark_evicted();
+                    // Capacity eviction must not strand the victim: its idle
+                    // instances are drained asynchronously (their TTL timer
+                    // tasks hold instance Arcs and would keep the processes
+                    // alive outside the LRU as orphaned copies), while
+                    // in-flight dispatches finish on their own completion
+                    // paths. A later request to the evicted identity
+                    // cold-starts a fresh group instead of failing
+                    // permanently.
+                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                        let pool = self.clone();
+                        handle.spawn(async move {
+                            pool.drain_evicted_group(evicted_group).await;
+                        });
+                    }
+                }
+            }
         }
 
         let elapsed_ms = spawn_start.elapsed().as_millis().max(1) as u64;
@@ -310,6 +335,36 @@ impl WorkerPool {
         self.inner.metrics.record_spawn_latency(elapsed_ms);
         self.sync_worker_counts();
         Ok(group)
+    }
+
+    /// Gracefully terminates the idle instances of a group evicted by LRU
+    /// capacity. The evicted group is unreachable from the cache, but its
+    /// instances keep living on: the TTL timer task holds each instance Arc
+    /// and would otherwise keep the evicted processes alive for up to
+    /// `ttl_ms` as orphaned copies alongside any readmission. In-flight
+    /// dispatches still holding instance Arcs finish on their own completion
+    /// paths.
+    ///
+    /// The dispatch lock is awaited WITHOUT a timeout on purpose: a
+    /// legitimate in-flight call longer than any drain budget must complete
+    /// first and then be cleaned up, not be skipped (a skipped instance
+    /// reschedules its TTL timer and becomes an orphan anyway). The lock is
+    /// also held across the state check AND the termination, so a call that
+    /// only acquires its slot after the check can never be terminated
+    /// mid-flight.
+    async fn drain_evicted_group(&self, group: Arc<WorkerGroup>) {
+        for instance in group.instances_snapshot() {
+            let dispatch_lock = instance.dispatch_lock();
+            let guard = dispatch_lock.lock_owned().await;
+            if matches!(instance.state(), WorkerState::Idle | WorkerState::Ready) {
+                instance.cancel_ttl_timer();
+                self.terminate_isolate_with_lifecycle(&instance, "lru_evicted")
+                    .await;
+                instance.set_state(WorkerState::Terminated);
+                self.inner.metrics.record_terminated();
+            }
+            drop(guard);
+        }
     }
 
     pub async fn prewarm_worker(&self, worker_ref: &WorkerRef) -> Result<usize, WorkerError> {
@@ -325,6 +380,12 @@ impl WorkerPool {
             .min_processes
             .min(worker_ref.config.max_processes.max(1));
         let group = self.get_or_create_group(&worker_ref)?;
+        if group.is_evicted() {
+            // The group was evicted between the lookup and now: prewarming
+            // it would orphan processes outside the cache. The identity's
+            // next prewarm applies to the current generation.
+            return Ok(0);
+        }
         let instances = group.ensure_min_processes(target, || {
             let spawn_start = Instant::now();
             let instance = self.create_instance(&worker_ref);
@@ -340,6 +401,9 @@ impl WorkerPool {
         for instance in instances {
             let dispatch_lock = instance.dispatch_lock();
             let _guard = dispatch_lock.lock_owned().await;
+            if group.is_evicted() {
+                break;
+            }
             if instance.state() == WorkerState::Creating {
                 self.spawn_instance(&instance).await?;
                 spawned += 1;
@@ -1014,13 +1078,6 @@ impl WorkerPool {
             .flat_map(|(_, group)| group.instances_snapshot())
             .collect::<Vec<_>>();
         self.inner
-            .evicted
-            .lock()
-            .expect("evicted lock")
-            .retain(|key| {
-                key.name != name || version.is_some_and(|version| key.version != version)
-            });
-        self.inner
             .circuit_breakers
             .lock()
             .expect("breaker lock")
@@ -1065,7 +1122,6 @@ impl WorkerPool {
         }
 
         self.inner.cache.clear();
-        self.inner.evicted.lock().expect("evicted lock").clear();
         self.inner
             .circuit_breakers
             .lock()

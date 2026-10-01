@@ -1,7 +1,7 @@
 //! Thread-safe LRU wrapper for worker instance groups.
 
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -13,6 +13,20 @@ use crate::instance::WorkerInstance;
 use crate::metrics::{MetricsCollector, WorkerGroupIdentity};
 use crate::state::{accepts_dispatch, WorkerState};
 use crate::types::WorkerCacheKey;
+
+/// Outcome of `WorkerLru::insert_group`.
+pub enum GroupInsertOutcome {
+    /// The caller's group became the cached group for the key, optionally
+    /// evicting the least-recently-used (key, group) pair.
+    Inserted {
+        evicted: Option<(WorkerCacheKey, Arc<WorkerGroup>)>,
+    },
+    /// A concurrent insert already owns the key: the cached (winning) group
+    /// is returned and the caller must discard its own group. Replacing the
+    /// winner would orphan its queue and max-process capacity for the same
+    /// identity.
+    Existing(Arc<WorkerGroup>),
+}
 
 pub enum ReservedSlot {
     Acquired {
@@ -31,6 +45,13 @@ pub enum QueueEnterResult {
 
 pub struct WorkerGroup {
     closed: AtomicUsize,
+    /// Set the moment the group is evicted from the LRU by capacity: the
+    /// group must not admit new slots or instances (they would be orphaned
+    /// outside the cache), and queued waiters wake up to re-resolve the
+    /// identity against the current generation. Distinct from `closed`
+    /// (recycle/shutdown), which is terminal for the queue and maps to
+    /// `Shutdown`; eviction is a retryable `Retired`, never `Shutdown`.
+    evicted: AtomicBool,
     instances: Mutex<Vec<Arc<WorkerInstance>>>,
     next_index: AtomicUsize,
     queue_waiters: AtomicUsize,
@@ -41,11 +62,35 @@ impl WorkerGroup {
     pub fn new(instances: Vec<Arc<WorkerInstance>>) -> Self {
         Self {
             closed: AtomicUsize::new(0),
+            evicted: AtomicBool::new(false),
             instances: Mutex::new(instances),
             next_index: AtomicUsize::new(0),
             queue_waiters: AtomicUsize::new(0),
             queue_notify: Notify::new(),
         }
+    }
+
+    /// Marks the group as evicted from the LRU by capacity and wakes queued
+    /// waiters so they exit their retry loop and re-resolve the identity
+    /// against the current generation. Must be called synchronously at
+    /// eviction time (before any await): once set, the group admits no new
+    /// slots or instances, so its instance set is fixed and the eviction
+    /// drain sees every instance.
+    ///
+    /// The flag is stored UNDER the instances lock: `reserve_slot_with_min`
+    /// and `ensure_min_processes` re-check it after acquiring the same lock,
+    /// so a thread that passed the lock-free fast-path check before the mark
+    /// cannot slip past it and create an instance after the mark/snapshot.
+    pub fn mark_evicted(&self) {
+        {
+            let _instances = self.instances.lock().expect("worker group lock");
+            self.evicted.store(true, Ordering::SeqCst);
+        }
+        self.queue_notify.notify_waiters();
+    }
+
+    pub fn is_evicted(&self) -> bool {
+        self.evicted.load(Ordering::SeqCst)
     }
 
     pub fn instances_snapshot(&self) -> Vec<Arc<WorkerInstance>> {
@@ -140,8 +185,13 @@ impl WorkerGroup {
         let mut instances = self.instances.lock().expect("worker group lock");
         instances.retain(|instance| instance.state() != WorkerState::Terminated);
 
-        while instances.len() < target {
-            instances.push(create());
+        // An evicted group must not grow: new instances would be orphaned
+        // outside the cache. Prewarm of the identity applies to the current
+        // generation instead.
+        if !self.is_evicted() {
+            while instances.len() < target {
+                instances.push(create());
+            }
         }
 
         instances.clone()
@@ -166,8 +216,21 @@ impl WorkerGroup {
         if self.is_closed() {
             return ReservedSlot::Unavailable;
         }
+        // Fast path (lock-free): an evicted group admits no slots — creating
+        // or reusing instances here would orphan processes outside the LRU.
+        // The caller's retry re-resolves the identity against the current
+        // (readmitted) group.
+        if self.is_evicted() {
+            return ReservedSlot::Unavailable;
+        }
 
         let mut instances = self.instances.lock().expect("worker group lock");
+        // Linearized re-check under the same lock `mark_evicted` takes: a
+        // mark that lands between the fast path and this point is always
+        // observed here, so no instance can be created after the mark.
+        if self.is_evicted() {
+            return ReservedSlot::Unavailable;
+        }
         instances.retain(|instance| instance.state() != WorkerState::Terminated);
 
         if instances.is_empty() {
@@ -288,23 +351,28 @@ impl WorkerLru {
         cache.get(key).cloned()
     }
 
-    pub fn insert_group(
-        &self,
-        key: WorkerCacheKey,
-        group: Arc<WorkerGroup>,
-    ) -> Option<WorkerCacheKey> {
+    /// Insert a group, returning the evicted (key, group) pair when the
+    /// capacity bound pushes the least-recently-used entry out. The pool owns
+    /// draining the evicted group's idle instances: their TTL timer tasks
+    /// hold instance Arcs and would otherwise keep the processes alive
+    /// outside the cache as orphaned copies.
+    ///
+    /// First insert wins: when a concurrent insert already owns the key, the
+    /// cached group is returned unchanged (`Existing`) and the caller's group
+    /// must be discarded, so concurrently readmitted requests for the same
+    /// identity share one group (one queue, one max-process budget).
+    pub fn insert_group(&self, key: WorkerCacheKey, group: Arc<WorkerGroup>) -> GroupInsertOutcome {
         let mut cache = self.inner.lock().expect("lru lock");
-        if cache.contains(&key) {
-            cache.put(key, group);
-            return None;
+        if let Some(existing) = cache.get(&key) {
+            return GroupInsertOutcome::Existing(Arc::clone(existing));
         }
-        let evicted_key = if cache.len() >= cache.cap().get() {
-            cache.peek_lru().map(|(k, _)| k.clone())
+        let evicted = if cache.len() >= cache.cap().get() {
+            cache.peek_lru().map(|(k, g)| (k.clone(), Arc::clone(g)))
         } else {
             None
         };
         cache.put(key, group);
-        evicted_key
+        GroupInsertOutcome::Inserted { evicted }
     }
 
     pub fn group_count(&self) -> usize {

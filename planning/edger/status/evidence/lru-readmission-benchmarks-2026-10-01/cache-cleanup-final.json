@@ -1,0 +1,9 @@
+{
+  "removed_cache": "/tmp/edger-version-release-target-20261001",
+  "apparent_gib": 1.391,
+  "observed_free_delta_gib": 1.328,
+  "data_free_gib_after": 41.086,
+  "measured_binaries_retained": "/tmp/edger-version-bench-binaries-20261001",
+  "workers": "all reports done before cleanup",
+  "no_source_worktree_report_removed": true
+}

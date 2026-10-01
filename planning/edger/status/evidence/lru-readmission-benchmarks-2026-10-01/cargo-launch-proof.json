@@ -1,0 +1,24 @@
+{
+  "command": [
+    "cargo",
+    "+1.98.0",
+    "run",
+    "--release",
+    "--manifest-path",
+    "/Users/djalmajr/Developer/djalmajr/edger/.worktrees/cpanel-act-warnings/Cargo.toml",
+    "-p",
+    "edger-orchestrator",
+    "--bin",
+    "edger"
+  ],
+  "health_curl_exit": 0,
+  "worker_curl_exit": 0,
+  "app": "bench-app",
+  "version": "1.0.0",
+  "generation_present": true,
+  "scope": "fresh loopback fixture; no preview/deploy",
+  "initial_attempts": [
+    "sandbox loopback denied; no server started; fixture cleaned",
+    "first cargo readiness budget30s expired during compile; own process group stopped and fixture cleaned; retry120s budget"
+  ]
+}

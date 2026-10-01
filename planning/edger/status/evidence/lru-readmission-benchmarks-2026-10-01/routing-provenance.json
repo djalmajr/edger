@@ -1,0 +1,33 @@
+{
+  "captured_at": "2026-10-01T11:56:53-0300",
+  "sha256": {
+    "example_binary": "9dfef4ffb4a251629c899931b6d56fec4406eebfc1c13d7c3b80621ffe0b3072",
+    "edger_binary": "26e8b45b7077812e1404eabfb2455f6ef74a94ba7861e7a6c2d4a19f79304054",
+    "example_source": "1bfd6673f2d2c2385487c8f994381cad6db8e590b6dad92a45e13f65064da8d9",
+    "http_script": "a6d3d9db97c13198f69b323e1a696883d3643e1071ca827ffd172032dddd433c",
+    "example_binary_after": "9dfef4ffb4a251629c899931b6d56fec4406eebfc1c13d7c3b80621ffe0b3072",
+    "edger_binary_after": "26e8b45b7077812e1404eabfb2455f6ef74a94ba7861e7a6c2d4a19f79304054",
+    "results_routing_json": "9140c50a3b184259e2edd9e60a1cacde38387604a9f675ab9aaf998f1487831a",
+    "results_micro_log": "032118cf57ed9307a4046f45ea2c929bd377aeb56d15a1a72b56b91da835458e"
+  },
+  "tooling": {
+    "cargo": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+    "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "deno": "deno 2.9.7 (stable, release, aarch64-apple-darwin)",
+    "python": "Python 3.14.3"
+  },
+  "git_head": "ac5a325b4f5b89274b12a28b0a54a2f59d47965f",
+  "git_dirty": true,
+  "platform": "Darwin arm64",
+  "loadavg_before": [
+    17.01416015625,
+    21.5009765625,
+    32.046875
+  ],
+  "finished_at": "2026-10-01T11:57:00-0300",
+  "loadavg_after": [
+    18.4541015625,
+    21.724609375,
+    32.06396484375
+  ]
+}

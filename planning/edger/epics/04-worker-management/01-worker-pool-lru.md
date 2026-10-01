@@ -82,3 +82,7 @@ cargo clippy -p edger-worker -- -D warnings
 cargo fmt -- --check
 bun test
 ```
+
+## Follow-up 2026-10-01 — readmissão após evicção
+
+Correção local aprovada; benchmarks de seleção e HTTP executados, com readmissão após 40 versões e zero falhas em 1.486 requests. Revisão final aprovada e gates verdes; concluído localmente. O teto LRU não bloqueia permanentemente uma versão removida por capacidade. Evidência e critérios em `../../status/evidence/lru-readmission-benchmarks-2026-10-01.md`. Nenhuma publicação ou implantação faz parte desta entrega.

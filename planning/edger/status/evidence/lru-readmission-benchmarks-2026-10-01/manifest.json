@@ -1,0 +1,38 @@
+{
+  "scope": "local, sequential, no deploy",
+  "result_sha256": {
+    "http-results.json": "161f7e1424a620406e60324f359e67114d1e093bfb202a4dd446defe1152fe62",
+    "routing-provenance.json": "2af7c4d974ecdf903d0ae2c3cca64722e356c339631ba5ff5042293d0efe5791",
+    "http-results.csv": "4ea10834d068bce74196e4df9d97e90e9d86896240ed3527204b4decc60a3172",
+    "refinement-report.txt": "7a0f491cf9d2e4748030aa9b368134a3289269efa641b2f80231893718e54e3e",
+    "cache-cleanup-final.json": "bc0fdafa759cce1255bb86b0bfd4276ac1fbd0837d8dab1ddc8d30cc841e5f07",
+    "cargo-launch-proof.json": "1e60c5d7719faef6702a2ae1a3afe6ee7daefc51494a209fef2673667f8eed7d",
+    "routing.json": "9140c50a3b184259e2edd9e60a1cacde38387604a9f675ab9aaf998f1487831a"
+  },
+  "source_sha256": {
+    "crates/edger-worker/src/pool.rs": "1c246316688d3294a4a2e2691505ce7f52a7840dcfeae8acf829e8f193e77d7d",
+    "crates/edger-worker/src/lru.rs": "c071a21734a292bca48463f845e7aa52f5c870354c85930cb5261bec4e758ffb",
+    "crates/edger-worker/tests/pool_lru_readmission.rs": "c986f0acd8054c0c4a93d046e82d0ecb606b6ab44a7f5284754603b58f315a3c",
+    "crates/edger-orchestrator/examples/version-routing-benchmark.rs": "1bfd6673f2d2c2385487c8f994381cad6db8e590b6dad92a45e13f65064da8d9",
+    "scripts/benchmark-version-http.py": "a6d3d9db97c13198f69b323e1a696883d3643e1071ca827ffd172032dddd433c"
+  },
+  "provenance": "Measured micro binary hash before/after/current identical; see routing-provenance.json. HTTP provenance embedded in http-results.json.",
+  "retained_measured_binaries": {
+    "edger": {
+      "path": "/tmp/edger-version-bench-binaries-20261001/edger",
+      "sha256": "26e8b45b7077812e1404eabfb2455f6ef74a94ba7861e7a6c2d4a19f79304054"
+    },
+    "version-routing-benchmark": {
+      "path": "/tmp/edger-version-bench-binaries-20261001/version-routing-benchmark",
+      "sha256": "9dfef4ffb4a251629c899931b6d56fec4406eebfc1c13d7c3b80621ffe0b3072"
+    }
+  },
+  "artifact_normalization": {
+    "http-results.csv": {
+      "original_sha256": "24e83d115520ebad6ff07c73050e73d34c3bfb27b9a51011c79a0eaccb7d7ea2",
+      "published_sha256": "4ea10834d068bce74196e4df9d97e90e9d86896240ed3527204b4decc60a3172",
+      "change": "CRLF to LF; parsed CSV rows identical"
+    }
+  },
+  "historical_logs": "Full historical planning logs remain outside this publication because they include prior console work excluded from this branch."
+}

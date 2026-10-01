@@ -16,6 +16,8 @@
 - Worker dir must have index.{ts,js,mjs} compatible with Deno.serve or export default { fetch }
 - JS/TS workers execute by default in persistent Deno processes (`deno` on PATH or `EDGER_DENO_BIN`); `EDGER_JS_RUNTIME=bridge` is the emergency CLI fallback. Do not reintroduce a Bun adapter.
 
+- LRU capacity eviction is recoverable: a later request may readmit the same app/version into a new group. Evicted groups refuse new slots; in-flight dispatch completes before process cleanup. The default capacity of 32 bounds cached groups, not total memory or all transient in-flight processes. See `planning/edger/status/evidence/lru-readmission-benchmarks-2026-10-01.md` (local proof).
+
 ## Tenant routing and weighted rollout (Epic 25)
 - Two independent flags, `EDGER_TENANT_ROUTING_ENABLED` and `EDGER_WEIGHTED_ROUTING_ENABLED`, default off. Tenant off needs no Tenancit setup; tenant on uses `/v1/identify` with a token file from an existing Secret.
 - A tenant allowlist gates the app before worker dispatch; hostname identifies domain context, while the worker authenticates people. Explicit `@version` bypasses weights only. Policies are local files and do not synchronize replicas.

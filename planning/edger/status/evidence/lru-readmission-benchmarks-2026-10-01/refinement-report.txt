@@ -1,0 +1,9 @@
+/agile-refinement Mode 1 — follow-up LRU 2026-10-01
+Scope: changed follow-up in roadmap, Epic04 overview/story01, evidence document and result artifacts. Historical foundation text is preserved; whole-tree mechanical lint runs separately.
+Cross-references: source/test/harness paths and evidence links exist.
+Dependencies/scope: existing worker pool; no new dependency, core I/O or routing opt-in. Benchmark preparation precedes execution after approved fix.
+Completeness: measurable criteria; correction/13 tests/red-green/prewarm contraproof/final review recorded. Benchmark JSON/CSV, sample sizes/units, source hashes and limitations preserved. Final methodology review PASS with zero findings; final measurements/provenance preserved.
+Traceability/format: dated evidence linked from roadmap and owning Epic04. No UI changes or business-rule invention in this follow-up. Synthetic UUIDs are process-generation oracles; no credentials copied.
+Consistency/staleness: historical completion unchanged; follow-up state matches reviewed final measurements and local completion. Unrelated dirty changes preserved.
+Scope conflicts: no commit, deploy or unrelated auth/UI changes.
+VERDICT: PASS
