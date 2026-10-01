@@ -176,7 +176,12 @@ async fn lru_evicts_oldest_when_full() {
     pool.get_or_create(&w2).await.unwrap();
     pool.get_or_create(&w3).await.unwrap();
 
-    assert!(pool.get_or_create(&w1).await.is_err());
+    // Eviction by capacity is recoverable: the next request to the evicted
+    // identity cold-starts a fresh group instead of failing permanently, and
+    // the group cap is preserved (no 4th group enters the cache).
+    let readmitted = pool.get_or_create(&w1).await.unwrap();
+    assert_eq!(readmitted.worker_ref.name, "worker-a");
+    assert_eq!(pool.len(), 2);
     assert!(pool.get_or_create(&w2).await.is_ok());
     assert!(pool.get_or_create(&w3).await.is_ok());
 }

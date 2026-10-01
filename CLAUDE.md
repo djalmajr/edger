@@ -31,6 +31,8 @@
 - **Legacy fallback:** `EDGER_JS_RUNTIME=bridge` forces the v1 per-request CLI bridge (`deno run` per request, bounded-first-chunk streaming). It is retained as an emergency fallback only; the persistent process is the supported path. Embedding `deno_core` was evaluated and rejected in favor of the durable multi-process design; do not reintroduce a Bun adapter.
 - Workers may export `routes` (Bun.serve-style: exact > `:param` > `*` wildcard, per-method maps, `fetch` fallback) in addition to `Deno.serve`/default fetch.
 
+- LRU capacity eviction is recoverable: a later request may readmit the same app/version into a new group. Evicted groups refuse new slots; in-flight dispatch completes before process cleanup. The default capacity of 32 bounds cached groups, not total memory or all transient in-flight processes. See `planning/edger/status/evidence/lru-readmission-benchmarks-2026-10-01.md` (local proof).
+
 ## Tenant routing and weighted rollout (Epic 25)
 - `EDGER_TENANT_ROUTING_ENABLED` and `EDGER_WEIGHTED_ROUTING_ENABLED` are independent opt-ins, both off by default. Tenant off requires no Tenancit URL or token.
 - Tenant allowlists are policies per full app name in `.edger-routing`; only root may PUT/DELETE them. `GET /v1/identify` confirms hostname-to-tenant context, not user membership. A restricted app fails closed if identify fails; worker auth still protects people and data. Never trust visitor `x-tenant-id`.

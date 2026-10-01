@@ -1,0 +1,14 @@
+scenario,v,phase,class,n,measured_ok,errors,mismatches,app_bad,empty_instance,divergent_generation,retries_total,is_point,point_ms,p50_ms,p95_ms,p99_ms,mean_ms,min_ms,max_ms
+churn,40,churn-sweep,cold,40,40,0,0,0,0,0,0,False,,82.14,103.384,128.96,85.561,69.692,128.96
+churn,40,post-readmission-warm,warm,1,1,0,0,0,0,0,0,True,0.533,,,,,,
+churn,40,readmission,cold,1,1,0,0,0,0,0,0,True,56.503,,,,,,
+churn,40,warm-control,warm,1,1,0,0,0,0,0,0,True,0.728,,,,,,
+hot-single,1,hot-default,warm,180,180,0,0,0,0,0,0,False,,0.204,0.542,1.015,0.25,0.12,1.017
+hot-single,1,hot-pinned,cold,1,1,0,0,0,0,0,0,True,93.711,,,,,,
+hot-single,1,hot-pinned,warm,180,180,0,0,0,0,0,0,False,,0.219,0.61,0.822,0.256,0.139,0.949
+hot-single,10,hot-default,warm,180,180,0,0,0,0,0,0,False,,0.238,1.056,1.625,0.363,0.121,1.956
+hot-single,10,hot-pinned,cold,1,1,0,0,0,0,0,0,True,99.173,,,,,,
+hot-single,10,hot-pinned,warm,180,180,0,0,0,0,0,0,False,,0.209,0.424,0.808,0.238,0.118,0.814
+hot-single,100,hot-default,warm,180,180,0,0,0,0,0,0,False,,0.162,0.334,0.839,0.194,0.114,1.091
+hot-single,100,hot-pinned,cold,1,1,0,0,0,0,0,0,True,126.016,,,,,,
+hot-single,100,hot-pinned,warm,180,180,0,0,0,0,0,0,False,,0.322,1.262,7.084,0.575,0.141,8.221
