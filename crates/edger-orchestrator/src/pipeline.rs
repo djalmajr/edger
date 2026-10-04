@@ -12,10 +12,14 @@ use edger_core::{
 };
 use edger_worker::{WorkerError, WorkerPool};
 use serde_json::json;
+use tower_http::compression::predicate::Predicate;
 use tower_http::trace::TraceLayer;
 
 use crate::admin_api;
 use crate::auth::ControlAuth;
+use crate::compression::{
+    compression_layer, mark_app_response, mark_worker_without_encoding, weaken_worker_etag,
+};
 use crate::manifest_index_stub::ManifestIndex;
 use crate::metrics::{
     cron_metrics_prometheus, metrics_stats_response, pool_metrics_prometheus,
@@ -76,6 +80,15 @@ pub fn build_pipeline(state: OrchestratorState) -> Router {
             state.clone(),
             owned_host_middleware,
         ))
+        // EDG-2/EDG-3: compression (brotli + gzip) sits OUTSIDE
+        // `owned_host_middleware` — covering the fallback and owned domains —
+        // and INSIDE `request_metrics_middleware`. Only responses marked as
+        // app (`pipeline_handler`) are compressed; the control plane passes
+        // through untouched. Immediately outside the compression layer, the
+        // ETag middleware weakens a worker's strong ETag once compression
+        // changed the content-coding.
+        .layer(compression_layer())
+        .layer(axum::middleware::from_fn(weaken_worker_etag))
         .layer(axum::middleware::from_fn_with_state(
             metrics_state,
             request_metrics_middleware,
@@ -208,6 +221,10 @@ async fn owned_host_middleware(
     }
 }
 
+/// Every response this handler produces — worker responses and pipeline
+/// errors alike — is marked with the `AppResponse` extension: it is the only
+/// data the EDG-2 compression predicate uses to decide a response belongs to
+/// an app and may be compressed.
 async fn pipeline_handler(
     State(state): State<OrchestratorState>,
     req: Request<Body>,
@@ -216,11 +233,24 @@ async fn pipeline_handler(
         request_id_from_headers(req.headers()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     match handle_request(&state, req, request_id.clone()).await {
-        Ok(res) => res,
+        Ok(mut res) => {
+            mark_app_response(&mut res);
+            // The worker produced this body WITHOUT a content-encoding:
+            // record it, so the ETag-weakening middleware knows a later
+            // compression transforms the representation and must downgrade
+            // a strong ETag. Responses already carrying a content-encoding
+            // keep their validator intact.
+            if !res.headers().contains_key(header::CONTENT_ENCODING) {
+                mark_worker_without_encoding(&mut res);
+            }
+            res
+        }
         Err(err) => {
             let status = map_error_status(&err);
             log_operational_error("pipeline", Some(&request_id), status, &err);
-            error_response(status, &err)
+            let mut res = error_response(status, &err);
+            mark_app_response(&mut res);
+            res
         }
     }
 }
@@ -542,6 +572,25 @@ async fn dispatch_worker(
     let trace_id = trace_id_from_headers(req.headers());
     #[cfg(feature = "otel")]
     attach_remote_trace_parent(req.headers());
+    // Conditional revalidation (RFC 9110 §13.1.2, EDG-5 part 2): the method
+    // and If-None-Match must be read BEFORE the request is consumed by the
+    // dispatch below — the buffered response is turned into a 304 Not
+    // Modified at the response conversion using these values.
+    let conditional_method = req.method().to_string();
+    // If-None-Match is a list field and may arrive as several header lines;
+    // RFC 9110 §5.2 makes a repeated field equivalent to the comma-joined
+    // value in received order, so join every value BEFORE the parser sees it.
+    // If any value is not valid header text the header is malformed and must
+    // never yield a 304 (a malformed validator is a "no match").
+    let if_none_match = req
+        .headers()
+        .get_all("if-none-match")
+        .into_iter()
+        .map(|value| value.to_str())
+        .collect::<Result<Vec<&str>, _>>()
+        .ok()
+        .filter(|values| !values.is_empty())
+        .map(|values| values.join(", "));
     let DispatchParams {
         request_id,
         worker,
@@ -739,7 +788,65 @@ async fn dispatch_worker(
     );
 
     let mut response = match worker_response {
-        edger_core::WorkerResponse::Buffered(response) => serialized_to_axum(response)?,
+        edger_core::WorkerResponse::Buffered(response) => {
+            // Only a BUFFERED response can be short-circuited to a 304: its
+            // status and headers fully describe the representation a client
+            // already has. Streams are never short-circuited — the body may
+            // not have been fully read. A 304 carries no body and only the
+            // revalidation fields; it is built BEFORE the cohort Set-Cookie
+            // append and the pipeline_handler markers (AppResponse /
+            // x-request-id), so those survive on the 304 as well.
+            let not_modified = crate::conditional::should_not_modify(
+                &conditional_method,
+                if_none_match.as_deref(),
+                response.status,
+                &response.headers,
+            );
+            if not_modified {
+                // A 304 must carry the `Vary` the 200 of the SAME request
+                // would carry. The tower-http compression layer appends
+                // `Vary: Accept-Encoding` to a 200 whenever the EDG-2
+                // predicate deems it eligible (even when the client asks for
+                // no compression) but never to a 304 (bodyless, skipped). So
+                // evaluate the ORIGINAL 200's eligibility as it would be
+                // marked AppResponse — that marker is applied by
+                // pipeline_handler AFTER dispatch_worker returns — and, if
+                // eligible, make sure the 304 lists accept-encoding in Vary,
+                // without duplicating or dropping existing Vary fields.
+                let mut original_200 = serialized_to_axum(response.clone())?;
+                mark_app_response(&mut original_200);
+                // Mirror the tower-http compression layer's guards exactly
+                // (future.rs: `content-encoding` and `content-range` are
+                // rejected BEFORE the predicate runs, and the predicate does
+                // not see either header). A 200 that already carries one of
+                // them is never compressed, so its 304 must not announce
+                // `Vary: accept-encoding` either.
+                let headers = original_200.headers();
+                let compressible = !headers.contains_key(header::CONTENT_ENCODING)
+                    && !headers.contains_key(header::CONTENT_RANGE)
+                    && crate::compression::app_response_predicate().should_compress(&original_200);
+                let not_modified = crate::conditional::build_not_modified(&response);
+                let response = serialized_to_axum(not_modified)?;
+                let response = if compressible {
+                    response_with_vary_accept_encoding(response)
+                } else {
+                    response
+                };
+                // RFC 9110 §15.4.5: a 304 must not carry representation-data
+                // fields. Axum stamps `content-length: 0` on any exact-size
+                // empty body at the top-level route (outside every
+                // middleware), so the 304 body is an empty stream with an
+                // unknown — not exact — size, which keeps that header from
+                // being injected.
+                response.map(|_| {
+                    Body::from_stream(futures_util::stream::empty::<
+                        std::result::Result<bytes::Bytes, std::io::Error>,
+                    >())
+                })
+            } else {
+                serialized_to_axum(response)?
+            }
+        }
         edger_core::WorkerResponse::Streamed(streamed) => crate::wire::streamed_to_axum(streamed)?,
     };
     if let Some(cookie) = cohort_cookie {
@@ -748,6 +855,34 @@ async fn dispatch_worker(
         }
     }
     Ok(response)
+}
+
+/// Ensure `accept-encoding` is listed in the response's `Vary`. Mirrors the
+/// rule the tower-http compression layer applies to a compressible 200: it
+/// appends `Vary: Accept-Encoding` unless some Vary value already contains
+/// "accept-encoding" (case-insensitive). Existing Vary fields are preserved.
+fn response_with_vary_accept_encoding(mut res: Response<Body>) -> Response<Body> {
+    const NEEDLE: &[u8] = b"accept-encoding";
+    if !res
+        .headers()
+        .get_all(header::VARY)
+        .into_iter()
+        .any(|value| bytes_contains_ignore_ascii_case(value.as_bytes(), NEEDLE))
+    {
+        res.headers_mut()
+            .append(header::VARY, HeaderValue::from_static("accept-encoding"));
+    }
+    res
+}
+
+/// Case-insensitive byte-substring test — the same primitive tower-http uses
+/// when deciding whether to append `Vary: Accept-Encoding`.
+fn bytes_contains_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack.len() >= needle.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 fn trace_id_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {

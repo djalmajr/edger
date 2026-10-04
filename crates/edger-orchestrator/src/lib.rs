@@ -3,6 +3,8 @@
 pub mod admin_api;
 pub mod api_keys;
 pub mod auth;
+pub mod compression;
+mod conditional;
 pub mod console_auth;
 pub mod cron;
 pub mod deploy;

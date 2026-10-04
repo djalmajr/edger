@@ -64,6 +64,10 @@ tempfile = "3"
 
 [dev-dependencies]
 base64 = "0.22"
+# Decoding in the compression tests (EDG-2/EDG-3): the versions are already
+# in Cargo.lock (brotli via tower-http compression-br, flate2 via zip/deflate).
+brotli = "9"
+flate2 = "1"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "multiproc"] }
 rusqlite.workspace = true

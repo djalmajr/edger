@@ -10,6 +10,7 @@ use std::path::{Component, Path, PathBuf};
 
 use bytes::Bytes;
 use edger_core::{is_sensitive_env_key, IsolationError, SerializedResponse, WorkerConfig};
+use sha2::{Digest, Sha256};
 
 pub fn serve_static_spa(
     request_path: &str,
@@ -44,14 +45,28 @@ pub fn serve_static_spa(
         body = transform_entry_html(body, base_href, config);
     }
 
+    let etag = weak_etag(&body);
     Ok(SerializedResponse {
         status: 200,
         headers: vec![
             ("content-type".into(), content_type.into()),
             ("cache-control".into(), cache_control_for(&file_path).into()),
+            ("etag".into(), etag),
         ],
         body: Some(Bytes::from(body)),
     })
+}
+
+/// Weak ETag (`W/"<hex>"`) for a static body: the first 16 hex characters
+/// of the SHA-256 of the FINAL body bytes (after the `<base href>`
+/// injection on the entry HTML). Weak because the compression layer
+/// (tower-http) does not rewrite the ETag when it re-encodes the body; a
+/// weak validator is the correct one across identity/br/gzip variants
+/// (RFC 9110 §8.8.1).
+pub(crate) fn weak_etag(body: &[u8]) -> String {
+    let digest = Sha256::digest(body);
+    let hex = format!("{:x}", digest);
+    format!(r#"W/"{}""#, &hex[..16])
 }
 
 // HTML is the pointer to everything else and must never stick — a stale SPA
@@ -342,9 +357,68 @@ mod tests {
             vec![
                 ("content-type".into(), "text/css; charset=utf-8".into()),
                 ("cache-control".into(), "public, max-age=300".into()),
+                ("etag".into(), weak_etag(b"body{}").into()),
             ]
         );
         assert_eq!(css.body.unwrap().as_ref(), b"body{}");
+    }
+
+    #[test]
+    fn static_spa_stamps_weak_etags_on_assets_and_entry_html() {
+        // ETag is computed on the FINAL bytes: the entry HTML tag must
+        // reflect the <base href> injection, and a different base gives a
+        // different tag.
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("index.html"),
+            r#"<!doctype html><html><head></head><body>app</body></html>"#,
+        )
+        .unwrap();
+        fs::write(root.path().join("index.css"), "body{}").unwrap();
+        fs::write(root.path().join("other.css"), "body{color:red}").unwrap();
+        let config = spa_config(root.path());
+
+        let css = serve_static_spa("/index.css", Some("/todos/"), &config).unwrap();
+        let css_etag = etag_of(&css).to_string();
+        assert!(weak_etag_shape_ok(&css_etag));
+        assert_eq!(css_etag, weak_etag(b"body{}"));
+
+        // Same file served again: same ETag.
+        let css_again = serve_static_spa("/index.css", Some("/todos/"), &config).unwrap();
+        assert_eq!(etag_of(&css_again), css_etag);
+
+        // Different content: different ETag.
+        let other = serve_static_spa("/other.css", Some("/todos/"), &config).unwrap();
+        assert_ne!(etag_of(&other), css_etag);
+
+        // Entry HTML: ETag over the transformed body; a different
+        // <base href> changes the body and therefore the ETag.
+        let html_todos = serve_static_spa("/", Some("/todos/"), &config).unwrap();
+        let html_other = serve_static_spa("/", Some("/other/"), &config).unwrap();
+        let body_todos = html_todos.body.clone().unwrap();
+        let body_other = html_other.body.clone().unwrap();
+        assert!(String::from_utf8_lossy(&body_todos).contains(r#"<base href="/todos/" />"#));
+        assert_eq!(etag_of(&html_todos), weak_etag(body_todos.as_ref()));
+        assert_eq!(etag_of(&html_other), weak_etag(body_other.as_ref()));
+        assert_ne!(etag_of(&html_todos), etag_of(&html_other));
+    }
+
+    fn etag_of(response: &SerializedResponse) -> &str {
+        response
+            .headers
+            .iter()
+            .find(|(name, _)| name == "etag")
+            .map(|(_, value)| value.as_str())
+            .expect("etag header missing")
+    }
+
+    fn weak_etag_shape_ok(value: &str) -> bool {
+        value
+            .strip_prefix(r#"W/""#)
+            .and_then(|rest| rest.strip_suffix('"'))
+            .is_some_and(|inner| {
+                inner.len() == 16 && inner.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
     }
 
     #[test]
