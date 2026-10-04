@@ -4,8 +4,9 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.6` (cPanel language and API key
-management, routing flag state); `v0.3.2-rc.5` (tenant routing, weighted
+Toward 0.3.2. Release candidates: `v0.3.2-rc.7` (compressed app responses,
+static asset revalidation, wasmtime security patch); `v0.3.2-rc.6` (cPanel
+language and API key management, routing flag state); `v0.3.2-rc.5` (tenant routing, weighted
 rollout, console authentication and user management); `v0.3.2-rc.4` (Rust
 1.98 toolchain, rusqlite 0.40); `v0.3.2-rc.3` (tanstack public files,
 type-only bundle deps); `v0.3.2-rc.2` (owned domains, metrics key,
@@ -201,6 +202,22 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.7]
+
+- App responses are compressed with brotli or gzip when the client accepts
+  it, including streamed server-rendered HTML, which is flushed chunk by
+  chunk. Server-sent events, the control plane, already-compressed media,
+  attachments, responses marked `Cache-Control: no-transform` and known-size
+  bodies under 1 KiB are left as they are.
+- A strong `ETag` set by a worker becomes weak when its response is
+  compressed.
+- Static SPA and fullstack files carry a weak `ETag`, and a matching
+  `If-None-Match` revalidation answers 304 Not Modified without a body.
+- A request whose `Accept-Encoding` accepts no supported coding receives 406
+  Not Acceptable.
+- wasmtime moves to 36.0.17 for RUSTSEC-2026-0321, RUSTSEC-2026-0322 and
+  RUSTSEC-2026-0323.
 
 ## [0.3.2-rc.6]
 
