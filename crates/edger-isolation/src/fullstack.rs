@@ -158,11 +158,13 @@ fn serve_fullstack_file(
         let entry_base_href = base_href(&base_path);
         body = crate::static_spa::transform_entry_html(body, Some(&entry_base_href), config);
     }
+    let etag = crate::static_spa::weak_etag(&body);
     Ok(SerializedResponse {
         status: 200,
         headers: vec![
             ("content-type".into(), content_type.into()),
             ("cache-control".into(), cache_control_for(path).into()),
+            ("etag".into(), etag),
         ],
         body: Some(Bytes::from(body)),
     })
@@ -493,6 +495,88 @@ mod tests {
 
         assert_eq!(res.status, 200);
         assert_eq!(res.body.unwrap().as_ref(), b"body{}");
+    }
+
+    #[test]
+    fn fullstack_assets_and_entry_html_carry_weak_etags() {
+        // The ETag is computed on the FINAL body bytes: for the entry HTML
+        // it reflects the <base href> injection, so a different base gives
+        // a different tag.
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/assets")).unwrap();
+        fs::write(root.path().join("client/assets/app.css"), "body{}").unwrap();
+        fs::write(
+            root.path().join("client/index.html"),
+            r#"<!doctype html><html><head><base href="/old/" /></head><body></body></html>"#,
+        )
+        .unwrap();
+        let config = config(root.path());
+
+        let css = try_serve_fullstack_asset(&req("/assets/app.css"), &config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            css.headers,
+            vec![
+                ("content-type".into(), "text/css; charset=utf-8".into()),
+                (
+                    "cache-control".into(),
+                    "public, max-age=31536000, immutable".into()
+                ),
+                (
+                    "etag".into(),
+                    crate::static_spa::weak_etag(b"body{}").into()
+                ),
+            ]
+        );
+
+        // Same file served again: same ETag.
+        let css_again = try_serve_fullstack_asset(&req("/assets/app.css"), &config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(etag_of(&css_again), etag_of(&css));
+
+        // Entry HTML: ETag over the transformed body (base injected); a
+        // different base path changes the body and therefore the ETag.
+        let html_auto = try_serve_fullstack_asset(&req("/index.html"), &config)
+            .unwrap()
+            .unwrap();
+        let body_auto = html_auto.body.clone().unwrap();
+        assert!(String::from_utf8_lossy(&body_auto).contains(r#"<base href="/tanstack-demo/" />"#));
+        assert_eq!(
+            etag_of(&html_auto),
+            crate::static_spa::weak_etag(body_auto.as_ref())
+        );
+
+        let fixed = config_from_manifest(
+            root.path(),
+            WorkerManifest {
+                name: "tanstack-demo".into(),
+                adapter: Some("tanstack".into()),
+                base_path: Some("/fixed-app".into()),
+                client_dir: Some("client".into()),
+                kind: Some("fullstack".into()),
+                ssr_entrypoint: Some("server/server.js".into()),
+                ..WorkerManifest::default()
+            },
+        );
+        let html_fixed = try_serve_fullstack_asset(&req("/index.html"), &fixed)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            etag_of(&html_fixed),
+            crate::static_spa::weak_etag(html_fixed.body.as_ref().unwrap())
+        );
+        assert_ne!(etag_of(&html_auto), etag_of(&html_fixed));
+    }
+
+    fn etag_of(response: &SerializedResponse) -> &str {
+        response
+            .headers
+            .iter()
+            .find(|(name, _)| name == "etag")
+            .map(|(_, value)| value.as_str())
+            .expect("etag header missing")
     }
 
     #[test]

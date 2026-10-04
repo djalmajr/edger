@@ -39,3 +39,4 @@ edger-bin
 # Local Claude Code config
 .claude/
 .herdr-agents/
+.herdr-soho/

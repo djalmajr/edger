@@ -9,7 +9,7 @@
 - Run `bun test` only if a root JS/TS test suite exists; the historical Bun adapter is removed.
 - Small behavior preserving changes.
 - Preserve worker/extension isolation.
-- Update this, roadmap, epics and status when state changes.
+- Update this file and the Cinzel planning (see Process) when state changes.
 - Use explicit memory scopes (workspace: "djalmajr", project: "edger") for ai-memory.
 - For buntime cross-ref use zommehq/buntime scope explicitly.
 - Persist important validated architectural, operational and product findings in ai-memory after verification; do not save transient hypotheses or routine progress as durable knowledge.
@@ -49,6 +49,9 @@
 - Naming: kebab for files, Pascal types, camel funcs.
 
 ## Process
+- **Cinzel is the planning source of truth** (dogfood): workspace `djalmajr`, team EdgeR (`EDG`), MCP `https://cinzel.app/mcp` with `Authorization: Bearer` (key outside the repo, `~/.config/cinzel/agent.key`). Projects, milestones (phases), issues (`story`/`task`/`spike`/`bug`, code in the title such as `S1.2 ...`), `blocks` relations, progress and review notes appended to the issue description, research as `research` artifacts linked to the project.
+- New initiatives start in Cinzel, not in `planning/edger/`. `planning/edger/` keeps history (epics 1-26), docs and evidence.
+- If something cannot be stored in Cinzel, report the gap to the Cinzel orchestrator (Herdr peer `mac/w7:pKP`) for Cinzel to implement or fix, keep it temporarily in `.agents/plans/`, continue, and move it into Cinzel once the Cinzel orchestrator says it is ready.
 - Follow agile flow: intake/roadmap/epic/story/tdd/status/refinement.
 - Update docs as progress; lint to prevent staleness.
 - Evidence for launches: capture bodies to scratch or logs.
