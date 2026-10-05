@@ -262,6 +262,8 @@ impl Isolate for NumberedStreamingIsolate {
                 status: 200,
                 headers: vec![],
                 body: pending_body_stream(),
+                completed: None,
+                production_complete: None,
             }));
         }
         self.execute_fetch(req, config)

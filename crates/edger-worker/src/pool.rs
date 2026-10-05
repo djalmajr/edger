@@ -800,13 +800,39 @@ impl WorkerPool {
                     _dispatch_slot: dispatch_slot,
                     isolate_guard: Some(isolate_guard),
                 };
+                // Production-complete signal (EDG-8): the body, the signal
+                // observer and the flag-checked drop/error paths share the
+                // dispatch state and race to take it exactly once. The flag
+                // guarantees a drop after a clean production end can never
+                // recycle the (in-sync, reusable) process — whoever wins the
+                // race drives the SAME lifecycle.
+                let shared_state = Arc::new(Mutex::new(Some(state)));
+                if let Some(signal) = streamed.completed {
+                    let observer = Arc::clone(&shared_state);
+                    tokio::spawn(async move {
+                        if signal.await {
+                            // Production completed (clean end frame): release
+                            // the slot and isolate NOW, even though a slow
+                            // client may still be downloading the buffered
+                            // tail from memory.
+                            if let Some(state) = take_stream_state(&observer) {
+                                complete_stream_state(state).await;
+                            }
+                        }
+                        // `false`: production did not complete cleanly; the
+                        // body's own error/end/drop path owns the lifecycle.
+                    });
+                }
                 Ok(WorkerResponse::Streamed(StreamedResponse {
                     status: streamed.status,
                     headers: streamed.headers,
                     body: Box::pin(GuardedBody {
                         inner: streamed.body,
-                        state: Some(state),
+                        state: shared_state,
+                        production_complete: streamed.production_complete,
                     }),
+                    completed: None,           // consumed by the observer above
+                    production_complete: None, // consumed by the guarded body
                 }))
             }
             Err(err) => {
@@ -1385,10 +1411,34 @@ impl Drop for DispatchSlot {
     }
 }
 
-/// Body stream wrapper enforcing the lifecycle above.
+/// Body stream wrapper enforcing the lifecycle above. `state` is shared with
+/// the production-complete signal observer (EDG-8): whichever of the three
+/// takes it first (clean end, signal, or early drop/error) drives the
+/// lifecycle. The `production_complete` flag (set by the producer on a clean
+/// end frame, BEFORE the signal fires) settles the race: a body that is
+/// dropped or errors AFTER production completed must COMPLETE the dispatch
+/// (the socket is in sync, the process reusable) — never recycle it.
 struct GuardedBody {
     inner: BodyStream,
-    state: Option<StreamDispatchState>,
+    state: Arc<Mutex<Option<StreamDispatchState>>>,
+    production_complete: Option<Arc<AtomicBool>>,
+}
+
+fn take_stream_state(state: &Mutex<Option<StreamDispatchState>>) -> Option<StreamDispatchState> {
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
+/// Drive the lifecycle for a taken dispatch state: complete when production
+/// finished cleanly (socket in sync, process reusable), recycle otherwise.
+fn finish_stream_state(state: StreamDispatchState, production_completed: bool) {
+    if production_completed {
+        tokio::spawn(complete_stream_state(state));
+    } else {
+        tokio::spawn(recycle_stream_state(state));
+    }
 }
 
 impl futures_core::Stream for GuardedBody {
@@ -1401,13 +1451,17 @@ impl futures_core::Stream for GuardedBody {
         match self.inner.as_mut().poll_next(cx) {
             std::task::Poll::Ready(Some(Ok(chunk))) => std::task::Poll::Ready(Some(Ok(chunk))),
             std::task::Poll::Ready(Some(Err(err))) => {
-                if let Some(state) = self.state.take() {
-                    tokio::spawn(recycle_stream_state(state));
+                // Mid-stream error: normally a desynced socket (recycle) —
+                // UNLESS production had already completed cleanly, in which
+                // case the socket is in sync and the process stays put.
+                let production_completed = self.production_completed();
+                if let Some(state) = take_stream_state(&self.state) {
+                    finish_stream_state(state, production_completed);
                 }
                 std::task::Poll::Ready(Some(Err(err)))
             }
             std::task::Poll::Ready(None) => {
-                if let Some(state) = self.state.take() {
+                if let Some(state) = take_stream_state(&self.state) {
                     tokio::spawn(complete_stream_state(state));
                 }
                 std::task::Poll::Ready(None)
@@ -1419,11 +1473,24 @@ impl futures_core::Stream for GuardedBody {
 
 impl Drop for GuardedBody {
     fn drop(&mut self) {
-        // Dropped before end-of-stream: the client disconnected while frames
-        // were in flight — the process socket cannot be reused.
-        if let Some(state) = self.state.take() {
-            tokio::spawn(recycle_stream_state(state));
+        // Dropped before end-of-stream: normally the client disconnected while
+        // frames were in flight — the process socket cannot be reused (recycle).
+        // When production had ALREADY completed (flag set), the socket is in
+        // sync and the process must COMPLETE, not recycle — even if the
+        // signal observer has not run yet.
+        let production_completed = self.production_completed();
+        if let Some(state) = take_stream_state(&self.state) {
+            finish_stream_state(state, production_completed);
         }
+    }
+}
+
+impl GuardedBody {
+    /// The shared production-complete flag, read without blocking.
+    fn production_completed(&self) -> bool {
+        self.production_complete
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
     }
 }
 
@@ -1598,5 +1665,243 @@ impl Drop for DispatchCancelGuard<'_> {
         if self.armed {
             self.pool.recycle_cancelled(&self.instance);
         }
+    }
+}
+
+#[cfg(test)]
+mod stream_drop_flag_tests {
+    //! EDG-8: a body dropped AFTER production completed must COMPLETE the
+    //! dispatch (the process socket is in sync and the process reusable),
+    //! never recycle it — even when the drop wins the race against the
+    //! completion-signal observer.
+
+    use super::*;
+    use edger_core::{CompletionSignal, IsolationError};
+    use std::task::{Context, Poll};
+
+    /// Body that yields exactly one chunk and then stays open (pending
+    /// forever), so a drop — not an end-of-stream — decides the lifecycle.
+    struct OneThenPendingBody {
+        consumed: bool,
+    }
+
+    impl futures_core::Stream for OneThenPendingBody {
+        type Item = Result<Bytes, IsolationError>;
+
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Self::Item>> {
+            if self.consumed {
+                Poll::Pending
+            } else {
+                self.consumed = true;
+                Poll::Ready(Some(Ok(Bytes::from_static(b"chunk-0"))))
+            }
+        }
+    }
+
+    /// Deterministic interleaving fixture: production has ALREADY completed
+    /// (the flag is set) but the completion signal is still PENDING, so the
+    /// drop path — not the signal observer — is the one that decides the
+    /// lifecycle.
+    #[derive(Default)]
+    struct DropFlagFixture {
+        fire: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
+        terminated: std::sync::atomic::AtomicUsize,
+    }
+
+    struct DropFlagFactory {
+        fixture: Arc<DropFlagFixture>,
+    }
+
+    struct DropFlagIsolate {
+        fixture: Arc<DropFlagFixture>,
+        fire_rx: Option<tokio::sync::oneshot::Receiver<bool>>,
+    }
+
+    impl IsolateFactory for DropFlagFactory {
+        fn create_isolate(&self, _worker_ref: &WorkerRef) -> Box<dyn Isolate> {
+            let (fire_tx, fire_rx) = tokio::sync::oneshot::channel::<bool>();
+            self.fixture.fire.lock().unwrap().replace(fire_tx);
+            Box::new(DropFlagIsolate {
+                fixture: Arc::clone(&self.fixture),
+                fire_rx: Some(fire_rx),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Isolate for DropFlagIsolate {
+        async fn execute_fetch(
+            &mut self,
+            _req: SerializedRequest,
+            _config: &WorkerConfig,
+        ) -> Result<SerializedResponse, IsolationError> {
+            Err(IsolationError::new(
+                "NOT_STREAM",
+                "fixture only streams /stream",
+            ))
+        }
+
+        async fn execute_routes(
+            &mut self,
+            req: SerializedRequest,
+            config: &WorkerConfig,
+        ) -> Result<SerializedResponse, IsolationError> {
+            self.execute_fetch(req, config).await
+        }
+
+        async fn serve_static_spa(
+            &mut self,
+            _path: &str,
+            _base_href: Option<&str>,
+            config: &WorkerConfig,
+        ) -> Result<SerializedResponse, IsolationError> {
+            self.execute_fetch(
+                SerializedRequest {
+                    method: "GET".into(),
+                    uri: "/".into(),
+                    headers: vec![],
+                    body: None,
+                    request_id: "spa".into(),
+                    base_href: None,
+                },
+                config,
+            )
+            .await
+        }
+
+        async fn execute_wasm(
+            &mut self,
+            req: SerializedRequest,
+            config: &WorkerConfig,
+        ) -> Result<SerializedResponse, IsolationError> {
+            self.execute_fetch(req, config).await
+        }
+
+        async fn execute_fetch_stream(
+            &mut self,
+            req: SerializedRequest,
+            config: &WorkerConfig,
+        ) -> Result<WorkerResponse, IsolationError> {
+            if req.uri != "/stream" {
+                return self
+                    .execute_fetch(req, config)
+                    .await
+                    .map(WorkerResponse::Buffered);
+            }
+            // Production has ALREADY completed (flag `true`), but the signal
+            // is still PENDING: the observer cannot take the dispatch state
+            // before the body is dropped.
+            let flag = Arc::new(AtomicBool::new(true));
+            let fire_rx = self.fire_rx.take().expect("signal created by the factory");
+            let signal: CompletionSignal =
+                Box::pin(async move { fire_rx.await.is_ok_and(|ok| ok) });
+            Ok(WorkerResponse::Streamed(StreamedResponse {
+                status: 200,
+                headers: vec![],
+                body: Box::pin(OneThenPendingBody { consumed: false }),
+                completed: Some(signal),
+                production_complete: Some(flag),
+            }))
+        }
+
+        async fn terminate(&mut self) -> Result<(), IsolationError> {
+            self.fixture.terminated.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    // Mutation captured (EDG-8, review P2 #3): a drop path that IGNORES the
+    // production-complete flag recycles the in-sync, reusable process. The
+    // current-thread runtime plus the pending signal make the interleaving
+    // deterministic: the DROP is the one that takes the state, and it must
+    // COMPLETE (Idle), never terminate.
+    #[tokio::test(flavor = "current_thread")]
+    async fn drop_after_production_complete_completes_instead_of_recycling() {
+        let fixture = Arc::new(DropFlagFixture::default());
+        let pool = WorkerPool::with_factory(
+            PoolConfig {
+                max_size: 16,
+                ephemeral_concurrency: 4,
+                ephemeral_queue_limit: 8,
+            },
+            Arc::new(DropFlagFactory {
+                fixture: Arc::clone(&fixture),
+            }),
+        );
+        let worker_ref = create_worker_ref(
+            std::path::PathBuf::from("/workers/edg8-flag-drop"),
+            WorkerManifest {
+                name: "edg8-flag-drop".into(),
+                max_processes: Some(1),
+                ttl: Some(serde_yaml::Value::String("30s".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let req = SerializedRequest {
+            method: "GET".into(),
+            uri: "/stream".into(),
+            headers: vec![],
+            body: None,
+            request_id: "edg8-flag-drop".into(),
+            base_href: None,
+        };
+
+        let streamed = pool
+            .fetch_worker_stream(&worker_ref, req, Some(ExecutionKind::FetchHandler))
+            .await
+            .unwrap();
+        let StreamedResponse { body, .. } = match streamed {
+            WorkerResponse::Streamed(streamed) => streamed,
+            _ => panic!("expected a streamed response"),
+        };
+
+        // The signal is still PENDING, so the signal observer cannot take the
+        // state before the body is dropped. DROP NOW — the drop path is the
+        // one that decides the lifecycle. The flag is set: COMPLETE, never
+        // recycle.
+        drop(body);
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            fixture.terminated.load(Ordering::SeqCst),
+            0,
+            "a drop after production completed must not terminate the isolate"
+        );
+        let stats = pool.worker_stats();
+        assert_eq!(stats.len(), 1, "the instance must still be cached");
+        assert_eq!(
+            stats[0].state,
+            WorkerState::Idle,
+            "the dispatch must COMPLETE (Idle), not recycle"
+        );
+
+        // Fire the signal NOW: the observer takes the state (already taken by
+        // the drop) and must be a no-op — no second lifecycle, no recycle.
+        fixture
+            .fire
+            .lock()
+            .unwrap()
+            .take()
+            .expect("signal still pending")
+            .send(true)
+            .unwrap();
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            fixture.terminated.load(Ordering::SeqCst),
+            0,
+            "the late observer must not double-run the lifecycle"
+        );
+        assert_eq!(
+            pool.worker_stats()[0].state,
+            WorkerState::Idle,
+            "still Idle after the late signal"
+        );
     }
 }
