@@ -4,7 +4,8 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.7` (compressed app responses,
+Toward 0.3.2. Release candidates: `v0.3.2-rc.8` (worker slot released when
+a streamed response is fully produced); `v0.3.2-rc.7` (compressed app responses,
 static asset revalidation, wasmtime security patch); `v0.3.2-rc.6` (cPanel
 language and API key management, routing flag state); `v0.3.2-rc.5` (tenant routing, weighted
 rollout, console authentication and user management); `v0.3.2-rc.4` (Rust
@@ -202,6 +203,19 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.8]
+
+- A streamed response from a persistent Deno worker releases its worker slot
+  as soon as the worker finishes producing it, instead of waiting for the
+  client to download the whole body; the remaining bytes are delivered from
+  memory. A slow client no longer makes other requests to the same worker
+  time out in the queue.
+- `EDGER_STREAM_DETACH_MAX_BYTES` (default 8 MiB, `0` disables) bounds that
+  memory per response and `EDGER_STREAM_DETACH_TOTAL_BYTES` (default 64 MiB)
+  across all responses; a response that does not fit keeps the previous
+  behavior. Server-sent events and other streams without an end keep their
+  slot as before.
 
 ## [0.3.2-rc.7]
 
