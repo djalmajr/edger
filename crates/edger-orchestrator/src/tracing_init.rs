@@ -23,7 +23,7 @@ impl TracingInitConfig {
             .or_else(|| lookup("RUST_LOG"))
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| {
-                "edger_orchestrator=info,edger_worker=info,edger_isolation=info".into()
+                "edger_orchestrator=info,edger_worker=info,edger_isolation=info,edger.dispatch=info".into()
             });
         let endpoint =
             lookup("OTEL_EXPORTER_OTLP_ENDPOINT").filter(|value| !value.trim().is_empty());
@@ -299,6 +299,8 @@ mod tests {
     fn tracing_config_has_safe_default_filter_and_otel_off() {
         let config = TracingInitConfig::from_lookup(|_| None);
         assert!(config.env_filter.contains("edger_orchestrator=info"));
+        // The per-request dispatch log uses its own target and must be on by default.
+        assert!(config.env_filter.contains("edger.dispatch=info"));
         assert!(!config.otel_enabled);
         assert!(config.otel_exporter_otlp_endpoint.is_none());
     }
