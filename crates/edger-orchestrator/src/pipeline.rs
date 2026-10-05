@@ -675,6 +675,9 @@ async fn dispatch_worker(
     let retry_request = serialized.clone();
     let retry_kind_hint = kind_hint.clone();
     let request_method = serialized.method.clone();
+    // (EDG-9) Dispatch telemetry: the worker-relative path WITHOUT its
+    // query string (`rewritten_path` is consumed by `append_query` below).
+    let dispatch_path = serialized.uri.split('?').next().unwrap_or("").to_string();
     let first_attempt = state
         .pool
         .fetch_worker_stream(&worker, serialized, kind_hint)
@@ -727,12 +730,19 @@ async fn dispatch_worker(
                     message: Some(err.message.clone()),
                     truncated: None,
                     dropped_count: None,
+                    // (EDG-9) request facts only — never header values.
+                    method: Some(request_method.clone()),
+                    path: Some(dispatch_path.clone()),
+                    content_type: None,
                 });
             crate::operational_log::log_dispatch_event(
                 &request_id,
                 &worker.name,
                 &worker.version,
                 worker.namespace.as_deref().unwrap_or(""),
+                &request_method,
+                &dispatch_path,
+                None,
                 &err.code,
                 started.elapsed().as_millis() as u64,
                 status,
@@ -744,6 +754,21 @@ async fn dispatch_worker(
     let response_status = match &worker_response {
         edger_core::WorkerResponse::Buffered(response) => response.status,
         edger_core::WorkerResponse::Streamed(response) => response.status,
+    };
+    // (EDG-9) Dispatch telemetry: the response content-type is the worker's
+    // `content-type` header (case-insensitive). Only that single header
+    // value is recorded — never other headers, cookies or auth material.
+    let content_type: Option<String> = match &worker_response {
+        edger_core::WorkerResponse::Buffered(response) => response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.clone()),
+        edger_core::WorkerResponse::Streamed(response) => response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.clone()),
     };
     let duration_ms = started.elapsed().as_millis() as u64;
 
@@ -775,6 +800,10 @@ async fn dispatch_worker(
             message: None,
             truncated: None,
             dropped_count: None,
+            // (EDG-9) request facts + response content-type only.
+            method: Some(request_method.clone()),
+            path: Some(dispatch_path.clone()),
+            content_type: content_type.clone(),
         });
 
     crate::operational_log::log_dispatch_event(
@@ -782,6 +811,9 @@ async fn dispatch_worker(
         &worker.name,
         &worker.version,
         worker.namespace.as_deref().unwrap_or(""),
+        &request_method,
+        &dispatch_path,
+        content_type.as_deref(),
         "ok",
         duration_ms,
         response_status,

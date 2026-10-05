@@ -417,6 +417,9 @@ mod tests {
                 message: Some("authorization=secret-value /Users/private/source.ts".into()),
                 truncated: Some(false),
                 dropped_count: None,
+                method: None,
+                path: None,
+                content_type: None,
             },
         );
         provider.force_flush().expect("flush OTLP trace");
@@ -507,6 +510,9 @@ mod tests {
             message: Some("collector unavailable".into()),
             truncated: Some(false),
             dropped_count: None,
+            method: Some("GET".into()),
+            path: Some("/api/items".into()),
+            content_type: None,
         });
 
         assert_eq!(store.query(Default::default()).events.len(), 1);

@@ -1670,6 +1670,9 @@ async fn execute_worker_health_check(
             message: Some(message.clone()),
             truncated: None,
             dropped_count: None,
+            method: None,
+            path: None,
+            content_type: None,
         });
     Ok(WorkerHealthCheckResult {
         worker: worker.name,
