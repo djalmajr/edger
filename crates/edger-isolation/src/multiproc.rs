@@ -16,9 +16,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use bytes::Bytes;
 use edger_core::{
-    CompletionSignal, DenoCacheMode, Isolate, IsolationError, SerializedRequest,
-    SerializedResponse, StreamedResponse, TerminationOutcome, TerminationReport, WorkerConfig,
-    WorkerResponse,
+    AbandonedStream, CompletionSignal, DenoCacheMode, Isolate, IsolationError, SerializedRequest,
+    SerializedResponse, StreamCompletion, StreamedResponse, TerminationOutcome, TerminationReport,
+    WorkerConfig, WorkerResponse,
 };
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
@@ -172,6 +172,31 @@ pub struct ProcessDrainReport {
     pub timed_out: bool,
 }
 
+/// The classified outcome of a graceful-shutdown handshake (EDG-9):
+/// the termination report must distinguish "no handshake was possible"
+/// (socket not reclaimed — nothing was sent) from "the handshake was
+/// attempted and the ack never arrived in time".
+#[derive(Debug)]
+enum ShutdownHandshake {
+    /// The shutdown control frame was accepted and the worker acked.
+    Acked(ProcessDrainReport),
+    /// The read half could not be reclaimed (poisoned/lost) or the control
+    /// frame could not be written: NO shutdown handshake took place.
+    SocketPoisoned,
+    /// The control frame was written but the ack never arrived within the
+    /// grace budget (+ margin).
+    AckTimedOut,
+}
+
+impl ShutdownHandshake {
+    fn into_acked(self) -> Option<ProcessDrainReport> {
+        match self {
+            ShutdownHandshake::Acked(report) => Some(report),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Deserialize, Default)]
 struct WireEndFrame {
     #[serde(default)]
@@ -182,6 +207,34 @@ struct WireEndFrame {
 const TAG_HEADER: u8 = b'H';
 const TAG_CHUNK: u8 = b'C';
 const TAG_END: u8 = b'E';
+
+/// Abandon-drain policy (EDG-9): when the consumer disappears before the
+/// end frame, the reader keeps reading frames and discarding them — no
+/// budget reservation, no enqueue — until the clean `TAG_END`, so the
+/// process can be reused instead of poisoned and respawned. `0` in either
+/// limit disables the drain (the socket is abandoned and the process
+/// recycled, the pre-EDG-9 behavior).
+#[derive(Clone, Copy, Debug)]
+pub struct AbandonDrain {
+    pub max_bytes: u64,
+    pub max_ms: u64,
+}
+
+impl Default for AbandonDrain {
+    fn default() -> Self {
+        Self {
+            max_bytes: edger_core::STREAM_ABANDON_DRAIN_MAX_BYTES_DEFAULT,
+            max_ms: edger_core::STREAM_ABANDON_DRAIN_MAX_MS_DEFAULT,
+        }
+    }
+}
+
+impl AbandonDrain {
+    /// The drain runs only when BOTH limits are positive.
+    pub fn enabled(self) -> bool {
+        self.max_bytes > 0 && self.max_ms > 0
+    }
+}
 
 /// Snapshot of the stream-detach counters (byte-semaphore budget accounting).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -195,6 +248,19 @@ pub struct StreamDetachStats {
     /// Chunks that had to wait (backpressure) because the process-wide
     /// budget was exhausted.
     pub fallback_budget_total: u64,
+    /// Abandon drains that reached a clean `TAG_END` within the limits: the
+    /// process was reused (EDG-9).
+    pub abandoned_drained_total: u64,
+    /// Abandon drains that stopped past the byte limit (process recycled).
+    pub abandoned_drain_bytes_limit_total: u64,
+    /// Abandon drains that stopped past the time limit (process recycled).
+    pub abandoned_drain_time_limit_total: u64,
+    /// Abandon drains that stopped on a read error, an end frame with an
+    /// error or a protocol error (process recycled).
+    pub abandoned_drain_stream_error_total: u64,
+    /// Abandoned sockets with the drain disabled (a limit of `0`): the
+    /// socket was left mid-response and the process is poisoned (recycled).
+    pub abandoned_socket_poisoned_total: u64,
 }
 
 /// Process-wide budget for the stream-detach pipelines, shared by every
@@ -215,6 +281,11 @@ struct StreamDetachStatsInner {
     detached_total: AtomicU64,
     fallback_cap_total: AtomicU64,
     fallback_budget_total: AtomicU64,
+    abandoned_drained_total: AtomicU64,
+    abandoned_drain_bytes_limit_total: AtomicU64,
+    abandoned_drain_time_limit_total: AtomicU64,
+    abandoned_drain_stream_error_total: AtomicU64,
+    abandoned_socket_poisoned_total: AtomicU64,
 }
 
 impl StreamDetachBudget {
@@ -241,6 +312,23 @@ impl StreamDetachBudget {
             detached_total: self.stats.detached_total.load(Ordering::Acquire),
             fallback_cap_total: self.stats.fallback_cap_total.load(Ordering::Acquire),
             fallback_budget_total: self.stats.fallback_budget_total.load(Ordering::Acquire),
+            abandoned_drained_total: self.stats.abandoned_drained_total.load(Ordering::Acquire),
+            abandoned_drain_bytes_limit_total: self
+                .stats
+                .abandoned_drain_bytes_limit_total
+                .load(Ordering::Acquire),
+            abandoned_drain_time_limit_total: self
+                .stats
+                .abandoned_drain_time_limit_total
+                .load(Ordering::Acquire),
+            abandoned_drain_stream_error_total: self
+                .stats
+                .abandoned_drain_stream_error_total
+                .load(Ordering::Acquire),
+            abandoned_socket_poisoned_total: self
+                .stats
+                .abandoned_socket_poisoned_total
+                .load(Ordering::Acquire),
         }
     }
 
@@ -267,15 +355,52 @@ impl StreamDetachBudget {
             .fallback_budget_total
             .fetch_add(1, Ordering::AcqRel);
     }
+
+    /// Abandon-drain outcome counters (EDG-9): the reader records WHICH
+    /// outcome a consumer-abandoned response ended in; the budget is the
+    /// shared surface the pool/tests can read (the core wire types carry no
+    /// outcome beyond the completion signal).
+    fn record_abandoned_drained(&self) {
+        self.stats
+            .abandoned_drained_total
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn record_abandoned_drain_bytes_limit(&self) {
+        self.stats
+            .abandoned_drain_bytes_limit_total
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn record_abandoned_drain_time_limit(&self) {
+        self.stats
+            .abandoned_drain_time_limit_total
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn record_abandoned_drain_stream_error(&self) {
+        self.stats
+            .abandoned_drain_stream_error_total
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn record_abandoned_socket_poisoned(&self) {
+        self.stats
+            .abandoned_socket_poisoned_total
+            .fetch_add(1, Ordering::AcqRel);
+    }
 }
 
 /// Detach-pipeline policy for one persistent-process isolate: the per-response
 /// buffered cap (`0` disables the pipeline entirely, keeping the legacy
-/// blocking behavior) and the process-wide budget shared by all isolates.
+/// blocking behavior) and the process-wide budget shared by all isolates, plus
+/// the abandon-drain policy (EDG-9) applied when the consumer disappears
+/// before the end frame.
 #[derive(Clone, Debug)]
 pub struct StreamDetach {
     pub max_bytes: u64,
     pub budget: Arc<StreamDetachBudget>,
+    pub drain: AbandonDrain,
 }
 
 /// One item of the detach pipeline's internal FIFO queue. The single queue
@@ -417,15 +542,17 @@ fn permits_for(len: usize, cap: usize) -> u32 {
 
 /// One response's detach-pipeline context, shared by the reader and the
 /// forwarder tasks: the per-response semaphore (and its capacity), the
-/// shared process-wide budget, and the consumer-gone cancellation that the
+/// shared process-wide budget, the consumer-gone cancellation that the
 /// reader's reservation waits select on (so a lost consumer can never leave
-/// the reader parked on a semaphore).
+/// the reader parked on a semaphore), and the abandon-drain policy (EDG-9)
+/// that decides what the reader does once the consumer is gone.
 #[derive(Clone)]
 struct DetachPipeline {
     per_response: Arc<tokio::sync::Semaphore>,
     per_response_cap: usize,
     budget: Arc<StreamDetachBudget>,
     cancel: watch::Receiver<bool>,
+    abandon_drain: AbandonDrain,
 }
 
 /// A streamed response from the worker process: status/headers up front, body
@@ -915,9 +1042,10 @@ impl DenoWorkerProcess {
                     per_response_cap,
                     budget: Arc::clone(&policy.budget),
                     cancel: cancel_rx,
+                    abandon_drain: policy.drain,
                 };
                 let production_complete = Arc::new(AtomicBool::new(false));
-                let (done_tx, done_rx) = oneshot::channel::<bool>();
+                let (done_tx, done_rx) = oneshot::channel::<StreamCompletion>();
 
                 // Reader: reads frames, reserves the chunk's bytes (waits
                 // when no permits are free — the slot stays held), and
@@ -940,9 +1068,12 @@ impl DenoWorkerProcess {
 
                 (
                     Some(Box::pin(async move {
-                        // `false` when the sender was dropped (error end or
-                        // abnormal task exit before a clean end frame).
-                        done_rx.await.is_ok_and(|ok| ok)
+                        // The reader sends the CAUSE on every abandon-drain
+                        // exit (EDG-9) and `Completed` on a clean end;
+                        // the fallback covers an abnormal task exit that
+                        // dropped the sender without reporting (no known
+                        // cause: the pool recycles with what it has).
+                        done_rx.await.unwrap_or(StreamCompletion::Incomplete)
                     }) as CompletionSignal),
                     Some(production_complete),
                 )
@@ -975,23 +1106,39 @@ impl DenoWorkerProcess {
     /// cannot outrun the budget. A clean end frame restores the read half,
     /// sets the shared production-complete flag, enqueues the terminal
     /// marker and only then fires the completion signal.
+    ///
+    /// When the consumer is lost BEFORE the end frame (EDG-9), the reader
+    /// enters discard mode (`drain_on_abandon`) instead of abandoning the
+    /// socket: it keeps reading and discarding frames until the clean
+    /// `TAG_END` (bounded by the drain limits), so the process can be
+    /// reused instead of poisoned.
     async fn detach_reader(
         mut read_half: OwnedReadHalf,
         q_tx: mpsc::UnboundedSender<QueueItem>,
         pipeline: DetachPipeline,
         restore_tx: oneshot::Sender<OwnedReadHalf>,
         production_complete: Arc<AtomicBool>,
-        done_tx: oneshot::Sender<bool>,
+        done_tx: oneshot::Sender<StreamCompletion>,
         frame_timeout: Duration,
     ) {
         loop {
             // Cancellation check BETWEEN frames (frame reads are NOT
-            // cancel-safe, so they never enter the select): if the consumer
-            // is gone, stop reading — no socket restore (frames for THIS
-            // response were in flight; the pool recycles as on a drop
-            // before the signal).
+            // cancel-safe, so they never enter the select): the consumer is
+            // gone. (EDG-9) Do not abandon the socket mid-response — drain
+            // the rest of the response in discard mode so the process can
+            // be reused. No chunk has been read at the loop top: nothing
+            // is pre-discarded.
             if *pipeline.cancel.borrow() {
-                return;
+                return Self::drain_on_abandon(
+                    read_half,
+                    &pipeline,
+                    restore_tx,
+                    production_complete,
+                    done_tx,
+                    frame_timeout,
+                    0,
+                )
+                .await;
             }
             let frame = match tokio::time::timeout(frame_timeout, read_frame(&mut read_half)).await
             {
@@ -1023,11 +1170,23 @@ impl DenoWorkerProcess {
                     // guard rides along in the queue item and returns both
                     // reservations when the item is dropped (delivery,
                     // discard, or early exit). `None` means the consumer
-                    // was lost while reserving: finish without enqueueing
-                    // or restoring (the queue is closed by the forwarder,
-                    // so a send would fail anyway).
-                    let Some(reservations) = reserve_chunk(&pipeline, chunk.len()).await else {
-                        return;
+                    // was lost while reserving: discard this chunk and
+                    // drain the rest of the response (EDG-9). The chunk
+                    // is ALREADY READ and discarded here — count it toward
+                    // the drain's byte budget from the start (captured
+                    // before the chunk is moved below).
+                    let discarded = chunk.len();
+                    let Some(reservations) = reserve_chunk(&pipeline, discarded).await else {
+                        return Self::drain_on_abandon(
+                            read_half,
+                            &pipeline,
+                            restore_tx,
+                            production_complete,
+                            done_tx,
+                            frame_timeout,
+                            discarded,
+                        )
+                        .await;
                     };
                     if q_tx
                         .send(QueueItem::Chunk {
@@ -1036,11 +1195,29 @@ impl DenoWorkerProcess {
                         })
                         .is_err()
                     {
-                        // Queue closed (forwarder gone, consumer dropped):
-                        // the item — and its RAII reservations — is dropped
-                        // here, returning the permits. Frames for THIS
-                        // response are still in flight, so the socket
-                        // cannot be reused: finish without restoring.
+                        // Queue closed: the forwarder only closes it after
+                        // firing the consumer-gone cancel (it exits on the
+                        // terminal marker otherwise, and this reader is
+                        // still alive). Consumer lost → drain the rest
+                        // (EDG-9); anything else keeps the pre-EDG-9 exit.
+                        if *pipeline.cancel.borrow() {
+                            // The chunk was read but the queue send failed:
+                            // it is discarded here — count it toward the
+                            // drain's byte budget from the start.
+                            return Self::drain_on_abandon(
+                                read_half,
+                                &pipeline,
+                                restore_tx,
+                                production_complete,
+                                done_tx,
+                                frame_timeout,
+                                discarded,
+                            )
+                            .await;
+                        }
+                        // Frames for THIS response are still in flight, so
+                        // the socket cannot be reused: finish without
+                        // restoring.
                         return;
                     }
                 }
@@ -1069,10 +1246,162 @@ impl DenoWorkerProcess {
                     production_complete.store(true, Ordering::SeqCst);
                     pipeline.budget.record_detached();
                     let _ = q_tx.send(QueueItem::End(Ok(())));
-                    let _ = done_tx.send(true);
+                    let _ = done_tx.send(StreamCompletion::Completed);
                     return;
                 }
                 _ => return, // abnormal: unknown tag — the queue close ends the body
+            }
+        }
+    }
+
+    /// Abandon drain (EDG-9): the consumer disappeared before `TAG_END`.
+    /// Instead of abandoning the socket mid-response (which poisons the
+    /// process and forces a cold start on the next request), keep reading
+    /// frames and DISCARD them — no budget reservation, no enqueue — until
+    /// the clean `TAG_END`, bounded by the byte and time limits.
+    ///
+    /// `pre_discarded` is the size of the chunk the reader already read and
+    /// discarded BEFORE entering this drain (the chunk whose reservation or
+    /// queue send failed): it counts toward `max_bytes` from the start, so
+    /// the byte limit is applied before a following `TAG_END` can be
+    /// accepted when the budget is already spent.
+    ///
+    /// A clean `TAG_END` within the limits restores the read half, sets the
+    /// production-complete flag and fires the completion signal as
+    /// `Completed`: the pool reuses the process. Past a limit, a read error
+    /// or an end frame with an error the drain stops WITHOUT restoring (the
+    /// socket is desynced) and reports the CAUSE on the signal: the pool
+    /// recycles, as before. A `0` in any limit disables the drain and
+    /// abandons the socket, reporting `SocketPoisoned`.
+    async fn drain_on_abandon(
+        mut read_half: OwnedReadHalf,
+        pipeline: &DetachPipeline,
+        restore_tx: oneshot::Sender<OwnedReadHalf>,
+        production_complete: Arc<AtomicBool>,
+        done_tx: oneshot::Sender<StreamCompletion>,
+        frame_timeout: Duration,
+        pre_discarded: usize,
+    ) {
+        let drain = pipeline.abandon_drain;
+        if !drain.enabled() {
+            // Drain disabled: abandon the socket, as before the drain
+            // existed — the process is poisoned by the mid-response socket.
+            pipeline.budget.record_abandoned_socket_poisoned();
+            tracing::info!(
+                target: "edger.stream",
+                max_bytes = drain.max_bytes,
+                max_ms = drain.max_ms,
+                "stream abandoned with drain disabled; socket poisoned, process will be recycled"
+            );
+            let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::SocketPoisoned));
+            return;
+        }
+        let time_budget = Duration::from_millis(drain.max_ms);
+        let started = Instant::now();
+        // The pre-discarded chunk counts toward the byte budget from the
+        // start: the limit is checked (and can stop the drain) before the
+        // next frame — a `TAG_END` included — is accepted.
+        let mut discarded = pre_discarded as u64;
+        loop {
+            let elapsed = started.elapsed();
+            if elapsed >= time_budget {
+                // Time limit: the response did not finish in budget.
+                pipeline.budget.record_abandoned_drain_time_limit();
+                tracing::info!(
+                    target: "edger.stream",
+                    discarded_bytes = discarded,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    "abandon drain stopped at the time limit; socket poisoned, process will be recycled"
+                );
+                let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::TimeLimit));
+                return;
+            }
+            if discarded > drain.max_bytes {
+                // Byte limit: more of the response was in flight (or
+                // pre-discarded) than the drain may discard.
+                pipeline.budget.record_abandoned_drain_bytes_limit();
+                tracing::info!(
+                    target: "edger.stream",
+                    discarded_bytes = discarded,
+                    max_bytes = drain.max_bytes,
+                    "abandon drain stopped at the byte limit; socket poisoned, process will be recycled"
+                );
+                let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::BytesLimit));
+                return;
+            }
+            // Bound every frame read by the REMAINING drain budget as well as
+            // the process frame timeout: a producer that pauses past the
+            // budget must not hold the socket (and the pool's wait) open.
+            let read_deadline = time_budget.saturating_sub(elapsed).min(frame_timeout);
+            let frame = match tokio::time::timeout(read_deadline, read_frame(&mut read_half)).await
+            {
+                Ok(Ok(frame)) => frame,
+                Ok(Err(_)) => {
+                    // Read error: the socket is desynced — recycle.
+                    pipeline.budget.record_abandoned_drain_stream_error();
+                    tracing::info!(
+                        target: "edger.stream",
+                        discarded_bytes = discarded,
+                        "abandon drain stopped on a stream read error; socket poisoned, process will be recycled"
+                    );
+                    let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::StreamError));
+                    return;
+                }
+                Err(_) => {
+                    // The frame stalled or the drain time budget ran out
+                    // while reading — either way the response did not end
+                    // in time: recycle.
+                    pipeline.budget.record_abandoned_drain_time_limit();
+                    tracing::info!(
+                        target: "edger.stream",
+                        discarded_bytes = discarded,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "abandon drain stopped at the time limit; socket poisoned, process will be recycled"
+                    );
+                    let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::TimeLimit));
+                    return;
+                }
+            };
+            let Ok((tag, body)) = split_tag(&frame) else {
+                // Protocol error (empty frame): the socket is desynced.
+                pipeline.budget.record_abandoned_drain_stream_error();
+                let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::StreamError));
+                return;
+            };
+            match tag {
+                TAG_CHUNK => {
+                    discarded = discarded.saturating_add(body.len() as u64);
+                }
+                TAG_END => {
+                    let end: WireEndFrame = serde_json::from_slice(body).unwrap_or_default();
+                    if end.error.is_some() {
+                        // The response itself ended in error: recycle.
+                        pipeline.budget.record_abandoned_drain_stream_error();
+                        let _ =
+                            done_tx.send(StreamCompletion::Abandoned(AbandonedStream::StreamError));
+                        return;
+                    }
+                    // Clean end WITHIN the limits: the socket is in sync —
+                    // reuse the process exactly as on a normal clean end.
+                    let _ = restore_tx.send(read_half);
+                    production_complete.store(true, Ordering::SeqCst);
+                    pipeline.budget.record_detached();
+                    pipeline.budget.record_abandoned_drained();
+                    tracing::info!(
+                        target: "edger.stream",
+                        discarded_bytes = discarded,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "abandon drain reached a clean end within the limits; process reused"
+                    );
+                    let _ = done_tx.send(StreamCompletion::Completed);
+                    return;
+                }
+                _ => {
+                    // Protocol error (unknown tag): the socket is desynced.
+                    pipeline.budget.record_abandoned_drain_stream_error();
+                    let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::StreamError));
+                    return;
+                }
             }
         }
     }
@@ -1241,35 +1570,69 @@ impl DenoWorkerProcess {
         reason: &str,
         grace: Duration,
     ) -> Option<ProcessDrainReport> {
+        self.shutdown_report_classified(reason, grace)
+            .await
+            .into_acked()
+    }
+
+    /// Classified shutdown handshake (EDG-9): distinguishes "no handshake was
+    /// possible" (socket not reclaimed / control frame not written — nothing
+    /// was sent) from "the handshake was attempted and the ack never arrived
+    /// in time". The unclassified wrapper above only surfaces acked reports.
+    async fn shutdown_report_classified(
+        &mut self,
+        reason: &str,
+        grace: Duration,
+    ) -> ShutdownHandshake {
         // Reclaim the read half the same way a request does — after a request it
         // rests in `restore_rx`, not in `self.read_half`. A poisoned/mid-stream
-        // process can't be reclaimed: skip straight to the kill.
-        let mut read_half = self.reclaim_read_half().await.ok()?;
-        let payload = serde_json::to_vec(&WireShutdown {
+        // process can't be reclaimed: skip straight to the kill — and NOTHING
+        // was sent, so this is a poisoned socket, not a timeout.
+        let mut read_half = match self.reclaim_read_half().await {
+            Ok(half) => half,
+            Err(_) => return ShutdownHandshake::SocketPoisoned,
+        };
+        let payload = match serde_json::to_vec(&WireShutdown {
             control: "shutdown",
             reason: reason.to_string(),
             grace_ms: grace.as_millis() as u64,
-        })
-        .ok()?;
-        if tokio::time::timeout(
+        }) {
+            Ok(payload) => payload,
+            // No payload, no handshake.
+            Err(_) => return ShutdownHandshake::SocketPoisoned,
+        };
+        // (EDG-9, amendment 3) Only a fully successful write proceeds to
+        // the ACK wait. `Ok(Err(_))` (broken pipe, reset by peer) means the
+        // frame did NOT make it out: the handshake is impossible — a
+        // poisoned socket, not a timeout. `Err(Elapsed)` (the write itself
+        // stalled past the 1 s budget) is the real write timeout.
+        match tokio::time::timeout(
             Duration::from_secs(1),
             write_frame(&mut self.write_half, &payload),
         )
         .await
-        .is_err()
         {
-            return None;
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return ShutdownHandshake::SocketPoisoned,
+            Err(_) => return ShutdownHandshake::AckTimedOut,
         }
         // Wait for the worker's drain ack, bounded by grace + a small margin.
         let deadline = grace.saturating_add(Duration::from_millis(500));
         match tokio::time::timeout(deadline, read_frame(&mut read_half)).await {
-            Ok(Ok(frame)) => serde_json::from_slice::<WireShutdownAck>(&frame)
-                .ok()
-                .map(|ack| ProcessDrainReport {
+            Ok(Ok(frame)) => match serde_json::from_slice::<WireShutdownAck>(&frame) {
+                Ok(ack) => ShutdownHandshake::Acked(ProcessDrainReport {
                     drained: ack.drained,
                     timed_out: ack.timed_out,
                 }),
-            _ => None,
+                // The peer sent something that is not a valid ack frame:
+                // the handshake is broken — a poisoned socket, not a timeout.
+                Err(_) => ShutdownHandshake::SocketPoisoned,
+            },
+            // EOF / broken pipe: the peer went away and no ack will ever
+            // come — a poisoned socket, not a timeout.
+            Ok(Err(_)) => ShutdownHandshake::SocketPoisoned,
+            // The deadline ran out waiting for the ack: the real timeout.
+            Err(_) => ShutdownHandshake::AckTimedOut,
         }
     }
 
@@ -1597,9 +1960,28 @@ impl DenoProcessIsolate {
     /// reader applies backpressure; `budget` is the process-wide cap shared
     /// by all isolates. A `max_bytes` of `0` disables the pipeline entirely:
     /// the legacy pre-EDG-8 path (no queue, no semaphores, no completion
-    /// signal) applies.
+    /// signal) applies. The abandon-drain policy (EDG-9) defaults to the
+    /// shared defaults; `with_abandon_drain_limits` overrides it.
     pub fn with_stream_detach(self, max_bytes: u64, budget: Arc<StreamDetachBudget>) -> Self {
-        let detach = (max_bytes > 0).then_some(StreamDetach { max_bytes, budget });
+        let detach = (max_bytes > 0).then_some(StreamDetach {
+            max_bytes,
+            budget,
+            drain: AbandonDrain::default(),
+        });
+        Self { detach, ..self }
+    }
+
+    /// Set the abandon-drain limits (EDG-9): when the response body is
+    /// dropped before the end frame, the reader keeps reading and discarding
+    /// frames up to `max_bytes` bytes and `max_ms` milliseconds before the
+    /// socket is abandoned and the process recycled. `0` in EITHER limit
+    /// disables the drain (the pre-EDG-9 behavior). A no-op when the detach
+    /// pipeline itself is disabled (`max_bytes` of `0`).
+    pub fn with_abandon_drain_limits(self, max_bytes: u64, max_ms: u64) -> Self {
+        let detach = self.detach.map(|detach| StreamDetach {
+            drain: AbandonDrain { max_bytes, max_ms },
+            ..detach
+        });
         Self { detach, ..self }
     }
 
@@ -1776,18 +2158,33 @@ impl Isolate for DenoProcessIsolate {
             // Best-effort graceful drain (beforeunload + waitUntil) before the
             // process is dropped (killed). Bounded by the shutdown grace budget.
             let process_id = process.process_id.clone();
-            let drain = process
-                .shutdown_report("terminate", self.shutdown_grace)
+            let handshake = process
+                .shutdown_report_classified("terminate", self.shutdown_grace)
                 .await;
-            let outcome = match drain {
-                Some(report) if !report.timed_out => TerminationOutcome::Completed,
-                _ => TerminationOutcome::TimedOut,
+            // (EDG-9) The report CLASSIFIES the handshake: a socket that could
+            // not be reclaimed reports `SocketPoisoned` (nothing was sent —
+            // no ack was ever awaited, so this is NOT a timeout); `TimedOut`
+            // means a shutdown was actually sent and its deadline ran out.
+            let outcome = match &handshake {
+                ShutdownHandshake::Acked(report) if !report.timed_out => {
+                    TerminationOutcome::Completed
+                }
+                // The worker acked that the beforeunload drain hit its grace
+                // budget, or the ack never arrived after the send.
+                ShutdownHandshake::Acked(_) | ShutdownHandshake::AckTimedOut => {
+                    TerminationOutcome::TimedOut
+                }
+                ShutdownHandshake::SocketPoisoned => TerminationOutcome::SocketPoisoned,
+            };
+            let drained_count = match &handshake {
+                ShutdownHandshake::Acked(report) => Some(report.drained),
+                _ => None,
             };
             self.process = None;
             return Ok(TerminationReport {
                 outcome,
                 process_id: Some(process_id),
-                drained_count: drain.map(|report| report.drained),
+                drained_count,
             });
         }
         // Dropping the process kills it (kill_on_drop).
@@ -1825,10 +2222,16 @@ mod console_tests {
 
 #[cfg(test)]
 mod stream_detach_tests {
-    use super::{reserve_chunk, DetachPipeline, QueueItem, StreamDetach, StreamDetachBudget};
+    use super::{
+        read_frame, reserve_chunk, AbandonDrain, DenoProcessIsolate, DenoWorkerProcess,
+        DetachPipeline, OwnedReadHalf, QueueItem, StreamDetach, StreamDetachBudget, TAG_CHUNK,
+        TAG_END,
+    };
     use bytes::Bytes;
+    use edger_core::Isolate;
     use std::sync::Arc;
     use std::time::Duration;
+    use tokio::io::AsyncReadExt;
 
     fn pipeline(per_response_cap: usize, budget: Arc<StreamDetachBudget>) -> DetachPipeline {
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
@@ -1840,6 +2243,12 @@ mod stream_detach_tests {
             per_response_cap,
             budget,
             cancel: cancel_rx,
+            // Disabled: these tests exercise the EDG-8 reservation/discard
+            // mechanics, not the EDG-9 abandon drain.
+            abandon_drain: AbandonDrain {
+                max_bytes: 0,
+                max_ms: 0,
+            },
         }
     }
 
@@ -1851,13 +2260,37 @@ mod stream_detach_tests {
         let off = StreamDetach {
             max_bytes: 0,
             budget: Arc::clone(&budget),
+            drain: AbandonDrain::default(),
         };
         assert!(off.max_bytes == 0 && (off.max_bytes > 0).then_some(&off).is_none());
         let on = StreamDetach {
             max_bytes: 8,
             budget,
+            drain: AbandonDrain::default(),
         };
         assert!((on.max_bytes > 0).then_some(&on).is_some());
+    }
+
+    // A `0` in EITHER abandon-drain limit disables the drain (the socket is
+    // abandoned and the process recycled, the pre-EDG-9 behavior).
+    #[test]
+    fn abandon_drain_requires_both_limits_positive() {
+        assert!(AbandonDrain::default().enabled());
+        assert!(!AbandonDrain {
+            max_bytes: 0,
+            max_ms: 2000
+        }
+        .enabled());
+        assert!(!AbandonDrain {
+            max_bytes: 8,
+            max_ms: 0
+        }
+        .enabled());
+        assert!(!AbandonDrain {
+            max_bytes: 0,
+            max_ms: 0
+        }
+        .enabled());
     }
 
     // A chunk larger than a semaphore's FULL capacity reserves that full
@@ -2012,6 +2445,11 @@ mod stream_detach_tests {
             per_response_cap: 100,
             budget: Arc::clone(&budget),
             cancel: cancel_rx,
+            // Disabled: the test exercises the EDG-8 discard mechanics.
+            abandon_drain: AbandonDrain {
+                max_bytes: 0,
+                max_ms: 0,
+            },
         };
         let (q_tx, q_rx) = tokio::sync::mpsc::unbounded_channel::<QueueItem>();
         let (tx, rx) = tokio::sync::mpsc::channel(16);
@@ -2095,6 +2533,11 @@ mod stream_detach_tests {
             per_response_cap: 100,
             budget: Arc::clone(&budget),
             cancel: cancel_rx,
+            // Disabled: the test exercises the EDG-8 discard mechanics.
+            abandon_drain: AbandonDrain {
+                max_bytes: 0,
+                max_ms: 0,
+            },
         };
         let (q_tx, q_rx) = tokio::sync::mpsc::unbounded_channel::<QueueItem>();
         let (tx, rx) = tokio::sync::mpsc::channel(16);
@@ -2164,5 +2607,366 @@ mod stream_detach_tests {
         );
         drop(other_guard);
         assert_eq!(budget.reserved_bytes(), 0);
+    }
+
+    // (EDG-9) The chunk the reader had ALREADY read and discarded when the
+    // consumer loss is observed (the chunk whose reservation failed) counts
+    // toward the drain's byte budget from the start: with the budget already
+    // spent by that chunk, a following clean TAG_END must NOT be accepted —
+    // the drain stops at the byte limit, the socket is NOT restored and the
+    // completion signal carries the CAUSE, not a `Completed`.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_discarded_chunk_counts_toward_the_drain_byte_limit() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::UnixStream;
+
+        // Per-response cap 100: chunk 1 (100 B) holds the WHOLE cap; chunk
+        // 2 (200 B, above the cap) can only reserve via the backpressure
+        // wait — the consumer loss fires there. The drain's byte limit
+        // (100) is smaller than the pre-discarded chunk (200).
+        // UDS pair: the reader gets the read half of end A; frames are
+        // written to end B (the loopback the harness socket is for the
+        // reader).
+        let (read_end, write_end) = UnixStream::pair().unwrap();
+        let (read_half, _write_half_a) = read_end.into_split();
+        let mut write_half = write_end;
+
+        let budget = Arc::new(StreamDetachBudget::new(1_000));
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let pipeline = DetachPipeline {
+            per_response: Arc::new(tokio::sync::Semaphore::new(100)),
+            per_response_cap: 100,
+            budget: Arc::clone(&budget),
+            cancel: cancel_rx,
+            abandon_drain: AbandonDrain {
+                max_bytes: 100,
+                max_ms: 10_000,
+            },
+        };
+        let (q_tx, _q_rx) = tokio::sync::mpsc::unbounded_channel::<QueueItem>();
+        let (restore_tx, restore_rx) = tokio::sync::oneshot::channel();
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+
+        // Frame wire format: 4-byte LE length, then tag byte + payload.
+        let mut frame1 = vec![0u8; 4];
+        frame1[..4].copy_from_slice(&((100 + 1) as u32).to_le_bytes());
+        frame1.push(TAG_CHUNK);
+        frame1.extend(std::iter::repeat(0x78u8).take(100));
+        let mut frame2 = vec![0u8; 4];
+        frame2[..4].copy_from_slice(&((200 + 1) as u32).to_le_bytes());
+        frame2.push(TAG_CHUNK);
+        frame2.extend(std::iter::repeat(0x79u8).take(200));
+        let end_payload: &[u8] = &[TAG_END, b'{', b'}'];
+        let mut frame3 = vec![0u8; 4];
+        frame3[..4].copy_from_slice(&(end_payload.len() as u32).to_le_bytes());
+        frame3.extend_from_slice(end_payload);
+        // Write ALL frames before the reader starts: they sit in the socket
+        // buffer, so the reader reads them without extra I/O yields and the
+        // only place it can park is chunk 2's reservation select.
+        write_half.write_all(&frame1).await.unwrap();
+        write_half.write_all(&frame2).await.unwrap();
+        write_half.write_all(&frame3).await.unwrap();
+
+        let mut reader = tokio::spawn(DenoWorkerProcess::detach_reader(
+            read_half,
+            q_tx,
+            pipeline.clone(),
+            restore_tx,
+            flag.clone(),
+            done_tx,
+            Duration::from_secs(5),
+        ));
+
+        // Wait until chunk 1 is reserved (100 held) — i.e. the reader is
+        // parked reserving chunk 2. Cancel must NOT fire before that: a
+        // cancel at the loop top would drain with nothing pre-discarded.
+        for _ in 0..1_000 {
+            if budget.reserved_bytes() == 100 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            budget.reserved_bytes(),
+            100,
+            "chunk 1 must hold the whole per-response cap"
+        );
+        // Consumer lost DURING the reservation of the 200-B chunk.
+        cancel_tx.send_replace(true);
+
+        let joined = tokio::time::timeout(Duration::from_secs(5), &mut reader).await;
+        assert!(joined.is_ok(), "the reader must exit after the drain stops");
+
+        // The pre-discarded 200-B chunk already exceeds the 100-B limit:
+        // the drain stops at the byte limit BEFORE reading the clean
+        // TAG_END.
+        let stats = budget.stats();
+        assert_eq!(
+            stats.abandoned_drain_bytes_limit_total, 1,
+            "byte limit must fire"
+        );
+        assert_eq!(
+            stats.abandoned_drained_total, 0,
+            "the TAG_END must not be accepted"
+        );
+        assert!(
+            !flag.load(std::sync::atomic::Ordering::Acquire),
+            "no production-complete flag"
+        );
+        assert!(
+            restore_rx.await.is_err(),
+            "the socket must NOT be restored (desynced)"
+        );
+        assert_eq!(
+            done_rx.await.unwrap(),
+            edger_core::StreamCompletion::Abandoned(edger_core::AbandonedStream::BytesLimit),
+            "the completion signal must carry the drain cause, not a completed"
+        );
+    }
+
+    // (EDG-9, amendment 2) Shutdown-handshake classification: the
+    // termination report must distinguish "socket not reclaimed" (nothing
+    // was sent — `SocketPoisoned`) from "shutdown sent, no ack in time"
+    // (`TimedOut`). Hand-built processes over a UDS pair — no Deno child
+    // needed (the dummy child only exists to be killed on drop).
+
+    /// Hand-built process for the shutdown-classification tests: a real UDS
+    /// pair (the test side is the returned stream) plus a dummy child.
+    #[cfg(unix)]
+    fn classified_terminate_process(
+        read_half: Option<OwnedReadHalf>,
+        restore_rx: Option<tokio::sync::oneshot::Receiver<OwnedReadHalf>>,
+    ) -> (DenoProcessIsolate, tokio::net::UnixStream) {
+        let child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("dummy child spawns");
+        let (stream_a, stream_b) = tokio::net::UnixStream::pair().unwrap();
+        let (_read_a, write_a) = stream_a.into_split();
+        let process = DenoWorkerProcess {
+            child,
+            write_half: write_a,
+            read_half,
+            restore_rx,
+            timeout: Duration::from_secs(5),
+            _bundle_dir: None,
+            _workdir: tempfile::tempdir().unwrap(),
+            _limit_monitor: None,
+            _console_tasks: Vec::new(),
+            stderr_tail: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            process_id: "test-classified-terminate".into(),
+        };
+        let isolate = DenoProcessIsolate {
+            process: Some(process),
+            // 100 ms grace: the ACK deadline is 600 ms (grace + 500 margin).
+            shutdown_grace: Duration::from_millis(100),
+            console_sender: None,
+            console_context: None,
+            detach: None,
+        };
+        (isolate, stream_b)
+    }
+
+    /// No read half, no pending restore: the reclaim fails immediately and
+    /// NO shutdown frame may be sent — the outcome is `SocketPoisoned`,
+    /// never a timeout.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn terminate_without_a_reclaimable_socket_reports_socket_poisoned() {
+        let (mut isolate, mut test_end) = classified_terminate_process(None, None);
+        let report = isolate
+            .terminate_with_report()
+            .await
+            .expect("terminate reports");
+        assert_eq!(
+            report.outcome,
+            edger_core::TerminationOutcome::SocketPoisoned,
+            "no reclaimable socket, no handshake: socket_poisoned, not a timeout"
+        );
+        let mut sent = Vec::new();
+        test_end.read_to_end(&mut sent).await.unwrap();
+        assert!(
+            sent.is_empty(),
+            "no shutdown frame may be written when the socket cannot be reclaimed"
+        );
+    }
+
+    /// The reader keeps the restore pending PAST the ACK deadline (100 ms
+    /// grace + 500 ms margin = 600 ms) and abandons it at 700 ms (poisoned
+    /// recovery). The aggregate elapsed time exceeds the ACK deadline — an
+    /// elapsed-based heuristic would classify this as an ACK timeout; the
+    /// classified report must say `SocketPoisoned` (nothing was sent).
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn slow_socket_recovery_ending_poisoned_is_socket_poisoned_not_an_ack_timeout() {
+        let (_restore_tx, restore_rx) = tokio::sync::oneshot::channel::<OwnedReadHalf>();
+        let (mut isolate, mut test_end) = classified_terminate_process(None, Some(restore_rx));
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            drop(_restore_tx);
+        });
+        let started = std::time::Instant::now();
+        let report = isolate
+            .terminate_with_report()
+            .await
+            .expect("terminate reports");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(700),
+            "the terminate must have waited on the (slow) recovery: {elapsed:?}"
+        );
+        assert_eq!(
+            report.outcome,
+            edger_core::TerminationOutcome::SocketPoisoned,
+            "a slow recovery that ends poisoned is NOT an ACK timeout"
+        );
+        let mut sent = Vec::new();
+        test_end.read_to_end(&mut sent).await.unwrap();
+        assert!(
+            sent.is_empty(),
+            "no shutdown frame may be sent — the socket was never reclaimed"
+        );
+    }
+
+    /// The read half is resting: the reclaim succeeds, the shutdown frame IS
+    /// sent, and the ACK never arrives — the 600 ms deadline runs out. That
+    /// is the ONLY case that may be classified `TimedOut`.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_sent_without_an_ack_reports_timed_out() {
+        let (read_end, _write_end) = tokio::net::UnixStream::pair().unwrap();
+        let (read_half, _write_a) = read_end.into_split();
+        let (mut isolate, mut test_end) = classified_terminate_process(Some(read_half), None);
+        let report = isolate
+            .terminate_with_report()
+            .await
+            .expect("terminate reports");
+        assert_eq!(
+            report.outcome,
+            edger_core::TerminationOutcome::TimedOut,
+            "a sent shutdown with no ack in time is the real timeout"
+        );
+        // Prove the shutdown frame actually went out: length-prefixed JSON
+        // control frame on the socket.
+        let mut sent = Vec::new();
+        test_end.read_to_end(&mut sent).await.unwrap();
+        assert!(sent.len() >= 5, "the shutdown frame must have been written");
+        let len = u32::from_le_bytes(sent[0..4].try_into().unwrap()) as usize;
+        let payload = std::str::from_utf8(&sent[4..4 + len]).unwrap();
+        assert!(
+            payload.contains("\"shutdown\""),
+            "the control frame is the shutdown handshake: {payload}"
+        );
+    }
+
+    // (EDG-9, amendment 3) I/O errors on the shutdown handshake are NOT
+    // timeouts: a write that fails (peer gone) or an ACK read that hits
+    // EOF/invalid frame is a poisoned socket; only the deadlines expiring
+    // classify `TimedOut`.
+
+    /// Hand-built process whose read half RESTS (reclaim succeeds
+    /// immediately) and whose PEER side is returned: the shutdown write and
+    /// the ACK read go through the real UDS pair.
+    #[cfg(unix)]
+    fn idle_socket_process() -> (DenoProcessIsolate, tokio::net::UnixStream) {
+        let child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("dummy child spawns");
+        let (stream_a, stream_b) = tokio::net::UnixStream::pair().unwrap();
+        let (read_a, write_a) = stream_a.into_split();
+        let process = DenoWorkerProcess {
+            child,
+            write_half: write_a,
+            read_half: Some(read_a),
+            restore_rx: None,
+            timeout: Duration::from_secs(5),
+            _bundle_dir: None,
+            _workdir: tempfile::tempdir().unwrap(),
+            _limit_monitor: None,
+            _console_tasks: Vec::new(),
+            stderr_tail: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            process_id: "test-idle-socket".into(),
+        };
+        let isolate = DenoProcessIsolate {
+            process: Some(process),
+            // 100 ms grace: the ACK deadline is 600 ms (grace + 500 margin).
+            shutdown_grace: Duration::from_millis(100),
+            console_sender: None,
+            console_context: None,
+            detach: None,
+        };
+        (isolate, stream_b)
+    }
+
+    /// (a) The peer closes BEFORE the shutdown write: the frame cannot make
+    /// it out (broken pipe — `Ok(Err(_))`, NOT the outer timeout), so the
+    /// outcome is `SocketPoisoned` and the terminate finishes well UNDER the
+    /// ACK deadline (no ack was ever awaited → no `DrainTimedOut`).
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn peer_closed_before_the_shutdown_write_reports_socket_poisoned() {
+        let (mut isolate, peer) = idle_socket_process();
+        drop(peer); // the peer goes away before the write
+        let started = std::time::Instant::now();
+        let report = isolate
+            .terminate_with_report()
+            .await
+            .expect("terminate reports");
+        let elapsed = started.elapsed();
+        assert_eq!(
+            report.outcome,
+            edger_core::TerminationOutcome::SocketPoisoned,
+            "a write that fails with an I/O error is a poisoned socket, not a timeout"
+        );
+        assert!(
+            elapsed < Duration::from_millis(600),
+            "no ack was awaited — the terminate must finish under the ACK deadline: {elapsed:?}"
+        );
+    }
+
+    /// (b) The peer RECEIVES the shutdown frame and closes WITHOUT acking:
+    /// the ACK read hits EOF (`Ok(Err(_))`) — `SocketPoisoned`, not the old
+    /// `AckTimedOut` — and the terminate finishes well UNDER the ACK
+    /// deadline.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn peer_closes_after_receiving_the_shutdown_reports_socket_poisoned() {
+        let (mut isolate, mut peer) = idle_socket_process();
+        // The peer reads the shutdown frame, then closes without acking.
+        let (frame_tx, frame_rx) = tokio::sync::oneshot::channel::<std::io::Result<Vec<u8>>>();
+        tokio::spawn(async move {
+            let frame = read_frame(&mut peer).await;
+            let _ = frame_tx.send(frame);
+            drop(peer);
+        });
+        let started = std::time::Instant::now();
+        let report = isolate
+            .terminate_with_report()
+            .await
+            .expect("terminate reports");
+        let elapsed = started.elapsed();
+        // The peer must have received the real shutdown control frame.
+        let frame = frame_rx
+            .await
+            .expect("the peer read task ran")
+            .expect("the shutdown frame arrives");
+        assert!(
+            String::from_utf8_lossy(&frame).contains("\"shutdown\""),
+            "the peer must receive the shutdown control frame: {frame:?}"
+        );
+        assert_eq!(
+            report.outcome,
+            edger_core::TerminationOutcome::SocketPoisoned,
+            "an EOF while waiting for the ack is a poisoned socket, not a timeout"
+        );
+        assert!(
+            elapsed < Duration::from_millis(600),
+            "the EOF is immediate — the terminate must finish under the ACK deadline: {elapsed:?}"
+        );
     }
 }

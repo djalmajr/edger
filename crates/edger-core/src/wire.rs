@@ -3,6 +3,17 @@
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
+/// EDG-9 stream-abandon drain defaults: when a streamed response body is
+/// dropped before the end frame, the reader keeps reading and discarding
+/// frames (no budget, no queue) up to this many bytes before giving up and
+/// recycling the process. `0` disables the drain (the socket is abandoned
+/// and the process recycled, the pre-EDG-9 behavior).
+pub const STREAM_ABANDON_DRAIN_MAX_BYTES_DEFAULT: u64 = 8 * 1024 * 1024;
+/// Wall-clock budget (ms) for the abandon drain; the pool waits at most this
+/// long (plus a small grace) for the completion signal on an early body
+/// drop/error before recycling. `0` disables the drain.
+pub const STREAM_ABANDON_DRAIN_MAX_MS_DEFAULT: u64 = 2000;
+
 /// Buntime HeaderLimits port: max header count.
 pub const MAX_HEADERS: usize = 100;
 /// Total header bytes limit.
@@ -34,13 +45,56 @@ pub type BodyStream = std::pin::Pin<
     Box<dyn futures_core::Stream<Item = Result<Bytes, crate::error::IsolationError>> + Send>,
 >;
 
+/// Why an abandoned stream did not complete cleanly (EDG-9). The abandon
+/// drain (consumer lost before the end frame) stops for exactly one of these
+/// reasons; the pool carries it into the recycle lifecycle detail and the
+/// operational event.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AbandonedStream {
+    /// The drain is disabled (a `0` limit): the socket was abandoned
+    /// mid-response and poisoned.
+    SocketPoisoned,
+    /// The discard drain exceeded `EDGER_STREAM_ABANDON_DRAIN_MAX_BYTES`.
+    BytesLimit,
+    /// The discard drain exceeded `EDGER_STREAM_ABANDON_DRAIN_MAX_MS`.
+    TimeLimit,
+    /// A read, protocol, or in-band error aborted the drain.
+    StreamError,
+    /// The POOL's bounded wait for the drain result expired before the
+    /// reader reported anything (slow producer): the reader's late result,
+    /// if any, is ignored without error. Synthesized by the pool — the
+    /// reader never reports it.
+    RelayTimeout,
+}
+
+/// The outcome of a streamed response's production (EDG-8/EDG-9), delivered
+/// through the completion signal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StreamCompletion {
+    /// Production reached a clean end frame and the socket is in sync —
+    /// the process is reusable, either directly or after the EDG-9 abandon
+    /// drain finished the response within its limits.
+    Completed,
+    /// The consumer was lost before the end frame and the response was
+    /// abandoned; the variant names the cause (EDG-9).
+    Abandoned(AbandonedStream),
+    /// Production did not complete cleanly and no cause was reported: the
+    /// producer went away before reporting one (error end or an abnormal
+    /// task exit). The pool recycles with the body-level detail it has.
+    Incomplete,
+}
+
 /// Production-complete signal for a streamed response (no I/O, pure std):
-/// resolves to `true` once the worker has fully produced the response (end of
-/// production without error, all chunks already in flight), so the runtime
+/// resolves to `StreamCompletion::Completed` once the worker has fully
+/// produced the response (end of production without error, all chunks
+/// already in flight — possibly via the EDG-9 abandon drain), so the runtime
 /// may release the worker slot before a slow client finishes downloading the
-/// buffered tail. Resolves to `false` when production did not complete cleanly
-/// (error, or the producer went away).
-pub type CompletionSignal = std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>;
+/// buffered tail. Resolves to `Abandoned(cause)` when the consumer was lost
+/// and the abandon drain reports why the response did not finish cleanly,
+/// and to `Incomplete` when production did not complete cleanly without a
+/// reported cause.
+pub type CompletionSignal =
+    std::pin::Pin<Box<dyn std::future::Future<Output = StreamCompletion> + Send>>;
 
 /// A response whose body streams incrementally from the worker (SSE, chunked
 /// SSR). Status/headers are available up front; chunks arrive as the worker
@@ -53,7 +107,8 @@ pub struct StreamedResponse {
     pub body: BodyStream,
     pub completed: Option<CompletionSignal>,
     /// Set to `true` once production finished cleanly (end frame without
-    /// error), BEFORE `completed` resolves. A body that is dropped or errors
+    /// error — possibly after the EDG-9 abandon drain), BEFORE `completed`
+    /// resolves. A body that is dropped or errors
     /// after this flag is set must COMPLETE the dispatch instead of
     /// recycling: the producer socket is already in sync and the process is
     /// reusable. Backends without the mechanism leave this `None`.

@@ -70,6 +70,9 @@ fn record(state: &OrchestratorState, request_id: &str) {
             message: None,
             truncated: None,
             dropped_count: None,
+            method: Some("GET".into()),
+            path: Some("/alpha".into()),
+            content_type: None,
         });
 }
 

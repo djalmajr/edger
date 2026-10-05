@@ -628,6 +628,9 @@ async fn observability_events_stay_inside_the_key_scope() {
         message: None,
         truncated: None,
         dropped_count: None,
+        method: Some("GET".into()),
+        path: Some("/hello".into()),
+        content_type: None,
     };
     state.server.operational_events().record(evento("hello"));
     state.server.operational_events().record(evento("other"));

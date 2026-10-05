@@ -9,7 +9,15 @@ use crate::wire::{SerializedRequest, SerializedResponse, WorkerResponse};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TerminationOutcome {
     Completed,
+    /// A shutdown handshake took place and its deadline ran out: either the
+    /// worker acked that the beforeunload drain hit its grace budget, or the
+    /// shutdown frame was sent but the ack never arrived in time.
     TimedOut,
+    /// The socket could not be reclaimed (poisoned/lost) or the shutdown
+    /// frame could not be written: NO shutdown handshake was sent — the
+    /// process went straight to the kill. This is not a timeout: no ack was
+    /// ever awaited.
+    SocketPoisoned,
     NotRunning,
 }
 

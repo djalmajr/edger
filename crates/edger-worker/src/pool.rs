@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use edger_core::{
-    create_worker_ref, BodyStream, ExecutionKind, Isolate, SerializedRequest, SerializedResponse,
-    StreamedResponse, TerminationOutcome, WorkerConfig, WorkerManifest, WorkerRef, WorkerResponse,
+    create_worker_ref, AbandonedStream, BodyStream, ExecutionKind, Isolate, SerializedRequest,
+    SerializedResponse, StreamCompletion, StreamedResponse, TerminationOutcome, WorkerConfig,
+    WorkerManifest, WorkerRef, WorkerResponse,
 };
 use edger_isolation::{
     dispatch_fullstack_stream, execute_with_limits, try_serve_fullstack_asset, validate_request,
@@ -41,6 +42,78 @@ struct WorkerPoolInner {
     circuit_breakers: Mutex<HashMap<WorkerCacheKey, CircuitBreakerState>>,
     shutdown: AtomicBool,
     lifecycle_events: Option<LifecycleEventSender>,
+    /// Abandon-drain policy (EDG-9): a body dropped or errored BEFORE
+    /// production completed waits at most `abandon_drain.drain_wait()` for
+    /// the completion signal (the isolate's in-flight discard drain) before
+    /// recycling. Mirrors the isolates' `EDGER_STREAM_ABANDON_DRAIN_MAX_*`;
+    /// the slot stays held during the wait (short and bounded).
+    abandon_drain: AbandonDrainLimits,
+}
+
+/// Grace added to the abandon-drain budget when the pool waits for the
+/// completion signal on an early body drop/error (EDG-9). The drain's own
+/// deadline is measured from the moment the READER enters discard mode —
+/// the consumer loss — which happens before the body's drop observes it and
+/// spawns the wait; the grace covers that handoff plus task scheduling, so
+/// a drain that finishes on time always reaches the pool in time.
+const ABANDON_DRAIN_GRACE_MS: u64 = 250;
+
+/// The EDG-9 abandon-drain policy the pool mirrors (it must match the
+/// isolates' `EDGER_STREAM_ABANDON_DRAIN_MAX_BYTES` / `_MAX_MS`): a body
+/// dropped or errored BEFORE production completed waits at most
+/// `max_ms + ABANDON_DRAIN_GRACE_MS` for the completion signal — the
+/// in-flight abandon drain — before recycling. `0` in EITHER limit
+/// disables the drain (the reader abandons the socket and reports the
+/// `socket_poisoned` cause); then the relay wait is `Duration::ZERO` and
+/// the pre-EDG-9 immediate recycle applies.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AbandonDrainLimits {
+    pub max_bytes: u64,
+    pub max_ms: u64,
+}
+
+impl Default for AbandonDrainLimits {
+    fn default() -> Self {
+        Self {
+            max_bytes: edger_core::STREAM_ABANDON_DRAIN_MAX_BYTES_DEFAULT,
+            max_ms: edger_core::STREAM_ABANDON_DRAIN_MAX_MS_DEFAULT,
+        }
+    }
+}
+
+impl AbandonDrainLimits {
+    /// The drain runs only when BOTH limits are positive (mirrors the
+    /// isolate's `AbandonDrain::enabled`).
+    pub fn enabled(&self) -> bool {
+        self.max_bytes > 0 && self.max_ms > 0
+    }
+
+    /// Bounded wait for the in-flight abandon drain: `Duration::ZERO` when
+    /// the policy is disabled, otherwise `max_ms + ABANDON_DRAIN_GRACE_MS`
+    /// — the grace covers the gap between the consumer loss and the
+    /// reader observing it and starting (and running) the drain.
+    pub fn drain_wait(&self) -> Duration {
+        if !self.enabled() {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(self.max_ms.saturating_add(ABANDON_DRAIN_GRACE_MS))
+        }
+    }
+}
+
+/// The sub-cause label carried into the recycle lifecycle detail (and, via
+/// it, the operational event) when the abandon drain reports a cause.
+fn abandoned_detail(cause: AbandonedStream) -> &'static str {
+    match cause {
+        AbandonedStream::SocketPoisoned => "socket_poisoned",
+        AbandonedStream::BytesLimit => "bytes_limit",
+        AbandonedStream::TimeLimit => "time_limit",
+        AbandonedStream::StreamError => "stream_error",
+        // Synthesized by the pool (never reported by the reader): the
+        // bounded wait for the drain result expired before the reader
+        // reported anything — an explicit, known outcome (EDG-9).
+        AbandonedStream::RelayTimeout => "relay_timeout",
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,6 +132,10 @@ pub struct WorkerLifecycleEvent {
     pub drained_count: Option<u64>,
     pub duration_ms: Option<u64>,
     pub reason: &'static str,
+    /// Sub-cause of the reason (EDG-9): e.g. `stream_error` for a
+    /// mid-stream body error that recycled the process. `None` when the
+    /// reason is self-explanatory.
+    pub detail: Option<&'static str>,
 }
 
 pub type LifecycleEventSender = tokio::sync::mpsc::Sender<WorkerLifecycleEvent>;
@@ -102,6 +179,28 @@ impl WorkerPool {
         factory: Arc<dyn IsolateFactory>,
         lifecycle_events: Option<LifecycleEventSender>,
     ) -> Self {
+        Self::with_factory_and_lifecycle_abandon_drain(
+            config,
+            factory,
+            lifecycle_events,
+            AbandonDrainLimits::default(),
+        )
+    }
+
+    /// Like `with_factory_and_lifecycle`, with an explicit abandon-drain
+    /// policy (EDG-9): a body dropped or errored before production
+    /// completed waits at most `abandon_drain.drain_wait()` for the
+    /// completion signal before recycling. Pass the SAME limits the isolates
+    /// get from `EDGER_STREAM_ABANDON_DRAIN_MAX_BYTES` /
+    /// `EDGER_STREAM_ABANDON_DRAIN_MAX_MS`; with `0` in either limit the
+    /// drain is disabled and the relay wait is `Duration::ZERO` — the
+    /// pre-EDG-9 immediate recycle applies.
+    pub fn with_factory_and_lifecycle_abandon_drain(
+        config: PoolConfig,
+        factory: Arc<dyn IsolateFactory>,
+        lifecycle_events: Option<LifecycleEventSender>,
+        abandon_drain: AbandonDrainLimits,
+    ) -> Self {
         let metrics = Arc::new(MetricsCollector::default());
         let ephemeral = EphemeralGate::new(
             config.ephemeral_concurrency,
@@ -118,6 +217,7 @@ impl WorkerPool {
                 circuit_breakers: Mutex::new(HashMap::new()),
                 shutdown: AtomicBool::new(false),
                 lifecycle_events,
+                abandon_drain,
             }),
         }
     }
@@ -800,29 +900,45 @@ impl WorkerPool {
                     _dispatch_slot: dispatch_slot,
                     isolate_guard: Some(isolate_guard),
                 };
-                // Production-complete signal (EDG-8): the body, the signal
-                // observer and the flag-checked drop/error paths share the
-                // dispatch state and race to take it exactly once. The flag
-                // guarantees a drop after a clean production end can never
-                // recycle the (in-sync, reusable) process — whoever wins the
-                // race drives the SAME lifecycle.
+                // Production-complete signal (EDG-8/EDG-9): the body, the
+                // signal observer and the flag-checked drop/error paths share
+                // the dispatch state and race to take it exactly once. The
+                // flag guarantees a drop after a clean production end can
+                // never recycle the (in-sync, reusable) process — whoever
+                // wins the race drives the SAME lifecycle. (EDG-9) The relay
+                // below lets a pre-completion drop/error WAIT (bounded) for
+                // the in-flight abandon drain before deciding to recycle.
                 let shared_state = Arc::new(Mutex::new(Some(state)));
-                if let Some(signal) = streamed.completed {
-                    let observer = Arc::clone(&shared_state);
-                    tokio::spawn(async move {
-                        if signal.await {
-                            // Production completed (clean end frame): release
-                            // the slot and isolate NOW, even though a slow
-                            // client may still be downloading the buffered
-                            // tail from memory.
-                            if let Some(state) = take_stream_state(&observer) {
-                                complete_stream_state(state).await;
+                let (completion_wait, drain_wait) = match streamed.completed {
+                    Some(signal) => {
+                        let (relay_tx, relay_rx) =
+                            tokio::sync::oneshot::channel::<StreamCompletion>();
+                        let observer = Arc::clone(&shared_state);
+                        tokio::spawn(async move {
+                            let outcome = signal.await;
+                            // Relay the OUTCOME (EDG-9) to a pre-completion
+                            // drop/error waiting on it: the CAUSE rides with
+                            // it into the recycle detail. If that wait is
+                            // gone already, the send just fails — harmless.
+                            let _ = relay_tx.send(outcome);
+                            if matches!(outcome, StreamCompletion::Completed) {
+                                // Production completed (clean end frame,
+                                // possibly via the EDG-9 abandon drain):
+                                // release the slot and isolate NOW, even
+                                // though a slow client may still be
+                                // downloading the buffered tail from memory.
+                                if let Some(state) = take_stream_state(&observer) {
+                                    complete_stream_state(state).await;
+                                }
                             }
-                        }
-                        // `false`: production did not complete cleanly; the
-                        // body's own error/end/drop path owns the lifecycle.
-                    });
-                }
+                            // Abandoned/Incomplete: production did not
+                            // complete cleanly; the body's own
+                            // error/end/drop path owns the lifecycle.
+                        });
+                        (Some(relay_rx), self.inner.abandon_drain.drain_wait())
+                    }
+                    None => (None, Duration::ZERO),
+                };
                 Ok(WorkerResponse::Streamed(StreamedResponse {
                     status: streamed.status,
                     headers: streamed.headers,
@@ -830,6 +946,9 @@ impl WorkerPool {
                         inner: streamed.body,
                         state: shared_state,
                         production_complete: streamed.production_complete,
+                        completion_wait,
+                        drain_wait,
+                        drain_disabled: !self.inner.abandon_drain.enabled(),
                     }),
                     completed: None,           // consumed by the observer above
                     production_complete: None, // consumed by the guarded body
@@ -1041,6 +1160,26 @@ impl WorkerPool {
         instance: &WorkerInstance,
         reason: &'static str,
     ) {
+        self.terminate_isolate_with_lifecycle_detail(instance, reason, None, false)
+            .await
+    }
+
+    /// Variant for the stream-abandon recycle (EDG-9): `detail` carries the
+    /// drain sub-cause, and the termination reason is rewritten ONLY when
+    /// the report actually classifies a deadline wait: the 5 s isolate-lock
+    /// timeout firing, or a shutdown that WAS sent and timed out (worker
+    /// acked a beforeunload grace breach, or the ack never arrived within
+    /// grace + margin) → `drain_timeout`. A socket that could not be
+    /// reclaimed (nothing was sent — no ack was ever awaited) reports
+    /// `SocketPoisoned` and terminates with the reason `socket_poisoned`
+    /// instead of `drain_timeout`.
+    pub(crate) async fn terminate_isolate_with_lifecycle_detail(
+        &self,
+        instance: &WorkerInstance,
+        reason: &'static str,
+        detail: Option<&'static str>,
+        stream_abandoned: bool,
+    ) {
         emit_lifecycle(
             self.inner.lifecycle_events.as_ref(),
             WorkerLifecycleEvent {
@@ -1050,18 +1189,47 @@ impl WorkerPool {
                 drained_count: None,
                 duration_ms: None,
                 reason,
+                detail,
             },
         );
         let started = Instant::now();
         let isolate = instance.isolate();
-        let report = match tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, isolate.lock()).await {
-            Ok(mut guard) => guard.terminate_with_report().await.ok(),
-            Err(_) => None,
+        let (report, lock_timed_out) =
+            match tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, isolate.lock()).await {
+                Ok(mut guard) => {
+                    // The ACK wait lives inside `terminate_with_report` (the
+                    // worker's grace budget plus the fixed margin) and the
+                    // report CLASSIFIES which wait happened: a poisoned
+                    // mid-stream socket reports `SocketPoisoned` without ever
+                    // awaiting an ack — comparing aggregate elapsed time
+                    // against the ack deadline would misclassify a slow socket
+                    // recovery as a `drain_timeout` (EDG-9).
+                    let report = guard.terminate_with_report().await.ok();
+                    (report, false)
+                }
+                Err(_) => (None, true),
+            };
+        // (EDG-9) Only an ACTUAL deadline wait rewrites the reason to
+        // `drain_timeout`: the 5 s isolate-lock timeout firing, or the
+        // report's own classification of a sent-and-timed-out shutdown.
+        // A `Completed` report (a real, completed wait) never becomes
+        // `drain_timeout`, and neither does `SocketPoisoned` — that
+        // terminates with the reason `socket_poisoned`, keeping the drain
+        // cause (if any) in `detail`.
+        let timed_out = if stream_abandoned {
+            lock_timed_out
+                || report
+                    .as_ref()
+                    .is_some_and(|report| report.outcome == TerminationOutcome::TimedOut)
+        } else {
+            report.is_none()
+                || report
+                    .as_ref()
+                    .is_some_and(|report| report.outcome == TerminationOutcome::TimedOut)
         };
-        let timed_out = report.is_none()
-            || report
-                .as_ref()
-                .is_some_and(|report| report.outcome == TerminationOutcome::TimedOut);
+        let socket_poisoned = report
+            .as_ref()
+            .is_some_and(|report| report.outcome == TerminationOutcome::SocketPoisoned);
         let duration_ms = started.elapsed().as_millis() as u64;
         emit_lifecycle(
             self.inner.lifecycle_events.as_ref(),
@@ -1076,6 +1244,7 @@ impl WorkerPool {
                 drained_count: report.as_ref().and_then(|report| report.drained_count),
                 duration_ms: Some(duration_ms),
                 reason,
+                detail,
             },
         );
         emit_lifecycle(
@@ -1086,7 +1255,14 @@ impl WorkerPool {
                 process_id: report.and_then(|report| report.process_id),
                 drained_count: None,
                 duration_ms: Some(duration_ms),
-                reason: if timed_out { "drain_timeout" } else { reason },
+                reason: if timed_out {
+                    "drain_timeout"
+                } else if socket_poisoned {
+                    "socket_poisoned"
+                } else {
+                    reason
+                },
+                detail,
             },
         );
     }
@@ -1418,10 +1594,20 @@ impl Drop for DispatchSlot {
 /// end frame, BEFORE the signal fires) settles the race: a body that is
 /// dropped or errors AFTER production completed must COMPLETE the dispatch
 /// (the socket is in sync, the process reusable) — never recycle it.
+///
+/// (EDG-9) `completion_wait` relays the completion signal's outcome so a
+/// drop/error BEFORE production completed can WAIT (bounded) for the
+/// in-flight abandon drain; `drain_wait` is that budget.
 struct GuardedBody {
     inner: BodyStream,
     state: Arc<Mutex<Option<StreamDispatchState>>>,
     production_complete: Option<Arc<AtomicBool>>,
+    completion_wait: Option<tokio::sync::oneshot::Receiver<StreamCompletion>>,
+    drain_wait: Duration,
+    /// The pool's abandon-drain policy is disabled (a `0` limit): the reader
+    /// abandons the socket on consumer loss, so the recycle sub-cause is
+    /// known up front (`socket_poisoned`).
+    drain_disabled: bool,
 }
 
 fn take_stream_state(state: &Mutex<Option<StreamDispatchState>>) -> Option<StreamDispatchState> {
@@ -1431,13 +1617,94 @@ fn take_stream_state(state: &Mutex<Option<StreamDispatchState>>) -> Option<Strea
         .take()
 }
 
-/// Drive the lifecycle for a taken dispatch state: complete when production
-/// finished cleanly (socket in sync, process reusable), recycle otherwise.
-fn finish_stream_state(state: StreamDispatchState, production_completed: bool) {
+/// Drive the lifecycle for a dispatch state whose body ended BEFORE
+/// production completed (mid-stream error or early drop). The decision is
+/// made with the state ALREADY taken (see `GuardedBody::finish_abandoned`):
+/// complete when production finished cleanly (socket in sync, process
+/// reusable); otherwise, if the completion relay exists and the drain wait
+/// is positive, wait for the in-flight abandon drain for at most
+/// `drain_wait` — a `Completed` relay runs the normal completion (the
+/// process is reused), anything else recycles, CARRYING THE DRAIN CAUSE
+/// (EDG-9) into the recycle detail.
+fn finish_stream_state(
+    state: StreamDispatchState,
+    production_completed: bool,
+    completion_wait: Option<tokio::sync::oneshot::Receiver<StreamCompletion>>,
+    drain_wait: Duration,
+    recycle_reason: &'static str,
+    detail: Option<&'static str>,
+) {
     if production_completed {
         tokio::spawn(complete_stream_state(state));
-    } else {
-        tokio::spawn(recycle_stream_state(state));
+        return;
+    }
+    match completion_wait {
+        Some(rx) if !drain_wait.is_zero() => {
+            let wait = drain_wait;
+            tokio::spawn(async move {
+                let started = Instant::now();
+                // `Completed` only when the relay RESOLVED `Completed`
+                // before the budget: the reader finished the abandoned
+                // response cleanly within its limits and the socket is in
+                // sync.
+                let relayed = tokio::time::timeout(wait, rx).await;
+                // The relay outcome, if it resolved within the budget AND
+                // the reader actually reported one (a dropped sender or a
+                // timed-out wait has no outcome).
+                let wait_expired = relayed.is_err();
+                let outcome = match relayed {
+                    Ok(result) => result.ok(),
+                    Err(_) => None,
+                };
+                let drained = outcome
+                    .as_ref()
+                    .is_some_and(|outcome| matches!(outcome, StreamCompletion::Completed));
+                if drained {
+                    // Register the real termination reason (EDG-9) and run
+                    // the normal completion: the instance goes Idle and the
+                    // slot is released — the process is reused.
+                    emit_lifecycle(
+                        state.pool.inner.lifecycle_events.as_ref(),
+                        WorkerLifecycleEvent {
+                            kind: WorkerLifecycleEventKind::DrainCompleted,
+                            worker_ref: state.instance.worker_ref.clone(),
+                            process_id: None,
+                            drained_count: None,
+                            duration_ms: Some(started.elapsed().as_millis() as u64),
+                            reason: "stream_abandoned_drained",
+                            detail: None,
+                        },
+                    );
+                    complete_stream_state(state).await;
+                } else {
+                    // (EDG-9) Carry the drain CAUSE the reader reported
+                    // into the recycle detail. A wait that EXPIRED is an
+                    // explicit, known outcome — not `None`: the reader
+                    // simply had not reported within the budget (slow
+                    // producer), so the sub-cause is `relay_timeout` and
+                    // the late result, if any, is ignored (the relay
+                    // receiver is already gone and the observer's send
+                    // just fails, harmlessly). A resolved `Incomplete`
+                    // (no reported cause) keeps the body-level detail.
+                    let detail = detail
+                        .or_else(|| {
+                            outcome.as_ref().and_then(|outcome| match outcome {
+                                StreamCompletion::Abandoned(cause) => {
+                                    Some(abandoned_detail(*cause))
+                                }
+                                _ => None,
+                            })
+                        })
+                        .or_else(|| {
+                            wait_expired.then_some(abandoned_detail(AbandonedStream::RelayTimeout))
+                        });
+                    recycle_stream_state(state, recycle_reason, detail).await;
+                }
+            });
+        }
+        _ => {
+            tokio::spawn(recycle_stream_state(state, recycle_reason, detail));
+        }
     }
 }
 
@@ -1454,10 +1721,10 @@ impl futures_core::Stream for GuardedBody {
                 // Mid-stream error: normally a desynced socket (recycle) —
                 // UNLESS production had already completed cleanly, in which
                 // case the socket is in sync and the process stays put.
-                let production_completed = self.production_completed();
-                if let Some(state) = take_stream_state(&self.state) {
-                    finish_stream_state(state, production_completed);
-                }
+                // (EDG-9) The decision is taken atomically with the state
+                // take (see `finish_abandoned`); the sub-cause is the
+                // mid-stream error itself.
+                self.finish_abandoned(Some("stream_error"));
                 std::task::Poll::Ready(Some(Err(err)))
             }
             std::task::Poll::Ready(None) => {
@@ -1473,15 +1740,12 @@ impl futures_core::Stream for GuardedBody {
 
 impl Drop for GuardedBody {
     fn drop(&mut self) {
-        // Dropped before end-of-stream: normally the client disconnected while
-        // frames were in flight — the process socket cannot be reused (recycle).
-        // When production had ALREADY completed (flag set), the socket is in
-        // sync and the process must COMPLETE, not recycle — even if the
-        // signal observer has not run yet.
-        let production_completed = self.production_completed();
-        if let Some(state) = take_stream_state(&self.state) {
-            finish_stream_state(state, production_completed);
-        }
+        // Dropped before end-of-stream: normally the client disconnected
+        // while frames were in flight — the process socket cannot be
+        // reused (recycle). (EDG-9) UNLESS the reader is still draining
+        // the abandoned response: the bounded wait below reuses the process
+        // when the drain finishes cleanly.
+        self.finish_abandoned(None);
     }
 }
 
@@ -1491,6 +1755,50 @@ impl GuardedBody {
         self.production_complete
             .as_ref()
             .is_some_and(|flag| flag.load(Ordering::Acquire))
+    }
+
+    /// Body end before production completed (drop or mid-stream error).
+    ///
+    /// (EDG-9, decision 3) The "complete or recycle" decision is taken
+    /// ATOMICALLY with the state take: the dispatch state is taken FIRST,
+    /// and the production-complete flag is read only AFTER the take. The
+    /// flag is stored by the producer right before the completion signal
+    /// fires, so a read that happened BEFORE the take can miss a store that
+    /// lands in between and recycle a socket that is in sync and reusable.
+    /// Reading after the take makes the decision reflect the state at the
+    /// moment the dispatch is decided: flag set ⇒ the producer saw a clean
+    /// end and restored the socket ⇒ complete; flag unset ⇒ production had
+    /// not completed cleanly at decision time ⇒ recycle.
+    fn finish_abandoned(&mut self, detail: Option<&'static str>) {
+        let Some(state) = take_stream_state(&self.state) else {
+            // The signal observer (or the body's own end path) took the
+            // state first and owns the lifecycle.
+            return;
+        };
+        let production_completed = self.production_completed();
+        // A completion relay exists only when the detach pipeline is
+        // active: with no pipeline the behavior is the pre-EDG-9 immediate
+        // recycle (`stream_recycle`), exactly as before.
+        let has_pipeline = self.completion_wait.is_some();
+        // (EDG-9) When the drain policy is disabled the reader abandons the
+        // socket on consumer loss — the recycle sub-cause is known up front
+        // (the reader's own cause report never arrives: the pool does not
+        // wait on the relay when the policy is disabled). A mid-stream
+        // error detail wins over it.
+        let detail =
+            detail.or_else(|| (has_pipeline && self.drain_disabled).then_some("socket_poisoned"));
+        finish_stream_state(
+            state,
+            production_completed,
+            self.completion_wait.take(),
+            self.drain_wait,
+            if has_pipeline {
+                "stream_abandoned_recycled"
+            } else {
+                "stream_recycle"
+            },
+            detail,
+        );
     }
 }
 
@@ -1520,16 +1828,23 @@ async fn complete_stream_state(state: StreamDispatchState) {
     pool.sync_worker_counts();
 }
 
-/// Abnormal end (mid-stream error or client disconnect): the process socket is
-/// desynced — terminate the isolate and evict the instance so the next request
-/// gets a fresh process.
-async fn recycle_stream_state(mut state: StreamDispatchState) {
+/// Abnormal end (mid-stream error, client disconnect, or an abandoned
+/// response whose drain failed, EDG-9): terminate the isolate and evict the
+/// instance so the next request gets a fresh process. `reason` is the real
+/// termination reason (`stream_recycle` for a pre-EDG-9 disconnect without
+/// pipeline, `stream_abandoned_recycled` for the EDG-9 abandon path); the
+/// terminate only rewrites it to `drain_timeout` after a real deadline wait.
+async fn recycle_stream_state(
+    mut state: StreamDispatchState,
+    reason: &'static str,
+    detail: Option<&'static str>,
+) {
     let worker_ref = state.instance.worker_ref.clone();
     let duration_ms = state.started.elapsed().as_millis().max(1) as u64;
     drop(state.isolate_guard.take());
     state
         .pool
-        .terminate_isolate_with_lifecycle(&state.instance, "stream_recycle")
+        .terminate_isolate_with_lifecycle_detail(&state.instance, reason, detail, true)
         .await;
     state.pool.recycle_cancelled(&state.instance);
     state
@@ -1571,6 +1886,7 @@ async fn shutdown_instances_after_drain(
                 drained_count: None,
                 duration_ms: None,
                 reason,
+                detail: None,
             },
         );
         let started = Instant::now();
@@ -1629,6 +1945,7 @@ async fn terminate_shutdown_instance(
             drained_count: report.as_ref().and_then(|report| report.drained_count),
             duration_ms: Some(duration_ms),
             reason,
+            detail: None,
         },
     );
     emit_lifecycle(
@@ -1640,6 +1957,7 @@ async fn terminate_shutdown_instance(
             drained_count: None,
             duration_ms: Some(duration_ms),
             reason: if timed_out { "drain_timeout" } else { reason },
+            detail: None,
         },
     );
 }
@@ -1676,7 +1994,7 @@ mod stream_drop_flag_tests {
     //! completion-signal observer.
 
     use super::*;
-    use edger_core::{CompletionSignal, IsolationError};
+    use edger_core::{AbandonedStream, CompletionSignal, IsolationError, StreamCompletion};
     use std::task::{Context, Poll};
 
     /// Body that yields exactly one chunk and then stays open (pending
@@ -1707,7 +2025,7 @@ mod stream_drop_flag_tests {
     /// lifecycle.
     #[derive(Default)]
     struct DropFlagFixture {
-        fire: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
+        fire: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<StreamCompletion>>>,
         terminated: std::sync::atomic::AtomicUsize,
     }
 
@@ -1717,12 +2035,12 @@ mod stream_drop_flag_tests {
 
     struct DropFlagIsolate {
         fixture: Arc<DropFlagFixture>,
-        fire_rx: Option<tokio::sync::oneshot::Receiver<bool>>,
+        fire_rx: Option<tokio::sync::oneshot::Receiver<StreamCompletion>>,
     }
 
     impl IsolateFactory for DropFlagFactory {
         fn create_isolate(&self, _worker_ref: &WorkerRef) -> Box<dyn Isolate> {
-            let (fire_tx, fire_rx) = tokio::sync::oneshot::channel::<bool>();
+            let (fire_tx, fire_rx) = tokio::sync::oneshot::channel::<StreamCompletion>();
             self.fixture.fire.lock().unwrap().replace(fire_tx);
             Box::new(DropFlagIsolate {
                 fixture: Arc::clone(&self.fixture),
@@ -1797,7 +2115,7 @@ mod stream_drop_flag_tests {
             let flag = Arc::new(AtomicBool::new(true));
             let fire_rx = self.fire_rx.take().expect("signal created by the factory");
             let signal: CompletionSignal =
-                Box::pin(async move { fire_rx.await.is_ok_and(|ok| ok) });
+                Box::pin(async move { fire_rx.await.unwrap_or(StreamCompletion::Incomplete) });
             Ok(WorkerResponse::Streamed(StreamedResponse {
                 status: 200,
                 headers: vec![],
@@ -1888,7 +2206,7 @@ mod stream_drop_flag_tests {
             .unwrap()
             .take()
             .expect("signal still pending")
-            .send(true)
+            .send(StreamCompletion::Completed)
             .unwrap();
         for _ in 0..100 {
             tokio::task::yield_now().await;
@@ -1902,6 +2220,681 @@ mod stream_drop_flag_tests {
             pool.worker_stats()[0].state,
             WorkerState::Idle,
             "still Idle after the late signal"
+        );
+    }
+
+    // (EDG-9) Abandon-drain fixtures: production had NOT completed at fetch
+    // time (flag `false`, signal pending) and the test plays the reader's
+    // drain: it stores the flag and fires the signal at a deterministic
+    // moment — mirroring the reader's ordering (flag store happens-before
+    // the completion send). The current-thread runtime makes the drop vs
+    // drain ordering exact.
+
+    #[derive(Default)]
+    struct DropAbandonFixture {
+        flag: std::sync::Mutex<Option<Arc<AtomicBool>>>,
+        fire: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<StreamCompletion>>>,
+        terminated: std::sync::atomic::AtomicUsize,
+        /// The outcome the fixture's `terminate_with_report` returns
+        /// (`Completed` unless a test configures one — EDG-9 amendment 2
+        /// classifies the `SocketPoisoned` pool path).
+        terminate_outcome: std::sync::Mutex<Option<edger_core::TerminationOutcome>>,
+    }
+
+    struct DropAbandonFactory {
+        fixture: Arc<DropAbandonFixture>,
+    }
+
+    struct DropAbandonIsolate {
+        fixture: Arc<DropAbandonFixture>,
+        fire_rx: Option<tokio::sync::oneshot::Receiver<StreamCompletion>>,
+    }
+
+    impl IsolateFactory for DropAbandonFactory {
+        fn create_isolate(&self, _worker_ref: &WorkerRef) -> Box<dyn Isolate> {
+            let (fire_tx, fire_rx) = tokio::sync::oneshot::channel::<StreamCompletion>();
+            self.fixture.fire.lock().unwrap().replace(fire_tx);
+            Box::new(DropAbandonIsolate {
+                fixture: Arc::clone(&self.fixture),
+                fire_rx: Some(fire_rx),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Isolate for DropAbandonIsolate {
+        async fn execute_fetch(
+            &mut self,
+            _req: SerializedRequest,
+            _config: &WorkerConfig,
+        ) -> Result<SerializedResponse, IsolationError> {
+            Err(IsolationError::new(
+                "NOT_STREAM",
+                "fixture only streams /stream",
+            ))
+        }
+
+        async fn execute_routes(
+            &mut self,
+            req: SerializedRequest,
+            config: &WorkerConfig,
+        ) -> Result<SerializedResponse, IsolationError> {
+            self.execute_fetch(req, config).await
+        }
+
+        async fn serve_static_spa(
+            &mut self,
+            _path: &str,
+            _base_href: Option<&str>,
+            config: &WorkerConfig,
+        ) -> Result<SerializedResponse, IsolationError> {
+            self.execute_fetch(
+                SerializedRequest {
+                    method: "GET".into(),
+                    uri: "/".into(),
+                    headers: vec![],
+                    body: None,
+                    request_id: "spa".into(),
+                    base_href: None,
+                },
+                config,
+            )
+            .await
+        }
+
+        async fn execute_wasm(
+            &mut self,
+            req: SerializedRequest,
+            config: &WorkerConfig,
+        ) -> Result<SerializedResponse, IsolationError> {
+            self.execute_fetch(req, config).await
+        }
+
+        async fn execute_fetch_stream(
+            &mut self,
+            req: SerializedRequest,
+            config: &WorkerConfig,
+        ) -> Result<WorkerResponse, IsolationError> {
+            if req.uri != "/stream" {
+                return self
+                    .execute_fetch(req, config)
+                    .await
+                    .map(WorkerResponse::Buffered);
+            }
+            // Production has NOT completed yet: flag `false`, signal pending.
+            let flag = Arc::new(AtomicBool::new(false));
+            self.fixture.flag.lock().unwrap().replace(flag.clone());
+            let fire_rx = self.fire_rx.take().expect("signal created by the factory");
+            // The reader sends a cause on every abandon-drain exit (EDG-9);
+            // a dropped sender (the fixture's "no cause" path) reports
+            // `Incomplete` — the pool recycles with the body-level detail.
+            let signal: CompletionSignal =
+                Box::pin(async move { fire_rx.await.unwrap_or(StreamCompletion::Incomplete) });
+            Ok(WorkerResponse::Streamed(StreamedResponse {
+                status: 200,
+                headers: vec![],
+                body: Box::pin(OneThenPendingBody { consumed: false }),
+                completed: Some(signal),
+                production_complete: Some(flag),
+            }))
+        }
+
+        async fn terminate(&mut self) -> Result<(), IsolationError> {
+            self.fixture.terminated.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn terminate_with_report(
+            &mut self,
+        ) -> Result<edger_core::TerminationReport, IsolationError> {
+            self.fixture.terminated.fetch_add(1, Ordering::SeqCst);
+            Ok(edger_core::TerminationReport {
+                outcome: self
+                    .fixture
+                    .terminate_outcome
+                    .lock()
+                    .unwrap()
+                    .unwrap_or(edger_core::TerminationOutcome::Completed),
+                process_id: None,
+                drained_count: None,
+            })
+        }
+    }
+
+    fn abandon_pool(
+        fixture: &Arc<DropAbandonFixture>,
+        name: &str,
+        lifecycle: Option<tokio::sync::mpsc::Sender<WorkerLifecycleEvent>>,
+    ) -> (WorkerPool, WorkerRef) {
+        abandon_pool_limits(
+            fixture,
+            name,
+            lifecycle,
+            AbandonDrainLimits {
+                max_bytes: edger_core::STREAM_ABANDON_DRAIN_MAX_BYTES_DEFAULT,
+                max_ms: 50,
+            },
+        )
+    }
+
+    fn abandon_pool_limits(
+        fixture: &Arc<DropAbandonFixture>,
+        name: &str,
+        lifecycle: Option<tokio::sync::mpsc::Sender<WorkerLifecycleEvent>>,
+        abandon_drain: AbandonDrainLimits,
+    ) -> (WorkerPool, WorkerRef) {
+        let pool = WorkerPool::with_factory_and_lifecycle_abandon_drain(
+            PoolConfig {
+                max_size: 16,
+                ephemeral_concurrency: 4,
+                ephemeral_queue_limit: 8,
+            },
+            Arc::new(DropAbandonFactory {
+                fixture: Arc::clone(fixture),
+            }),
+            lifecycle,
+            abandon_drain,
+        );
+        let worker_ref = create_worker_ref(
+            std::path::PathBuf::from(format!("/workers/{name}")),
+            WorkerManifest {
+                name: name.into(),
+                max_processes: Some(1),
+                ttl: Some(serde_yaml::Value::String("30s".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (pool, worker_ref)
+    }
+
+    fn stream_request(worker: &str) -> SerializedRequest {
+        SerializedRequest {
+            method: "GET".into(),
+            uri: "/stream".into(),
+            headers: vec![],
+            body: None,
+            request_id: worker.into(),
+            base_href: None,
+        }
+    }
+
+    /// Drain the (small) lifecycle channel and return the first event of the
+    /// given kind, if any.
+    fn lifecycle_event_of(
+        rx: &mut tokio::sync::mpsc::Receiver<WorkerLifecycleEvent>,
+        kind: WorkerLifecycleEventKind,
+    ) -> Option<WorkerLifecycleEvent> {
+        loop {
+            match rx.try_recv() {
+                Ok(event) if event.kind == kind => return Some(event),
+                Ok(_) => continue,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return None,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return None,
+            }
+        }
+    }
+
+    fn drain_completed_event(
+        rx: &mut tokio::sync::mpsc::Receiver<WorkerLifecycleEvent>,
+    ) -> Option<WorkerLifecycleEvent> {
+        lifecycle_event_of(rx, WorkerLifecycleEventKind::DrainCompleted)
+    }
+
+    fn terminated_event(
+        rx: &mut tokio::sync::mpsc::Receiver<WorkerLifecycleEvent>,
+    ) -> Option<WorkerLifecycleEvent> {
+        lifecycle_event_of(rx, WorkerLifecycleEventKind::Terminated)
+    }
+
+    async fn fetch_stream_body(
+        pool: &WorkerPool,
+        worker_ref: &WorkerRef,
+    ) -> edger_core::StreamedResponse {
+        let streamed = pool
+            .fetch_worker_stream(
+                worker_ref,
+                stream_request(&worker_ref.name),
+                Some(ExecutionKind::FetchHandler),
+            )
+            .await
+            .unwrap();
+        match streamed {
+            WorkerResponse::Streamed(streamed) => streamed,
+            _ => panic!("expected a streamed response"),
+        }
+    }
+
+    // (EDG-9, decision 2+3) The client disconnects WHILE the reader is still
+    // draining the abandoned response; the drain then finishes cleanly within
+    // the limits (flag store + completion). The pool must WAIT for the
+    // completion relay and COMPLETE (the process is reused) — never recycle.
+    // Mutation killed: a drop path that recycles without waiting.
+    #[tokio::test(flavor = "current_thread")]
+    async fn drop_while_abandon_drain_in_progress_completes_when_drain_finishes() {
+        let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(16);
+        let fixture = Arc::new(DropAbandonFixture::default());
+        let (pool, worker_ref) = abandon_pool(&fixture, "edg9-drained", Some(lifecycle_tx));
+
+        let _streamed = fetch_stream_body(&pool, &worker_ref).await;
+        // Client disconnects BEFORE the drain finishes: flag still `false`,
+        // the drop spawns the bounded completion wait.
+        drop(_streamed.body);
+
+        // The drain finishes cleanly NOW: flag store happens-before the
+        // completion send (the reader's real ordering).
+        let flag = fixture
+            .flag
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("flag created by the isolate");
+        flag.store(true, Ordering::SeqCst);
+        fixture
+            .fire
+            .lock()
+            .unwrap()
+            .take()
+            .expect("signal still pending")
+            .send(StreamCompletion::Completed)
+            .unwrap();
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            fixture.terminated.load(Ordering::SeqCst),
+            0,
+            "a drain that finished within the limits must not terminate the isolate"
+        );
+        let stats = pool.worker_stats();
+        assert_eq!(stats.len(), 1, "the instance must still be cached");
+        assert_eq!(
+            stats[0].state,
+            WorkerState::Idle,
+            "the dispatch must COMPLETE (Idle), not recycle"
+        );
+        let drained = drain_completed_event(&mut lifecycle_rx);
+        assert!(
+            drained.is_some_and(|event| event.reason == "stream_abandoned_drained"),
+            "the real termination reason must be stream_abandoned_drained"
+        );
+    }
+
+    // (EDG-9) The client disconnects and the drain does NOT finish within the
+    // limits (the completion signal resolves `false`): the bounded wait
+    // closes and the process is recycled with the REAL reason
+    // `stream_abandoned_recycled` (no drain was waiting, so no
+    // `drain_timeout`).
+    #[tokio::test(flavor = "current_thread")]
+    async fn drop_when_abandon_drain_fails_recycles_with_real_reason() {
+        let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(16);
+        let fixture = Arc::new(DropAbandonFixture::default());
+        let (pool, worker_ref) = abandon_pool(&fixture, "edg9-drain-fail", Some(lifecycle_tx));
+
+        let _streamed = fetch_stream_body(&pool, &worker_ref).await;
+        drop(_streamed.body);
+
+        // The reader gives up (over a limit or a socket error): the
+        // completion resolves `false`. Dropping the sender does it.
+        fixture.fire.lock().unwrap().take();
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            fixture.terminated.load(Ordering::SeqCst),
+            1,
+            "a failed drain must recycle the process"
+        );
+        let terminated = terminated_event(&mut lifecycle_rx);
+        assert!(
+            terminated.is_some_and(|event| {
+                event.reason == "stream_abandoned_recycled" && event.detail.is_none()
+            }),
+            "the real reason must be stream_abandoned_recycled, not drain_timeout"
+        );
+    }
+
+    // (EDG-9, decision 3) The completion arrives BEFORE the drop decides:
+    // the flag is stored and the signal fired, but the drop wins the state
+    // take (the observer is delayed on the current-thread runtime). The
+    // decision reads the flag AFTER the take — flag set ⇒ complete, never
+    // recycle.
+    #[tokio::test(flavor = "current_thread")]
+    async fn drop_after_drain_finished_completes_instead_of_recycling() {
+        let fixture = Arc::new(DropAbandonFixture::default());
+        let (pool, worker_ref) = abandon_pool(&fixture, "edg9-drop-late", None);
+
+        let _streamed = fetch_stream_body(&pool, &worker_ref).await;
+        let flag = fixture
+            .flag
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("flag created by the isolate");
+        // The drain finished (flag + signal) — but on the current-thread
+        // runtime the observer task cannot run before the drop, so the DROP
+        // takes the dispatch state first.
+        flag.store(true, Ordering::SeqCst);
+        fixture
+            .fire
+            .lock()
+            .unwrap()
+            .take()
+            .expect("signal still pending")
+            .send(StreamCompletion::Completed)
+            .unwrap();
+        drop(_streamed.body);
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            fixture.terminated.load(Ordering::SeqCst),
+            0,
+            "the flag (read after the state take) must settle the decision on COMPLETE"
+        );
+        let stats = pool.worker_stats();
+        assert_eq!(stats.len(), 1, "the instance must still be cached");
+        assert_eq!(
+            stats[0].state,
+            WorkerState::Idle,
+            "the dispatch must COMPLETE (Idle), not recycle"
+        );
+    }
+
+    // (EDG-9) The drain CAUSE the reader reports rides the completion relay
+    // into the recycle lifecycle detail: the reader gives up at the byte
+    // limit, the bounded wait resolves with `Abandoned(BytesLimit)` and the
+    // pool recycles with the real sub-cause — not a generic detail-less
+    // recycle, and not a drain_timeout.
+    #[tokio::test(flavor = "current_thread")]
+    async fn drop_carries_the_drain_cause_into_the_recycle_detail() {
+        let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(16);
+        let fixture = Arc::new(DropAbandonFixture::default());
+        let (pool, worker_ref) = abandon_pool(&fixture, "edg9-drain-cause", Some(lifecycle_tx));
+
+        let _streamed = fetch_stream_body(&pool, &worker_ref).await;
+        drop(_streamed.body);
+
+        // The reader reports WHY it stopped: the byte limit.
+        fixture
+            .fire
+            .lock()
+            .unwrap()
+            .take()
+            .expect("signal still pending")
+            .send(StreamCompletion::Abandoned(AbandonedStream::BytesLimit))
+            .unwrap();
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            fixture.terminated.load(Ordering::SeqCst),
+            1,
+            "a failed drain must recycle the process"
+        );
+        let terminated = terminated_event(&mut lifecycle_rx);
+        assert!(
+            terminated.is_some_and(|event| {
+                event.reason == "stream_abandoned_recycled"
+                    && event.detail.as_deref() == Some("bytes_limit")
+            }),
+            "the recycle detail must carry the drain cause (bytes_limit)"
+        );
+    }
+
+    // (EDG-9, amendment 2) The pool's bounded wait for the drain result
+    // EXPIRES before the reader reports anything (slow producer): the
+    // recycle carries the explicit sub-cause `relay_timeout` — never a
+    // generic `None` — and the reader's LATE result, which lands after
+    // the relay receiver is gone, is ignored without error.
+    #[tokio::test(flavor = "current_thread")]
+    async fn relay_wait_expiry_recycles_with_the_relay_timeout_cause() {
+        let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(16);
+        let fixture = Arc::new(DropAbandonFixture::default());
+        // drain_wait = 50 ms (max_ms) + 250 ms grace = 300 ms; the signal
+        // only resolves ~1 s after the drop, so the wait is guaranteed to
+        // expire first.
+        let (pool, worker_ref) = abandon_pool(&fixture, "edg9-relay-timeout", Some(lifecycle_tx));
+
+        let _streamed = fetch_stream_body(&pool, &worker_ref).await;
+        // The late reader: it reports the drain cause AFTER the pool's
+        // bounded wait has already expired — that result must be ignored
+        // without error (the relay receiver is already dropped, so the
+        // observer's send just fails, harmlessly).
+        let late = fixture
+            .fire
+            .lock()
+            .unwrap()
+            .take()
+            .expect("signal still pending");
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1_000)).await;
+            let _ = late.send(StreamCompletion::Abandoned(AbandonedStream::TimeLimit));
+        });
+        drop(_streamed.body);
+
+        // The wait (300 ms) expires and the recycle runs.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(
+            fixture.terminated.load(Ordering::SeqCst),
+            1,
+            "an expired wait must recycle the process"
+        );
+        // Let the late signal land: it must be ignored without error.
+        tokio::time::sleep(Duration::from_millis(800)).await;
+
+        let mut events = Vec::new();
+        while let Ok(event) = lifecycle_rx.try_recv() {
+            events.push(event);
+        }
+        assert!(
+            events
+                .iter()
+                .all(|event| event.kind != WorkerLifecycleEventKind::DrainTimedOut),
+            "an expired relay wait is a known cause, not a shutdown timeout"
+        );
+        let terminated = events
+            .into_iter()
+            .find(|event| event.kind == WorkerLifecycleEventKind::Terminated);
+        assert!(
+            terminated.is_some_and(|event| {
+                event.reason == "stream_abandoned_recycled"
+                    && event.detail.as_deref() == Some("relay_timeout")
+            }),
+            "the expired wait must recycle with the explicit relay_timeout sub-cause"
+        );
+    }
+
+    // (EDG-9, amendment 2) The termination report classifies the socket as
+    // NOT reclaimed (`SocketPoisoned` — nothing was sent, no ack was ever
+    // awaited): the termination carries the reason `socket_poisoned` (never
+    // `drain_timeout`, never `DrainTimedOut`) and keeps the drain cause in
+    // the detail.
+    #[tokio::test(flavor = "current_thread")]
+    async fn socket_poisoned_termination_reports_socket_poisoned_not_drain_timeout() {
+        let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(16);
+        let fixture = Arc::new(DropAbandonFixture::default());
+        let (pool, worker_ref) =
+            abandon_pool(&fixture, "edg9-poison-terminate", Some(lifecycle_tx));
+
+        let _streamed = fetch_stream_body(&pool, &worker_ref).await;
+        // The isolate reports: the socket could not be reclaimed — no
+        // shutdown was sent, so this is NOT a timeout.
+        fixture
+            .terminate_outcome
+            .lock()
+            .unwrap()
+            .replace(edger_core::TerminationOutcome::SocketPoisoned);
+        // The drain cause still rides the relay into the detail.
+        fixture
+            .fire
+            .lock()
+            .unwrap()
+            .take()
+            .expect("signal still pending")
+            .send(StreamCompletion::Abandoned(AbandonedStream::BytesLimit))
+            .unwrap();
+        drop(_streamed.body);
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            fixture.terminated.load(Ordering::SeqCst),
+            1,
+            "a poisoned-socket recycle must terminate the isolate"
+        );
+        let mut events = Vec::new();
+        while let Ok(event) = lifecycle_rx.try_recv() {
+            events.push(event);
+        }
+        assert!(
+            events
+                .iter()
+                .all(|event| event.kind != WorkerLifecycleEventKind::DrainTimedOut),
+            "a poisoned socket is not a shutdown timeout"
+        );
+        let terminated = events
+            .into_iter()
+            .find(|event| event.kind == WorkerLifecycleEventKind::Terminated);
+        assert!(
+            terminated.is_some_and(|event| {
+                event.reason == "socket_poisoned"
+                    && event.detail.as_deref() == Some("bytes_limit")
+            }),
+            "the termination must carry the reason socket_poisoned, keeping the drain cause in the detail"
+        );
+    }
+
+    // (EDG-9) `drain_timeout` only when the ACTUAL wait timed out: the
+    // isolate lock is held past grace+500 ms (800 ms) but under the 5 s
+    // lock timeout, and the termination itself completes — the aggregate
+    // elapsed time must NOT be rewritten into a `drain_timeout`; the real
+    // reason is preserved and no `DrainTimedOut` event is emitted.
+    #[tokio::test(flavor = "current_thread")]
+    async fn lock_held_past_grace_then_completed_keeps_the_real_reason() {
+        let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(16);
+        let fixture = Arc::new(DropAbandonFixture::default());
+        // `max_ms: 0` disables the relay wait: the drop recycles IMMEDIATELY
+        // (the terminate below models that recycle).
+        let (pool, worker_ref) = abandon_pool_limits(
+            &fixture,
+            "edg9-lock-held",
+            Some(lifecycle_tx),
+            AbandonDrainLimits {
+                max_bytes: edger_core::STREAM_ABANDON_DRAIN_MAX_BYTES_DEFAULT,
+                max_ms: 0,
+            },
+        );
+
+        // NOTE: the isolate is locked on an instance built WITHOUT an
+        // in-flight dispatch — a live stream body holds the SAME isolate
+        // lock (the dispatch state keeps the guard for the body's
+        // lifetime), so locking it from outside while the body is alive
+        // would deadlock (and did: the first version of this test hung).
+        let isolate = DropAbandonIsolate {
+            fixture: Arc::clone(&fixture),
+            fire_rx: None,
+        };
+        let instance = Arc::new(WorkerInstance::new(worker_ref.clone(), Box::new(isolate)));
+        let lock_guard = instance.isolate().lock_owned().await;
+
+        let terminate_pool = pool.clone();
+        let terminate_instance = Arc::clone(&instance);
+        let terminate = tokio::spawn(async move {
+            terminate_pool
+                .terminate_isolate_with_lifecycle_detail(
+                    &terminate_instance,
+                    "stream_abandoned_recycled",
+                    Some("bytes_limit"),
+                    true,
+                )
+                .await;
+        });
+
+        // The terminate task is parked on the isolate lock. Hold it for
+        // 800 ms: past the ack deadline (grace 0 + 500 ms margin) and far
+        // under the 5 s lock timeout.
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        drop(lock_guard);
+        tokio::time::timeout(Duration::from_secs(5), terminate)
+            .await
+            .expect("the terminate must finish once the lock frees")
+            .expect("the terminate task must not panic");
+
+        assert_eq!(
+            fixture.terminated.load(Ordering::SeqCst),
+            1,
+            "the terminate must run once the lock frees"
+        );
+        // Collect the events once (the helpers below DRAIN non-matching
+        // events, so they must not be run twice on the same channel).
+        let mut events = Vec::new();
+        while let Ok(event) = lifecycle_rx.try_recv() {
+            events.push(event);
+        }
+        assert!(
+            events
+                .iter()
+                .all(|event| event.kind != WorkerLifecycleEventKind::DrainTimedOut),
+            "a completed wait must not emit DrainTimedOut"
+        );
+        let terminated = events
+            .into_iter()
+            .find(|event| event.kind == WorkerLifecycleEventKind::Terminated);
+        assert!(
+            terminated.is_some_and(|event| {
+                event.reason == "stream_abandoned_recycled"
+                    && event.detail.as_deref() == Some("bytes_limit")
+            }),
+            "the real reason must be preserved (no drain_timeout rewrite)"
+        );
+    }
+
+    // (EDG-9) With the drain disabled (a `0` limit) the relay wait is
+    // `Duration::ZERO`: the termination must start WITHOUT advancing the
+    // clock by the 250 ms grace — a pending signal must not hold it. This
+    // test never sleeps, so a 250 ms (or larger) wait would never elapse
+    // and the assertion below would fail.
+    #[tokio::test(flavor = "current_thread")]
+    async fn disabled_drain_recycles_without_waiting_for_the_signal() {
+        let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(16);
+        let fixture = Arc::new(DropAbandonFixture::default());
+        let (pool, worker_ref) = abandon_pool_limits(
+            &fixture,
+            "edg9-disabled-wait",
+            Some(lifecycle_tx),
+            AbandonDrainLimits {
+                max_bytes: edger_core::STREAM_ABANDON_DRAIN_MAX_BYTES_DEFAULT,
+                max_ms: 0,
+            },
+        );
+
+        let _streamed = fetch_stream_body(&pool, &worker_ref).await;
+        drop(_streamed.body);
+        // NO sleep: only yields. The clock has not advanced by the grace.
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            fixture.terminated.load(Ordering::SeqCst),
+            1,
+            "a disabled drain must recycle immediately, without the relay wait"
+        );
+        // The pool knows the sub-cause up front: the reader abandoned the
+        // socket (drain disabled ⇒ poisoned).
+        let terminated = terminated_event(&mut lifecycle_rx);
+        assert!(
+            terminated.is_some_and(|event| {
+                event.reason == "stream_abandoned_recycled"
+                    && event.detail.as_deref() == Some("socket_poisoned")
+            }),
+            "a disabled-drain recycle must carry the socket_poisoned sub-cause"
         );
     }
 }

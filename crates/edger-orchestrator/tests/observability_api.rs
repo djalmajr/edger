@@ -44,6 +44,9 @@ fn input(worker: &str, version: &str, request_id: &str) -> OperationalEventInput
         message: None,
         truncated: None,
         dropped_count: None,
+        method: Some("GET".into()),
+        path: Some("/api/items".into()),
+        content_type: Some("application/json".into()),
     }
 }
 

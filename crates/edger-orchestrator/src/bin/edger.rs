@@ -53,6 +53,10 @@ struct RuntimeIsolateFactory {
     js_uses_process: bool,
     stream_detach_max_bytes: u64,
     stream_detach_budget: Arc<StreamDetachBudget>,
+    /// EDG-9 abandon-drain limits (per isolate process, mirrored by the
+    /// pool's completion wait): `0` in either one disables the drain.
+    abandon_drain_max_bytes: u64,
+    abandon_drain_max_ms: u64,
 }
 
 /// `EDGER_STREAM_DETACH_MAX_BYTES` default: 8 MiB per-response buffered tail.
@@ -88,11 +92,24 @@ impl RuntimeIsolateFactory {
             "EDGER_STREAM_DETACH_TOTAL_BYTES",
             DEFAULT_STREAM_DETACH_TOTAL_BYTES,
         );
+        // EDG-9: the reader keeps discarding an abandoned response to a
+        // clean end frame, bounded by both limits; `0` disables the drain
+        // (the pre-EDG-9 socket_poisoned recycle).
+        let abandon_drain_max_bytes = stream_detach_env(
+            "EDGER_STREAM_ABANDON_DRAIN_MAX_BYTES",
+            edger_core::STREAM_ABANDON_DRAIN_MAX_BYTES_DEFAULT,
+        );
+        let abandon_drain_max_ms = stream_detach_env(
+            "EDGER_STREAM_ABANDON_DRAIN_MAX_MS",
+            edger_core::STREAM_ABANDON_DRAIN_MAX_MS_DEFAULT,
+        );
         Self {
             console_sender,
             js_uses_process,
             stream_detach_max_bytes,
             stream_detach_budget: Arc::new(StreamDetachBudget::new(stream_detach_total_bytes)),
+            abandon_drain_max_bytes,
+            abandon_drain_max_ms,
         }
     }
 }
@@ -115,10 +132,20 @@ impl IsolateFactory for RuntimeIsolateFactory {
                     ),
                     None => DenoProcessIsolate::new(),
                 };
-                Box::new(isolate.with_stream_detach(
-                    self.stream_detach_max_bytes,
-                    Arc::clone(&self.stream_detach_budget),
-                ))
+                Box::new(
+                    isolate
+                        .with_stream_detach(
+                            self.stream_detach_max_bytes,
+                            Arc::clone(&self.stream_detach_budget),
+                        )
+                        // EDG-9: on consumer loss, drain the abandoned response
+                        // (discard-mode to a clean end frame) instead of
+                        // poisoning the socket and recycling the process.
+                        .with_abandon_drain_limits(
+                            self.abandon_drain_max_bytes,
+                            self.abandon_drain_max_ms,
+                        ),
+                )
             }
             _ => Box::new(DenoIsolate::new(DenoFacade::new())),
         }
@@ -142,10 +169,22 @@ async fn main() -> anyhow::Result<()> {
     }
     let console_sender = start_console_capture(&server);
     let lifecycle_sender = start_lifecycle_capture(&server);
-    let pool = WorkerPool::with_factory_and_lifecycle(
+    // EDG-9: the pool's completion wait must mirror the isolates'
+    // `EDGER_STREAM_ABANDON_DRAIN_MAX_MS` (the drain's own deadline is
+    // measured from the consumer loss, which happens before the body's drop
+    // observes it; the pool adds its small grace on top). `0` in either
+    // limit disables the drain AND the pool's relay wait (immediate
+    // recycle, `socket_poisoned` sub-cause).
+    let isolate_factory = RuntimeIsolateFactory::from_env(console_sender);
+    let abandon_drain = edger_worker::AbandonDrainLimits {
+        max_bytes: isolate_factory.abandon_drain_max_bytes,
+        max_ms: isolate_factory.abandon_drain_max_ms,
+    };
+    let pool = WorkerPool::with_factory_and_lifecycle_abandon_drain(
         PoolConfig::default(),
-        Arc::new(RuntimeIsolateFactory::from_env(console_sender)),
+        Arc::new(isolate_factory),
         Some(lifecycle_sender),
+        abandon_drain,
     );
     server.mark_ready(pool.clone());
     let worker_dirs = worker_dirs_from_env();
@@ -344,6 +383,18 @@ fn record_lifecycle_event(events: &OperationalStore, record: WorkerLifecycleEven
             record.reason,
         ),
     };
+    // (EDG-9) Preserve the reason and the drain sub-cause on the
+    // operational surface (the old fields above stay untouched): the REUSE
+    // reason (`stream_abandoned_drained`) rides the `DrainCompleted` event,
+    // and the RECYCLE sub-cause (`bytes_limit`, `time_limit`,
+    // `stream_error`, `socket_poisoned`) rides the `Terminated` event's
+    // detail — its outcome is already the real reason
+    // (`stream_abandoned_recycled`).
+    let code = match record.kind {
+        WorkerLifecycleEventKind::DrainCompleted => Some(record.reason.to_string()),
+        WorkerLifecycleEventKind::Terminated => record.detail.map(|detail| detail.to_string()),
+        _ => None,
+    };
     events.record(OperationalEventInput {
         source: OperationalEventSource::Drain,
         kind: kind.into(),
@@ -357,12 +408,15 @@ fn record_lifecycle_event(events: &OperationalStore, record: WorkerLifecycleEven
         outcome: Some(outcome.into()),
         status: None,
         duration_ms: record.duration_ms,
-        code: None,
+        code,
         message: record
             .drained_count
             .map(|count| format!("drained waitUntil promises: {count}")),
         truncated: None,
         dropped_count: None,
+        method: None,
+        path: None,
+        content_type: None,
     });
 }
 
@@ -387,6 +441,9 @@ fn record_console_event(events: &OperationalStore, record: edger_isolation::Cons
         message: Some(record.message),
         truncated: record.truncated.then_some(true),
         dropped_count: (record.dropped_before > 0).then_some(record.dropped_before),
+        method: None,
+        path: None,
+        content_type: None,
     });
 }
 
@@ -656,5 +713,88 @@ mod tests {
             "sem nenhuma credencial segue open mode legado"
         );
         assert!(auth.console_service().is_none());
+    }
+
+    // (EDG-9) The lifecycle consumer must PRESERVE the reason and the drain
+    // sub-cause on the operational surface: `stream_abandoned_drained` on
+    // reuse (the DrainCompleted event) and `stream_abandoned_recycled`
+    // WITH the sub-cause on recycle (the Terminated event) — the serialized
+    // operational event is what an operator sees.
+    #[test]
+    fn lifecycle_reason_and_detail_reach_the_serialized_operational_event() {
+        use edger_orchestrator::observability::OperationalEventQuery;
+
+        let worker_ref = edger_core::create_worker_ref(
+            std::path::PathBuf::from("/workers/lifecycle-cause"),
+            edger_core::WorkerManifest {
+                name: "lifecycle-cause".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let store = OperationalStore::default();
+
+        // Reuse: the pool's completion ran after the EDG-9 drain finished.
+        record_lifecycle_event(
+            &store,
+            WorkerLifecycleEvent {
+                kind: WorkerLifecycleEventKind::DrainCompleted,
+                worker_ref: worker_ref.clone(),
+                process_id: None,
+                drained_count: None,
+                duration_ms: Some(12),
+                reason: "stream_abandoned_drained",
+                detail: None,
+            },
+        );
+        // Recycle: the drain stopped at the byte limit.
+        record_lifecycle_event(
+            &store,
+            WorkerLifecycleEvent {
+                kind: WorkerLifecycleEventKind::Terminated,
+                worker_ref: worker_ref.clone(),
+                process_id: Some("proc-1".into()),
+                drained_count: None,
+                duration_ms: Some(34),
+                reason: "stream_abandoned_recycled",
+                detail: Some("bytes_limit"),
+            },
+        );
+
+        let page = store.query(OperationalEventQuery::default());
+        let json = serde_json::to_string(&page.events).unwrap();
+
+        // The old fields stay intact.
+        assert!(json.contains("\"kind\":\"process.drain.completed\""));
+        assert!(json.contains("\"outcome\":\"completed\""));
+        assert!(json.contains("\"kind\":\"process.terminated\""));
+        assert!(json.contains("\"outcome\":\"stream_abandoned_recycled\""));
+        // (EDG-9) reason and sub-cause now ride the operational event.
+        assert!(
+            json.contains("stream_abandoned_drained"),
+            "the reuse reason must reach the serialized event: {json}"
+        );
+        assert!(
+            json.contains("\"code\":\"bytes_limit\""),
+            "the recycle sub-cause must reach the serialized event: {json}"
+        );
+
+        // And the fields are on the RIGHT events (not just somewhere).
+        let drained = page
+            .events
+            .iter()
+            .find(|event| event.kind == "process.drain.completed")
+            .expect("drain completed event");
+        assert_eq!(drained.code.as_deref(), Some("stream_abandoned_drained"));
+        let terminated = page
+            .events
+            .iter()
+            .find(|event| event.kind == "process.terminated")
+            .expect("terminated event");
+        assert_eq!(
+            terminated.outcome.as_deref(),
+            Some("stream_abandoned_recycled")
+        );
+        assert_eq!(terminated.code.as_deref(), Some("bytes_limit"));
     }
 }

@@ -1044,6 +1044,9 @@ fn record_release_event(
         message: None,
         truncated: None,
         dropped_count: None,
+        method: None,
+        path: None,
+        content_type: None,
     });
 }
 
