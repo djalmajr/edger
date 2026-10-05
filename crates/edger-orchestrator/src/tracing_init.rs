@@ -23,7 +23,8 @@ impl TracingInitConfig {
             .or_else(|| lookup("RUST_LOG"))
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| {
-                "edger_orchestrator=info,edger_worker=info,edger_isolation=info,edger.dispatch=info".into()
+                "edger_orchestrator=info,edger_worker=info,edger_isolation=info,edger.dispatch=info"
+                    .into()
             });
         let endpoint =
             lookup("OTEL_EXPORTER_OTLP_ENDPOINT").filter(|value| !value.trim().is_empty());
