@@ -4,7 +4,8 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.9` (abandoned streams drained
+Toward 0.3.2. Release candidates: `v0.3.2-rc.10` (dispatch telemetry visible
+in production logs); `v0.3.2-rc.9` (abandoned streams drained
 instead of killing the worker process); `v0.3.2-rc.8` (worker slot released when
 a streamed response is fully produced); `v0.3.2-rc.7` (compressed app responses,
 static asset revalidation, wasmtime security patch); `v0.3.2-rc.6` (cPanel
@@ -204,6 +205,13 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.10]
+
+- The per-request dispatch log (method, path without query string, response
+  content type) is on by default, and operational events print the same
+  fields as `http_method`, `http_path` and `content_type`. Setting `EDGER_LOG`
+  or `RUST_LOG` still replaces the default filter.
 
 ## [0.3.2-rc.9]
 
