@@ -4,7 +4,8 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.8` (worker slot released when
+Toward 0.3.2. Release candidates: `v0.3.2-rc.9` (abandoned streams drained
+instead of killing the worker process); `v0.3.2-rc.8` (worker slot released when
 a streamed response is fully produced); `v0.3.2-rc.7` (compressed app responses,
 static asset revalidation, wasmtime security patch); `v0.3.2-rc.6` (cPanel
 language and API key management, routing flag state); `v0.3.2-rc.5` (tenant routing, weighted
@@ -203,6 +204,23 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.9]
+
+- When a client drops a streamed response before it ends (disconnect,
+  aborted fetch, `HEAD` over a streamed page), EdgeR keeps reading and
+  discarding the rest of that response and reuses the Deno process instead
+  of killing it, so the next request no longer pays a cold start.
+  `EDGER_STREAM_ABANDON_DRAIN_MAX_BYTES` (default 8 MiB) and
+  `EDGER_STREAM_ABANDON_DRAIN_MAX_MS` (default 2000 ms; `0` in either
+  disables) bound that drain. Server-sent events and other streams without
+  an end are still recycled when abandoned.
+- Worker dispatch logs and operational events include the request method,
+  the path without query string and the response content type, and stream
+  terminations record their real cause (`stream_abandoned_drained`,
+  `stream_abandoned_recycled` with `bytes_limit`, `time_limit`,
+  `stream_error`, `relay_timeout` or `socket_poisoned`). `drain_timeout` now
+  means only a shutdown acknowledgement that did not arrive in time.
 
 ## [0.3.2-rc.8]
 
