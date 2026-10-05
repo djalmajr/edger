@@ -29,7 +29,7 @@ use std::sync::Arc;
 use edger_core::ExecutionKind;
 use edger_isolation::{
     ConsoleLogContext, ConsoleLogSender, ConsoleStream, DenoFacade, DenoIsolate,
-    DenoProcessIsolate, WasiConfig, WasmIsolate,
+    DenoProcessIsolate, StreamDetachBudget, WasiConfig, WasmIsolate,
 };
 use edger_orchestrator::observability::{
     OperationalEventInput, OperationalEventLevel, OperationalEventSource, OperationalStore,
@@ -51,6 +51,28 @@ use edger_worker::{
 struct RuntimeIsolateFactory {
     console_sender: Option<ConsoleLogSender>,
     js_uses_process: bool,
+    stream_detach_max_bytes: u64,
+    stream_detach_budget: Arc<StreamDetachBudget>,
+}
+
+/// `EDGER_STREAM_DETACH_MAX_BYTES` default: 8 MiB per-response buffered tail.
+const DEFAULT_STREAM_DETACH_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// `EDGER_STREAM_DETACH_TOTAL_BYTES` default: 64 MiB process-wide budget.
+const DEFAULT_STREAM_DETACH_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Parse a detach-bytes env var: invalid values (including empty or negative
+/// text) fall back to the default with a warning; `0` is a valid disable.
+fn stream_detach_env(name: &str, default: u64) -> u64 {
+    match std::env::var(name) {
+        Ok(value) => match value.trim().parse::<u64>() {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                tracing::warn!(var = name, default, "invalid {name}; using the default");
+                default
+            }
+        },
+        Err(_) => default,
+    }
 }
 
 impl RuntimeIsolateFactory {
@@ -58,9 +80,19 @@ impl RuntimeIsolateFactory {
         let js_uses_process = std::env::var("EDGER_JS_RUNTIME")
             .map(|value| !value.trim().eq_ignore_ascii_case("bridge"))
             .unwrap_or(true);
+        let stream_detach_max_bytes = stream_detach_env(
+            "EDGER_STREAM_DETACH_MAX_BYTES",
+            DEFAULT_STREAM_DETACH_MAX_BYTES,
+        );
+        let stream_detach_total_bytes = stream_detach_env(
+            "EDGER_STREAM_DETACH_TOTAL_BYTES",
+            DEFAULT_STREAM_DETACH_TOTAL_BYTES,
+        );
         Self {
             console_sender,
             js_uses_process,
+            stream_detach_max_bytes,
+            stream_detach_budget: Arc::new(StreamDetachBudget::new(stream_detach_total_bytes)),
         }
     }
 }
@@ -71,17 +103,23 @@ impl IsolateFactory for RuntimeIsolateFactory {
             ExecutionKind::WasmModule { .. } => Box::new(WasmIsolate::new(
                 WasiConfig::from_worker_config(&worker_ref.config),
             )),
-            _ if self.js_uses_process => match self.console_sender.as_ref() {
-                Some(sender) => Box::new(DenoProcessIsolate::with_console(
-                    sender.clone(),
-                    ConsoleLogContext {
-                        namespace: worker_ref.namespace.clone(),
-                        worker: worker_ref.name.clone(),
-                        version: worker_ref.version.clone(),
-                    },
-                )),
-                None => Box::new(DenoProcessIsolate::new()),
-            },
+            _ if self.js_uses_process => {
+                let isolate = match self.console_sender.as_ref() {
+                    Some(sender) => DenoProcessIsolate::with_console(
+                        sender.clone(),
+                        ConsoleLogContext {
+                            namespace: worker_ref.namespace.clone(),
+                            worker: worker_ref.name.clone(),
+                            version: worker_ref.version.clone(),
+                        },
+                    ),
+                    None => DenoProcessIsolate::new(),
+                };
+                Box::new(isolate.with_stream_detach(
+                    self.stream_detach_max_bytes,
+                    Arc::clone(&self.stream_detach_budget),
+                ))
+            }
             _ => Box::new(DenoIsolate::new(DenoFacade::new())),
         }
     }

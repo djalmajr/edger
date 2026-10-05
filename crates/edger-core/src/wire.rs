@@ -34,13 +34,30 @@ pub type BodyStream = std::pin::Pin<
     Box<dyn futures_core::Stream<Item = Result<Bytes, crate::error::IsolationError>> + Send>,
 >;
 
+/// Production-complete signal for a streamed response (no I/O, pure std):
+/// resolves to `true` once the worker has fully produced the response (end of
+/// production without error, all chunks already in flight), so the runtime
+/// may release the worker slot before a slow client finishes downloading the
+/// buffered tail. Resolves to `false` when production did not complete cleanly
+/// (error, or the producer went away).
+pub type CompletionSignal = std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>;
+
 /// A response whose body streams incrementally from the worker (SSE, chunked
 /// SSR). Status/headers are available up front; chunks arrive as the worker
-/// produces them.
+/// produces them. Backends that cannot observe production completion leave
+/// `completed` and `production_complete` as `None`; the end of the body
+/// remains the only release trigger for the worker slot.
 pub struct StreamedResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: BodyStream,
+    pub completed: Option<CompletionSignal>,
+    /// Set to `true` once production finished cleanly (end frame without
+    /// error), BEFORE `completed` resolves. A body that is dropped or errors
+    /// after this flag is set must COMPLETE the dispatch instead of
+    /// recycling: the producer socket is already in sync and the process is
+    /// reusable. Backends without the mechanism leave this `None`.
+    pub production_complete: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl std::fmt::Debug for StreamedResponse {
@@ -49,6 +66,8 @@ impl std::fmt::Debug for StreamedResponse {
             .field("status", &self.status)
             .field("headers", &self.headers)
             .field("body", &"<stream>")
+            .field("completed", &self.completed.is_some())
+            .field("production_complete", &self.production_complete.is_some())
             .finish()
     }
 }

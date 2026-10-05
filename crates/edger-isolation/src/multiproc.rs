@@ -9,15 +9,16 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use edger_core::{
-    DenoCacheMode, Isolate, IsolationError, SerializedRequest, SerializedResponse,
-    StreamedResponse, TerminationOutcome, TerminationReport, WorkerConfig, WorkerResponse,
+    CompletionSignal, DenoCacheMode, Isolate, IsolationError, SerializedRequest,
+    SerializedResponse, StreamedResponse, TerminationOutcome, TerminationReport, WorkerConfig,
+    WorkerResponse,
 };
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
@@ -25,7 +26,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixListener;
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::deno_bundle::{
     default_deno_executable, entry_needs_bundle, DenoCliBundler, ModuleBundler,
@@ -182,12 +183,264 @@ const TAG_HEADER: u8 = b'H';
 const TAG_CHUNK: u8 = b'C';
 const TAG_END: u8 = b'E';
 
+/// Snapshot of the stream-detach counters (byte-semaphore budget accounting).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamDetachStats {
+    /// Responses whose production completed while the detach pipeline was
+    /// active (the slot was released at production end, not at drain end).
+    pub detached_total: u64,
+    /// Chunks that had to wait (backpressure) because the per-response
+    /// buffer cap was already full.
+    pub fallback_cap_total: u64,
+    /// Chunks that had to wait (backpressure) because the process-wide
+    /// budget was exhausted.
+    pub fallback_budget_total: u64,
+}
+
+/// Process-wide budget for the stream-detach pipelines, shared by every
+/// isolate of the `edger` process. It is a byte semaphore: every chunk the
+/// reader task has READ but the forwarder has not yet delivered to the body
+/// channel holds permits; permits are released the moment a chunk is
+/// delivered (or discarded), so the budget never leaks across responses. The
+/// 16-slot body channel is deliberately outside the budget.
+#[derive(Debug)]
+pub struct StreamDetachBudget {
+    total: u64,
+    permits: tokio::sync::Semaphore,
+    stats: StreamDetachStatsInner,
+}
+
+#[derive(Debug, Default)]
+struct StreamDetachStatsInner {
+    detached_total: AtomicU64,
+    fallback_cap_total: AtomicU64,
+    fallback_budget_total: AtomicU64,
+}
+
+impl StreamDetachBudget {
+    pub fn new(total: u64) -> Self {
+        Self {
+            total,
+            permits: tokio::sync::Semaphore::new(total.min(usize::MAX as u64) as usize),
+            stats: StreamDetachStatsInner::default(),
+        }
+    }
+
+    pub fn total_bytes(&self) -> u64 {
+        self.total
+    }
+
+    /// Bytes currently held by read-but-undelivered chunks (saturated to
+    /// `usize` when `total` exceeds the pointer width).
+    pub fn reserved_bytes(&self) -> u64 {
+        (self.total.min(usize::MAX as u64) as usize - self.permits.available_permits()) as u64
+    }
+
+    pub fn stats(&self) -> StreamDetachStats {
+        StreamDetachStats {
+            detached_total: self.stats.detached_total.load(Ordering::Acquire),
+            fallback_cap_total: self.stats.fallback_cap_total.load(Ordering::Acquire),
+            fallback_budget_total: self.stats.fallback_budget_total.load(Ordering::Acquire),
+        }
+    }
+
+    /// The byte semaphore (used by the reader/forwarder of the detach
+    /// pipeline, which live in this module).
+    fn permits(&self) -> &tokio::sync::Semaphore {
+        &self.permits
+    }
+
+    fn total_usize(&self) -> usize {
+        self.total.min(usize::MAX as u64) as usize
+    }
+
+    fn record_detached(&self) {
+        self.stats.detached_total.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn record_fallback_cap(&self) {
+        self.stats.fallback_cap_total.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn record_fallback_budget(&self) {
+        self.stats
+            .fallback_budget_total
+            .fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// Detach-pipeline policy for one persistent-process isolate: the per-response
+/// buffered cap (`0` disables the pipeline entirely, keeping the legacy
+/// blocking behavior) and the process-wide budget shared by all isolates.
+#[derive(Clone, Debug)]
+pub struct StreamDetach {
+    pub max_bytes: u64,
+    pub budget: Arc<StreamDetachBudget>,
+}
+
+/// One item of the detach pipeline's internal FIFO queue. The single queue
+/// guarantees order: a newer chunk can never bypass an older one, and the
+/// end/error marker is delivered strictly after the last chunk.
+enum QueueItem {
+    /// A produced chunk awaiting delivery to the body channel. The RAII
+    /// `reservations` return the chunk's per-response and global permits
+    /// when the item is dropped — on delivery, on discard, or on any early
+    /// exit — so no code path can leak a reservation.
+    Chunk {
+        chunk: Bytes,
+        reservations: ChunkReservations,
+    },
+    /// Terminal marker, enqueued by the reader after the last chunk and
+    /// passed through in order by the forwarder.
+    End(Result<(), IsolationError>),
+}
+
+/// RAII guard for one chunk's detach reservations: holds the per-response
+/// and the global permits taken by `reserve_chunk` and returns them on
+/// drop. The guard is dropped exactly when the chunk's fate is decided —
+/// after successful delivery, when discarded (consumer gone), or on early
+/// exit (enqueue failure, task unwind) — so every path returns the permits
+/// automatically.
+struct ChunkReservations {
+    per_response: Arc<tokio::sync::Semaphore>,
+    per_response_permits: u32,
+    budget: Arc<StreamDetachBudget>,
+    budget_permits: u32,
+}
+
+impl Drop for ChunkReservations {
+    fn drop(&mut self) {
+        if self.per_response_permits > 0 {
+            self.per_response
+                .add_permits(self.per_response_permits as usize);
+        }
+        if self.budget_permits > 0 {
+            self.budget
+                .permits()
+                .add_permits(self.budget_permits as usize);
+        }
+    }
+}
+
+/// Keep a semaphore reservation HELD past the end of this scope. The
+/// returned `SemaphorePermit` is deliberately forgotten: dropping it would
+/// release the permits immediately, but a detach-pipeline reservation must
+/// stay held until the forwarder releases it via `add_permits` — after the
+/// chunk is delivered (or discarded). Safe: the permit's `Drop` is a pure
+/// counter increment on the semaphore (no allocation, no other side
+/// effect), so forgetting it leaks nothing.
+fn hold_permit(permit: tokio::sync::SemaphorePermit<'_>) {
+    std::mem::forget(permit);
+}
+
+/// Reserve `chunk_len` bytes on the per-response semaphore and on the
+/// shared global budget, waiting when no permits are free (that wait IS the
+/// backpressure: the worker slot stays held, exactly like the legacy path).
+/// Returns an RAII guard that returns both reservations on drop. A chunk
+/// larger than a semaphore's FULL capacity reserves that full capacity —
+/// not its own size — so a single oversized chunk can never deadlock the
+/// pipeline. (Permit counts are `u32`, the tokio semaphore width; a budget
+/// above 4 GiB simply saturates the reservation.)
+///
+/// `None` when the consumer-gone cancellation fires while waiting. Semaphore
+/// acquisition is cancel-safe, and the guard exists from the FIRST
+/// acquisition, so a cancellation before the global one still returns the
+/// per-response permits.
+async fn reserve_chunk(pipeline: &DetachPipeline, chunk_len: usize) -> Option<ChunkReservations> {
+    let per_response_permits = permits_for(chunk_len, pipeline.per_response_cap);
+    let budget_permits = permits_for(chunk_len, pipeline.budget.total_usize());
+    // `cancelled()` needs `&mut`; a cloned receiver observes the same channel.
+    let mut cancel = pipeline.cancel.clone();
+    let per_response = match pipeline.per_response.try_acquire_many(per_response_permits) {
+        Ok(permit) => {
+            hold_permit(permit);
+            Arc::clone(&pipeline.per_response)
+        }
+        Err(_) => {
+            // The per-response cap is already buffered: wait for the
+            // forwarder to free capacity (backpressure) — or for the
+            // consumer to be lost (cancellation).
+            pipeline.budget.record_fallback_cap();
+            let acquired = tokio::select! {
+                acquired = pipeline.per_response.acquire_many(per_response_permits) => {
+                    Some(acquired.expect("only fails on task cancellation"))
+                }
+                _ = cancel.wait_for(|v| *v) => None,
+            };
+            let Some(permit) = acquired else {
+                // Consumer gone: the reader finishes without enqueueing.
+                return None;
+            };
+            hold_permit(permit);
+            Arc::clone(&pipeline.per_response)
+        }
+    };
+    // Guard from the FIRST acquisition: if the global acquisition is
+    // cancelled, dropping it still returns the per-response permits.
+    let mut guard = ChunkReservations {
+        per_response,
+        per_response_permits,
+        budget: Arc::clone(&pipeline.budget),
+        budget_permits: 0,
+    };
+    match pipeline.budget.permits().try_acquire_many(budget_permits) {
+        Ok(permit) => hold_permit(permit),
+        Err(_) => {
+            // The process-wide budget is already buffered: wait for ANY
+            // forwarder to free capacity (backpressure) — or for the
+            // consumer to be lost (cancellation).
+            pipeline.budget.record_fallback_budget();
+            let acquired = tokio::select! {
+                acquired = pipeline.budget.permits().acquire_many(budget_permits) => {
+                    Some(acquired.expect("only fails on task cancellation"))
+                }
+                _ = cancel.wait_for(|v| *v) => None,
+            };
+            let Some(permit) = acquired else {
+                // Cancelled: the guard drops here, returning the
+                // per-response permits (budget permits: 0).
+                return None;
+            };
+            hold_permit(permit);
+        }
+    }
+    guard.budget_permits = budget_permits;
+    Some(guard)
+}
+
+/// Permit count for a `len`-byte chunk under a `cap`-byte capacity: the
+/// chunk size, the full capacity when the chunk is oversized, saturated to
+/// the `u32` semaphore width.
+fn permits_for(len: usize, cap: usize) -> u32 {
+    len.min(cap).min(u32::MAX as usize) as u32
+}
+
+/// One response's detach-pipeline context, shared by the reader and the
+/// forwarder tasks: the per-response semaphore (and its capacity), the
+/// shared process-wide budget, and the consumer-gone cancellation that the
+/// reader's reservation waits select on (so a lost consumer can never leave
+/// the reader parked on a semaphore).
+#[derive(Clone)]
+struct DetachPipeline {
+    per_response: Arc<tokio::sync::Semaphore>,
+    per_response_cap: usize,
+    budget: Arc<StreamDetachBudget>,
+    cancel: watch::Receiver<bool>,
+}
+
 /// A streamed response from the worker process: status/headers up front, body
 /// chunks delivered through the channel as the worker produces them.
 pub struct ProcessStreamedResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub chunks: mpsc::Receiver<Result<Bytes, IsolationError>>,
+    /// Production-complete signal (see `StreamedResponse::completed`); `None`
+    /// when the detach pipeline is not configured for this isolate.
+    pub completed: Option<CompletionSignal>,
+    /// Shared production-complete flag (see
+    /// `StreamedResponse::production_complete`); `None` when the detach
+    /// pipeline is not configured for this isolate.
+    pub production_complete: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Deserialize)]
@@ -571,10 +824,26 @@ impl DenoWorkerProcess {
 
     /// Send one request and stream the response: status/headers resolve as soon
     /// as the worker produced them; body chunks flow through the channel until
-    /// the end frame (story 16.D).
+    /// the end frame (story 16.D). Legacy behavior: no detach buffer.
     pub async fn request_stream(
         &mut self,
         req: SerializedRequest,
+    ) -> Result<ProcessStreamedResponse, IsolationError> {
+        self.request_stream_with_detach(req, None).await
+    }
+
+    /// Streaming request with an optional stream-detach policy (EDG-8): chunks
+    /// flow through a single FIFO pipeline — the reader reserves each chunk's
+    /// bytes (per-response cap + shared process-wide budget) before enqueueing
+    /// and waits when no permits are free (backpressure keeps the slot held);
+    /// the forwarder delivers chunks in order and releases the permits after
+    /// delivery. A policy of `0` disables the pipeline entirely (legacy
+    /// blocking path, no signal). The returned `completed` signal resolves to
+    /// `true` when production finished cleanly.
+    pub async fn request_stream_with_detach(
+        &mut self,
+        req: SerializedRequest,
+        detach: Option<&StreamDetach>,
     ) -> Result<ProcessStreamedResponse, IsolationError> {
         let mut read_half = self.reclaim_read_half().await?;
 
@@ -629,70 +898,318 @@ impl DenoWorkerProcess {
         self.restore_rx = Some(restore_rx);
         let frame_timeout = self.timeout;
 
-        tokio::spawn(async move {
-            loop {
-                let frame =
-                    match tokio::time::timeout(frame_timeout, read_frame(&mut read_half)).await {
-                        Ok(Ok(frame)) => frame,
-                        Ok(Err(err)) => {
-                            let _ = tx
-                                .send(Err(IsolationError::new(
-                                    "UDS_IO",
-                                    format!("stream read failed: {err}"),
-                                )))
-                                .await;
-                            return; // abnormal: read half dropped, process poisoned
-                        }
-                        Err(_) => {
-                            let _ = tx
-                                .send(Err(IsolationError::new(
-                                    "UDS_TIMEOUT",
-                                    "stream stalled past the frame timeout",
-                                )))
-                                .await;
-                            return; // abnormal
-                        }
-                    };
-                let Ok((tag, body)) = split_tag(&frame) else {
-                    return; // abnormal: empty frame
+        // Detach pipeline (EDG-8): a policy of `0` (or none) disables it
+        // entirely — no queue, no semaphores, no signal: the exact pre-slice
+        // path (blocking channel send, slot held until the body ends).
+        let (completed, production_complete) = match detach.filter(|policy| policy.max_bytes > 0) {
+            Some(policy) => {
+                let per_response_cap = policy.max_bytes.min(usize::MAX as u64) as usize;
+                let (q_tx, q_rx) = mpsc::unbounded_channel::<QueueItem>();
+                // Consumer-gone cancellation: the forwarder fires it (and
+                // closes the queue) when the body is dropped mid-stream, so
+                // a reader parked on a reservation semaphore is woken and
+                // finishes (killing the process/socket cannot wake it).
+                let (cancel_tx, cancel_rx) = watch::channel(false);
+                let pipeline = DetachPipeline {
+                    per_response: Arc::new(tokio::sync::Semaphore::new(per_response_cap)),
+                    per_response_cap,
+                    budget: Arc::clone(&policy.budget),
+                    cancel: cancel_rx,
                 };
-                match tag {
-                    TAG_CHUNK => {
-                        if tx.send(Ok(Bytes::copy_from_slice(body))).await.is_err() {
-                            // Consumer dropped mid-stream (client disconnect):
-                            // frames for THIS response are still in flight, so
-                            // the socket cannot be reused — do not restore.
-                            return;
-                        }
-                    }
-                    TAG_END => {
-                        let end: WireEndFrame = serde_json::from_slice(body).unwrap_or_default();
-                        if let Some(error) = end.error {
-                            let _ = tx.send(Err(IsolationError::new("UDS_STREAM", error))).await;
-                        }
-                        let _ = restore_tx.send(read_half); // clean end: reusable
-                        return;
-                    }
-                    _ => return, // abnormal: unknown tag
-                }
+                let production_complete = Arc::new(AtomicBool::new(false));
+                let (done_tx, done_rx) = oneshot::channel::<bool>();
+
+                // Reader: reads frames, reserves the chunk's bytes (waits
+                // when no permits are free — the slot stays held), and
+                // enqueues it on the single FIFO queue.
+                tokio::spawn(Self::detach_reader(
+                    read_half,
+                    q_tx,
+                    pipeline.clone(),
+                    restore_tx,
+                    production_complete.clone(),
+                    done_tx,
+                    frame_timeout,
+                ));
+                // Forwarder: takes chunks from the queue IN ORDER and
+                // sends them on the body channel; the RAII reservations in
+                // the queue items return the permits on delivery or
+                // discard. On a lost consumer it cancels the reader's
+                // reservation waits and closes the queue, then drains.
+                tokio::spawn(Self::detach_forwarder(q_rx, tx, cancel_tx));
+
+                (
+                    Some(Box::pin(async move {
+                        // `false` when the sender was dropped (error end or
+                        // abnormal task exit before a clean end frame).
+                        done_rx.await.is_ok_and(|ok| ok)
+                    }) as CompletionSignal),
+                    Some(production_complete),
+                )
             }
-        });
+            None => {
+                tokio::spawn(Self::legacy_stream_pump(
+                    read_half,
+                    tx,
+                    restore_tx,
+                    frame_timeout,
+                ));
+                (None, None)
+            }
+        };
 
         Ok(ProcessStreamedResponse {
             status: header.status,
             headers: header.headers,
             chunks: rx,
+            completed,
+            production_complete,
         })
+    }
+
+    /// Detach-pipeline reader task (EDG-8): reads frames from the worker
+    /// socket and enqueues each chunk on the single FIFO queue AFTER
+    /// reserving its bytes on the per-response and the global semaphores.
+    /// When no permits are free it WAITS (that wait is the backpressure: the
+    /// worker slot stays held, exactly like the legacy path) — production
+    /// cannot outrun the budget. A clean end frame restores the read half,
+    /// sets the shared production-complete flag, enqueues the terminal
+    /// marker and only then fires the completion signal.
+    async fn detach_reader(
+        mut read_half: OwnedReadHalf,
+        q_tx: mpsc::UnboundedSender<QueueItem>,
+        pipeline: DetachPipeline,
+        restore_tx: oneshot::Sender<OwnedReadHalf>,
+        production_complete: Arc<AtomicBool>,
+        done_tx: oneshot::Sender<bool>,
+        frame_timeout: Duration,
+    ) {
+        loop {
+            // Cancellation check BETWEEN frames (frame reads are NOT
+            // cancel-safe, so they never enter the select): if the consumer
+            // is gone, stop reading — no socket restore (frames for THIS
+            // response were in flight; the pool recycles as on a drop
+            // before the signal).
+            if *pipeline.cancel.borrow() {
+                return;
+            }
+            let frame = match tokio::time::timeout(frame_timeout, read_frame(&mut read_half)).await
+            {
+                Ok(Ok(frame)) => frame,
+                Ok(Err(err)) => {
+                    // Abnormal: surface the error IN ORDER (the forwarder
+                    // delivers it) and drop the read half — poisoned.
+                    let _ = q_tx.send(QueueItem::End(Err(IsolationError::new(
+                        "UDS_IO",
+                        format!("stream read failed: {err}"),
+                    ))));
+                    return;
+                }
+                Err(_) => {
+                    let _ = q_tx.send(QueueItem::End(Err(IsolationError::new(
+                        "UDS_TIMEOUT",
+                        "stream stalled past the frame timeout",
+                    ))));
+                    return; // abnormal
+                }
+            };
+            let Ok((tag, body)) = split_tag(&frame) else {
+                return; // abnormal: empty frame — the queue close ends the body
+            };
+            match tag {
+                TAG_CHUNK => {
+                    let chunk = Bytes::copy_from_slice(body);
+                    // Reserve the chunk's bytes BEFORE enqueueing; the RAII
+                    // guard rides along in the queue item and returns both
+                    // reservations when the item is dropped (delivery,
+                    // discard, or early exit). `None` means the consumer
+                    // was lost while reserving: finish without enqueueing
+                    // or restoring (the queue is closed by the forwarder,
+                    // so a send would fail anyway).
+                    let Some(reservations) = reserve_chunk(&pipeline, chunk.len()).await else {
+                        return;
+                    };
+                    if q_tx
+                        .send(QueueItem::Chunk {
+                            chunk,
+                            reservations,
+                        })
+                        .is_err()
+                    {
+                        // Queue closed (forwarder gone, consumer dropped):
+                        // the item — and its RAII reservations — is dropped
+                        // here, returning the permits. Frames for THIS
+                        // response are still in flight, so the socket
+                        // cannot be reused: finish without restoring.
+                        return;
+                    }
+                }
+                TAG_END => {
+                    let end: WireEndFrame = serde_json::from_slice(body).unwrap_or_default();
+                    if let Some(error) = end.error {
+                        // In-band production error: restore the read half (the
+                        // end frame itself was clean) and pass the error
+                        // marker through in order. No success flag/signal: the
+                        // pool recycles as it does today.
+                        let _ = restore_tx.send(read_half);
+                        let _ = q_tx.send(QueueItem::End(Err(IsolationError::new(
+                            "UDS_STREAM",
+                            error,
+                        ))));
+                        return;
+                    }
+                    // Clean end: production is DONE. (1) hand back the read
+                    // half (the process is reusable), (2) mark the shared
+                    // production-complete flag, (3) enqueue the terminal
+                    // marker, (4) fire the completion signal. The flag is set
+                    // BEFORE the signal so a body drop racing the signal
+                    // observer can never recycle a socket that is in sync and
+                    // reusable.
+                    let _ = restore_tx.send(read_half);
+                    production_complete.store(true, Ordering::SeqCst);
+                    pipeline.budget.record_detached();
+                    let _ = q_tx.send(QueueItem::End(Ok(())));
+                    let _ = done_tx.send(true);
+                    return;
+                }
+                _ => return, // abnormal: unknown tag — the queue close ends the body
+            }
+        }
+    }
+
+    /// Detach-pipeline forwarder task (EDG-8): takes chunks from the single
+    /// FIFO queue IN ORDER and sends them on the body channel, releasing the
+    /// chunk's permits only AFTER delivery (or discard) — via the RAII
+    /// `ChunkReservations` guard, so every path returns the permits. It runs
+    /// continuously, so already-read chunks reach the consumer as soon as it
+    /// has capacity — without waiting for the next frame or the terminal
+    /// marker.
+    ///
+    /// On a LOST CONSUMER it fires the shared cancellation (waking a reader
+    /// parked on a reservation semaphore), closes the queue (ending any
+    /// reader that still tries to send) and then drains what is left
+    /// (RAII returns every reservation).
+    async fn detach_forwarder(
+        mut q_rx: mpsc::UnboundedReceiver<QueueItem>,
+        tx: mpsc::Sender<Result<Bytes, IsolationError>>,
+        cancel_tx: watch::Sender<bool>,
+    ) {
+        loop {
+            let item = match q_rx.recv().await {
+                Some(item) => item,
+                None => break, // reader gone (abnormal): drop `tx`, end the body
+            };
+            match item {
+                QueueItem::Chunk {
+                    chunk,
+                    reservations,
+                } => {
+                    if tx.send(Ok(chunk)).await.is_err() {
+                        // Consumer gone (client disconnect): return THIS
+                        // chunk's reservations FIRST, then cancel the
+                        // reader's reservation waits and close the queue —
+                        // the pool recycles the process, but killing the
+                        // socket cannot wake a semaphore wait, so the
+                        // cancellation is the reader's only wake-up. Then
+                        // discard what is left; every dropped item returns
+                        // its own reservations (RAII), and `close` makes
+                        // `recv` return None once the queue is drained.
+                        drop(reservations);
+                        let _ = cancel_tx.send_replace(true);
+                        q_rx.close();
+                        while let Some(QueueItem::Chunk { .. }) = q_rx.recv().await {
+                            // Dropped at the end of each iteration: its
+                            // `ChunkReservations` guard returns the permits.
+                        }
+                        break;
+                    }
+                    // Delivered: the permits return (RAII drop).
+                    drop(reservations);
+                }
+                QueueItem::End(Ok(())) => break, // drop `tx` → body ends (None)
+                QueueItem::End(Err(err)) => {
+                    let _ = tx.send(Err(err)).await;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Legacy stream pump (pre-EDG-8): one task reads frames and blocking
+    /// sends chunks on the body channel; the worker slot stays held until the
+    /// body is fully consumed or dropped.
+    async fn legacy_stream_pump(
+        mut read_half: OwnedReadHalf,
+        tx: mpsc::Sender<Result<Bytes, IsolationError>>,
+        restore_tx: oneshot::Sender<OwnedReadHalf>,
+        frame_timeout: Duration,
+    ) {
+        loop {
+            let frame = match tokio::time::timeout(frame_timeout, read_frame(&mut read_half)).await
+            {
+                Ok(Ok(frame)) => frame,
+                Ok(Err(err)) => {
+                    let _ = tx
+                        .send(Err(IsolationError::new(
+                            "UDS_IO",
+                            format!("stream read failed: {err}"),
+                        )))
+                        .await;
+                    return; // abnormal: read half dropped, process poisoned
+                }
+                Err(_) => {
+                    let _ = tx
+                        .send(Err(IsolationError::new(
+                            "UDS_TIMEOUT",
+                            "stream stalled past the frame timeout",
+                        )))
+                        .await;
+                    return; // abnormal
+                }
+            };
+            let Ok((tag, body)) = split_tag(&frame) else {
+                return; // abnormal: empty frame
+            };
+            match tag {
+                TAG_CHUNK => {
+                    if tx.send(Ok(Bytes::copy_from_slice(body))).await.is_err() {
+                        // Consumer dropped mid-stream (client disconnect):
+                        // frames for THIS response are still in flight, so
+                        // the socket cannot be reused — do not restore.
+                        return;
+                    }
+                }
+                TAG_END => {
+                    let end: WireEndFrame = serde_json::from_slice(body).unwrap_or_default();
+                    if let Some(error) = end.error {
+                        let _ = tx.send(Err(IsolationError::new("UDS_STREAM", error))).await;
+                    }
+                    let _ = restore_tx.send(read_half); // clean end: reusable
+                    return;
+                }
+                _ => return, // abnormal: unknown tag
+            }
+        }
     }
 
     /// Buffered request: streams internally and collects the whole body. Used
     /// by tests and non-streaming callers; infinite streams are bounded by the
-    /// harness byte cap and the per-frame timeout.
+    /// harness byte cap and the per-frame timeout. Legacy behavior: no detach
+    /// buffer.
     pub async fn request(
         &mut self,
         req: SerializedRequest,
     ) -> Result<SerializedResponse, IsolationError> {
-        let mut streamed = self.request_stream(req).await?;
+        self.request_with_detach(req, None).await
+    }
+
+    /// Buffered request with an optional stream-detach policy.
+    pub async fn request_with_detach(
+        &mut self,
+        req: SerializedRequest,
+        detach: Option<&StreamDetach>,
+    ) -> Result<SerializedResponse, IsolationError> {
+        let mut streamed = self.request_stream_with_detach(req, detach).await?;
         let mut body = Vec::new();
         while let Some(chunk) = streamed.chunks.recv().await {
             body.extend_from_slice(&chunk?);
@@ -1057,6 +1574,9 @@ pub struct DenoProcessIsolate {
     shutdown_grace: Duration,
     console_sender: Option<ConsoleLogSender>,
     console_context: Option<ConsoleLogContext>,
+    /// Stream-detach policy (EDG-8): releases the worker slot as soon as
+    /// production completes; `None` keeps the legacy blocking behavior.
+    detach: Option<StreamDetach>,
 }
 
 impl DenoProcessIsolate {
@@ -1070,6 +1590,17 @@ impl DenoProcessIsolate {
             console_context: Some(context),
             ..Self::default()
         }
+    }
+
+    /// Enable the stream-detach pipeline: `max_bytes` caps how much of ONE
+    /// response may be buffered (read but not yet delivered) before the
+    /// reader applies backpressure; `budget` is the process-wide cap shared
+    /// by all isolates. A `max_bytes` of `0` disables the pipeline entirely:
+    /// the legacy pre-EDG-8 path (no queue, no semaphores, no completion
+    /// signal) applies.
+    pub fn with_stream_detach(self, max_bytes: u64, budget: Arc<StreamDetachBudget>) -> Self {
+        let detach = (max_bytes > 0).then_some(StreamDetach { max_bytes, budget });
+        Self { detach, ..self }
     }
 
     async fn ensure_process(&mut self, config: &WorkerConfig) -> Result<(), IsolationError> {
@@ -1120,7 +1651,7 @@ impl DenoProcessIsolate {
             .process
             .as_mut()
             .expect("process just set")
-            .request(req)
+            .request_with_detach(req, self.detach.as_ref())
             .await;
         if result.is_err() {
             // Drop the (possibly dead) process so the next request respawns.
@@ -1139,13 +1670,15 @@ impl DenoProcessIsolate {
             .process
             .as_mut()
             .expect("process just set")
-            .request_stream(req)
+            .request_stream_with_detach(req, self.detach.as_ref())
             .await;
         match result {
             Ok(streamed) => Ok(WorkerResponse::Streamed(StreamedResponse {
                 status: streamed.status,
                 headers: streamed.headers,
                 body: Box::pin(ReceiverBody(streamed.chunks)),
+                completed: streamed.completed,
+                production_complete: streamed.production_complete,
             })),
             Err(err) => {
                 // Drop the (possibly dead/poisoned) process so the next request
@@ -1287,5 +1820,349 @@ mod console_tests {
 
         let (line, _) = sanitize_console_line(b"at file:///Users/operator/workers/app.ts:1");
         assert_eq!(line, "[redacted]");
+    }
+}
+
+#[cfg(test)]
+mod stream_detach_tests {
+    use super::{reserve_chunk, DetachPipeline, QueueItem, StreamDetach, StreamDetachBudget};
+    use bytes::Bytes;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn pipeline(per_response_cap: usize, budget: Arc<StreamDetachBudget>) -> DetachPipeline {
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        // Keep the sender alive for the whole test so `cancelled()` only
+        // fires on an explicit cancel (not on sender drop).
+        std::mem::forget(cancel_tx);
+        DetachPipeline {
+            per_response: Arc::new(tokio::sync::Semaphore::new(per_response_cap)),
+            per_response_cap,
+            budget,
+            cancel: cancel_rx,
+        }
+    }
+
+    // Zero disables the pipeline entirely: the policy is normalized to
+    // absent (no queue, no semaphores, no signal — the legacy path).
+    #[test]
+    fn zero_policy_is_normalized_to_absent() {
+        let budget = Arc::new(StreamDetachBudget::new(1_000));
+        let off = StreamDetach {
+            max_bytes: 0,
+            budget: Arc::clone(&budget),
+        };
+        assert!(off.max_bytes == 0 && (off.max_bytes > 0).then_some(&off).is_none());
+        let on = StreamDetach {
+            max_bytes: 8,
+            budget,
+        };
+        assert!((on.max_bytes > 0).then_some(&on).is_some());
+    }
+
+    // A chunk larger than a semaphore's FULL capacity reserves that full
+    // capacity (not its own size), so one oversized chunk can never deadlock
+    // the pipeline; the RAII guard returns everything on drop.
+    #[tokio::test]
+    async fn oversized_chunk_reserves_full_capacity_not_its_size() {
+        // Per-response cap 100, global budget 1_000.
+        let budget = Arc::new(StreamDetachBudget::new(1_000));
+        let pl = pipeline(100, Arc::clone(&budget));
+        let guard = reserve_chunk(&pl, 5_000).await.expect("not cancelled");
+        assert_eq!(
+            budget.reserved_bytes(),
+            1_000,
+            "the whole global budget is held"
+        );
+        assert_eq!(
+            pl.per_response.available_permits(),
+            0,
+            "the whole per-response cap is held"
+        );
+        drop(guard);
+        assert_eq!(budget.reserved_bytes(), 0);
+        assert_eq!(pl.per_response.available_permits(), 100);
+    }
+
+    // Per-response cap: once it is full the next reservation must WAIT for a
+    // delivery (backpressure, slot held) and a fallback-cap counter is
+    // recorded; dropping one chunk's guard unblocks it.
+    #[tokio::test]
+    async fn per_response_cap_backpressures_and_releases_on_delivery() {
+        let budget = Arc::new(StreamDetachBudget::new(10_000));
+        let pl = pipeline(100, Arc::clone(&budget));
+        let g1 = reserve_chunk(&pl, 60).await.expect("not cancelled");
+        let g2 = reserve_chunk(&pl, 40).await.expect("not cancelled");
+        // Cap exhausted: the next reservation must WAIT for a delivery.
+        let mut waiter = {
+            let pl = pl.clone();
+            tokio::spawn(async move { reserve_chunk(&pl, 1).await })
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut waiter)
+                .await
+                .is_err(),
+            "the reservation must still be waiting on the full cap"
+        );
+        // The waiter is blocked on the per-response CAP (it takes the budget
+        // permit only after the cap frees up) — the budget is unchanged.
+        assert_eq!(
+            budget.reserved_bytes(),
+            100,
+            "60 + 40; the waiter has not reached the budget yet"
+        );
+        // Simulate the forwarder delivering the first chunk: its RAII guard
+        // is dropped and the waiter can proceed.
+        drop(g1);
+        waiter.await.unwrap();
+        assert_eq!(
+            budget.reserved_bytes(),
+            40,
+            "only g2 (40) is still reserved; the waiter's guard dropped with its task"
+        );
+        let stats = budget.stats();
+        assert_eq!(stats.fallback_cap_total, 1);
+        assert_eq!(stats.fallback_budget_total, 0);
+        // Release the rest (a delivery or a discard always returns permits).
+        drop(g2);
+        assert_eq!(budget.reserved_bytes(), 0);
+    }
+
+    // Global budget: shared across "responses"; exhaustion is a distinct
+    // fallback reason; permits returned by one response unblock another.
+    #[tokio::test]
+    async fn global_budget_is_shared_and_returns_on_delivery() {
+        let budget = Arc::new(StreamDetachBudget::new(100));
+        let first = pipeline(10_000, Arc::clone(&budget));
+        let second = pipeline(10_000, Arc::clone(&budget));
+        let g1 = reserve_chunk(&first, 60).await.expect("not cancelled");
+        let g2 = reserve_chunk(&second, 40).await.expect("not cancelled");
+        // Budget exhausted for a third reservation: it must wait.
+        let mut waiter = {
+            let second = second.clone();
+            tokio::spawn(async move { reserve_chunk(&second, 10).await })
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut waiter)
+                .await
+                .is_err(),
+            "budget exhaustion must block"
+        );
+        // The first response delivers: exactly its permits come back, and
+        // the waiter (needing 10) unblocks and takes them.
+        drop(g1);
+        waiter.await.unwrap();
+        assert_eq!(
+            budget.reserved_bytes(),
+            40,
+            "only g2 (40) is still reserved; the waiter's guard dropped with its task"
+        );
+        let stats = budget.stats();
+        assert_eq!(stats.fallback_budget_total, 1);
+        drop(g2);
+        assert_eq!(budget.reserved_bytes(), 0);
+    }
+
+    // Concurrency: under contention the shared budget never admits more than
+    // its total; every dropped guard makes its permits available again.
+    #[tokio::test]
+    async fn budget_reservations_are_bounded_under_contention() {
+        let budget = Arc::new(StreamDetachBudget::new(1_000));
+        let pl = pipeline(u32::MAX as usize, Arc::clone(&budget));
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let pl = pl.clone();
+            handles.push(tokio::spawn(async move {
+                let _guard = reserve_chunk(&pl, 100).await.expect("not cancelled");
+                // Hold the reservation for a bit (simulating an in-flight
+                // response); the RAII drop at scope end returns it.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }));
+        }
+        for handle in handles {
+            handle.await.unwrap();
+        }
+        // All tasks finished and every permit was returned: a FULL
+        // reservation fits again (nothing leaked).
+        assert_eq!(budget.reserved_bytes(), 0, "all permits returned");
+        let full = reserve_chunk(&pl, 1_000).await.expect("not cancelled");
+        assert_eq!(
+            budget.reserved_bytes(),
+            1_000,
+            "the full reservation fits again"
+        );
+        drop(full);
+        assert_eq!(budget.reserved_bytes(), 0);
+    }
+
+    // Review recipe for the send-failure path: body receiver CLOSED (consumer
+    // gone), per-response capacity = exactly one chunk, one chunk reserved
+    // sitting in the queue, and the reader trying to reserve the next one
+    // (blocked on the full cap). The forwarder's discard must finish under a
+    // timeout, unblock the blocked reader, and return every reservation.
+    #[tokio::test]
+    async fn discarded_pipeline_returns_all_reservations_under_timeout() {
+        // Per-response capacity = one chunk (100); the budget is ample.
+        let budget = Arc::new(StreamDetachBudget::new(1_000));
+        // The forwarder's cancel sender is wired to the pipeline's receiver
+        // (exactly like the real pipeline).
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let pipeline = DetachPipeline {
+            per_response: Arc::new(tokio::sync::Semaphore::new(100)),
+            per_response_cap: 100,
+            budget: Arc::clone(&budget),
+            cancel: cancel_rx,
+        };
+        let (q_tx, q_rx) = tokio::sync::mpsc::unbounded_channel::<QueueItem>();
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(rx); // consumer gone: the body receiver is closed
+
+        // Chunk 1: reserved and sitting in the queue.
+        let g1 = reserve_chunk(&pipeline, 100).await.expect("not cancelled");
+        q_tx.send(QueueItem::Chunk {
+            chunk: Bytes::from(vec![b'x'; 100]),
+            reservations: g1,
+        })
+        .unwrap();
+
+        // The reader tries to reserve chunk 2: it blocks on the full
+        // per-response capacity (or is cancelled by the forwarder). Its
+        // sender is the only one left once the test drops its own, so the
+        // queue closes when the reader finishes — exactly like the real
+        // reader's exit. Either way it must observe a CLOSED queue.
+        let mut reader = {
+            let pipeline = pipeline.clone();
+            let q_tx = q_tx.clone();
+            tokio::spawn(async move {
+                match reserve_chunk(&pipeline, 100).await {
+                    Some(g2) => {
+                        // Unblocked before the cancel won the race: the
+                        // forwarder still closed the queue, so the send
+                        // must fail.
+                        q_tx.send(QueueItem::Chunk {
+                            chunk: Bytes::from(vec![b'y'; 100]),
+                            reservations: g2,
+                        })
+                        .is_err()
+                    }
+                    // Cancelled while reserving: the queue must be closed.
+                    None => q_tx.is_closed(),
+                }
+            })
+        };
+        drop(q_tx);
+
+        // The forwarder must drain (its send fails on the closed body)
+        // returning every reservation — under a timeout.
+        let mut forwarder = tokio::spawn(super::DenoWorkerProcess::detach_forwarder(
+            q_rx, tx, cancel_tx,
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), &mut forwarder)
+                .await
+                .is_ok(),
+            "the discard must finish under a timeout (a leaked reservation could keep it — and the reader — blocked forever)"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), &mut reader)
+                .await
+                .is_ok(),
+            "the blocked reader must unblock: the discarded reservations are returned (or the cancellation fires)"
+        );
+        assert_eq!(budget.reserved_bytes(), 0, "every reservation was returned");
+    }
+
+    // Review recipe (round 3): the global budget (1000) is 90% held by
+    // ANOTHER response that stays alive; the discarded response has a
+    // 100-byte chunk whose send failed and a reader trying to reserve 1000
+    // (which can NEVER fit while the other response lives). After the body
+    // is closed, the forwarder cancels the reader and closes the queue:
+    // BOTH tasks must finish under a timeout, the discarded response's
+    // reservations must return, the other response's 900 must stay intact,
+    // and the reader must see the queue closed.
+    #[tokio::test]
+    async fn discarded_pipeline_cancels_reader_blocked_on_other_responses_budget() {
+        // Global budget 1000; another live response holds 900 of it.
+        let budget = Arc::new(StreamDetachBudget::new(1_000));
+        let other = pipeline(10_000, Arc::clone(&budget));
+        let other_guard = reserve_chunk(&other, 900).await.expect("not cancelled");
+
+        // Discarded response: per-response cap = one 100-byte chunk; the
+        // forwarder's cancel sender is wired to the pipeline's receiver.
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let pipeline = DetachPipeline {
+            per_response: Arc::new(tokio::sync::Semaphore::new(100)),
+            per_response_cap: 100,
+            budget: Arc::clone(&budget),
+            cancel: cancel_rx,
+        };
+        let (q_tx, q_rx) = tokio::sync::mpsc::unbounded_channel::<QueueItem>();
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(rx); // consumer gone: the body receiver is closed
+
+        // Chunk 1: reserved (per-response 100 + budget 100 → the budget is
+        // now FULL: 900 other + 100 here) and sitting in the queue.
+        let g1 = reserve_chunk(&pipeline, 100).await.expect("not cancelled");
+        q_tx.send(QueueItem::Chunk {
+            chunk: Bytes::from(vec![b'x'; 100]),
+            reservations: g1,
+        })
+        .unwrap();
+
+        // The reader tries to reserve the next chunk (1000): without the
+        // cancellation it would be parked on the global semaphore forever
+        // (900 are held by the other live response, and returning chunk 1's
+        // 100 is far from enough).
+        let mut reader = {
+            let pipeline = pipeline.clone();
+            let q_tx = q_tx.clone();
+            tokio::spawn(async move {
+                match reserve_chunk(&pipeline, 1_000).await {
+                    Some(g2) => {
+                        // If the permits were released before the cancel
+                        // won the race, the queue is still closed: the send
+                        // must fail.
+                        q_tx.send(QueueItem::Chunk {
+                            chunk: Bytes::from(vec![b'z'; 100]),
+                            reservations: g2,
+                        })
+                        .is_err()
+                    }
+                    // Cancelled while reserving: the queue must be closed.
+                    None => q_tx.is_closed(),
+                }
+            })
+        };
+        drop(q_tx);
+
+        let mut forwarder = tokio::spawn(super::DenoWorkerProcess::detach_forwarder(
+            q_rx, tx, cancel_tx,
+        ));
+        let forwarder_result = tokio::time::timeout(Duration::from_secs(2), &mut forwarder).await;
+        assert!(
+            forwarder_result.is_ok(),
+            "the forwarder must finish under a timeout"
+        );
+        let reader_result = tokio::time::timeout(Duration::from_secs(2), &mut reader).await;
+        assert!(
+            reader_result.is_ok(),
+            "a reader parked on the global semaphore must be woken by the cancellation (killing the process/socket cannot wake a semaphore wait)"
+        );
+        assert!(
+            reader_result.unwrap().unwrap(),
+            "the reader's send to the queue must report it closed"
+        );
+        assert_eq!(
+            budget.reserved_bytes(),
+            900,
+            "every reservation of the discarded response returned; the other response's 900 stays intact"
+        );
+        assert_eq!(
+            pipeline.per_response.available_permits(),
+            100,
+            "the per-response permits were returned too"
+        );
+        drop(other_guard);
+        assert_eq!(budget.reserved_bytes(), 0);
     }
 }

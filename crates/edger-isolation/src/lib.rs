@@ -47,7 +47,7 @@ pub use deno::{DenoFacade, DenoIsolate};
 #[cfg(feature = "multiproc")]
 pub use multiproc::{
     ConsoleLogContext, ConsoleLogRecord, ConsoleLogSender, ConsoleStream, DenoProcessIsolate,
-    DenoWorkerProcess,
+    DenoWorkerProcess, StreamDetach, StreamDetachBudget, StreamDetachStats,
 };
 
 #[cfg(feature = "wasm")]
