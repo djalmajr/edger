@@ -1,4 +1,4 @@
 name: cpanel
-version: "0.3.2-rc.10"
+version: "0.3.2-rc.11"
 entrypoint: dist/index.html
 injectBase: true
