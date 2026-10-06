@@ -385,15 +385,32 @@ fn record_lifecycle_event(events: &OperationalStore, record: WorkerLifecycleEven
     };
     // (EDG-9) Preserve the reason and the drain sub-cause on the
     // operational surface (the old fields above stay untouched): the REUSE
-    // reason (`stream_abandoned_drained`) rides the `DrainCompleted` event,
-    // and the RECYCLE sub-cause (`bytes_limit`, `time_limit`,
-    // `stream_error`, `socket_poisoned`) rides the `Terminated` event's
-    // detail — its outcome is already the real reason
+    // reason (`stream_abandoned_drained`) rides the `DrainCompleted`
+    // event's code, and the RECYCLE sub-cause (`bytes_limit`,
+    // `time_limit`, `stream_error`, `socket_poisoned`) rides the
+    // `Terminated` event's code — its outcome is already the real reason
     // (`stream_abandoned_recycled`).
     let code = match record.kind {
         WorkerLifecycleEventKind::DrainCompleted => Some(record.reason.to_string()),
         WorkerLifecycleEventKind::Terminated => record.detail.map(|detail| detail.to_string()),
         _ => None,
+    };
+    // (EDG-9 slice 2, amended) A `DrainCompleted` also carries the drain
+    // sub-cause (`cancelled` for the cancel end): the reason keeps its
+    // code slot, so the sub-cause rides the message — the SAME plain
+    // detail string `Terminated` puts in its code — and the message no
+    // longer depends solely on `drained_count` (which is `None` for
+    // stream-abandon drains).
+    let message = if matches!(record.kind, WorkerLifecycleEventKind::DrainCompleted) {
+        record.detail.map(|detail| detail.to_string()).or_else(|| {
+            record
+                .drained_count
+                .map(|count| format!("drained waitUntil promises: {count}"))
+        })
+    } else {
+        record
+            .drained_count
+            .map(|count| format!("drained waitUntil promises: {count}"))
     };
     events.record(OperationalEventInput {
         source: OperationalEventSource::Drain,
@@ -409,9 +426,7 @@ fn record_lifecycle_event(events: &OperationalStore, record: WorkerLifecycleEven
         status: None,
         duration_ms: record.duration_ms,
         code,
-        message: record
-            .drained_count
-            .map(|count| format!("drained waitUntil promises: {count}")),
+        message,
         truncated: None,
         dropped_count: None,
         method: None,
@@ -734,7 +749,8 @@ mod tests {
         .unwrap();
         let store = OperationalStore::default();
 
-        // Reuse: the pool's completion ran after the EDG-9 drain finished.
+        // Reuse: the pool's completion ran after the EDG-9 drain finished —
+        // the cancel end carries its sub-cause (slice 2).
         record_lifecycle_event(
             &store,
             WorkerLifecycleEvent {
@@ -744,7 +760,7 @@ mod tests {
                 drained_count: None,
                 duration_ms: Some(12),
                 reason: "stream_abandoned_drained",
-                detail: None,
+                detail: Some("cancelled"),
             },
         );
         // Recycle: the drain stopped at the byte limit.
@@ -778,6 +794,10 @@ mod tests {
             json.contains("\"code\":\"bytes_limit\""),
             "the recycle sub-cause must reach the serialized event: {json}"
         );
+        assert!(
+            json.contains("\"message\":\"cancelled\""),
+            "the cancel sub-cause must reach the serialized event: {json}"
+        );
 
         // And the fields are on the RIGHT events (not just somewhere).
         let drained = page
@@ -786,6 +806,15 @@ mod tests {
             .find(|event| event.kind == "process.drain.completed")
             .expect("drain completed event");
         assert_eq!(drained.code.as_deref(), Some("stream_abandoned_drained"));
+        // (EDG-9 slice 2, amended) The reason AND the sub-cause ride the
+        // SAME event: the reason keeps the code slot, the sub-cause rides
+        // the message (the same plain detail string `Terminated` puts in
+        // its code) — even with `drained_count: None`.
+        assert_eq!(
+            drained.message.as_deref(),
+            Some("cancelled"),
+            "the cancel sub-cause must be preserved on the drain-completed event"
+        );
         let terminated = page
             .events
             .iter()

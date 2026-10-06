@@ -90,6 +90,33 @@ async function readFrame() {
   return await readExact(len);
 }
 
+// --- frame pump (EDG-9 slice 2, amended) ---
+// ONE pending readFrame() at a time, shared by the main loop and the body
+// pump's single cancel observation: a control frame that arrives WHILE a
+// response body is being streamed must be observed (and, if it is a
+// cancel, consumed) — while any OTHER frame is left pending for the main
+// loop to consume in order (socket order guarantees a stale cancel
+// precedes the next request frame). `pendingFrame` holds the in-flight
+// read OR the already-arrived frame value; it is cleared exactly when a
+// frame value is consumed. The body pump registers ONE observation per
+// response (never one per chunk): a per-chunk race would accumulate `.then`
+// reactions on the durable frame promise, one per chunk.
+let pendingFrame = null;
+// Test-mode frame-observation instrumentation: `respond()` arms the counter
+// around one response body and `nextFrame()` counts every registration of
+// interest in the next frame. The focal proof asserts that a 10 000-chunk
+// body with no input frame registers EXACTLY ONE observation.
+let frameObsCounting = false;
+let frameObsCount = 0;
+
+function nextFrame() {
+  if (frameObsCounting) frameObsCount += 1;
+  if (pendingFrame === null) {
+    pendingFrame = readFrame();
+  }
+  return pendingFrame;
+}
+
 function sendJson(obj) {
   return writeFrame(new TextEncoder().encode(JSON.stringify(obj)));
 }
@@ -537,10 +564,13 @@ async function loadHandler() {
   return handler;
 }
 
-function buildRequest(raw) {
+function buildRequest(raw, signal) {
   const headers = new Headers(raw.headers ?? []);
   const method = raw.method ?? "GET";
-  const init = { method, headers };
+  // (EDG-9 slice 2) The request carries the per-response AbortSignal: a
+  // cancel control frame aborts it while the body is pumped, so the worker
+  // can observe `request.signal.aborted` after an abandon.
+  const init = { method, headers, signal };
   if (raw.body && !["GET", "HEAD"].includes(method.toUpperCase())) {
     init.body = new Uint8Array(raw.body);
   }
@@ -588,9 +618,14 @@ function streamedResponseHeaders(headers) {
 }
 
 async function respond(handler, raw) {
+  // (EDG-9 slice 2) The request's AbortController: a cancel control frame
+  // arriving while the body is pumped aborts it and stops the body pump
+  // (see the single frame observation below); a fresh controller per
+  // request means the signal is never aborted at construction.
+  const abortController = new AbortController();
   let response;
   try {
-    response = await handler(buildRequest(raw), {
+    response = await handler(buildRequest(raw, abortController.signal), {
       localAddr: { transport: "tcp", hostname: "127.0.0.1", port: 0 },
       remoteAddr: { transport: "tcp", hostname: "127.0.0.1", port: 0 },
       completed: Promise.resolve(),
@@ -627,6 +662,54 @@ async function respond(handler, raw) {
     const reader = response.body.getReader();
     let total = 0;
     let endPayload = new Uint8Array();
+    let cancelled = false;
+    let bodyDone = false;
+    // (Amendment) The body pump registers ONE observation of the next
+    // frame — no per-chunk race (each race reaction would stay attached to
+    // the durable frame promise, growing with the chunk count). When it
+    // resolves with a cancel, the handler consumes the frame, aborts the
+    // request's signal and cancels the reader WITHOUT awaiting: per the
+    // Streams spec, `reader.cancel()` closes the stream from the reader
+    // side and resolves the pending read with `done: true` even if the
+    // underlying `cancel()` never settles — so the pump below is a plain
+    // `await reader.read()` that exits on `done` and writes
+    // `E {"cancelled":true}`. A frame that is NOT a cancel (or EOF) stays
+    // parked for the main loop (no new registration); if the body ends
+    // first, the pending observation is inherited by the main loop through
+    // the SAME pump.
+    // (Amendment) Test-mode frame-observation counter, armed BEFORE the
+    // observation is registered (the main loop is blocked in `await
+    // respond`): the focal proof reads the final count from the stderr
+    // record `[harness-test] frame-observations=<n>` emitted after the end
+    // frame when the `x-edger-test` request header is present (the harness
+    // has no write permission outside its workdir, so the count rides the
+    // console — captured as a `ConsoleLogRecord` by the isolate).
+    const obsTest = (raw.headers ?? []).some(
+      ([name]) => name.toLowerCase() === "x-edger-test",
+    );
+    frameObsCounting = true;
+    frameObsCount = 0;
+    nextFrame().then((frame) => {
+      if (frame === null) return; // EOF: parked for the main loop.
+      const control = JSON.parse(new TextDecoder().decode(frame));
+      if (!(control && control.__control === "cancel")) {
+        // A request/shutdown frame: parked for the main loop, in order.
+        return;
+      }
+      if (bodyDone) {
+        // A STALE cancel: the response already ended (its end frame went
+        // out first) — leave the frame parked for the main loop, which
+        // ignores it.
+        return;
+      }
+      // Consume the cancel frame: the main loop starts a fresh read.
+      pendingFrame = null;
+      cancelled = true;
+      abortController.abort();
+      // WITHOUT awaiting reader.cancel(): user code may hang inside
+      // cancel(); capture any rejection.
+      reader.cancel().catch(() => {});
+    });
     try {
       while (total < STREAM_MAX_BYTES) {
         const { done, value } = await reader.read();
@@ -637,11 +720,23 @@ async function respond(handler, raw) {
           await writeTagged(FRAME_CHUNK, bytes.subarray(offset, offset + MAX_CHUNK_FRAME));
         }
       }
+      bodyDone = true;
     } catch (err) {
       endPayload = new TextEncoder().encode(
         JSON.stringify({ error: String(err?.stack ?? err) }),
       );
+      bodyDone = true;
     } finally {
+      frameObsCounting = false;
+    }
+    if (cancelled) {
+      // The cancel handler stopped the body (the pending read resolved
+      // `done`): answer with the cancel end frame.
+      endPayload = new TextEncoder().encode(JSON.stringify({ cancelled: true }));
+    } else {
+      // Natural end or the byte cap: release the reader (the cleanup
+      // path). On the cancel path the handler already cancelled it without
+      // awaiting (the producer may ignore the cancel).
       try {
         await reader.cancel();
       } catch (_) {
@@ -649,6 +744,11 @@ async function respond(handler, raw) {
       }
     }
     await writeTagged(FRAME_END, endPayload);
+    if (obsTest) {
+      // Test-mode instrumentation output on stderr (best-effort; a failure
+      // must not break the response).
+      console.error(`[harness-test] frame-observations=${frameObsCount}`);
+    }
     return;
   }
 
@@ -668,7 +768,10 @@ async function main() {
   await sendJson({ ready: true });
 
   while (true) {
-    const frame = await readFrame();
+    // (EDG-9 slice 2) The frame pump: a frame parked by the body's cancel
+    // watch is consumed HERE, in order, before any newer frame.
+    const frame = await nextFrame();
+    pendingFrame = null; // this frame value is consumed; the next read starts fresh
     if (frame === null) break; // orchestrator closed the connection
     const raw = JSON.parse(new TextDecoder().decode(frame));
     // A shutdown control frame is not a request: drain and exit cleanly.
@@ -685,6 +788,13 @@ async function main() {
         // socket already closed — nothing to ack.
       }
       break;
+    }
+    // (EDG-9 slice 2) A STALE cancel: the response it targeted already
+    // ended (its end frame went out before the cancel arrived). No stream
+    // is active to cancel — socket order guarantees the stale cancel
+    // precedes the next request frame, so it is safe to ignore.
+    if (raw && raw.__control === "cancel") {
+      continue;
     }
     // respond() writes the tagged H/C.../E frames itself and never throws for
     // handler errors; a throw here means the socket broke — exit the loop.
