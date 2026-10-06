@@ -15,6 +15,13 @@
 //!
 //! Requires `deno` on PATH. Ignored by default; run explicitly:
 //! `cargo test -p edger-orchestrator --test min_processes_e2e -- --ignored`
+//!
+//! EDG-13 adds the EMPTIED-floor scenario: with `minProcesses: 1` and
+//! `maxRequests: 3`, the third request retires the only instance and the
+//! group is emptied; without any request the pool must refill the emptied
+//! (floored) generation in the background — a new Idle process appears in
+//! `/metrics/stats` — and the fourth request is served by that already-
+//! alive process (module counter reset, no cold start on the request path).
 
 use std::fs;
 use std::sync::Arc;
@@ -140,4 +147,158 @@ async fn floor_instance_survives_idle_ttl_and_serves_the_next_request() {
         "2",
         "x-seq must not reset: the floor process was not recycled while idle"
     );
+}
+
+/// Worker whose ONLY instance retires after `maxRequests` requests
+/// (`maxRequests: 3`): the same module-scope `x-seq` counter as
+/// `write_floor_worker`, plus a 60 s TTL (well outside the test window —
+/// the floor, not the TTL, keeps anything alive).
+fn write_max_requests_worker(root: &std::path::Path, name: &str) {
+    let dir = root.join(name);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("manifest.yaml"),
+        format!(
+            "name: {name}\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nminProcesses: 1\nmaxRequests: 3\nttl: \"60s\"\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("index.ts"),
+        r#"let seq = 0;
+Deno.serve(() => {
+  seq += 1;
+  return new Response("ok", {
+    headers: { "content-type": "text/plain", "x-seq": String(seq) },
+  });
+});
+"#,
+    )
+    .unwrap();
+}
+
+/// `/metrics/stats` worker entries, as the orchestrator exposes them
+/// (control-plane read — it does NOT dispatch to the worker app).
+#[derive(serde::Deserialize)]
+struct StatsResponse {
+    #[serde(default)]
+    workers: Vec<StatsWorker>,
+}
+
+#[derive(serde::Deserialize)]
+struct StatsWorker {
+    name: String,
+    // /metrics/stats serializes camelCase (`MetricsWorkerStats`).
+    #[serde(default, rename = "idleProcesses")]
+    idle_processes: usize,
+}
+
+/// Poll `/metrics/stats` (control plane only — no data-plane request is
+/// sent to the worker) until the named app has at least one IDLE process
+/// reported, within a short timeout.
+async fn stats_has_idle_process(app: &Router, name: &str, timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let res = match tokio::time::timeout(
+            Duration::from_secs(10),
+            app.clone().oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/metrics/stats")
+                    .header("authorization", "Bearer test-root")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+        )
+        .await
+        {
+            Ok(Ok(res)) => res,
+            _ => {
+                // A stats read that failed/timed out is not evidence:
+                // retry until the deadline.
+                if tokio::time::Instant::now() >= deadline {
+                    return false;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
+        if res.status() == StatusCode::OK {
+            let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let stats: StatsResponse =
+                serde_json::from_slice(&body).expect("the stats endpoint returns JSON");
+            if stats
+                .workers
+                .iter()
+                .any(|worker| worker.name == name && worker.idle_processes >= 1)
+            {
+                return true;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+// EDG-13: the floor is re-established when the LAST instance retires. With
+// `minProcesses: 1` and `maxRequests: 3` the third request retires the only
+// instance and EMPTIES the group; without any request the background
+// replenishment refills the emptied (floored) generation — a new Idle
+// process appears in `/metrics/stats` — and the fourth request is served by
+// that already-alive process: the module counter resets to 1 (new process,
+// the retired one is not reused) and NO cold start ran on the request path
+// (the process was observed Idle in the stats BEFORE the fourth request —
+// in the old behavior the group left the cache, the stats never showed a
+// process, and the fourth request would have had to cold-start it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs deno on PATH; run explicitly"]
+async fn emptied_floor_group_is_replenished_without_a_request() {
+    let root = tempfile::tempdir().unwrap();
+    write_max_requests_worker(root.path(), "floor-maxreq");
+    let app = build_pipeline(state(root.path().to_path_buf()));
+
+    // Requests #1-#3: the only instance serves all three; on the third it
+    // reaches maxRequests and retires — the group is emptied.
+    for expected in ["1", "2", "3"] {
+        let res = send(app.clone(), "/floor-maxreq").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get("x-seq").unwrap(),
+            expected,
+            "requests #1-#3 run on the first process"
+        );
+        let _ = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+    }
+
+    // Wait WITHOUT a data-plane request until a new Idle process appears in
+    // /metrics/stats (short timeout): the background replenishment must
+    // refill the emptied floored generation. In the old behavior the group
+    // left the cache, so no process ever appears and this times out.
+    let seen_idle = stats_has_idle_process(&app, "floor-maxreq", Duration::from_secs(15)).await;
+    assert!(
+        seen_idle,
+        "a new idle process must appear in /metrics/stats without any request"
+    );
+
+    // Request #4: the NEW process serves it — the module-scope counter
+    // resets to 1 (the retired process is not reused). The process was
+    // already alive (observed Idle above), so no cold start ran on the
+    // request path.
+    let res = send(app, "/floor-maxreq").await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get("x-seq").unwrap(),
+        "1",
+        "x-seq must reset: a fresh (replenished) process serves the fourth request"
+    );
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(body, axum::body::Bytes::from_static(b"ok"));
 }

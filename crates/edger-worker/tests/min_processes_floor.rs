@@ -13,15 +13,22 @@
 //!    `min_processes`, one background attempt refills it through the
 //!    existing `prewarm_worker` path. No replenishment for evicted groups,
 //!    shutdown, or `ttl_ms == 0` (ephemeral semantics intact).
+//!
+//! EDG-13 — the EMPTIED floor: a removal that empties a floored generation
+//! (the last instance retires) keeps the EMPTY group admitted as the same
+//! generation, so the replenishment above finds it and refills it; groups
+//! without a floor (`min_processes == 0`) leave the cache as before, and an
+//! LRU-evicted empty group is never refilled.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use edger_core::{
     create_worker_ref, ExecutionKind, Isolate, IsolationError, SerializedRequest,
-    SerializedResponse, WorkerConfig, WorkerManifest, WorkerRef,
+    SerializedResponse, StreamCompletion, StreamedResponse, WorkerConfig, WorkerManifest,
+    WorkerRef, WorkerResponse,
 };
 use edger_worker::pool::AdmissionSectionReleaseGuard;
 use edger_worker::{instance::TtlArm, IsolateFactory, PoolConfig, WorkerPool, WorkerState};
@@ -29,17 +36,21 @@ use edger_worker::{instance::TtlArm, IsolateFactory, PoolConfig, WorkerPool, Wor
 /// Isolate that answers with its own id ("isolate-N"): the response body
 /// proves WHICH process answered, which is the whole point of the floor
 /// tests (kept vs replaced vs replenished). `fail_prepare` makes `prepare`
-/// ALWAYS fail (P2 #1: spawn-failure replenishment).
+/// fail (P2 #1: spawn-failure replenishment); the `fail_execute` and
+/// `open_stream` toggles (EDG-13) make `execute_fetch` fail (critical-error
+/// removal) or answer with an open stream (stream-recycle removal).
 struct NumberedIsolate {
     id: usize,
     slow_fetch_ms: u64,
-    fail_prepare: bool,
+    fail_prepare: Arc<AtomicBool>,
+    fail_execute: Arc<AtomicBool>,
+    open_stream: Arc<AtomicBool>,
 }
 
 #[async_trait]
 impl Isolate for NumberedIsolate {
     async fn prepare(&mut self, _config: &WorkerConfig) -> Result<(), IsolationError> {
-        if self.fail_prepare {
+        if self.fail_prepare.load(Ordering::SeqCst) {
             return Err(IsolationError::new(
                 "TEST_PREPARE_FAIL",
                 "test: prepare always fails",
@@ -53,6 +64,12 @@ impl Isolate for NumberedIsolate {
         _req: SerializedRequest,
         _config: &WorkerConfig,
     ) -> Result<SerializedResponse, IsolationError> {
+        if self.fail_execute.load(Ordering::SeqCst) {
+            return Err(IsolationError::new(
+                "TEST_EXECUTE_FAIL",
+                "test: execute always fails",
+            ));
+        }
         if self.slow_fetch_ms > 0 {
             tokio::time::sleep(Duration::from_millis(self.slow_fetch_ms)).await;
         }
@@ -61,6 +78,31 @@ impl Isolate for NumberedIsolate {
             headers: vec![],
             body: Some(format!("isolate-{}", self.id).into()),
         })
+    }
+
+    /// (EDG-13) An OPEN body (one chunk, then pending forever) plus a
+    /// completion signal that resolves `Incomplete`: dropping the response
+    /// before any end frame is the stream-recycle trigger (the pool
+    /// terminates the instance through the abandon path).
+    async fn execute_fetch_stream(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<WorkerResponse, IsolationError> {
+        if self.open_stream.load(Ordering::SeqCst) {
+            return Ok(WorkerResponse::Streamed(StreamedResponse {
+                status: 200,
+                headers: vec![],
+                body: Box::pin(OpenBody {
+                    chunk_yielded: false,
+                }),
+                completed: Some(Box::pin(async { StreamCompletion::Incomplete })),
+                production_complete: None,
+            }));
+        }
+        self.execute_fetch(req, config)
+            .await
+            .map(WorkerResponse::Buffered)
     }
 
     async fn execute_routes(
@@ -95,12 +137,16 @@ impl Isolate for NumberedIsolate {
 
 /// Factory counting every isolate it creates: a replacement process (a
 /// breach of the floor or a cold start) is always a NEW creation, so the
-/// created count discriminates "kept/reused" from "recycled".
+/// created count discriminates "kept/reused" from "recycled". The failure
+/// toggles are runtime-switchable (EDG-13: a spawn that succeeds first and
+/// fails on the replenishment attempt).
 #[derive(Default)]
 struct CountingFactory {
     created: AtomicUsize,
     slow_fetch_ms: u64,
-    fail_prepare: bool,
+    fail_prepare: Arc<AtomicBool>,
+    fail_execute: Arc<AtomicBool>,
+    open_stream: Arc<AtomicBool>,
 }
 
 impl CountingFactory {
@@ -108,7 +154,9 @@ impl CountingFactory {
         Self {
             created: AtomicUsize::new(0),
             slow_fetch_ms,
-            fail_prepare: false,
+            fail_prepare: Arc::new(AtomicBool::new(false)),
+            fail_execute: Arc::new(AtomicBool::new(false)),
+            open_stream: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -117,12 +165,44 @@ impl CountingFactory {
         Self {
             created: AtomicUsize::new(0),
             slow_fetch_ms: 0,
-            fail_prepare: true,
+            fail_prepare: Arc::new(AtomicBool::new(true)),
+            fail_execute: Arc::new(AtomicBool::new(false)),
+            open_stream: Arc::new(AtomicBool::new(false)),
         }
     }
 
     fn created_count(&self) -> usize {
         self.created.load(Ordering::SeqCst)
+    }
+
+    /// (EDG-13) `prepare` fails from the next creation (replenishment
+    /// spawn-failure fixture).
+    fn fail_prepare_from_now_on(&self) {
+        self.fail_prepare.store(true, Ordering::SeqCst);
+    }
+
+    fn stop_failing_prepare(&self) {
+        self.fail_prepare.store(false, Ordering::SeqCst);
+    }
+
+    /// (EDG-13) `execute_fetch` fails from the next request (critical-error
+    /// removal fixture).
+    fn fail_execute_from_now_on(&self) {
+        self.fail_execute.store(true, Ordering::SeqCst);
+    }
+
+    fn stop_failing_execute(&self) {
+        self.fail_execute.store(false, Ordering::SeqCst);
+    }
+
+    /// (EDG-13) `execute_fetch_stream` answers with an open stream from the
+    /// next request (stream-recycle removal fixture).
+    fn open_stream_from_now_on(&self) {
+        self.open_stream.store(true, Ordering::SeqCst);
+    }
+
+    fn stop_open_stream(&self) {
+        self.open_stream.store(false, Ordering::SeqCst);
     }
 }
 
@@ -132,8 +212,33 @@ impl IsolateFactory for CountingFactory {
         Box::new(NumberedIsolate {
             id,
             slow_fetch_ms: self.slow_fetch_ms,
-            fail_prepare: self.fail_prepare,
+            fail_prepare: Arc::clone(&self.fail_prepare),
+            fail_execute: Arc::clone(&self.fail_execute),
+            open_stream: Arc::clone(&self.open_stream),
         })
+    }
+}
+
+/// (EDG-13) A body that yields one chunk and then stays open (pending
+/// forever): the test drops it before any end frame, so the drop — not a
+/// clean completion — decides the instance's lifecycle (stream recycle).
+struct OpenBody {
+    chunk_yielded: bool,
+}
+
+impl futures_core::Stream for OpenBody {
+    type Item = Result<bytes::Bytes, IsolationError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        if self.chunk_yielded {
+            std::task::Poll::Pending
+        } else {
+            self.chunk_yielded = true;
+            std::task::Poll::Ready(Some(Ok(bytes::Bytes::from_static(b"chunk"))))
+        }
     }
 }
 
@@ -535,44 +640,263 @@ async fn max_requests_removal_triggers_background_replenishment() {
     assert_eq!(group.recycle_max_requests_total, 2);
 }
 
-// 4b. Generation scope (review P2 #2, complement): when the removal EMPTIES
-//     the group (min 1, the only instance retires), the group leaves the
-//     cache; the background attempt revalidates the generation and finds it
-//     is no longer the admitted generation, so it does NOTHING — it must not
-//     re-admit the identity (that could evict an unrelated group). The floor
-//     is re-established by the NEXT request through the demand path, which
-//     cold-starts a fresh generation.
+// 4b. (EDG-13) When the removal EMPTIES the group (min 1, the only
+//     instance retires), the EMPTY group STAYS admitted as the same
+//     generation: the background attempt revalidates the generation
+//     (still the admitted one) and refills it directly — no request in
+//     flight, and no `get_or_create_group` (the attempt can never
+//     re-admit a removed identity or evict another group). The floor
+//     survives repeated turnovers: one attempt per removal. (Before
+//     EDG-13 this test pinned the opposite: the emptied group left the
+//     cache and the attempt did nothing — the floor was only restored by
+//     the next request's cold start.)
 #[tokio::test]
-async fn emptied_group_attempt_does_not_readmit_the_identity() {
+async fn emptied_floored_group_is_refilled_in_background() {
     tokio::time::pause();
     let factory = Arc::new(CountingFactory::new(0));
     let pool = pool(factory.clone(), 8);
-    let worker_ref = floor_worker_ref("floor-empty", 1, 1, 30_000, 1);
+    let worker_ref = floor_worker_ref("floor-empty-fill", 1, 1, 30_000, 1);
 
     // The only instance reaches maxRequests and retires: the group is
-    // emptied and leaves the cache; the scheduled attempt must not
-    // re-create it in the background.
+    // EMPTIED. The removal ran synchronously inside the request path, so
+    // the state right below (before any await) is the post-removal one:
+    // the EMPTY group is still the admitted generation (it never left the
+    // cache) and the replenishment attempt is queued but not run yet.
     assert_eq!(fetch_body(&pool, &worker_ref, "/retire").await, "isolate-1");
-    settle(64).await;
+    let emptied = pool
+        .worker_group(&worker_ref)
+        .expect("the emptied floored group stays in the cache");
+    assert!(
+        emptied.is_empty(),
+        "no instance until the attempt refills it"
+    );
+    // The admitted empty group is published from its live origin (max
+    // processes of the config), not as the ghost default entry with
+    // `max_processes == 0` that hid the floor in production.
+    let metrics = pool.get_metrics();
+    let group_metrics = metrics
+        .worker_groups
+        .iter()
+        .find(|group| group.name == "floor-empty-fill")
+        .expect("the admitted empty group stays in /metrics/stats");
+    assert_eq!(group_metrics.total_processes, 0);
+    assert_eq!(
+        group_metrics.max_processes, 1,
+        "live origin, not the ghost default of 0"
+    );
+    assert!(group_metrics.processes.is_empty());
 
+    // Let the attempt run (no request in flight): it refills the SAME
+    // generation directly — a new instance appears and is Idle.
+    settle(64).await;
+    let refilled = pool
+        .worker_group(&worker_ref)
+        .expect("still the same generation after the refill");
+    assert!(
+        Arc::ptr_eq(&emptied, &refilled),
+        "the refill happened in the SAME generation (not a re-admission)"
+    );
+    assert_eq!(
+        refilled.len(),
+        1,
+        "the floor is re-established without any request"
+    );
+    let stats = pool.worker_stats();
+    assert_eq!(
+        stats.len(),
+        1,
+        "exactly one instance, refilled in the background"
+    );
+    assert_eq!(
+        stats[0].state,
+        WorkerState::Idle,
+        "the refilled instance is idle and ready"
+    );
     assert_eq!(
         factory.created_count(),
-        1,
-        "the attempt sees the generation left the cache and does nothing"
-    );
-    assert!(
-        pool.worker_stats().iter().all(|s| s.name != "floor-empty"),
-        "the identity is not re-admitted without traffic"
+        2,
+        "exactly one replenishment attempt"
     );
 
-    // The next request re-establishes the floor through the demand path: a
-    // fresh generation cold-starts (isolate-2) and answers 200.
+    let metrics = pool.get_metrics();
+    let group = metrics
+        .worker_groups
+        .iter()
+        .find(|group| group.name == "floor-empty-fill")
+        .unwrap();
+    assert_eq!(group.replenish_total, 1, "one replenishment triggered");
+    assert_eq!(group.total_processes, 1);
+    assert_eq!(group.idle_processes, 1);
+    assert_eq!(group.recycle_max_requests_total, 1);
+
+    // The next request is served by the refilled instance (no new process)
+    // and retires again (maxRequests=1): a SECOND attempt refills the floor
+    // — one attempt per removal, no more.
     assert_eq!(fetch_body(&pool, &worker_ref, "/next").await, "isolate-2");
+    settle(64).await;
+    let stats = pool.worker_stats();
+    assert_eq!(stats.len(), 1, "the floor survives the second turnover");
+    assert_eq!(
+        stats[0].state,
+        WorkerState::Idle,
+        "the refilled instance is idle and ready"
+    );
+    assert_eq!(
+        factory.created_count(),
+        3,
+        "one attempt per removal, no more"
+    );
+
+    let metrics = pool.get_metrics();
+    let group = metrics
+        .worker_groups
+        .iter()
+        .find(|group| group.name == "floor-empty-fill")
+        .unwrap();
+    assert_eq!(group.replenish_total, 2, "one replenishment per removal");
+    assert_eq!(group.recycle_max_requests_total, 2);
+}
+
+// 4c. (EDG-13) Same emptied-floor refill through a CRITICAL-ERROR removal
+//     (the isolate fails mid-request): the dispatch's error path removes
+//     the instance, the group is emptied and kept, and the background
+//     attempt refills the same generation. The refilled instance serves
+//     the next (healthy) request without a cold start.
+#[tokio::test]
+async fn critical_error_removal_empties_floored_group_and_refills() {
+    tokio::time::pause();
+    let factory = Arc::new(CountingFactory::new(0));
+    let pool = pool(factory.clone(), 8);
+    let worker_ref = floor_worker_ref("floor-err-fill", 1, 1, 30_000, 0);
+
+    // The isolate fails on the (only) request: the critical-error path
+    // removes the instance (the group is emptied and KEPT — the removal ran
+    // synchronously inside the failed request, so the state right below is
+    // the post-removal one).
+    factory.fail_execute_from_now_on();
+    let err = pool
+        .fetch_worker(&worker_ref, req("/boom"), Some(ExecutionKind::FetchHandler))
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("TEST_EXECUTE_FAIL"),
+        "the isolate failure surfaces to the caller"
+    );
+    let emptied = pool
+        .worker_group(&worker_ref)
+        .expect("the emptied floored group stays in the cache");
+    assert!(
+        emptied.is_empty(),
+        "no instance until the attempt refills it"
+    );
+
+    settle(64).await; // the attempt refills the SAME generation
+    let stats = pool.worker_stats();
+    assert_eq!(
+        stats.len(),
+        1,
+        "the floor is re-established without any request"
+    );
+    assert_eq!(stats[0].state, WorkerState::Idle);
+    assert_eq!(
+        factory.created_count(),
+        2,
+        "exactly one replenishment attempt"
+    );
+
+    let metrics = pool.get_metrics();
+    let group = metrics
+        .worker_groups
+        .iter()
+        .find(|group| group.name == "floor-err-fill")
+        .unwrap();
+    assert_eq!(group.replenish_total, 1);
+    assert_eq!(
+        group.recycle_error_total, 1,
+        "the critical-error removal is counted"
+    );
+
+    // Healthy again: the refilled instance serves (no new process).
+    factory.stop_failing_execute();
+    assert_eq!(
+        fetch_body(&pool, &worker_ref, "/after").await,
+        "isolate-2",
+        "the refilled instance serves, not a cold start"
+    );
     settle(64).await;
     assert_eq!(
         factory.created_count(),
         2,
-        "only the demand path created the next process"
+        "serving the refilled instance spawns nothing"
+    );
+    assert_eq!(pool.worker_stats().len(), 1);
+}
+
+// 4d. (EDG-13) Same emptied-floor refill through a STREAM-RECYCLE removal
+//     (the streamed body is dropped before the end frame): the pool's
+//     abandon path terminates the instance, the group is emptied and kept,
+//     and the background attempt refills the same generation.
+#[tokio::test]
+async fn stream_recycle_removal_empties_floored_group_and_refills() {
+    tokio::time::pause();
+    let factory = Arc::new(CountingFactory::new(0));
+    let pool = pool(factory.clone(), 8);
+    let worker_ref = floor_worker_ref("floor-stream-fill", 1, 1, 30_000, 0);
+
+    // A streamed response whose body is DROPPED before any end frame: the
+    // stream-recycle (abandon) path terminates the instance and empties the
+    // group (kept). One settle lets the spawned abandon-recycle task take
+    // the state and the replenishment attempt run.
+    factory.open_stream_from_now_on();
+    let res = pool
+        .fetch_worker_stream(
+            &worker_ref,
+            req("/stream"),
+            Some(ExecutionKind::FetchHandler),
+        )
+        .await
+        .unwrap();
+    drop(res); // client disconnect: the body is dropped without an end frame
+    settle(64).await; // the recycle task + the replenishment attempt run
+
+    let stats = pool.worker_stats();
+    assert_eq!(
+        stats.len(),
+        1,
+        "the floor is re-established without any request"
+    );
+    assert_eq!(stats[0].state, WorkerState::Idle);
+    assert_eq!(
+        factory.created_count(),
+        2,
+        "exactly one replenishment attempt"
+    );
+
+    let metrics = pool.get_metrics();
+    let group = metrics
+        .worker_groups
+        .iter()
+        .find(|group| group.name == "floor-stream-fill")
+        .unwrap();
+    assert_eq!(group.replenish_total, 1);
+    assert_eq!(
+        group.recycle_error_total, 1,
+        "the stream-recycle removal is counted"
+    );
+
+    // The next request (buffered) is served by the refilled instance — no
+    // new process.
+    factory.stop_open_stream();
+    assert_eq!(
+        fetch_body(&pool, &worker_ref, "/after").await,
+        "isolate-2",
+        "the refilled instance serves, not a cold start"
+    );
+    settle(64).await;
+    assert_eq!(
+        factory.created_count(),
+        2,
+        "serving the refilled instance spawns nothing"
     );
 }
 
@@ -1341,4 +1665,231 @@ async fn recycle_waits_for_held_admission_section_and_drains_admitted_placeholde
         !seam.timed_out(),
         "the hold was released within the deadline"
     );
+}
+
+// EDG-13-1. `min_processes: 0`: a removal that empties the group leaves it
+// OUT of the cache, exactly as before EDG-13 — no floor means no kept
+// generation, no background replenishment, and the next request cold-starts
+// a fresh generation through the demand path.
+#[tokio::test]
+async fn emptied_group_without_floor_leaves_the_cache() {
+    tokio::time::pause();
+    let factory = Arc::new(CountingFactory::new(0));
+    let pool = pool(factory.clone(), 8);
+    let worker_ref = floor_worker_ref("floor-no-floor", 0, 1, 30_000, 1);
+
+    // The only instance reaches maxRequests and retires: the group is
+    // emptied and leaves the cache (no floor: `min_processes == 0`). The
+    // removal ran synchronously inside the request path, so the state right
+    // below (before any await) is the post-removal one.
+    assert_eq!(fetch_body(&pool, &worker_ref, "/retire").await, "isolate-1");
+    assert!(
+        pool.worker_group(&worker_ref).is_none(),
+        "a non-floored group leaves the cache when it is emptied"
+    );
+
+    settle(64).await;
+    assert!(
+        pool.worker_group(&worker_ref).is_none(),
+        "nothing re-admits the identity without traffic"
+    );
+    assert_eq!(
+        factory.created_count(),
+        1,
+        "no background replenishment for min_processes: 0"
+    );
+    let metrics = pool.get_metrics();
+    let group = metrics
+        .worker_groups
+        .iter()
+        .find(|group| group.name == "floor-no-floor")
+        .unwrap();
+    assert_eq!(group.replenish_total, 0);
+
+    // The next request cold-starts a fresh generation through the demand
+    // path (as before EDG-13).
+    assert_eq!(fetch_body(&pool, &worker_ref, "/next").await, "isolate-2");
+    settle(64).await;
+    assert_eq!(
+        factory.created_count(),
+        2,
+        "only the demand path created the next process"
+    );
+}
+
+// EDG-13-2. Spawn failure on the REPLENISHMENT with `min 1`: the attempt
+// makes EXACTLY ONE placeholder, its failed spawn removes it with
+// `ReplenishPolicy::SpawnFailed` (no chained successor — P2 #1), the EMPTY
+// group STAYS in the cache, and the next request creates the instance
+// through the normal demand path (same generation).
+#[tokio::test]
+async fn replenishment_spawn_failure_keeps_empty_group_without_loop() {
+    tokio::time::pause();
+    let factory = Arc::new(CountingFactory::new(0));
+    let pool = pool(factory.clone(), 8);
+    // Circuit breaker EXPLICITLY disabled: without a circuit to stop a
+    // failure loop, the SpawnFailed policy is the ONLY thing that bounds
+    // the attempts (P2 #1).
+    let worker_ref = floor_worker_ref_no_circuit("floor-nospawn-keep", 1, 1, 100);
+
+    // Prewarm succeeds: isolate-1 is the floor (Idle).
+    pool.prewarm_worker(&worker_ref).await.unwrap();
+    assert_eq!(factory.created_count(), 1);
+
+    // From here on `prepare` fails. The only instance retires (maxRequests
+    // is 0 here — retire it through the pool's own removal instead):
+    let instance = pool.get_or_create(&worker_ref).await.unwrap();
+    factory.fail_prepare_from_now_on();
+    pool.remove_instance(&instance);
+    // The removal (synchronous) emptied the floored group: it STAYS in the
+    // cache (empty) and the one attempt is queued but not run yet.
+    let emptied = pool
+        .worker_group(&worker_ref)
+        .expect("the emptied floored group stays in the cache");
+    assert!(emptied.is_empty());
+
+    // The attempt runs: it creates EXACTLY ONE placeholder (isolate-2),
+    // whose spawn fails; the failed placeholder is removed WITHOUT chaining
+    // another attempt, and the group stays in the cache (empty).
+    settle(64).await;
+    assert_eq!(
+        factory.created_count(),
+        2,
+        "exactly one attempt: the placeholder whose spawn failed"
+    );
+    let still = pool
+        .worker_group(&worker_ref)
+        .expect("the empty group stays in the cache after the failed spawn");
+    assert!(Arc::ptr_eq(&emptied, &still), "still the same generation");
+    assert!(
+        still.is_empty(),
+        "the failed placeholder left the group empty"
+    );
+    assert!(
+        pool.worker_stats().is_empty(),
+        "no live instance after the failed spawn"
+    );
+
+    // Many yields and TTL windows (the old unbounded loop would have kept
+    // creating): nothing else runs without traffic.
+    settle(128).await;
+    advance(100).await;
+    settle(128).await;
+    advance(100).await;
+    assert_eq!(
+        factory.created_count(),
+        2,
+        "a failed replenishment spawn must not schedule another attempt"
+    );
+
+    let metrics = pool.get_metrics();
+    let group = metrics
+        .worker_groups
+        .iter()
+        .find(|group| group.name == "floor-nospawn-keep")
+        .unwrap();
+    assert_eq!(
+        group.replenish_total, 1,
+        "exactly one replenishment was dispatched"
+    );
+
+    // Spawns work again: the NEXT REQUEST creates the instance through the
+    // demand path, into the SAME (kept) generation.
+    factory.stop_failing_prepare();
+    assert_eq!(
+        fetch_body(&pool, &worker_ref, "/next").await,
+        "isolate-3",
+        "the demand path creates the instance in the kept generation"
+    );
+    settle(64).await;
+    assert_eq!(factory.created_count(), 3);
+    let refilled = pool
+        .worker_group(&worker_ref)
+        .expect("the demand path used the kept generation");
+    assert!(Arc::ptr_eq(&still, &refilled), "same generation end to end");
+    assert_eq!(pool.worker_stats()[0].state, WorkerState::Idle);
+}
+
+// EDG-13-3. LRU eviction of an EMPTY floored group: the empty group counts
+// toward the LRU capacity and is evicted like any group; the eviction
+// drains the (empty) set, the queued replenishment attempt finds the
+// generation gone and does nothing — the evicted group is NEVER refilled
+// without traffic (the identity comes back through the next request's
+// demand path, in a fresh generation).
+#[tokio::test]
+async fn evicted_empty_floored_group_is_not_refilled() {
+    tokio::time::pause();
+    let factory = Arc::new(CountingFactory::new(0));
+    // LRU capacity 1: admitting B evicts A's (empty) group.
+    let pool = pool(factory.clone(), 1);
+    let wa = floor_worker_ref("floor-evict-empty-a", 1, 1, 30_000, 1);
+    let wb = floor_worker_ref("floor-evict-empty-b", 1, 1, 30_000, 0);
+
+    // A: the only instance serves the request and retires (maxRequests 1):
+    // the group is emptied and KEPT; the replenishment attempt is scheduled
+    // but CANNOT have run yet (synchronous removal, no await since).
+    assert_eq!(fetch_body(&pool, &wa, "/retire").await, "isolate-1");
+    let emptied_a = pool
+        .worker_group(&wa)
+        .expect("A's emptied floored group stays in the cache");
+    assert!(emptied_a.is_empty());
+
+    // B is admitted: the eviction (inside B's insert) runs synchronously —
+    // before any await in the prewarm — so it lands while A's attempt is
+    // still queued: A's EMPTY group is evicted (marked, drained in the
+    // background — a no-op on the empty set).
+    pool.prewarm_worker(&wb).await.unwrap();
+    assert_eq!(factory.created_count(), 2, "B prewarms one");
+
+    // NOW let the queued attempt (and the eviction drain) run.
+    settle(128).await;
+
+    assert_eq!(
+        factory.created_count(),
+        2,
+        "the evicted empty group was NOT refilled (no request for A)"
+    );
+    assert!(
+        pool.worker_stats()
+            .iter()
+            .all(|stats| stats.name != "floor-evict-empty-a"),
+        "A's evicted generation is not re-created without traffic"
+    );
+    assert!(
+        pool.worker_stats()
+            .iter()
+            .any(|stats| stats.name == "floor-evict-empty-b"),
+        "the admitted worker B is untouched"
+    );
+    let metrics = pool.get_metrics();
+    let group_a = metrics
+        .worker_groups
+        .iter()
+        .find(|group| group.name == "floor-evict-empty-a")
+        .unwrap();
+    assert_eq!(
+        group_a.replenish_total, 1,
+        "the removal scheduled one attempt"
+    );
+    assert_eq!(group_a.total_processes, 0, "...which refilled nothing");
+
+    // The next request for A cold-starts a FRESH generation (demand path).
+    // Same identity (name/version/dir → same cache key), but `max_requests
+    // = 0`: the refill probe above must not be confounded by a second
+    // max-requests retire on the NEW instance.
+    let wa_after = floor_worker_ref("floor-evict-empty-a", 1, 1, 30_000, 0);
+    assert_eq!(fetch_body(&pool, &wa_after, "/after").await, "isolate-3");
+    settle(64).await;
+    assert_eq!(
+        factory.created_count(),
+        3,
+        "only the demand path created A's next process"
+    );
+    // The fresh generation kept its process (no retire, no background
+    // refill — the stale attempt was rejected by the generation
+    // revalidation).
+    let after_a = pool
+        .worker_group(&wa_after)
+        .expect("the fresh generation is admitted");
+    assert_eq!(after_a.len(), 1);
 }
