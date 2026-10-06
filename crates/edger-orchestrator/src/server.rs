@@ -22,7 +22,8 @@ use crate::compression::CompressionConfig;
 use crate::cron::CronMetrics;
 use crate::metrics::{
     cron_metrics_prometheus, http_metrics_prometheus, pool_metrics_prometheus,
-    tenant_routing_metrics_prometheus, CompressionMetrics, HttpMetrics, TenantRoutingMetrics,
+    stream_detach_metrics_prometheus, tenant_routing_metrics_prometheus, CompressionMetrics,
+    HttpMetrics, TenantRoutingMetrics,
 };
 
 /// Listener configuration (addr from `PORT` env in the binary).
@@ -61,6 +62,11 @@ struct ServerStateInner {
     compression_metrics: CompressionMetrics,
     operational_events: crate::observability::OperationalStore,
     worker_errors: crate::worker_errors::WorkerErrorLog,
+    /// Process-wide stream-detach budget (multiproc backend only): its
+    /// `StreamDetachStats` snapshot feeds the `/metrics` block. `None` when
+    /// the backend does not run the multiproc detach pipeline — the block
+    /// stays absent.
+    detach_budget: std::sync::OnceLock<std::sync::Arc<edger_isolation::StreamDetachBudget>>,
 }
 
 /// Shared application state for health/readiness and future pipeline wiring.
@@ -85,6 +91,7 @@ impl ServerState {
                 compression_metrics: CompressionMetrics::default(),
                 operational_events: crate::observability::OperationalStore::default(),
                 worker_errors: crate::worker_errors::WorkerErrorLog::default(),
+                detach_budget: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -92,6 +99,22 @@ impl ServerState {
     pub fn mark_ready(&self, pool: WorkerPool) {
         *self.inner.pool.write().expect("pool lock") = Some(pool);
         self.inner.ready.store(true, Ordering::SeqCst);
+    }
+
+    /// Register the process-wide stream-detach budget (multiproc backend
+    /// only). Setting it twice is a no-op: the first budget wins.
+    pub fn set_stream_detach_budget(
+        &self,
+        budget: std::sync::Arc<edger_isolation::StreamDetachBudget>,
+    ) {
+        let _ = self.inner.detach_budget.set(budget);
+    }
+
+    /// Snapshot of the stream-detach counters, or `None` when the backend
+    /// does not run the multiproc detach pipeline (the `/metrics` block is
+    /// then omitted).
+    pub fn stream_detach_stats(&self) -> Option<edger_isolation::StreamDetachStats> {
+        self.inner.detach_budget.get().map(|budget| budget.stats())
     }
 
     pub fn set_tenant_identity_client(&self, client: crate::tenant_identity::TenantIdentityClient) {
@@ -225,6 +248,9 @@ async fn metrics(State(state): State<ServerState>) -> impl IntoResponse {
     body.push_str(&tenant_routing_metrics_prometheus(
         &state.tenant_routing_metrics(),
     ));
+    if let Some(stats) = state.stream_detach_stats() {
+        body.push_str(&stream_detach_metrics_prometheus(&stats));
+    }
     (
         [(
             header::CONTENT_TYPE,

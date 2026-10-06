@@ -247,7 +247,7 @@ fn assert_worker_metric_labels_are_low_cardinality(body: &str) {
             assert!(
                 matches!(
                     label.0,
-                    "worker" | "version" | "namespace" | "state" | "cause"
+                    "worker" | "version" | "namespace" | "state" | "cause" | "outcome"
                 ),
                 "unexpected high-cardinality worker metric label `{}` in line `{}`",
                 label.0,

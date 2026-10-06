@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use edger_isolation::StreamDetachStats;
 use edger_worker::metrics::{WorkerGroupMetrics, WorkerHealthMetrics, WorkerProcessMetrics};
 use edger_worker::{PoolMetrics, WorkerState, WorkerStats};
 use serde::Serialize;
@@ -55,6 +56,9 @@ pub struct MetricsWorkerStats {
     pub request_duration_ms_p95: u64,
     pub request_total: u64,
     pub requests: u32,
+    /// Group-level dispatched requests by worker-side result
+    /// (`ok` + `error`): survives instance recycling, unlike `requests`.
+    pub requests_total: u64,
     pub state: &'static str,
     pub terminating_processes: usize,
     pub timeout_total: u64,
@@ -531,6 +535,10 @@ fn metrics_worker_stats_from_group(
         request_duration_ms_p95: group.request_duration_ms_p95,
         request_total: group.request_total,
         requests,
+        requests_total: group
+            .requests_ok_total
+            .saturating_add(group.requests_cancelled_total)
+            .saturating_add(group.requests_error_total),
         state: worker_group_state_label(group),
         terminating_processes: group.terminating_processes,
         timeout_total: group.timeout_total,
@@ -568,6 +576,7 @@ fn metrics_worker_stats_from_instance(worker: &WorkerStats) -> MetricsWorkerStat
         request_duration_ms_p95: 0,
         request_total: worker.request_count as u64,
         requests: worker.request_count,
+        requests_total: worker.request_count as u64,
         state: worker_state_label(worker.state),
         terminating_processes: usize::from(worker.state == WorkerState::Terminating),
         timeout_total: 0,
@@ -772,6 +781,37 @@ fn push_worker_group_metrics(out: &mut String, groups: &[WorkerGroupMetrics]) {
         );
     }
     out.push('\n');
+
+    push_metric_header(
+        out,
+        "edger_worker_requests_total",
+        "counter",
+        "Worker requests dispatched to a process slot, by outcome: ok = the worker returned a response (any HTTP status), error = a worker/isolate error (timeout, crash, protocol error), cancelled = the dispatch future was dropped before a known result. Queue rejections and queue timeouts are excluded, and synthetic health checks (x-edger-health-check) are excluded. The counter is per worker identity (name/namespace/version) for the life of the edger process: it is not reset by instance recycling or LRU eviction/readmission, and resets only when the edger process restarts",
+    );
+    for group in groups {
+        push_worker_sample(
+            out,
+            "edger_worker_requests_total",
+            group,
+            &[("outcome", "ok")],
+            group.requests_ok_total,
+        );
+        push_worker_sample(
+            out,
+            "edger_worker_requests_total",
+            group,
+            &[("outcome", "error")],
+            group.requests_error_total,
+        );
+        push_worker_sample(
+            out,
+            "edger_worker_requests_total",
+            group,
+            &[("outcome", "cancelled")],
+            group.requests_cancelled_total,
+        );
+    }
+    out.push('\n');
 }
 
 fn push_worker_metric<F>(
@@ -830,6 +870,84 @@ fn push_metric_header(out: &mut String, name: &str, kind: &str, help: &str) {
     out.push_str(name);
     out.push(' ');
     out.push_str(kind);
+    out.push('\n');
+}
+
+/// Prometheus text exposition for the process-wide stream-detach counters
+/// (the `StreamDetachStats` snapshot of the shared detach budget). No worker
+/// label: the budget belongs to the whole process. The caller emits this
+/// block only when the backend runs the multiproc detach pipeline; a
+/// non-multiproc backend has no budget and the block stays absent.
+pub fn stream_detach_metrics_prometheus(stats: &StreamDetachStats) -> String {
+    let mut out = String::new();
+    push_metric(
+        &mut out,
+        "edger_stream_detached_total",
+        "counter",
+        "Responses whose production completed while the stream-detach pipeline was active (the worker slot was released at production end)",
+        stats.detached_total,
+    );
+    push_metric_header(
+        &mut out,
+        "edger_stream_detach_backpressure_total",
+        "counter",
+        "Stream-detach chunks that had to wait because a buffer budget was exhausted",
+    );
+    push_labeled_sample(
+        &mut out,
+        "edger_stream_detach_backpressure_total",
+        &[("reason", "cap")],
+        stats.fallback_cap_total,
+    );
+    push_labeled_sample(
+        &mut out,
+        "edger_stream_detach_backpressure_total",
+        &[("reason", "budget")],
+        stats.fallback_budget_total,
+    );
+    out.push('\n');
+    // One entry per abandon outcome: adding a new `StreamDetachStats` field
+    // (and its recorder) is a single line in this table.
+    let abandoned_outcomes: [(&str, u64); 6] = [
+        ("drained", stats.abandoned_drained_total),
+        ("bytes_limit", stats.abandoned_drain_bytes_limit_total),
+        ("time_limit", stats.abandoned_drain_time_limit_total),
+        ("stream_error", stats.abandoned_drain_stream_error_total),
+        ("socket_poisoned", stats.abandoned_socket_poisoned_total),
+        ("cancelled", stats.abandoned_cancelled_total),
+    ];
+    push_metric_header(
+        &mut out,
+        "edger_stream_abandoned_total",
+        "counter",
+        "Abandoned stream drains by terminal outcome",
+    );
+    for (outcome, count) in abandoned_outcomes {
+        push_labeled_sample(
+            &mut out,
+            "edger_stream_abandoned_total",
+            &[("outcome", outcome)],
+            count,
+        );
+    }
+    out.push('\n');
+    out
+}
+
+fn push_labeled_sample(out: &mut String, name: &str, labels: &[(&str, &str)], value: u64) {
+    out.push_str(name);
+    out.push('{');
+    for (index, (label, label_value)) in labels.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(label);
+        out.push_str("=\"");
+        out.push_str(&escape_label_value(label_value));
+        out.push('"');
+    }
+    out.push_str("} ");
+    out.push_str(&value.to_string());
     out.push('\n');
 }
 
@@ -933,5 +1051,121 @@ mod tests {
         assert!(body.contains("\"state\":\"idle\""));
         assert!(!body.to_ascii_lowercase().contains("authorization"));
         assert!(!body.to_ascii_lowercase().contains("root_api_key"));
+    }
+
+    #[test]
+    fn worker_group_requests_render_with_outcome_labels() {
+        let output = pool_metrics_prometheus(&PoolMetrics {
+            active_workers: 1,
+            idle_workers: 1,
+            cache_hits: 0,
+            cache_misses: 0,
+            ephemeral_inflight: 0,
+            ephemeral_queued: 0,
+            ephemeral_rejected: 0,
+            request_duration_ms_last: 0,
+            spawn_latency_ms_last: 0,
+            spawn_latency_ms_p50: 0,
+            terminated_total: 0,
+            worker_queue_enqueued: 0,
+            worker_queue_queued: 0,
+            worker_queue_rejected: 0,
+            worker_queue_timeout: 0,
+            worker_queue_wait_ms_last: 0,
+            worker_groups: vec![WorkerGroupMetrics {
+                name: "echo".into(),
+                version: "1.0.0".into(),
+                requests_ok_total: 3,
+                requests_error_total: 1,
+                requests_cancelled_total: 2,
+                ..Default::default()
+            }],
+        });
+
+        assert!(output.contains("# TYPE edger_worker_requests_total counter"));
+        assert!(output.contains(
+            "edger_worker_requests_total{worker=\"echo\",version=\"1.0.0\",namespace=\"\",outcome=\"ok\"} 3"
+        ));
+        assert!(output.contains(
+            "edger_worker_requests_total{worker=\"echo\",version=\"1.0.0\",namespace=\"\",outcome=\"error\"} 1"
+        ));
+        assert!(output.contains(
+            "edger_worker_requests_total{worker=\"echo\",version=\"1.0.0\",namespace=\"\",outcome=\"cancelled\"} 2"
+        ));
+        // The lifetime contract is documented: process identity, not LRU
+        // generation.
+        assert!(output.contains("resets only when the edger process restarts"));
+        assert!(output.contains("synthetic health checks (x-edger-health-check) are excluded"));
+    }
+
+    #[test]
+    fn stream_detach_block_renders_every_counter_with_known_values() {
+        let output = stream_detach_metrics_prometheus(&StreamDetachStats {
+            detached_total: 2,
+            fallback_cap_total: 1,
+            fallback_budget_total: 4,
+            abandoned_drained_total: 1,
+            abandoned_drain_bytes_limit_total: 2,
+            abandoned_drain_time_limit_total: 3,
+            abandoned_drain_stream_error_total: 4,
+            abandoned_socket_poisoned_total: 5,
+            abandoned_cancelled_total: 6,
+        });
+
+        assert!(output.contains("# TYPE edger_stream_detached_total counter"));
+        assert!(output.contains("edger_stream_detached_total 2"));
+        assert!(output.contains("# TYPE edger_stream_detach_backpressure_total counter"));
+        assert!(output.contains("edger_stream_detach_backpressure_total{reason=\"cap\"} 1"));
+        assert!(output.contains("edger_stream_detach_backpressure_total{reason=\"budget\"} 4"));
+        assert!(output.contains("# TYPE edger_stream_abandoned_total counter"));
+        assert!(output.contains("edger_stream_abandoned_total{outcome=\"drained\"} 1"));
+        assert!(output.contains("edger_stream_abandoned_total{outcome=\"bytes_limit\"} 2"));
+        assert!(output.contains("edger_stream_abandoned_total{outcome=\"time_limit\"} 3"));
+        assert!(output.contains("edger_stream_abandoned_total{outcome=\"stream_error\"} 4"));
+        assert!(output.contains("edger_stream_abandoned_total{outcome=\"socket_poisoned\"} 5"));
+        assert!(output.contains("edger_stream_abandoned_total{outcome=\"cancelled\"} 6"));
+        // Process-global counters: no worker label of any kind.
+        assert!(!output.contains("worker="));
+    }
+
+    #[test]
+    fn stats_response_exposes_group_requests_total_next_to_existing_counters() {
+        let response = metrics_stats_response(
+            &PoolMetrics {
+                active_workers: 0,
+                idle_workers: 0,
+                cache_hits: 0,
+                cache_misses: 0,
+                ephemeral_inflight: 0,
+                ephemeral_queued: 0,
+                ephemeral_rejected: 0,
+                request_duration_ms_last: 0,
+                spawn_latency_ms_last: 0,
+                spawn_latency_ms_p50: 0,
+                terminated_total: 0,
+                worker_queue_enqueued: 0,
+                worker_queue_queued: 0,
+                worker_queue_rejected: 0,
+                worker_queue_timeout: 0,
+                worker_queue_wait_ms_last: 0,
+                worker_groups: vec![WorkerGroupMetrics {
+                    name: "echo".into(),
+                    version: "1.0.0".into(),
+                    request_total: 5,
+                    requests_ok_total: 3,
+                    requests_error_total: 2,
+                    requests_cancelled_total: 1,
+                    ..Default::default()
+                }],
+            },
+            &[],
+        );
+
+        let body = serde_json::to_string(&response).unwrap();
+        // The new group-level total is ok + cancelled + error, next to the
+        // untouched existing counters.
+        assert!(body.contains("\"requestsTotal\":6"));
+        assert!(body.contains("\"requestTotal\":5"));
+        assert!(body.contains("\"name\":\"echo\""));
     }
 }

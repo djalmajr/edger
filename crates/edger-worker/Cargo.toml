@@ -37,3 +37,5 @@ edger-isolation = { path = "../edger-isolation", features = ["wasm"] }
 serde_yaml.workspace = true
 tempfile = "3"
 wat.workspace = true
+# Driving streamed bodies to end/error in the EDG-6 metrics tests (StreamExt::next).
+futures-util = { version = "0.3", default-features = false }

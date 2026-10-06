@@ -179,6 +179,9 @@ async fn metrics_handler(
     body.push_str(&tenant_routing_metrics_prometheus(
         &state.server.tenant_routing_metrics(),
     ));
+    if let Some(stats) = state.server.stream_detach_stats() {
+        body.push_str(&crate::metrics::stream_detach_metrics_prometheus(&stats));
+    }
     (
         [(
             header::CONTENT_TYPE,

@@ -336,6 +336,44 @@ async fn churn_beyond_default_capacity_readmits_first_identity() {
     assert_eq!(factory.prepares("churn-00@latest"), 2);
 }
 
+// EDG-6 (metrics amendment): the per-worker request counters live on the
+// worker IDENTITY (name/namespace/version) for the life of the edger process
+// — a capacity eviction and readmission of the same identity must ACCUMULATE
+// on the same series (ok=2), not restart it (the monotonic behavior
+// Prometheus expects). A → B (capacity 1 evicts A) → A (cold readmission).
+#[tokio::test]
+async fn evicted_identity_readmission_accumulates_the_group_request_counter() {
+    let factory = TestFactory::new();
+    let pool = pool_with(factory.clone(), 1);
+    let wa = worker_ref("/workers/mra", "mra", 30_000);
+    let wb = worker_ref("/workers/mrb", "mrb", 30_000);
+
+    pool.fetch_worker(&wa, sample_req("/"), Some(ExecutionKind::FetchHandler))
+        .await
+        .unwrap();
+    pool.fetch_worker(&wb, sample_req("/"), Some(ExecutionKind::FetchHandler))
+        .await
+        .unwrap();
+    assert_eq!(pool.len(), 1, "capacity 1: B evicts A");
+    assert_eq!(factory.prepares("mrb@latest"), 1);
+    pool.fetch_worker(&wa, sample_req("/"), Some(ExecutionKind::FetchHandler))
+        .await
+        .unwrap();
+    assert_eq!(factory.prepares("mra@latest"), 2, "readmission cold-starts");
+
+    let groups = pool.get_metrics().worker_groups;
+    let group = groups
+        .iter()
+        .find(|group| group.name == "mra")
+        .unwrap_or_else(|| panic!("group mra missing from the metrics snapshot"));
+    assert_eq!(
+        group.requests_ok_total, 2,
+        "ok accumulates on the same identity series across eviction/readmission"
+    );
+    assert_eq!(group.requests_error_total, 0);
+    assert_eq!(group.requests_cancelled_total, 0);
+}
+
 #[tokio::test]
 async fn fetch_worker_stream_readmits_evicted_identity() {
     let factory = TestFactory::new();
