@@ -12,9 +12,30 @@ use bytes::Bytes;
 use edger_core::{is_sensitive_env_key, IsolationError, SerializedResponse, WorkerConfig};
 use sha2::{Digest, Sha256};
 
+/// Cache-control for fingerprinted assets shared by every serving path: a
+/// weak ETag identifies the entity across identity/br/gzip variants, so the
+/// policy is the same for all of them.
+pub(crate) const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+
 pub fn serve_static_spa(
     request_path: &str,
     base_href: Option<&str>,
+    config: &WorkerConfig,
+) -> Result<SerializedResponse, IsolationError> {
+    serve_static_spa_encoded(request_path, base_href, None, config)
+}
+
+/// `serve_static_spa` + the request's `Accept-Encoding` (EDG-4): for an
+/// immutable asset with a pre-compressed variant on disk, the variant is
+/// served with `content-encoding`, the ORIGINAL's content-type and weak
+/// ETag (identity and variants share the entity tag, as with real-time
+/// compression) and `Vary: accept-encoding`; an identity response of the
+/// same asset also carries `vary: accept-encoding`. Without a variant the
+/// behavior is exactly the current one (real-time compression applies).
+pub fn serve_static_spa_encoded(
+    request_path: &str,
+    base_href: Option<&str>,
+    accept_encoding: Option<&str>,
     config: &WorkerConfig,
 ) -> Result<SerializedResponse, IsolationError> {
     let entrypoint = resolve_spa_entrypoint(config)?;
@@ -45,16 +66,190 @@ pub fn serve_static_spa(
         body = transform_entry_html(body, base_href, config);
     }
 
+    let cache_control = cache_control_for(&file_path);
     let etag = weak_etag(&body);
+    // A direct request for the variant file (e.g. `/assets/x.js.br`) is
+    // served as a plain file, exactly as today: the variant logic only fires
+    // for the immutable original.
+    if cache_control == IMMUTABLE_CACHE_CONTROL {
+        if let Some(response) = serve_precompressed_variant(
+            &file_path,
+            &body,
+            content_type,
+            cache_control,
+            accept_encoding,
+        ) {
+            return Ok(response);
+        }
+        if has_precompressed_variant(&file_path) {
+            return Ok(SerializedResponse {
+                status: 200,
+                headers: vec![
+                    ("content-type".into(), content_type.into()),
+                    ("cache-control".into(), cache_control.into()),
+                    ("vary".into(), "accept-encoding".into()),
+                    ("etag".into(), etag),
+                ],
+                body: Some(Bytes::from(body)),
+            });
+        }
+    }
     Ok(SerializedResponse {
         status: 200,
         headers: vec![
             ("content-type".into(), content_type.into()),
-            ("cache-control".into(), cache_control_for(&file_path).into()),
+            ("cache-control".into(), cache_control.into()),
             ("etag".into(), etag),
         ],
         body: Some(Bytes::from(body)),
     })
+}
+
+/// Pick which pre-compressed variant a request negotiates: `br` beats
+/// `gzip` at equal quality; `q=0` rejects an encoding; `*` covers any
+/// encoding not listed explicitly; a missing header — or one that accepts
+/// neither encoding — means identity. A malformed `q` parameter invalidates
+/// the whole field (the field is ignored, like `If-None-Match`).
+pub(crate) fn negotiate_variant_encoding(
+    accept_encoding: Option<&str>,
+) -> Option<crate::precompress::VariantEncoding> {
+    use crate::precompress::VariantEncoding;
+    let header = accept_encoding?;
+    let mut br: Option<f32> = None;
+    let mut gzip: Option<f32> = None;
+    let mut star: Option<f32> = None;
+    for element in header.split(',') {
+        let element = element.trim();
+        if element.is_empty() {
+            continue;
+        }
+        let (token, params) = match element.split_once(';') {
+            Some((token, params)) => (token.trim(), params),
+            None => (element, ""),
+        };
+        let quality = parse_accept_encoding_quality(params)?;
+        match token.to_ascii_lowercase().as_str() {
+            "br" => br = Some(quality),
+            "gzip" => gzip = Some(quality),
+            "*" => star = Some(quality),
+            // `identity` and unknown codings are simply not variants.
+            _ => {}
+        }
+    }
+    // A listed coding wins over `*`; `q=0` is a rejection (RFC 9110 §12.5.1).
+    let accepted = |quality: Option<f32>| quality.filter(|q| *q > 0.0);
+    let br = accepted(br.or(star));
+    let gzip = accepted(gzip.or(star));
+    match (br, gzip) {
+        (Some(brotli_q), Some(gzip_q)) => {
+            if gzip_q > brotli_q {
+                Some(VariantEncoding::Gzip)
+            } else {
+                Some(VariantEncoding::Brotli)
+            }
+        }
+        (Some(_), None) => Some(VariantEncoding::Brotli),
+        (None, Some(_)) => Some(VariantEncoding::Gzip),
+        (None, None) => None,
+    }
+}
+
+/// Parse the `q` parameter list of one `Accept-Encoding` element. Returns
+/// `None` when the parameters are malformed (non-`q` parameter, unparseable
+/// or out-of-range value): the whole field must then be ignored. No `q`
+/// parameter means the default weight 1.
+fn parse_accept_encoding_quality(params: &str) -> Option<f32> {
+    let mut quality: Option<f32> = None;
+    for param in params.split(';') {
+        let param = param.trim();
+        if param.is_empty() {
+            continue;
+        }
+        let (name, value) = param.split_once('=')?;
+        if !name.trim().eq_ignore_ascii_case("q") {
+            return None;
+        }
+        let value = value.trim();
+        quality = Some(
+            value
+                .parse::<f32>()
+                .ok()
+                .filter(|q| q.is_finite() && (0.0..=1.0).contains(q))?,
+        );
+    }
+    quality.or(Some(1.0))
+}
+
+/// True when `path` is a REGULAR file (not a symlink): `symlink_metadata`
+/// inspects the path itself, so a link to a file elsewhere reports `false`.
+fn variant_is_regular_file(variant: &Path) -> bool {
+    fs::symlink_metadata(variant)
+        .ok()
+        .is_some_and(|meta| meta.is_file())
+}
+
+/// True when at least one pre-compressed variant of `path` exists on disk
+/// as a regular file. HTML never qualifies: those entries are transformed at
+/// runtime, so a variant (or a `Vary` advertising one) must not be
+/// advertised for them.
+pub(crate) fn has_precompressed_variant(path: &Path) -> bool {
+    if content_type_for(path).starts_with("text/html") {
+        return false;
+    }
+    crate::precompress::VariantEncoding::ALL
+        .iter()
+        .any(|encoding| variant_is_regular_file(&crate::precompress::variant_path(path, *encoding)))
+}
+
+/// Build the pre-compressed variant response for an immutable asset, or
+/// `None` when the request negotiates no variant, when the asset is HTML
+/// (transformed at runtime: a pre-compressed variant would skip the
+/// transformation), or when the variant is missing / not a regular file —
+/// the identity path then serves, as before.
+pub(crate) fn serve_precompressed_variant(
+    path: &Path,
+    body: &[u8],
+    content_type: &str,
+    cache_control: &'static str,
+    accept_encoding: Option<&str>,
+) -> Option<SerializedResponse> {
+    if content_type.starts_with("text/html") {
+        return None;
+    }
+    let encoding = negotiate_variant_encoding(accept_encoding)?;
+    let variant = crate::precompress::variant_path(path, encoding);
+    // The variant must be a REGULAR file in the same (already validated)
+    // directory as the original. A symlink — even to a regular file outside
+    // the worker — is refused and the identity path serves instead.
+    if !variant_is_regular_file(&variant) {
+        return None;
+    }
+    let compressed = fs::read(&variant).ok()?;
+    Some(SerializedResponse {
+        status: 200,
+        headers: vec![
+            ("content-type".into(), content_type.into()),
+            ("cache-control".into(), cache_control.into()),
+            (
+                "content-encoding".into(),
+                encoding.content_encoding().into(),
+            ),
+            ("vary".into(), "accept-encoding".into()),
+            // Same weak ETag as the identity response: one entity, several
+            // codings (RFC 9110 §8.8.1) — 304s match in every coding.
+            ("etag".into(), weak_etag(body)),
+        ],
+        body: Some(Bytes::from(compressed)),
+    })
+}
+
+/// The request's `Accept-Encoding` value (case-insensitive header lookup),
+/// if any.
+pub fn accept_encoding_header(headers: &[(String, String)]) -> Option<&str> {
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("accept-encoding"))
+        .map(|(_, value)| value.as_str())
 }
 
 /// Weak ETag (`W/"<hex>"`) for a static body: the first 16 hex characters
@@ -62,7 +257,8 @@ pub fn serve_static_spa(
 /// injection on the entry HTML). Weak because the compression layer
 /// (tower-http) does not rewrite the ETag when it re-encodes the body; a
 /// weak validator is the correct one across identity/br/gzip variants
-/// (RFC 9110 §8.8.1).
+/// (RFC 9110 §8.8.1). The same tag is shared by the pre-compressed variants
+/// (EDG-4), which are codings of the same entity.
 pub(crate) fn weak_etag(body: &[u8]) -> String {
     let digest = Sha256::digest(body);
     let hex = format!("{:x}", digest);
@@ -74,9 +270,13 @@ pub(crate) fn weak_etag(body: &[u8]) -> String {
 // (Vite's `assets/name-<hash>` shape) are immutable by construction; both
 // gates are required so an un-hashed user file named e.g. `controller.js`
 // never gets pinned for a year. Everything else lives short and revalidates.
-fn cache_control_for(path: &Path) -> &'static str {
+//
+// The same predicate decides which assets receive pre-compressed variants
+// at deploy time (`precompress_worker_assets`): it must stay in lockstep
+// with the serving rule, or a variant could exist for a non-immutable file.
+pub(crate) fn is_immutable_asset(path: &Path) -> bool {
     if content_type_for(path).starts_with("text/html") {
-        return "no-cache";
+        return false;
     }
     let under_assets = path
         .parent()
@@ -96,8 +296,15 @@ fn cache_control_for(path: &Path) -> &'static str {
                 && tail.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
                 && (tail.chars().any(|c| c.is_ascii_digit()) || mixed_case)
         });
-    if under_assets && hashed_stem {
-        "public, max-age=31536000, immutable"
+    under_assets && hashed_stem
+}
+
+fn cache_control_for(path: &Path) -> &'static str {
+    if content_type_for(path).starts_with("text/html") {
+        return "no-cache";
+    }
+    if is_immutable_asset(path) {
+        IMMUTABLE_CACHE_CONTROL
     } else {
         "public, max-age=300"
     }
@@ -517,5 +724,235 @@ mod tests {
 
         let err = serve_static_spa("/../secret", None, &config).unwrap_err();
         assert_eq!(err.code, "SPA_PATH_DENIED");
+    }
+
+    // ---- EDG-4: pre-compressed variant serving ------------------------------
+
+    #[test]
+    fn negotiate_variant_encoding_respects_quality_and_star() {
+        use crate::precompress::VariantEncoding;
+        let cases: &[(&str, Option<VariantEncoding>)] = &[
+            ("br", Some(VariantEncoding::Brotli)),
+            ("gzip", Some(VariantEncoding::Gzip)),
+            ("*", Some(VariantEncoding::Brotli)),
+            ("br;q=0, gzip", Some(VariantEncoding::Gzip)),
+            ("gzip;q=0, br", Some(VariantEncoding::Brotli)),
+            ("br;q=0, gzip;q=0", None),
+            ("gzip;q=0", None),
+            ("identity", None),
+            ("identity;q=0, gzip", Some(VariantEncoding::Gzip)),
+            ("gzip;q=0, *", Some(VariantEncoding::Brotli)),
+            ("gzip;q=0.5, br;q=0.2", Some(VariantEncoding::Gzip)),
+            ("br;q=0.3, gzip;q=0.3", Some(VariantEncoding::Brotli)),
+            ("br , gzip;q=0.9", Some(VariantEncoding::Brotli)),
+            ("x-experimental, br;q=0", None), // only an unknown coding accepted: identity
+            ("", None),
+            (",br", Some(VariantEncoding::Brotli)),
+            ("br;q=1.5", None),   // malformed field: ignored, never a variant
+            ("br;level=4", None), // non-q parameter: malformed, ignored
+            ("BR", Some(VariantEncoding::Brotli)), // token match is case-insensitive
+        ];
+        for (header, expected) in cases {
+            assert_eq!(
+                negotiate_variant_encoding(Some(header)),
+                *expected,
+                "Accept-Encoding: {header:?}"
+            );
+        }
+        // Absent header is identity, no matter what is on disk.
+        assert_eq!(negotiate_variant_encoding(None), None);
+    }
+
+    fn spa_root_with_variant() -> (tempfile::TempDir, WorkerConfig) {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("assets")).unwrap();
+        let original = vec![b'x'; 2048];
+        fs::write(root.path().join("index.html"), "<html></html>").unwrap();
+        let asset = root.path().join("assets/app-a1b2c3d4.js");
+        fs::write(&asset, &original).unwrap();
+        // Variants produced by the deploy-time module itself.
+        crate::precompress::precompress_worker_assets(
+            root.path(),
+            &edger_core::ExecutionKind::StaticSpa { inject_base: true },
+            &parse_worker_config(&WorkerManifest::default()),
+            u64::MAX,
+        );
+        let final_config = spa_config(root.path());
+        (root, final_config)
+    }
+
+    fn response_header<'a>(response: &'a SerializedResponse, name: &str) -> Option<&'a str> {
+        response
+            .headers
+            .iter()
+            .find(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
+    #[test]
+    fn static_spa_serves_negotiated_variant_with_original_etag_and_vary() {
+        let (root, config) = spa_root_with_variant();
+        let original = fs::read(root.path().join("assets/app-a1b2c3d4.js")).unwrap();
+
+        let br =
+            serve_static_spa_encoded("/assets/app-a1b2c3d4.js", None, Some("br"), &config).unwrap();
+        let expected_br = fs::read(root.path().join("assets/app-a1b2c3d4.js.br")).unwrap();
+        assert_eq!(br.status, 200);
+        assert_eq!(response_header(&br, "content-encoding"), Some("br"));
+        assert_eq!(
+            response_header(&br, "content-type"),
+            Some("application/javascript; charset=utf-8")
+        );
+        assert_eq!(
+            response_header(&br, "cache-control"),
+            Some("public, max-age=31536000, immutable")
+        );
+        assert!(response_header(&br, "vary")
+            .is_some_and(|vary| vary.to_ascii_lowercase().contains("accept-encoding")));
+        // The variant shares the WEAK ETag of the original bytes.
+        assert_eq!(
+            response_header(&br, "etag"),
+            Some(weak_etag(&original).as_str())
+        );
+        assert_eq!(br.body.unwrap().as_ref(), expected_br.as_slice());
+
+        // `br;q=0, gzip` negotiates the gzip variant.
+        let gz = serve_static_spa_encoded(
+            "/assets/app-a1b2c3d4.js",
+            None,
+            Some("br;q=0, gzip"),
+            &config,
+        )
+        .unwrap();
+        assert_eq!(response_header(&gz, "content-encoding"), Some("gzip"));
+        assert_eq!(
+            response_header(&gz, "etag"),
+            Some(weak_etag(&original).as_str())
+        );
+        assert_eq!(
+            gz.body.unwrap().as_ref(),
+            fs::read(root.path().join("assets/app-a1b2c3d4.js.gz"))
+                .unwrap()
+                .as_slice()
+        );
+    }
+
+    #[test]
+    fn static_spa_identity_of_variant_asset_carries_vary_but_no_encoding() {
+        let (root, config) = spa_root_with_variant();
+        let original = fs::read(root.path().join("assets/app-a1b2c3d4.js")).unwrap();
+
+        for accept_encoding in [None, Some("identity"), Some("br;q=0, gzip;q=0")] {
+            let res =
+                serve_static_spa_encoded("/assets/app-a1b2c3d4.js", None, accept_encoding, &config)
+                    .unwrap();
+            assert!(
+                response_header(&res, "content-encoding").is_none(),
+                "Accept-Encoding {accept_encoding:?} must serve identity"
+            );
+            assert!(
+                response_header(&res, "vary")
+                    .is_some_and(|vary| vary.to_ascii_lowercase().contains("accept-encoding")),
+                "identity of a variant asset must vary on accept-encoding"
+            );
+            assert_eq!(
+                response_header(&res, "etag"),
+                Some(weak_etag(&original).as_str())
+            );
+            assert_eq!(res.body.unwrap().as_ref(), original.as_slice());
+        }
+    }
+
+    #[test]
+    fn static_spa_without_variants_keeps_current_behavior() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("assets")).unwrap();
+        fs::write(root.path().join("index.html"), "<html></html>").unwrap();
+        fs::write(root.path().join("assets/app-a1b2c3d4.js"), vec![b'x'; 2048]).unwrap();
+        let config = spa_config(root.path());
+
+        let res =
+            serve_static_spa_encoded("/assets/app-a1b2c3d4.js", None, Some("br"), &config).unwrap();
+        assert!(response_header(&res, "content-encoding").is_none());
+        assert!(
+            response_header(&res, "vary").is_none(),
+            "no variant, no vary"
+        );
+        assert_eq!(res.body.as_ref().unwrap(), &vec![b'x'; 2048]);
+
+        let legacy = serve_static_spa("/assets/app-a1b2c3d4.js", None, &config).unwrap();
+        assert_eq!(legacy.status, res.status);
+        assert_eq!(legacy.headers, res.headers);
+        assert_eq!(legacy.body.as_ref().unwrap(), &vec![b'x'; 2048]);
+    }
+
+    #[test]
+    fn static_spa_never_serves_variant_for_non_immutable_asset() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("assets")).unwrap();
+        fs::write(root.path().join("index.html"), "<html></html>").unwrap();
+        fs::write(root.path().join("assets/controller.js"), vec![b'j'; 2048]).unwrap();
+        // A stray variant for a NON-immutable file must be ignored: the file
+        // is revalidated (max-age=300) and served identity.
+        fs::write(root.path().join("assets/controller.js.br"), b"stray-br").unwrap();
+        let config = spa_config(root.path());
+
+        let res =
+            serve_static_spa_encoded("/assets/controller.js", None, Some("br"), &config).unwrap();
+        assert_eq!(response_header(&res, "content-encoding"), None);
+        assert_eq!(response_header(&res, "vary"), None);
+        assert_eq!(
+            response_header(&res, "cache-control"),
+            Some("public, max-age=300")
+        );
+        assert_eq!(res.body.unwrap().as_ref(), vec![b'j'; 2048].as_slice());
+
+        // A direct request for the variant file serves it as a plain file,
+        // exactly as before the feature existed.
+        let direct =
+            serve_static_spa_encoded("/assets/controller.js.br", None, Some("br"), &config)
+                .unwrap();
+        assert_eq!(response_header(&direct, "content-encoding"), None);
+        assert_eq!(
+            response_header(&direct, "content-type"),
+            Some("application/octet-stream")
+        );
+        assert_eq!(direct.body.unwrap().as_ref(), b"stray-br");
+    }
+
+    #[test]
+    fn static_spa_symlinked_variant_is_never_served() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("assets")).unwrap();
+        fs::write(root.path().join("index.html"), "<html></html>").unwrap();
+        let original = vec![b'x'; 2048];
+        fs::write(root.path().join("assets/app-a1b2c3d4.js"), &original).unwrap();
+        // The `.br` variant is a symlink to a file OUTSIDE the worker: the
+        // variant must be refused, never the external bytes served.
+        let external = b"EXTERNAL-VARIANT-BYTES";
+        fs::write(outside.path().join("external.br"), external).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("external.br"),
+            root.path().join("assets/app-a1b2c3d4.js.br"),
+        )
+        .unwrap();
+        let config = spa_config(root.path());
+
+        let res =
+            serve_static_spa_encoded("/assets/app-a1b2c3d4.js", None, Some("br"), &config).unwrap();
+        assert_eq!(res.status, 200);
+        // Identity original: no content-encoding, and no Vary advertising a
+        // variant that is not a regular file.
+        assert!(response_header(&res, "content-encoding").is_none());
+        assert_eq!(
+            response_header(&res, "etag"),
+            Some(weak_etag(&original).as_str())
+        );
+        assert!(
+            response_header(&res, "vary").is_none(),
+            "a symlinked variant is not a variant: no Vary"
+        );
+        assert_eq!(res.body.unwrap().as_ref(), original.as_slice());
     }
 }
