@@ -60,6 +60,13 @@ pub enum AbandonedStream {
     TimeLimit,
     /// A read, protocol, or in-band error aborted the drain.
     StreamError,
+    /// The harness acknowledged the CANCEL control frame (EDG-9 slice 2):
+    /// the client abandoned the stream, the orchestrator told the harness
+    /// to cancel it and the harness answered with the `cancelled` end
+    /// frame. Like a clean drain end, the socket is restored and the
+    /// process is REUSED — the pool completes the dispatch with the
+    /// `stream_abandoned_drained` reason and the `cancelled` sub-cause.
+    Cancelled,
     /// The POOL's bounded wait for the drain result expired before the
     /// reader reported anything (slow producer): the reader's late result,
     /// if any, is ignored without error. Synthesized by the pool — the

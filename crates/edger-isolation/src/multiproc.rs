@@ -157,6 +157,18 @@ struct WireShutdown {
     grace_ms: u64,
 }
 
+/// Control frame telling the harness to cancel the in-flight response
+/// (EDG-9 slice 2): the client abandoned the stream and the orchestrator is
+/// draining it, so the harness aborts the request's `AbortSignal`, cancels
+/// the body reader and answers with an end frame carrying
+/// `{"cancelled":true}`. No id: the socket order guarantees a stale cancel
+/// (its response already ended) arrives before the next request frame.
+#[derive(Serialize)]
+struct WireCancel {
+    #[serde(rename = "__control")]
+    control: &'static str,
+}
+
 /// The worker's shutdown ack (untagged JSON frame with the drained count).
 #[derive(Deserialize)]
 struct WireShutdownAck {
@@ -201,6 +213,12 @@ impl ShutdownHandshake {
 struct WireEndFrame {
     #[serde(default)]
     error: Option<String>,
+    /// Set by the harness when the response ended because of a cancel
+    /// control frame (EDG-9 slice 2): a CLEAN end inside the abandon drain
+    /// (the socket is restored and the process reused), an unexpected
+    /// protocol error outside of it.
+    #[serde(default, rename = "cancelled")]
+    cancelled: bool,
 }
 
 /// Response frame tags (must match the harness).
@@ -261,6 +279,10 @@ pub struct StreamDetachStats {
     /// Abandoned sockets with the drain disabled (a limit of `0`): the
     /// socket was left mid-response and the process is poisoned (recycled).
     pub abandoned_socket_poisoned_total: u64,
+    /// Abandon drains that stopped on the harness's CANCEL end frame
+    /// (`{"cancelled":true}`, EDG-9 slice 2): the socket was restored and
+    /// the process was reused.
+    pub abandoned_cancelled_total: u64,
 }
 
 /// Process-wide budget for the stream-detach pipelines, shared by every
@@ -286,6 +308,7 @@ struct StreamDetachStatsInner {
     abandoned_drain_time_limit_total: AtomicU64,
     abandoned_drain_stream_error_total: AtomicU64,
     abandoned_socket_poisoned_total: AtomicU64,
+    abandoned_cancelled_total: AtomicU64,
 }
 
 impl StreamDetachBudget {
@@ -329,6 +352,7 @@ impl StreamDetachBudget {
                 .stats
                 .abandoned_socket_poisoned_total
                 .load(Ordering::Acquire),
+            abandoned_cancelled_total: self.stats.abandoned_cancelled_total.load(Ordering::Acquire),
         }
     }
 
@@ -387,6 +411,12 @@ impl StreamDetachBudget {
     fn record_abandoned_socket_poisoned(&self) {
         self.stats
             .abandoned_socket_poisoned_total
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn record_abandoned_cancelled(&self) {
+        self.stats
+            .abandoned_cancelled_total
             .fetch_add(1, Ordering::AcqRel);
     }
 }
@@ -580,7 +610,10 @@ struct ReadyFrame {
 /// A spawned, connected, module-loaded Deno worker process.
 pub struct DenoWorkerProcess {
     child: Child,
-    write_half: OwnedWriteHalf,
+    /// Shared write half (EDG-9 slice 2): the request writer, the shutdown
+    /// writer and the abandon drain (which writes the cancel control frame
+    /// from the reader task) all serialize on this mutex.
+    write_half: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
     // The read half is owned by the response pump while a request streams; it
     // comes back through `restore_rx` on a CLEAN end-of-stream. An abnormal end
     // (mid-stream error, consumer dropped) never restores it — the process is
@@ -853,7 +886,7 @@ impl DenoWorkerProcess {
         let (read_half, write_half) = stream.into_split();
         let mut process = Self {
             child,
-            write_half,
+            write_half: Arc::new(tokio::sync::Mutex::new(write_half)),
             read_half: Some(read_half),
             restore_rx: None,
             timeout,
@@ -986,7 +1019,8 @@ impl DenoWorkerProcess {
             .map_err(|err| IsolationError::new("UDS_ENCODE", err.to_string()))?;
 
         let write = async {
-            tokio::time::timeout(self.timeout, write_frame(&mut self.write_half, &payload))
+            let mut write_half = self.write_half.lock().await;
+            tokio::time::timeout(self.timeout, write_frame(&mut *write_half, &payload))
                 .await
                 .map_err(|_| IsolationError::new("UDS_TIMEOUT", "request write timed out"))?
                 .map_err(|err| IsolationError::new("UDS_IO", format!("write failed: {err}")))
@@ -1049,9 +1083,12 @@ impl DenoWorkerProcess {
 
                 // Reader: reads frames, reserves the chunk's bytes (waits
                 // when no permits are free — the slot stays held), and
-                // enqueues it on the single FIFO queue.
+                // enqueues it on the single FIFO queue. On a consumer loss
+                // it runs the abandon drain, which shares this writer (the
+                // EDG-9 slice 2 cancel control frame).
                 tokio::spawn(Self::detach_reader(
                     read_half,
+                    Arc::clone(&self.write_half),
                     q_tx,
                     pipeline.clone(),
                     restore_tx,
@@ -1112,8 +1149,10 @@ impl DenoWorkerProcess {
     /// socket: it keeps reading and discarding frames until the clean
     /// `TAG_END` (bounded by the drain limits), so the process can be
     /// reused instead of poisoned.
+    #[allow(clippy::too_many_arguments)]
     async fn detach_reader(
         mut read_half: OwnedReadHalf,
+        write_half: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
         q_tx: mpsc::UnboundedSender<QueueItem>,
         pipeline: DetachPipeline,
         restore_tx: oneshot::Sender<OwnedReadHalf>,
@@ -1131,6 +1170,7 @@ impl DenoWorkerProcess {
             if *pipeline.cancel.borrow() {
                 return Self::drain_on_abandon(
                     read_half,
+                    write_half,
                     &pipeline,
                     restore_tx,
                     production_complete,
@@ -1179,6 +1219,7 @@ impl DenoWorkerProcess {
                     let Some(reservations) = reserve_chunk(&pipeline, discarded).await else {
                         return Self::drain_on_abandon(
                             read_half,
+                            write_half,
                             &pipeline,
                             restore_tx,
                             production_complete,
@@ -1206,6 +1247,7 @@ impl DenoWorkerProcess {
                             // drain's byte budget from the start.
                             return Self::drain_on_abandon(
                                 read_half,
+                                write_half,
                                 &pipeline,
                                 restore_tx,
                                 production_complete,
@@ -1235,6 +1277,18 @@ impl DenoWorkerProcess {
                         ))));
                         return;
                     }
+                    if end.cancelled {
+                        // (EDG-9 slice 2) A cancel end frame OUTSIDE the
+                        // abandon drain is an unexpected protocol state — the
+                        // orchestrator only cancels while draining. The
+                        // socket cannot be trusted: do not restore and pass
+                        // the error marker through in order (recycle).
+                        let _ = q_tx.send(QueueItem::End(Err(IsolationError::new(
+                            "UDS_PROTOCOL",
+                            "unexpected cancel end frame outside the abandon drain",
+                        ))));
+                        return;
+                    }
                     // Clean end: production is DONE. (1) hand back the read
                     // half (the process is reusable), (2) mark the shared
                     // production-complete flag, (3) enqueue the terminal
@@ -1260,6 +1314,17 @@ impl DenoWorkerProcess {
     /// frames and DISCARD them — no budget reservation, no enqueue — until
     /// the clean `TAG_END`, bounded by the byte and time limits.
     ///
+    /// (EDG-9 slice 2) BEFORE the discard loop, the drain writes the CANCEL
+    /// control frame (`{"__control":"cancel"}`) on the shared write half
+    /// (bounded by the REMAINING drain time budget): the harness aborts the
+    /// request's `AbortSignal`, cancels the body and answers with a `TAG_END`
+    /// carrying `{"cancelled":true}` — a clean end for the drain even when
+    /// the stream is endless (SSE), so the process is reused instead of
+    /// recycled at the time limit. A write that fails or stalls past the
+    /// budget recycles with the `socket_poisoned` sub-cause. The cancel is
+    /// sent for EVERY abandon (finite and endless responses alike) — only a
+    /// DISABLED drain skips it.
+    ///
     /// `pre_discarded` is the size of the chunk the reader already read and
     /// discarded BEFORE entering this drain (the chunk whose reservation or
     /// queue send failed): it counts toward `max_bytes` from the start, so
@@ -1273,8 +1338,10 @@ impl DenoWorkerProcess {
     /// socket is desynced) and reports the CAUSE on the signal: the pool
     /// recycles, as before. A `0` in any limit disables the drain and
     /// abandons the socket, reporting `SocketPoisoned`.
+    #[allow(clippy::too_many_arguments)]
     async fn drain_on_abandon(
         mut read_half: OwnedReadHalf,
+        write_half: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
         pipeline: &DetachPipeline,
         restore_tx: oneshot::Sender<OwnedReadHalf>,
         production_complete: Arc<AtomicBool>,
@@ -1286,6 +1353,7 @@ impl DenoWorkerProcess {
         if !drain.enabled() {
             // Drain disabled: abandon the socket, as before the drain
             // existed — the process is poisoned by the mid-response socket.
+            // No cancel frame is written (current pre-slice-2 behavior).
             pipeline.budget.record_abandoned_socket_poisoned();
             tracing::info!(
                 target: "edger.stream",
@@ -1298,6 +1366,50 @@ impl DenoWorkerProcess {
         }
         let time_budget = Duration::from_millis(drain.max_ms);
         let started = Instant::now();
+        // (EDG-9 slice 2) Tell the harness to cancel the in-flight response
+        // NOW, before the discard loop starts: an endless stream (SSE) can
+        // never reach TAG_END on its own, so without the cancel the drain
+        // would always stop at the time limit and recycle. The write is
+        // bounded by the REMAINING drain time budget (short): a stalled
+        // socket cannot hold the writer — and the pool's relay wait — open
+        // past the budget.
+        let write_budget = time_budget
+            .saturating_sub(started.elapsed())
+            .min(frame_timeout);
+        let cancel_payload = serde_json::to_vec(&WireCancel { control: "cancel" })
+            .expect("static cancel frame serializes");
+        match tokio::time::timeout(write_budget, async {
+            let mut write_half = write_half.lock().await;
+            write_frame(&mut *write_half, &cancel_payload).await
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                // Write failed (broken pipe / reset by peer): the socket is
+                // poisoned — recycle with the socket_poisoned sub-cause.
+                pipeline.budget.record_abandoned_socket_poisoned();
+                tracing::info!(
+                    target: "edger.stream",
+                    "abandon drain could not write the cancel frame; socket poisoned, process will be recycled"
+                );
+                let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::SocketPoisoned));
+                return;
+            }
+            Err(_) => {
+                // The write stalled past the remaining drain budget: the
+                // socket cannot be trusted in time — recycle with the
+                // socket_poisoned sub-cause.
+                pipeline.budget.record_abandoned_socket_poisoned();
+                tracing::info!(
+                    target: "edger.stream",
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "abandon drain cancel write stalled past the time budget; socket poisoned, process will be recycled"
+                );
+                let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::SocketPoisoned));
+                return;
+            }
+        }
         // The pre-discarded chunk counts toward the byte budget from the
         // start: the limit is checked (and can stop the drain) before the
         // next frame — a `TAG_END` included — is accepted.
@@ -1379,6 +1491,29 @@ impl DenoWorkerProcess {
                         pipeline.budget.record_abandoned_drain_stream_error();
                         let _ =
                             done_tx.send(StreamCompletion::Abandoned(AbandonedStream::StreamError));
+                        return;
+                    }
+                    if end.cancelled {
+                        // (EDG-9 slice 2) The harness acknowledged the cancel
+                        // control frame: the body was aborted and this end is
+                        // CLEAN even though the stream never reached its
+                        // natural end — restore the read half, set the
+                        // production-complete flag and report the `cancelled`
+                        // cause: the pool reuses the process (the dispatch
+                        // completes with the `stream_abandoned_drained` reason
+                        // and the `cancelled` sub-cause).
+                        let _ = restore_tx.send(read_half);
+                        production_complete.store(true, Ordering::SeqCst);
+                        pipeline.budget.record_detached();
+                        pipeline.budget.record_abandoned_cancelled();
+                        tracing::info!(
+                            target: "edger.stream",
+                            discarded_bytes = discarded,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "abandon drain reached the cancel end within the limits; process reused"
+                        );
+                        let _ =
+                            done_tx.send(StreamCompletion::Abandoned(AbandonedStream::Cancelled));
                         return;
                     }
                     // Clean end WITHIN the limits: the socket is in sync —
@@ -1512,6 +1647,21 @@ impl DenoWorkerProcess {
                     let end: WireEndFrame = serde_json::from_slice(body).unwrap_or_default();
                     if let Some(error) = end.error {
                         let _ = tx.send(Err(IsolationError::new("UDS_STREAM", error))).await;
+                        let _ = restore_tx.send(read_half); // clean end: reusable
+                        return;
+                    }
+                    if end.cancelled {
+                        // (EDG-9 slice 2) A cancel end frame on the LEGACY
+                        // path is an unexpected protocol state (the legacy
+                        // path never cancels): surface the error and do not
+                        // restore the read half (poisoned).
+                        let _ = tx
+                            .send(Err(IsolationError::new(
+                                "UDS_PROTOCOL",
+                                "unexpected cancel end frame",
+                            )))
+                            .await;
+                        return;
                     }
                     let _ = restore_tx.send(read_half); // clean end: reusable
                     return;
@@ -1606,10 +1756,13 @@ impl DenoWorkerProcess {
         // frame did NOT make it out: the handshake is impossible — a
         // poisoned socket, not a timeout. `Err(Elapsed)` (the write itself
         // stalled past the 1 s budget) is the real write timeout.
-        match tokio::time::timeout(
-            Duration::from_secs(1),
-            write_frame(&mut self.write_half, &payload),
-        )
+        // (EDG-9 slice 2) The write goes through the SHARED write-half mutex
+        // (the abandon drain writes the cancel frame on the same half);
+        // dropping the timed-out future drops the guard, releasing the lock.
+        match tokio::time::timeout(Duration::from_secs(1), async {
+            let mut write_half = self.write_half.lock().await;
+            write_frame(&mut *write_half, &payload).await
+        })
         .await
         {
             Ok(Ok(())) => {}
@@ -2627,10 +2780,13 @@ mod stream_detach_tests {
         // (100) is smaller than the pre-discarded chunk (200).
         // UDS pair: the reader gets the read half of end A; frames are
         // written to end B (the loopback the harness socket is for the
-        // reader).
+        // reader). The cancel control frame (EDG-9 slice 2) goes out on the
+        // A-side write half — end B's buffer simply absorbs it (this test
+        // never reads it back).
         let (read_end, write_end) = UnixStream::pair().unwrap();
-        let (read_half, _write_half_a) = read_end.into_split();
-        let mut write_half = write_end;
+        let (read_half, write_half_a) = read_end.into_split();
+        let write_half = Arc::new(tokio::sync::Mutex::new(write_half_a));
+        let mut write_half_peer = write_end;
 
         let budget = Arc::new(StreamDetachBudget::new(1_000));
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
@@ -2665,12 +2821,13 @@ mod stream_detach_tests {
         // Write ALL frames before the reader starts: they sit in the socket
         // buffer, so the reader reads them without extra I/O yields and the
         // only place it can park is chunk 2's reservation select.
-        write_half.write_all(&frame1).await.unwrap();
-        write_half.write_all(&frame2).await.unwrap();
-        write_half.write_all(&frame3).await.unwrap();
+        write_half_peer.write_all(&frame1).await.unwrap();
+        write_half_peer.write_all(&frame2).await.unwrap();
+        write_half_peer.write_all(&frame3).await.unwrap();
 
         let mut reader = tokio::spawn(DenoWorkerProcess::detach_reader(
             read_half,
+            Arc::clone(&write_half),
             q_tx,
             pipeline.clone(),
             restore_tx,
@@ -2726,6 +2883,258 @@ mod stream_detach_tests {
         );
     }
 
+    // (EDG-9 slice 2) The abandon writes the CANCEL control frame BEFORE
+    // draining: the drain writes it on the shared write half and only then
+    // reads frames — so the peer observes the cancel FIRST. The harness's
+    // cancel end frame (`E {"cancelled":true}`) is a CLEAN end inside the
+    // drain: the read half is restored, the production-complete flag is set
+    // and the completion signal carries the `cancelled` cause (the pool
+    // reuses the process).
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn abandon_drain_writes_cancel_before_draining_and_reports_cancelled_end() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::UnixStream;
+
+        let (read_end, mut peer) = UnixStream::pair().unwrap();
+        let (read_half, write_half_a) = read_end.into_split();
+        let write_half = Arc::new(tokio::sync::Mutex::new(write_half_a));
+
+        let budget = Arc::new(StreamDetachBudget::new(1_000));
+        let pipeline = DetachPipeline {
+            per_response: Arc::new(tokio::sync::Semaphore::new(100)),
+            per_response_cap: 100,
+            budget: Arc::clone(&budget),
+            cancel: tokio::sync::watch::channel(false).1,
+            abandon_drain: AbandonDrain {
+                max_bytes: 10_000,
+                max_ms: 10_000,
+            },
+        };
+        let (restore_tx, restore_rx) = tokio::sync::oneshot::channel();
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let flag_inner = Arc::clone(&flag);
+
+        let mut drain = tokio::spawn(async move {
+            DenoWorkerProcess::drain_on_abandon(
+                read_half,
+                write_half,
+                &pipeline,
+                restore_tx,
+                flag_inner,
+                done_tx,
+                Duration::from_secs(5),
+                0,
+            )
+            .await
+        });
+
+        // The drain must write the cancel control frame BEFORE reading any
+        // frame: the peer reads it first, and it is the plain
+        // `{"__control":"cancel"}` JSON frame.
+        let cancel_frame = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut peer))
+            .await
+            .expect("the cancel frame is written before any drain read")
+            .expect("the cancel frame is read");
+        let payload = String::from_utf8(cancel_frame).unwrap();
+        assert!(
+            payload.contains("\"__control\":\"cancel\""),
+            "the drain writes the cancel control frame: {payload}"
+        );
+
+        // The harness's answer to the cancel: an end frame carrying
+        // {"cancelled":true}.
+        let end_payload = br#"{"cancelled":true}"#;
+        let mut end_frame = ((1 + end_payload.len()) as u32).to_le_bytes().to_vec();
+        end_frame.push(TAG_END);
+        end_frame.extend_from_slice(end_payload);
+        peer.write_all(&end_frame).await.unwrap();
+
+        let joined = tokio::time::timeout(Duration::from_secs(5), &mut drain).await;
+        assert!(
+            joined.is_ok(),
+            "the drain must exit on the cancel end frame"
+        );
+
+        assert!(
+            restore_rx.await.is_ok(),
+            "the cancel end frame restores the read half (the process is reusable)"
+        );
+        assert!(
+            flag.load(std::sync::atomic::Ordering::Acquire),
+            "the production-complete flag is set on a cancel end"
+        );
+        assert_eq!(
+            done_rx.await.unwrap(),
+            edger_core::StreamCompletion::Abandoned(edger_core::AbandonedStream::Cancelled),
+            "the completion signal carries the cancelled cause, not a completed"
+        );
+        let stats = budget.stats();
+        assert_eq!(
+            stats.abandoned_cancelled_total, 1,
+            "the cancelled counter moves"
+        );
+        assert_eq!(
+            stats.abandoned_drained_total, 0,
+            "a cancel end is distinct from a plain drained end"
+        );
+        assert!(
+            stats.detached_total >= 1,
+            "the aborted production still counts as detached"
+        );
+    }
+
+    // (EDG-9 slice 2) A cancel write that FAILS (the peer is gone) recycles
+    // with the `socket_poisoned` sub-cause: no restore, no flag, no cancel
+    // end — the socket cannot be trusted.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn abandon_drain_cancel_write_failure_reports_socket_poisoned() {
+        use tokio::net::UnixStream;
+
+        let (read_end, peer) = UnixStream::pair().unwrap();
+        let (read_half, write_half_a) = read_end.into_split();
+        let write_half = Arc::new(tokio::sync::Mutex::new(write_half_a));
+        drop(peer); // the peer is gone: the cancel write must fail
+
+        let budget = Arc::new(StreamDetachBudget::new(1_000));
+        let pipeline = DetachPipeline {
+            per_response: Arc::new(tokio::sync::Semaphore::new(100)),
+            per_response_cap: 100,
+            budget: Arc::clone(&budget),
+            cancel: tokio::sync::watch::channel(false).1,
+            abandon_drain: AbandonDrain {
+                max_bytes: 10_000,
+                max_ms: 10_000,
+            },
+        };
+        let (restore_tx, restore_rx) = tokio::sync::oneshot::channel();
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let flag_inner = Arc::clone(&flag);
+
+        let mut drain = tokio::spawn(async move {
+            DenoWorkerProcess::drain_on_abandon(
+                read_half,
+                write_half,
+                &pipeline,
+                restore_tx,
+                flag_inner,
+                done_tx,
+                Duration::from_secs(5),
+                0,
+            )
+            .await
+        });
+
+        let joined = tokio::time::timeout(Duration::from_secs(5), &mut drain).await;
+        assert!(
+            joined.is_ok(),
+            "the drain must exit on the failed cancel write (well under the budget)"
+        );
+        assert!(
+            restore_rx.await.is_err(),
+            "a failed cancel write must NOT restore the read half"
+        );
+        assert!(
+            !flag.load(std::sync::atomic::Ordering::Acquire),
+            "no production-complete flag on a failed cancel write"
+        );
+        assert_eq!(
+            done_rx.await.unwrap(),
+            edger_core::StreamCompletion::Abandoned(edger_core::AbandonedStream::SocketPoisoned),
+            "the completion signal carries the socket_poisoned sub-cause"
+        );
+        let stats = budget.stats();
+        assert_eq!(
+            stats.abandoned_socket_poisoned_total, 1,
+            "the poisoned counter moves"
+        );
+        assert_eq!(
+            stats.abandoned_cancelled_total, 0,
+            "no cancel was acknowledged"
+        );
+    }
+
+    // (EDG-9 slice 2) With the drain DISABLED no cancel frame is written at
+    // all (the pre-slice behavior): the drain reports `socket_poisoned` up
+    // front and the socket stays silent.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn disabled_abandon_drain_writes_no_cancel() {
+        use tokio::io::AsyncReadExt;
+        use tokio::net::UnixStream;
+
+        let (read_end, mut peer) = UnixStream::pair().unwrap();
+        let (read_half, write_half_a) = read_end.into_split();
+        let write_half = Arc::new(tokio::sync::Mutex::new(write_half_a));
+
+        let budget = Arc::new(StreamDetachBudget::new(1_000));
+        let pipeline = DetachPipeline {
+            per_response: Arc::new(tokio::sync::Semaphore::new(100)),
+            per_response_cap: 100,
+            budget: Arc::clone(&budget),
+            cancel: tokio::sync::watch::channel(false).1,
+            // Disabled: `0` in either limit.
+            abandon_drain: AbandonDrain {
+                max_bytes: 0,
+                max_ms: 0,
+            },
+        };
+        let (restore_tx, restore_rx) = tokio::sync::oneshot::channel();
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+
+        let mut drain = tokio::spawn(async move {
+            DenoWorkerProcess::drain_on_abandon(
+                read_half,
+                write_half,
+                &pipeline,
+                restore_tx,
+                flag,
+                done_tx,
+                Duration::from_secs(5),
+                0,
+            )
+            .await
+        });
+
+        let joined = tokio::time::timeout(Duration::from_secs(2), &mut drain).await;
+        assert!(
+            joined.is_ok(),
+            "a disabled drain must return immediately (no write attempt)"
+        );
+        // Nothing may have been written to the socket: the drain task has
+        // exited and dropped its halves (EOF) or the socket is still open
+        // (timeout) — but NO frame may have been delivered.
+        let mut probe = Vec::new();
+        let read_result = tokio::time::timeout(Duration::from_millis(200), peer.read(&mut probe))
+            .await
+            .expect("the bounded probe read finishes");
+        match read_result {
+            // EOF: the drain side closed its halves without writing anything.
+            Ok(0) => {}
+            Ok(n) => panic!("a frame was written with the drain disabled: {n} bytes"),
+            Err(err) => panic!("probe read error: {err}"),
+        }
+        assert!(
+            restore_rx.await.is_err(),
+            "a disabled drain must NOT restore the read half"
+        );
+        assert_eq!(
+            done_rx.await.unwrap(),
+            edger_core::StreamCompletion::Abandoned(edger_core::AbandonedStream::SocketPoisoned),
+            "the completion signal carries the socket_poisoned cause, as before"
+        );
+        let stats = budget.stats();
+        assert_eq!(
+            stats.abandoned_socket_poisoned_total, 1,
+            "the poisoned counter moves"
+        );
+        assert_eq!(stats.abandoned_cancelled_total, 0, "no cancel was written");
+    }
+
     // (EDG-9, amendment 2) Shutdown-handshake classification: the
     // termination report must distinguish "socket not reclaimed" (nothing
     // was sent — `SocketPoisoned`) from "shutdown sent, no ack in time"
@@ -2748,7 +3157,7 @@ mod stream_detach_tests {
         let (_read_a, write_a) = stream_a.into_split();
         let process = DenoWorkerProcess {
             child,
-            write_half: write_a,
+            write_half: Arc::new(tokio::sync::Mutex::new(write_a)),
             read_half,
             restore_rx,
             timeout: Duration::from_secs(5),
@@ -2881,7 +3290,7 @@ mod stream_detach_tests {
         let (read_a, write_a) = stream_a.into_split();
         let process = DenoWorkerProcess {
             child,
-            write_half: write_a,
+            write_half: Arc::new(tokio::sync::Mutex::new(write_a)),
             read_half: Some(read_a),
             restore_rx: None,
             timeout: Duration::from_secs(5),

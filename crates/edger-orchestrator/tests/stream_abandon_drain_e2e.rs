@@ -12,19 +12,35 @@
 //! when the Deno process is respawned, so it proves reuse vs recycle
 //! end-to-end.
 //!
-//! Scenarios:
-//! - an early client disconnect mid-production: the drain finishes within
-//!   the limits, the process is REUSED (x-seq continues) — and this is the
+//! Scenarios (slice 2: the drain writes the CANCEL control frame first —
+//! a harness that answers it ends the response with the cancel end frame,
+//! which is ALSO a clean end):
+//! - an early client disconnect mid-production: the harness answers the
+//!   cancel, the process is REUSED (x-seq continues) — and this is the
 //!   mutation sentinel: a pool that does not wait for the drain, or a
 //!   reader that does not drain, both recycle and reset x-seq;
-//! - a `HEAD` request on the same streaming page: the same drain/reuse;
-//! - an oversized abandoned response: the drain hits the BYTE limit and the
-//!   process is RECYCLED (x-seq resets);
-//! - a slow abandoned response: the drain hits the TIME limit and the
-//!   process is RECYCLED;
-//! - an infinite (SSE) stream: it can never reach `TAG_END`, the drain hits
-//!   the time limit and the process is RECYCLED;
+//! - a `HEAD` request on the same streaming page: the body never
+//!   materializes, the drain is plain (`drained`) and the process is
+//!   reused;
+//! - an oversized abandoned response (a SINGLE chunk > the byte limit; the
+//!   harness writes all its frames before the next socket frame): the
+//!   drain hits the BYTE limit and the process is RECYCLED (x-seq resets);
+//! - a producer that FREEZES its event loop (a synchronous busy-wait
+//!   longer than the time limit — it cannot process the cancel): the
+//!   drain hits the TIME limit and the process is RECYCLED;
+//! - an infinite (SSE) stream: the harness answers the cancel, the
+//!   process is REUSED (x-seq continues);
+//! - an in-stream pull error before the cancel is read (the `E {error}`
+//!   is in flight): the drain stops on the error end and the process is
+//!   RECYCLED (`stream_error`);
 //! - limits `0`: the drain is disabled and the pre-EDG-9 recycle applies.
+//!
+//! The guard scenarios (byte/time limits, `stream_error`) share a
+//! deterministic drain-entry fixture: a burst of 20 × 300 B chunks fills
+//! the 16-slot body channel, the forwarder blocks holding detach-cap
+//! permits, and the reader parks on a reserve — the drop fails the stuck
+//! send (the discard flag is set) and the parked reader wakes and drains
+//! instead of racing the flag.
 //!
 //! Requires `deno` on PATH. Ignored by default; run explicitly.
 
@@ -329,27 +345,34 @@ async fn early_disconnect_drains_and_reuses_the_process() {
     // pool's completion wait; 2 s is a wide margin on local hardware.
     tokio::time::sleep(Duration::from_millis(2_000)).await;
 
-    // The drain must have recorded a clean end within the limits.
+    // (EDG-9 slice 2) The harness ANSWERED the cancel frame: the response
+    // ended with the CANCEL end frame — a clean end, sub-cause
+    // `cancelled` (not a plain `drained`).
     let stats = factory.budget.stats();
     assert!(
-        stats.abandoned_drained_total >= 1,
-        "the drain must have reached a clean end, stats: {stats:?}"
+        stats.abandoned_cancelled_total >= 1,
+        "the harness must have answered the cancel, stats: {stats:?}"
+    );
+    assert_eq!(
+        stats.abandoned_drained_total, 0,
+        "the sub-cause is `cancelled`, not `drained`, stats: {stats:?}"
     );
 
     // (EDG-9) The lifecycle the bin's operational consumer receives must
-    // carry the REUSE reason — not a generic `completed`.
+    // carry the REUSE reason — not a generic `completed` — with the cancel
+    // sub-cause in the detail.
     let drained = lifecycle_event_of(
         &mut lifecycle_rx,
         WorkerLifecycleEventKind::DrainCompleted,
         2_000,
     )
     .await;
-    let drained_ok = drained
-        .as_ref()
-        .is_some_and(|event| event.reason == "stream_abandoned_drained");
+    let drained_ok = drained.as_ref().is_some_and(|event| {
+        event.reason == "stream_abandoned_drained" && event.detail.as_deref() == Some("cancelled")
+    });
     assert!(
         drained_ok,
-        "the lifecycle must show stream_abandoned_drained (reuse), got: {drained:?}"
+        "the lifecycle must show stream_abandoned_drained (reuse) with the cancelled sub-cause, got: {drained:?}"
     );
 
     // C: the SAME process must serve it (module-scope counter, no reset) —
@@ -425,19 +448,22 @@ async fn head_request_drains_and_reuses_the_process() {
     assert_numbered_body(&body_c, 8);
 }
 
-// An oversized abandoned response: the reader's discard mode exceeds the
-// byte limit before the end frame — the socket is left desynced, the drain
-// exits WITHOUT restoring, and the process is RECYCLED (x-seq resets for
-// the next request).
+// An oversized abandoned response: a SINGLE chunk larger than the byte
+// limit — the harness writes every frame of that chunk before reading the
+// next socket frame (the cancel cannot cut it short). The drain crosses
+// the byte limit while discarding it, leaves the socket desynced, and the
+// process is RECYCLED (x-seq resets for the next request).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs deno on PATH; run explicitly"]
 async fn oversized_abandon_recycles_at_the_byte_limit() {
     let root = tempfile::tempdir().unwrap();
-    // 32 x 16 KiB = 512 KiB, 50 ms between chunks (~1.5 s of production).
-    write_stream_worker(root.path(), "oversized-app", 32, 50);
-    // Byte limit: 4 chunks (64 KiB) — the drain must stop after discarding
-    // the first four in-flight chunks, long before the end frame.
-    let factory = DrainFactory::new(8 * 1024 * 1024, 64 * 1024, 5_000);
+    // 20 × 300 B burst (the deterministic drain entry — see the module
+    // docs) plus a single 1 MiB chunk (> the 64 KiB byte limit).
+    write_burst_worker(root.path(), "oversized-app", BurstEnding::Oversized);
+    // 512 B detach cap (the burst makes the reader park on the reserve);
+    // 64 KiB byte limit — crossed by the SINGLE 1 MiB chunk; generous time
+    // limit (the drain stops on the bytes, not the time).
+    let factory = DrainFactory::new(512, 64 * 1024, 5_000);
     let (state, mut lifecycle_rx) =
         state_with_lifecycle(root.path().to_path_buf(), factory.clone());
     let app = build_pipeline(state);
@@ -451,19 +477,27 @@ async fn oversized_abandon_recycles_at_the_byte_limit() {
         .expect("A's first chunk")
         .expect("stream open")
         .expect("chunk ok");
-    assert_eq!(first.len(), CHUNK_BYTES);
+    assert_eq!(first.len(), BURST_CHUNK_BYTES);
 
-    // A disconnects mid-production; the drain discards ~4 chunks and hits
-    // the byte limit.
+    // Let the harness flush the burst, the 1 MiB chunk and the natural end
+    // frame, THEN disconnect: the drain's cancel arrives stale (the
+    // harness's main loop ignores it) and the drain crosses the byte limit
+    // on the in flight 1 MiB chunk.
+    tokio::time::sleep(Duration::from_millis(150)).await;
     drop(body_a);
-    // The drain stops within a few hundred ms; the recycle (process
-    // terminate) follows. 2 s is a wide margin.
+    // The drain stops within a few ms of the drop (the 1 MiB frame is the
+    // last thing to cross the limit); the recycle follows. 2 s is a wide
+    // margin.
     tokio::time::sleep(Duration::from_millis(2_000)).await;
 
     let stats = factory.budget.stats();
     assert!(
         stats.abandoned_drain_bytes_limit_total >= 1,
         "the drain must have stopped at the byte limit, stats: {stats:?}"
+    );
+    assert_eq!(
+        stats.abandoned_cancelled_total, 0,
+        "the stale cancel was ignored — no cancel end, stats: {stats:?}"
     );
     assert_eq!(
         stats.abandoned_drained_total, 0,
@@ -490,7 +524,8 @@ async fn oversized_abandon_recycles_at_the_byte_limit() {
         "the recycle must show the socket_poisoned reason with the bytes_limit sub-cause, got: {terminated:?}"
     );
 
-    // C: a FRESH process must serve it (x-seq reset to 1).
+    // C: a FRESH process must serve it (x-seq reset to 1) — burst + the
+    // huge chunk.
     let res_c = send(app, "/oversized-app").await;
     assert_eq!(res_c.status(), StatusCode::OK);
     assert_eq!(
@@ -498,31 +533,45 @@ async fn oversized_abandon_recycles_at_the_byte_limit() {
         "1",
         "x-seq must reset: the process was recycled at the byte limit"
     );
-    let body_c = axum::body::to_bytes(res_c.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    assert_numbered_body(&body_c, 32);
+    let body_c = tokio::time::timeout(
+        Duration::from_secs(15),
+        axum::body::to_bytes(res_c.into_body(), usize::MAX),
+    )
+    .await
+    .expect("C's full body within 15s")
+    .unwrap();
+    assert_eq!(
+        body_c.len(),
+        BURST_CHUNKS * BURST_CHUNK_BYTES + HUGE_CHUNK_BYTES,
+        "burst + the huge chunk"
+    );
+    let huge_start = BURST_CHUNKS * BURST_CHUNK_BYTES;
+    assert!(
+        body_c[huge_start..huge_start + 4]
+            .iter()
+            .all(|&b| b == 0x4f),
+        "the huge chunk payload intact"
+    );
 }
 
-// A slow abandoned response: the byte limit is generous, but the reader
-// cannot reach the end frame within the time limit — the drain exits at the
-// deadline WITHOUT restoring, and the process is RECYCLED.
+// A producer that CANNOT process the cancel before the time limit: after
+// flushing the burst it blocks the EVENT LOOP with a synchronous busy-wait
+// longer than the drain budget — the harness cannot even READ the cancel
+// frame the drain writes. The drain's frame reads stall until the budget is
+// exhausted (`drain_time_limit`), the socket is left desynced, and the
+// process is RECYCLED.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs deno on PATH; run explicitly"]
 async fn slow_abandon_recycles_at_the_time_limit() {
     let root = tempfile::tempdir().unwrap();
-    // 32 x 16 KiB, 200 ms between chunks: ~6.4 s of production — long past
-    // the 300 ms drain budget (the REAL slow-producer case). With a 200 ms
-    // frame interval the reader can enter the drain up to one frame after
-    // the disconnect, so its report lands ~500–700 ms after the drop —
-    // right around the pool's relay wait (300 ms budget + 250 ms grace =
-    // 550 ms): the wait may resolve with the reader's `time_limit` cause OR
-    // EXPIRE first. Both are correct outcomes — the sub-cause must be one of
-    // them, NEVER `None` (an expired wait is the explicit `relay_timeout`).
-    write_stream_worker(root.path(), "slow-app", 32, 200);
-    // Byte limit far above the response; time limit 300 ms: the drain stops
-    // at the deadline, well before the ~1.6 s end frame.
-    let factory = DrainFactory::new(8 * 1024 * 1024, 8 * 1024 * 1024, 300);
+    // Burst + a 4 s synchronous busy-wait (>> the 500 ms drain budget AND
+    // the 750 ms relay wait): the harness event loop is frozen before the
+    // drain writes the cancel.
+    write_burst_worker(root.path(), "slow-app", BurstEnding::Freezes);
+    // 512 B detach cap (the burst makes the reader park on the reserve);
+    // generous byte limit; 500 ms time limit — the frozen harness answers
+    // nothing, so the drain runs out the budget.
+    let factory = DrainFactory::new(512, 8 * 1024 * 1024, 500);
     let (state, mut lifecycle_rx) =
         state_with_lifecycle(root.path().to_path_buf(), factory.clone());
     let app = build_pipeline(state);
@@ -536,16 +585,26 @@ async fn slow_abandon_recycles_at_the_time_limit() {
         .expect("A's first chunk")
         .expect("stream open")
         .expect("chunk ok");
-    assert_eq!(first.len(), CHUNK_BYTES);
+    assert_eq!(first.len(), BURST_CHUNK_BYTES);
 
-    drop(body_a); // A disconnects mid-production
-                  // The drain stops at ~300 ms; the recycle follows.
-    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    // Wait for the busy-wait to start (it begins 100 ms after the burst and
+    // lasts 4 s) and freeze the harness event loop — THEN disconnect: the
+    // drain's cancel is written into the kernel buffer but the frozen
+    // harness never reads or answers it.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(body_a);
+    // The drain runs out its 500 ms budget on the stalled reads; the
+    // recycle follows. 2 s is a wide margin.
+    tokio::time::sleep(Duration::from_millis(2_000)).await;
 
     let stats = factory.budget.stats();
     assert!(
         stats.abandoned_drain_time_limit_total >= 1,
         "the drain must have stopped at the time limit, stats: {stats:?}"
+    );
+    assert_eq!(
+        stats.abandoned_cancelled_total, 0,
+        "the frozen harness never processed the cancel, stats: {stats:?}"
     );
     assert_eq!(
         stats.abandoned_drained_total, 0,
@@ -555,7 +614,8 @@ async fn slow_abandon_recycles_at_the_time_limit() {
     // (EDG-9, amendment 2) The recycle reason AND a REAL sub-cause must
     // reach the lifecycle: the reader's `time_limit` cause when the relay
     // resolves in time, or the pool's explicit `relay_timeout` when the
-    // wait expired first — never `None`.
+    // wait (500 ms budget + 250 ms grace) expired first — never `None`.
+    // The STATS counter above is the strict sub-cause evidence.
     let terminated = lifecycle_event_of(
         &mut lifecycle_rx,
         WorkerLifecycleEventKind::Terminated,
@@ -574,6 +634,9 @@ async fn slow_abandon_recycles_at_the_time_limit() {
         "the recycle must show the socket_poisoned reason with the time_limit or relay_timeout sub-cause, got: {terminated:?}"
     );
 
+    // C: a FRESH process must serve it (x-seq reset to 1). The fresh
+    // process runs the same fixture: the burst is instant, then its 4 s
+    // event-loop freeze delays the end frame — bound the read.
     let res_c = send(app, "/slow-app").await;
     assert_eq!(res_c.status(), StatusCode::OK);
     assert_eq!(
@@ -581,24 +644,36 @@ async fn slow_abandon_recycles_at_the_time_limit() {
         "1",
         "x-seq must reset: the process was recycled at the time limit"
     );
-    let body_c = axum::body::to_bytes(res_c.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    assert_numbered_body(&body_c, 32);
+    let body_c = tokio::time::timeout(
+        Duration::from_secs(15),
+        axum::body::to_bytes(res_c.into_body(), usize::MAX),
+    )
+    .await
+    .expect("C's full body within 15s (the 4 s event-loop freeze included)")
+    .unwrap();
+    assert_eq!(
+        body_c.len(),
+        BURST_CHUNKS * BURST_CHUNK_BYTES,
+        "the full burst on the fresh process"
+    );
+    assert_eq!(body_c.first(), Some(&0), "chunk 0 first");
 }
 
-// An infinite (SSE) stream can never reach `TAG_END`: the abandon drain
-// always stops at its time limit and the process is RECYCLED. (This is why
-// the limits exist — SSE disconnects keep recycling, by design, until the
-// stream is finite or the operator raises the limits.)
+// An infinite (SSE) stream: with slice 2 the drain writes the CANCEL frame
+// and the harness ANSWERS it (amendment 1) — the infinite body is aborted
+// and the response ends with the cancel end frame: a CLEAN end. The socket
+// is in sync, the process is REUSED. (The time limit is no longer the
+// outcome — it stays as a guard for harnesses that cannot answer in time;
+// see `slow_abandon_recycles_at_the_time_limit`.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs deno on PATH; run explicitly"]
-async fn sse_abandon_recycles_at_the_time_limit() {
+async fn sse_abandon_is_cancelled_and_reuses_the_process() {
     let root = tempfile::tempdir().unwrap();
     write_sse_worker(root.path(), "sse-app");
-    // Generous byte limit; 300 ms time limit: an infinite stream can never
-    // finish in time.
-    let factory = DrainFactory::new(8 * 1024 * 1024, 8 * 1024 * 1024, 300);
+    // Generous byte limit; generous time limit too: the point is the
+    // cancel, not the limit (the relay wait = limit + 250 ms grace must
+    // comfortably outlast the cancel round-trip).
+    let factory = DrainFactory::new(8 * 1024 * 1024, 8 * 1024 * 1024, 2_000);
     let (state, mut lifecycle_rx) =
         state_with_lifecycle(root.path().to_path_buf(), factory.clone());
     let app = build_pipeline(state);
@@ -614,44 +689,56 @@ async fn sse_abandon_recycles_at_the_time_limit() {
         .expect("chunk ok");
     assert!(String::from_utf8_lossy(&first).contains("tick-0"));
 
-    drop(body_a); // A disconnects; the stream never ends
-                  // The drain stops at ~300 ms; the recycle follows.
+    drop(body_a); // A disconnects; the stream never ends on its own
+                  // The drain writes the cancel as the next frames flow; the harness
+                  // aborts the body and ends with the cancel end frame. 1.5 s is a wide
+                  // margin.
     tokio::time::sleep(Duration::from_millis(1_500)).await;
 
     let stats = factory.budget.stats();
     assert!(
-        stats.abandoned_drain_time_limit_total >= 1,
-        "the drain of an infinite stream must stop at the time limit, stats: {stats:?}"
+        stats.abandoned_cancelled_total >= 1,
+        "the harness must have answered the cancel, stats: {stats:?}"
+    );
+    assert_eq!(
+        stats.abandoned_drained_total, 0,
+        "the sub-cause is `cancelled`, not `drained`, stats: {stats:?}"
+    );
+    assert_eq!(
+        stats.abandoned_drain_time_limit_total, 0,
+        "the cancel answered before the time limit, stats: {stats:?}"
     );
 
-    // (EDG-9, amendment 2) A REAL sub-cause must reach the lifecycle: the
-    // reader's `time_limit` cause when the relay resolves in time, or the
-    // pool's explicit `relay_timeout` when the wait expired first — never
-    // `None`.
-    let terminated = lifecycle_event_of(
+    // (EDG-9 slice 2) The REUSE reason must reach the lifecycle — with the
+    // cancel sub-cause in the detail — NOT a termination.
+    let drained = lifecycle_event_of(
         &mut lifecycle_rx,
-        WorkerLifecycleEventKind::Terminated,
+        WorkerLifecycleEventKind::DrainCompleted,
         2_000,
     )
     .await;
-    let terminated_ok = terminated.as_ref().is_some_and(|event| {
-        event.reason == "socket_poisoned"
-            && matches!(
-                event.detail.as_deref(),
-                Some("time_limit") | Some("relay_timeout")
-            )
+    let drained_ok = drained.as_ref().is_some_and(|event| {
+        event.reason == "stream_abandoned_drained" && event.detail.as_deref() == Some("cancelled")
     });
     assert!(
-        terminated_ok,
-        "the recycle must show the socket_poisoned reason with the time_limit or relay_timeout sub-cause, got: {terminated:?}"
+        drained_ok,
+        "the lifecycle must show stream_abandoned_drained (reuse) with the cancelled sub-cause, got: {drained:?}"
     );
 
+    // The SAME process must serve the next request (x-seq continues — no
+    // cold start).
+    let c_started = Instant::now();
     let res_c = send(app, "/sse-app").await;
     assert_eq!(res_c.status(), StatusCode::OK);
     assert_eq!(
         res_c.headers().get("x-seq").unwrap(),
-        "1",
-        "x-seq must reset: the infinite stream was recycled at the time limit"
+        "2",
+        "x-seq must not reset: the SSE stream was cancelled and the process reused"
+    );
+    assert!(
+        c_started.elapsed() < Duration::from_millis(5_000),
+        "C was served by the warm process, took {:?}",
+        c_started.elapsed()
     );
 }
 
@@ -724,10 +811,88 @@ async fn disabled_drain_recycles_as_before() {
     assert_numbered_body(&body_c, 8);
 }
 
-/// Worker whose body ERRORS MID-STREAM after a few chunks: the harness
-/// turns the body error into a `TAG_END` carrying an error, which the
-/// abandon drain reports as `stream_error`.
-fn write_error_mid_stream_worker(root: &std::path::Path, name: &str) {
+/// (EDG-9 slice 2) The fixture workers for the GUARD scenarios: a burst of
+/// `BURST_CHUNKS` × `BURST_CHUNK_BYTES` (300 B) chunks — enough to fill the
+/// 16-slot body channel so the forwarder blocks holding detach-cap permits
+/// and the READER PARKS ON A RESERVE — followed by one of three endings:
+///   * `Freezes`: the event loop is frozen with a SYNCHRONOUS busy-wait
+///     longer than the drain's time limit right after the burst — the
+///     harness cannot even read the cancel frame the drain writes
+///     (`drain_time_limit`);
+///   * `Oversized`: a SINGLE chunk larger than the drain byte limit — the
+///     harness writes every frame of it before reading the next socket
+///     frame (the cancel cannot cut it short; `drain_bytes_limit`);
+///   * `Errors`: the body stream errors right after the burst — the
+///     `E {error}` end frame is already in flight when the cancel arrives
+///     (`stream_error`).
+/// The burst makes the drain entry DETERMINISTIC: the test drops the
+/// response, the forwarder's stuck send fails (the discard flag is set) and
+/// the parked reader wakes and drains instead of racing the flag.
+const BURST_CHUNKS: usize = 20;
+const BURST_CHUNK_BYTES: usize = 300;
+const HUGE_CHUNK_BYTES: usize = 1024 * 1024;
+
+enum BurstEnding {
+    /// Freeze the event loop (busy-wait) after the burst.
+    Freezes,
+    /// Enqueue a single 1 MiB chunk after the burst, then close.
+    Oversized,
+    /// Fail the PULL right after the burst (an in-stream body error).
+    Errors,
+}
+
+fn write_burst_worker(root: &std::path::Path, name: &str, ending: BurstEnding) {
+    // The burst loop shared by all endings.
+    let burst = format!(
+        r#"      for (let i = 0; i < {chunks}; i++) {{
+        const chunk = new Uint8Array({size}).fill(0x79);
+        chunk[0] = i;
+        c.enqueue(chunk);
+      }}"#,
+        chunks = BURST_CHUNKS,
+        size = BURST_CHUNK_BYTES,
+    );
+    let source = match ending {
+        // Let the harness flush the burst to the socket, then block the
+        // EVENT LOOP synchronously for 4 s — longer than the drain's time
+        // budget AND the pool's relay wait: the harness cannot read (let
+        // alone answer) the cancel frame the drain writes.
+        BurstEnding::Freezes => format!(
+            r#"    async start(c) {{
+{burst}
+      await new Promise((r) => setTimeout(r, 100));
+      const t0 = performance.now();
+      while (performance.now() - t0 < 4000) {{}}
+      c.close();
+    }}"#,
+            burst = burst
+        ),
+        // A SINGLE chunk larger than the drain byte limit. The harness
+        // writes all its frames before reading the next socket frame.
+        BurstEnding::Oversized => format!(
+            r#"    start(c) {{
+{burst}
+      c.enqueue(new Uint8Array({huge}).fill(0x4f));
+      c.close();
+    }}"#,
+            burst = burst,
+            huge = HUGE_CHUNK_BYTES
+        ),
+        // The pull FAILS: the error happens on the pull after the burst is
+        // drained, so the `E {error}` end frame is in flight before the
+        // drain's cancel arrives. (A `c.error()` inside `start` would
+        // reject the ReadableStream construction itself — the harness
+        // would see a handler error, not an in-stream body error.)
+        BurstEnding::Errors => format!(
+            r#"    start(c) {{
+{burst}
+    }},
+    pull(c) {{
+      c.error(new Error("in-stream pull failure"));
+    }}"#,
+            burst = burst
+        ),
+    };
     let dir = root.join(name);
     fs::create_dir_all(&dir).unwrap();
     fs::write(
@@ -741,44 +906,36 @@ fn write_error_mid_stream_worker(root: &std::path::Path, name: &str) {
         dir.join("index.ts"),
         format!(
             r#"let seq = 0;
-const CHUNK_BYTES = {chunk_bytes};
 Deno.serve(() => {{
   seq += 1;
   const stream = new ReadableStream({{
-    async start(c) {{
-      for (let i = 0; i < 4; i++) {{
-        const chunk = new Uint8Array(CHUNK_BYTES).fill(0x78);
-        chunk[0] = i;
-        c.enqueue(chunk);
-        await new Promise((r) => setTimeout(r, 80));
-      }}
-      // Production fails mid-stream: the harness reports it in the end
-      // frame, which the abandon drain must stop on.
-      c.error(new Error("boom mid-stream"));
-    }},
+{source}
   }});
   return new Response(stream, {{
-    headers: {{ "content-type": "text/plain", "x-seq": String(seq) }},
+    headers: {{ "content-type": "application/octet-stream", "x-seq": String(seq) }},
   }});
 }});
 "#,
-            chunk_bytes = CHUNK_BYTES,
+            source = source,
         ),
     )
     .unwrap();
 }
 
-// The worker's stream errors mid-production AND the client disconnects:
-// the abandon drain runs, reads the error end frame, and recycles with the
-// `stream_error` sub-cause on the lifecycle.
+// The stream FAILS before the cancel is read: the burst is flushed and the
+// pull errors immediately, so the `E {error}` frame is in flight when the
+// drop (and the drain's cancel) arrive. The harness's main loop ignores the
+// STALE cancel, the drain reads the error end frame, and the process is
+// RECYCLED with the `stream_error` sub-cause.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs deno on PATH; run explicitly"]
 async fn error_during_drain_recycles_with_the_stream_error_cause() {
     let root = tempfile::tempdir().unwrap();
-    write_error_mid_stream_worker(root.path(), "error-app");
-    // Generous limits: the drain must stop on the ERROR end frame, not on
-    // a limit.
-    let factory = DrainFactory::new(8 * 1024 * 1024, 8 * 1024 * 1024, 5_000);
+    write_burst_worker(root.path(), "error-app", BurstEnding::Errors);
+    // 512 B detach cap (the burst makes the reader park on the reserve);
+    // generous byte/time limits: the drain must stop on the ERROR end
+    // frame, not on a limit.
+    let factory = DrainFactory::new(512, 8 * 1024 * 1024, 5_000);
     let (state, mut lifecycle_rx) =
         state_with_lifecycle(root.path().to_path_buf(), factory.clone());
     let app = build_pipeline(state);
@@ -792,10 +949,12 @@ async fn error_during_drain_recycles_with_the_stream_error_cause() {
         .expect("A's first chunk")
         .expect("stream open")
         .expect("chunk ok");
-    assert_eq!(first.len(), CHUNK_BYTES);
+    assert_eq!(first.len(), BURST_CHUNK_BYTES);
 
-    // A disconnects while the worker is still producing; the worker then
-    // errors mid-stream and the drain stops on the error end frame.
+    // Let the harness flush the burst AND the error end frame (in flight),
+    // THEN disconnect: the drain's cancel is stale (the main loop ignores
+    // it) and the drain stops on the in flight `E {error}`.
+    tokio::time::sleep(Duration::from_millis(150)).await;
     drop(body_a);
     tokio::time::sleep(Duration::from_millis(2_000)).await;
 
@@ -803,6 +962,14 @@ async fn error_during_drain_recycles_with_the_stream_error_cause() {
     assert!(
         stats.abandoned_drain_stream_error_total >= 1,
         "the drain must have stopped on the error end frame, stats: {stats:?}"
+    );
+    assert_eq!(
+        stats.abandoned_cancelled_total, 0,
+        "the stale cancel was ignored — no cancel end, stats: {stats:?}"
+    );
+    assert_eq!(
+        stats.abandoned_drained_total, 0,
+        "an error drain must not count as a clean drain"
     );
 
     // (EDG-9, amendment 2) The stream_error sub-cause must reach the

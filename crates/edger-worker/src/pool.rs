@@ -109,6 +109,10 @@ fn abandoned_detail(cause: AbandonedStream) -> &'static str {
         AbandonedStream::BytesLimit => "bytes_limit",
         AbandonedStream::TimeLimit => "time_limit",
         AbandonedStream::StreamError => "stream_error",
+        // (EDG-9 slice 2) The harness acknowledged the cancel control
+        // frame: a CLEAN end (the process is reused), carried into the
+        // lifecycle detail of the `stream_abandoned_drained` completion.
+        AbandonedStream::Cancelled => "cancelled",
         // Synthesized by the pool (never reported by the reader): the
         // bounded wait for the drain result expired before the reader
         // reported anything — an explicit, known outcome (EDG-9).
@@ -1656,13 +1660,30 @@ fn finish_stream_state(
                     Ok(result) => result.ok(),
                     Err(_) => None,
                 };
-                let drained = outcome
-                    .as_ref()
-                    .is_some_and(|outcome| matches!(outcome, StreamCompletion::Completed));
+                let drained = outcome.as_ref().is_some_and(|outcome| {
+                    matches!(
+                        outcome,
+                        StreamCompletion::Completed
+                            // (EDG-9 slice 2) The cancel end is ALSO a
+                            // clean end: the harness aborted the body,
+                            // restored the socket and the process is
+                            // reused, exactly like a drained clean end.
+                            | StreamCompletion::Abandoned(AbandonedStream::Cancelled)
+                    )
+                });
                 if drained {
                     // Register the real termination reason (EDG-9) and run
                     // the normal completion: the instance goes Idle and the
                     // slot is released — the process is reused.
+                    // (EDG-9 slice 2) The cancel end carries its sub-cause
+                    // into the lifecycle detail (and, via it, the
+                    // operational event); a plain drained end carries none.
+                    let detail = outcome.as_ref().and_then(|outcome| match outcome {
+                        StreamCompletion::Abandoned(AbandonedStream::Cancelled) => {
+                            Some("cancelled")
+                        }
+                        _ => None,
+                    });
                     emit_lifecycle(
                         state.pool.inner.lifecycle_events.as_ref(),
                         WorkerLifecycleEvent {
@@ -1672,7 +1693,7 @@ fn finish_stream_state(
                             drained_count: None,
                             duration_ms: Some(started.elapsed().as_millis() as u64),
                             reason: "stream_abandoned_drained",
-                            detail: None,
+                            detail,
                         },
                     );
                     complete_stream_state(state).await;
