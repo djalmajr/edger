@@ -2809,11 +2809,11 @@ mod stream_detach_tests {
         let mut frame1 = vec![0u8; 4];
         frame1[..4].copy_from_slice(&((100 + 1) as u32).to_le_bytes());
         frame1.push(TAG_CHUNK);
-        frame1.extend(std::iter::repeat(0x78u8).take(100));
+        frame1.extend(std::iter::repeat_n(0x78u8, 100));
         let mut frame2 = vec![0u8; 4];
         frame2[..4].copy_from_slice(&((200 + 1) as u32).to_le_bytes());
         frame2.push(TAG_CHUNK);
-        frame2.extend(std::iter::repeat(0x79u8).take(200));
+        frame2.extend(std::iter::repeat_n(0x79u8, 200));
         let end_payload: &[u8] = &[TAG_END, b'{', b'}'];
         let mut frame3 = vec![0u8; 4];
         frame3[..4].copy_from_slice(&(end_payload.len() as u32).to_le_bytes());

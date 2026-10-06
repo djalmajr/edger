@@ -296,7 +296,8 @@ async fn send_head(app: Router, uri: &str) -> axum::http::Response<Body> {
 /// the rest is 0x78, in exact order.
 fn assert_numbered_body(body: &[u8], chunks: usize) {
     assert_eq!(body.len(), chunks * CHUNK_BYTES, "full body length");
-    for (i, chunk) in body.chunks_exact(CHUNK_BYTES).enumerate() {
+    let (numbered_chunks, _rest) = body.as_chunks::<CHUNK_BYTES>();
+    for (i, chunk) in numbered_chunks.iter().enumerate() {
         assert_eq!(chunk[0], i as u8, "chunk {i} out of order");
         assert!(
             chunk[1..].iter().all(|&byte| byte == 0x78),
@@ -368,7 +369,7 @@ async fn early_disconnect_drains_and_reuses_the_process() {
     )
     .await;
     let drained_ok = drained.as_ref().is_some_and(|event| {
-        event.reason == "stream_abandoned_drained" && event.detail.as_deref() == Some("cancelled")
+        event.reason == "stream_abandoned_drained" && event.detail == Some("cancelled")
     });
     assert!(
         drained_ok,
@@ -517,7 +518,7 @@ async fn oversized_abandon_recycles_at_the_byte_limit() {
     )
     .await;
     let terminated_ok = terminated.as_ref().is_some_and(|event| {
-        event.reason == "socket_poisoned" && event.detail.as_deref() == Some("bytes_limit")
+        event.reason == "socket_poisoned" && event.detail == Some("bytes_limit")
     });
     assert!(
         terminated_ok,
@@ -624,10 +625,7 @@ async fn slow_abandon_recycles_at_the_time_limit() {
     .await;
     let terminated_ok = terminated.as_ref().is_some_and(|event| {
         event.reason == "socket_poisoned"
-            && matches!(
-                event.detail.as_deref(),
-                Some("time_limit") | Some("relay_timeout")
-            )
+            && matches!(event.detail, Some("time_limit") | Some("relay_timeout"))
     });
     assert!(
         terminated_ok,
@@ -718,7 +716,7 @@ async fn sse_abandon_is_cancelled_and_reuses_the_process() {
     )
     .await;
     let drained_ok = drained.as_ref().is_some_and(|event| {
-        event.reason == "stream_abandoned_drained" && event.detail.as_deref() == Some("cancelled")
+        event.reason == "stream_abandoned_drained" && event.detail == Some("cancelled")
     });
     assert!(
         drained_ok,
@@ -791,7 +789,7 @@ async fn disabled_drain_recycles_as_before() {
     )
     .await;
     let terminated_ok = terminated.as_ref().is_some_and(|event| {
-        event.reason == "socket_poisoned" && event.detail.as_deref() == Some("socket_poisoned")
+        event.reason == "socket_poisoned" && event.detail == Some("socket_poisoned")
     });
     assert!(
         terminated_ok,
@@ -825,6 +823,7 @@ async fn disabled_drain_recycles_as_before() {
 ///   * `Errors`: the body stream errors right after the burst — the
 ///     `E {error}` end frame is already in flight when the cancel arrives
 ///     (`stream_error`).
+///
 /// The burst makes the drain entry DETERMINISTIC: the test drops the
 /// response, the forwarder's stuck send fails (the discard flag is set) and
 /// the parked reader wakes and drains instead of racing the flag.
@@ -984,7 +983,7 @@ async fn error_during_drain_recycles_with_the_stream_error_cause() {
     )
     .await;
     let terminated_ok = terminated.as_ref().is_some_and(|event| {
-        event.reason == "socket_poisoned" && event.detail.as_deref() == Some("stream_error")
+        event.reason == "socket_poisoned" && event.detail == Some("stream_error")
     });
     assert!(
         terminated_ok,

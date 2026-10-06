@@ -169,7 +169,8 @@ fn spa_files() -> Vec<(&'static str, Vec<u8>)> {
     vec![
         (
             "manifest.yaml",
-            format!("name: spa4\nversion: \"1.0.0\"\nentrypoint: index.html\nkind: static\n")
+            "name: spa4\nversion: \"1.0.0\"\nentrypoint: index.html\nkind: static\n"
+                .to_string()
                 .into_bytes(),
         ),
         (

@@ -350,7 +350,7 @@ async fn infinite_sse_abandon_cancels_and_reuses_the_process() {
     )
     .await;
     let drained_ok = drained.as_ref().is_some_and(|event| {
-        event.reason == "stream_abandoned_drained" && event.detail.as_deref() == Some("cancelled")
+        event.reason == "stream_abandoned_drained" && event.detail == Some("cancelled")
     });
     assert!(
         drained_ok,
@@ -468,7 +468,7 @@ Deno.serve((req) => {
     assert!(
         drained
             .as_ref()
-            .is_some_and(|event| event.detail.as_deref() == Some("cancelled")),
+            .is_some_and(|event| event.detail == Some("cancelled")),
         "the lifecycle must carry the cancelled sub-cause, got: {drained:?}"
     );
 
@@ -573,7 +573,7 @@ Deno.serve(() => {
     assert!(
         drained
             .as_ref()
-            .is_some_and(|event| event.detail.as_deref() == Some("cancelled")),
+            .is_some_and(|event| event.detail == Some("cancelled")),
         "the lifecycle must carry the cancelled sub-cause, got: {drained:?}"
     );
 
@@ -807,7 +807,7 @@ async fn disabled_drain_recycles_without_cancel() {
     )
     .await;
     let terminated_ok = terminated.as_ref().is_some_and(|event| {
-        event.reason == "socket_poisoned" && event.detail.as_deref() == Some("socket_poisoned")
+        event.reason == "socket_poisoned" && event.detail == Some("socket_poisoned")
     });
     assert!(
         terminated_ok,

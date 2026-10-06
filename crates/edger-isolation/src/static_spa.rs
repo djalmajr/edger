@@ -564,7 +564,7 @@ mod tests {
             vec![
                 ("content-type".into(), "text/css; charset=utf-8".into()),
                 ("cache-control".into(), "public, max-age=300".into()),
-                ("etag".into(), weak_etag(b"body{}").into()),
+                ("etag".into(), weak_etag(b"body{}")),
             ]
         );
         assert_eq!(css.body.unwrap().as_ref(), b"body{}");
