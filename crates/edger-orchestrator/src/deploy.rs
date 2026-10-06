@@ -243,6 +243,11 @@ pub struct InstalledWorker {
     pub release: String,
     pub health: String,
     pub activation: String,
+    /// (EDG-12) `"scheduled"` when the install left the version active and
+    /// its `minProcesses` floor prewarm was queued in the background;
+    /// `"not_configured"` when the version is inactive, has
+    /// `minProcesses == 0`, or uses a backend without a process.
+    pub prewarm: String,
     pub default_version: String,
     pub revision: String,
     pub staged: bool,
@@ -568,6 +573,7 @@ pub fn install_worker_from_zip(
             release: "pending".into(),
             health: "pending".into(),
             activation: "indexed".into(),
+            prewarm: "not_configured".into(),
             default_version: String::new(),
             revision,
             staged,

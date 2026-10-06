@@ -14,9 +14,8 @@ use edger_core::admin::UpdateApiKeyPermissionsRequest;
 use edger_core::{
     principal_can_access_worker, principal_has_permission, require_same_origin, root_principal,
     AdminApiKeysResponse, AdminCatalogItem, AdminCatalogResponse, AdminErrorResponse,
-    AdminMutationResponse, AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse,
-    ApiKeyPrincipal, CoreError, CreateApiKeyRequest, SerializedRequest, WorkerOrigin,
-    WorkerVisibility,
+    AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse, ApiKeyPrincipal, CoreError,
+    CreateApiKeyRequest, SerializedRequest, WorkerOrigin, WorkerVisibility,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -897,6 +896,96 @@ struct InstallWorkerQuery {
     staged: bool,
 }
 
+/// (EDG-12) Queue the background `minProcesses` prewarm for a version that
+/// install/promote/enable just left active. The API response never waits for
+/// the prewarm; its outcome lands in the operational events in the same
+/// envelope as the rescan prewarm, with the worker, version and how many
+/// instances were created. A failed attempt records a `warn` event and does
+/// not retry (EDG-10 floor replenishment semantics). Returns the `prewarm`
+/// response field: `"scheduled"` when the prewarm was queued,
+/// `"not_configured"` when the version is inactive, has `minProcesses == 0`,
+/// or uses a backend without a process.
+fn schedule_min_process_prewarm(
+    state: &OrchestratorState,
+    name: &str,
+    version: &str,
+) -> &'static str {
+    let Some(worker) = state
+        .index
+        .worker_refs()
+        .into_iter()
+        .find(|worker| worker.name == name && worker.version == version)
+    else {
+        return "not_configured";
+    };
+    if !worker.config.enabled
+        || worker.config.min_processes == 0
+        || !worker.kind.uses_process_backend()
+    {
+        return "not_configured";
+    }
+    let pool = state.pool.clone();
+    let events = state.server.operational_events();
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        match pool.prewarm_worker(&worker).await {
+            Ok(created) => {
+                events.record(prewarm_event_input(
+                    &worker,
+                    crate::observability::OperationalEventLevel::Info,
+                    "completed",
+                    format!("prewarmed {created} process(es) for the min-processes floor"),
+                    Some(started.elapsed().as_millis().max(1) as u64),
+                ));
+            }
+            Err(error) => {
+                events.record(prewarm_event_input(
+                    &worker,
+                    crate::observability::OperationalEventLevel::Warn,
+                    "failed",
+                    format!("min-processes prewarm failed: {error}"),
+                    Some(started.elapsed().as_millis().max(1) as u64),
+                ));
+            }
+        }
+    });
+    "scheduled"
+}
+
+/// Operational event for a post-activation `minProcesses` prewarm (EDG-12),
+/// in the same envelope as the rescan prewarm/release events: source, kind,
+/// worker, version, outcome and duration; the created count rides in the
+/// message.
+fn prewarm_event_input(
+    worker: &edger_core::WorkerRef,
+    level: crate::observability::OperationalEventLevel,
+    outcome: &str,
+    message: String,
+    duration_ms: Option<u64>,
+) -> crate::observability::OperationalEventInput {
+    crate::observability::OperationalEventInput {
+        source: crate::observability::OperationalEventSource::Orchestrator,
+        kind: "worker.prewarm".into(),
+        level,
+        namespace: worker.namespace.clone(),
+        worker: Some(worker.name.clone()),
+        version: Some(worker.version.clone()),
+        process_id: None,
+        request_id: None,
+        trace_id: None,
+        outcome: Some(outcome.into()),
+        status: None,
+        duration_ms,
+        code: None,
+        message: Some(message),
+        truncated: None,
+        dropped_count: None,
+        method: None,
+        path: None,
+        content_type: None,
+    }
+}
+
 async fn install_worker(
     State(state): State<OrchestratorState>,
     headers: HeaderMap,
@@ -1011,6 +1100,15 @@ async fn install_worker(
             .resolve_public_worker(&transaction.installed.name, None)
             .map(|worker| worker.version)
             .unwrap_or_default();
+        // (EDG-12) prewarm the min-processes floor in the background after
+        // the version is active and the replaced old processes are recycled
+        // — the response never waits for it.
+        transaction.installed.prewarm = schedule_min_process_prewarm(
+            &state,
+            &transaction.installed.name,
+            &transaction.installed.version,
+        )
+        .into();
         let installed = commit_install(transaction)?;
         Ok((installed, replaced_existing))
     }
@@ -1129,12 +1227,16 @@ async fn promote_worker(
             )
         })?;
         let worker = persist_default_version(&state.index, &name, &version)?;
+        // (EDG-12) prewarm the promoted version's min-processes floor in the
+        // background; the response never waits for it.
+        let prewarm = schedule_min_process_prewarm(&state, &worker.name, &worker.version);
         Ok(json!({
             "name": worker.name,
             "version": worker.version,
             "defaultVersion": worker.version,
             "eligibleVersions": eligible,
             "status": "promoted",
+            "prewarm": prewarm,
         }))
     }
     .await;
@@ -1710,15 +1812,23 @@ async fn worker_mutation(
             .index
             .set_worker_enabled(&name, version.as_deref(), enabled)
     }) {
-        Ok(worker) => Json(AdminMutationResponse {
-            code: "OK".into(),
-            message: format!(
-                "worker {}@{} {}",
-                worker.name, worker.version, worker.status
-            ),
-            status: worker.status,
-        })
-        .into_response(),
+        Ok(worker) => {
+            // (EDG-12) enable prewarms the min-processes floor in the
+            // background; disable never prewarms (the version is inactive,
+            // so the helper reports `not_configured`). The response never
+            // waits for the prewarm.
+            let prewarm = schedule_min_process_prewarm(&state, &worker.name, &worker.version);
+            Json(json!({
+                "code": "OK",
+                "message": format!(
+                    "worker {}@{} {}",
+                    worker.name, worker.version, worker.status
+                ),
+                "status": worker.status,
+                "prewarm": prewarm,
+            }))
+            .into_response()
+        }
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
 }
