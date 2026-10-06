@@ -4,8 +4,10 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.10` (dispatch telemetry visible
-in production logs); `v0.3.2-rc.9` (abandoned streams drained
+Toward 0.3.2. Release candidates: `v0.3.2-rc.11` (abandoned streams cancelled
+in the worker, precompressed assets, configurable compression, per-worker
+request metrics, minProcesses kept as a floor); `v0.3.2-rc.10` (dispatch
+telemetry visible in production logs); `v0.3.2-rc.9` (abandoned streams drained
 instead of killing the worker process); `v0.3.2-rc.8` (worker slot released when
 a streamed response is fully produced); `v0.3.2-rc.7` (compressed app responses,
 static asset revalidation, wasmtime security patch); `v0.3.2-rc.6` (cPanel
@@ -205,6 +207,30 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.11]
+
+- An abandoned streamed response (client disconnect, `HEAD`, fetch abort) is
+  cancelled inside the worker: the harness aborts `request.signal`, cancels the
+  body and ends the response, so infinite SSE streams no longer recycle the Deno
+  process. The new `cancelled` outcome shows in the lifecycle detail, the
+  operational event and `edger_stream_abandoned_total`.
+- Deploy precompresses immutable assets of static SPA and fullstack workers
+  (`.br` at quality 11, `.gz` at level 9) and serves the variant matching
+  `Accept-Encoding` with `Vary` and the same weak ETag; versions installed
+  before keep live compression.
+- Compression is configurable with `EDGER_COMPRESSION`,
+  `EDGER_COMPRESSION_MIN_BYTES` and `EDGER_COMPRESSION_LEVEL` (chart
+  `compression.*`). Only app responses answer 406 for an unsatisfiable
+  `Accept-Encoding`; `HEAD` is never compressed; every 304 omits
+  `Content-Length`. New `edger_http_compression_bytes_in/out_total{encoding}`.
+- `minProcesses` is a maintained floor: the idle TTL keeps those instances
+  and a removal below the floor starts one background replacement
+  (`ttl: 0` stays ephemeral).
+- `/metrics` adds `edger_worker_requests_total{...,outcome}` per worker for the
+  life of the process (also `requestsTotal` in `/metrics/stats`) and the
+  stream detach/abandon counters.
+- `EDGER_STREAM_IDLE_MS` was removed from the docs; it was never read.
 
 ## [0.3.2-rc.10]
 
