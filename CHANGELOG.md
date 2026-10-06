@@ -4,7 +4,9 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.11` (abandoned streams cancelled
+Toward 0.3.2. Release candidates: `v0.3.2-rc.12` (minProcesses prewarmed on
+install/promote/enable and refilled when a removal empties the group);
+`v0.3.2-rc.11` (abandoned streams cancelled
 in the worker, precompressed assets, configurable compression, per-worker
 request metrics, minProcesses kept as a floor); `v0.3.2-rc.10` (dispatch
 telemetry visible in production logs); `v0.3.2-rc.9` (abandoned streams drained
@@ -207,6 +209,17 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.12]
+
+- Install (active version), promote and enable prewarm `minProcesses` in the
+  background; their responses report `prewarm: "scheduled"` or
+  `"not_configured"`. Before, a new version paid a cold start on its first
+  request.
+- A removal that empties a group with a `minProcesses` floor (a
+  `maxRequests` retirement, a stream recycle, a crash) no longer drops the
+  group: it stays admitted and the floor is refilled in the background.
+  Before, with `minProcesses: 1` the floor was never refilled.
 
 ## [0.3.2-rc.11]
 
