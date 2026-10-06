@@ -381,7 +381,7 @@ async fn weak_etag_from_compressed_response_round_trips_to_304() {
         .unwrap();
     // Decode back to the original body (brotli) to prove the 200 carried the
     // real asset, so the round-trip is not vacuous.
-    assert_eq!(brotli_decode(&body.to_vec()), js.as_bytes());
+    assert_eq!(brotli_decode(&body), js.as_bytes());
 
     let res = send(
         &app,

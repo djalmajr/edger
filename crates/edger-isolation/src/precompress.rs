@@ -461,11 +461,7 @@ mod tests {
         // Never: HTML entries are transformed at runtime.
         fs::write(root.path().join("index.html"), "<html>".repeat(300)).unwrap();
         // Never: raster image.
-        fs::write(
-            root.path().join("logo.png"),
-            vec![0x89u8, 0x50u8].repeat(1024),
-        )
-        .unwrap();
+        fs::write(root.path().join("logo.png"), [0x89u8, 0x50u8].repeat(1024)).unwrap();
         // Not immutable: hash-like name outside assets/.
         fs::write(root.path().join("app-a1b2c3d4.js"), js_body(2048)).unwrap();
         // Too small: below the 1 KiB floor.

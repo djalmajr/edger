@@ -1075,14 +1075,6 @@ mod tests {
 
     // --- EDG-6 corrections: HEAD marker + size-preserving counting body ----
 
-    /// A no-op waker: the bodies consumed here (exact-size and finite
-    /// iterator streams) never pend.
-    struct NoopWake;
-
-    impl std::task::Wake for NoopWake {
-        fn wake(self: std::sync::Arc<Self>) {}
-    }
-
     /// Consume every frame of a body with a no-op waker. The bodies wrapped
     /// here (exact-size and finite-iterator) never pend.
     fn drain_frames<B>(body: &mut B) -> Vec<Bytes>
@@ -1090,8 +1082,8 @@ mod tests {
         B: http_body::Body<Data = Bytes> + Unpin,
         B::Error: std::fmt::Display,
     {
-        let waker = std::task::Waker::from(std::sync::Arc::new(NoopWake));
-        let mut cx = std::task::Context::from_waker(&waker);
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
         let mut data = Vec::new();
         loop {
             match Pin::new(&mut *body).poll_frame(&mut cx) {

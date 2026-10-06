@@ -158,6 +158,7 @@ mod tests {
     use bytes::Bytes;
 
     type HeaderPair = (String, String);
+    type Case<'a> = (&'a str, Option<&'a str>, u16, &'a Vec<HeaderPair>, bool);
 
     fn headers(pairs: &[(&str, &str)]) -> Vec<HeaderPair> {
         pairs
@@ -178,7 +179,7 @@ mod tests {
         let etag_malformed = headers(&[("etag", "abc123")]);
         let no_etag = headers(&[("content-type", "text/html; charset=utf-8")]);
 
-        let cases: [(&str, Option<&str>, u16, &Vec<HeaderPair>, bool); 30] = [
+        let cases: [Case<'_>; 30] = [
             // exact match
             ("GET", Some(r#""abc123""#), 200, &etag_strong, true),
             ("HEAD", Some(r#""abc123""#), 200, &etag_strong, true),

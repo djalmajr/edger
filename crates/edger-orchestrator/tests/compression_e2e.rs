@@ -359,7 +359,7 @@ mod compression {
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
             .await
             .unwrap();
-        assert_eq!(brotli_decode(&bytes.to_vec()), vec![b'l'; 4096]);
+        assert_eq!(brotli_decode(&bytes), vec![b'l'; 4096]);
     }
 
     #[tokio::test]
@@ -971,10 +971,7 @@ mod compression {
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
             .await
             .unwrap();
-        assert_eq!(
-            String::from_utf8(brotli_decode(&bytes.to_vec())).unwrap(),
-            js
-        );
+        assert_eq!(String::from_utf8(brotli_decode(&bytes)).unwrap(), js);
     }
 
     // ---- EDG-6: configuration + byte counters (no deno) ---------------------
@@ -1288,7 +1285,7 @@ mod compression {
         let compressed = axum::body::to_bytes(res.into_body(), usize::MAX)
             .await
             .unwrap();
-        let plain = gzip_decode(&compressed.to_vec());
+        let plain = gzip_decode(&compressed);
         let value: serde_json::Value = serde_json::from_slice(&plain).unwrap();
         assert_eq!(value["code"], "NOT_FOUND");
         assert!(
@@ -1342,10 +1339,7 @@ mod compression {
             bytes.len(),
             original.len()
         );
-        assert_eq!(
-            String::from_utf8(brotli_decode(&bytes.to_vec())).unwrap(),
-            original
-        );
+        assert_eq!(String::from_utf8(brotli_decode(&bytes)).unwrap(), original);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1367,10 +1361,7 @@ mod compression {
             .await
             .unwrap();
         let original = format!("/* edger bundle */\n{}", "x".repeat(4096));
-        assert_eq!(
-            String::from_utf8(gzip_decode(&bytes.to_vec())).unwrap(),
-            original
-        );
+        assert_eq!(String::from_utf8(gzip_decode(&bytes)).unwrap(), original);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1413,10 +1404,7 @@ mod compression {
             .await
             .unwrap();
         let original = format!("/* edger bundle */\n{}", "x".repeat(4096));
-        assert_eq!(
-            String::from_utf8(gzip_decode(&bytes.to_vec())).unwrap(),
-            original
-        );
+        assert_eq!(String::from_utf8(gzip_decode(&bytes)).unwrap(), original);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1579,7 +1567,7 @@ mod compression {
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
             .await
             .unwrap();
-        assert_eq!(gzip_decode(&bytes.to_vec()), b"tiny");
+        assert_eq!(gzip_decode(&bytes), b"tiny");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1643,7 +1631,7 @@ mod compression {
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
             .await
             .unwrap();
-        let plain = gzip_decode(&bytes.to_vec());
+        let plain = gzip_decode(&bytes);
         let expected_plain_len = "/* edger bundle */\n".len() + 4096;
         assert_eq!(plain.len(), expected_plain_len);
         assert_eq!(metrics.gzip_bytes_in(), expected_plain_len as u64);

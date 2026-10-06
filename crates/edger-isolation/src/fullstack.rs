@@ -562,10 +562,7 @@ mod tests {
                     "cache-control".into(),
                     "public, max-age=31536000, immutable".into()
                 ),
-                (
-                    "etag".into(),
-                    crate::static_spa::weak_etag(b"body{}").into()
-                ),
+                ("etag".into(), crate::static_spa::weak_etag(b"body{}")),
             ]
         );
 
