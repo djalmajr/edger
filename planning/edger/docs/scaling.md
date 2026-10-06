@@ -26,7 +26,11 @@ L1 é configurado no manifesto de cada worker, não no chart global:
   uma geração nova com o piso). `ttl: 0` mantém a semântica efêmera (apenas
   prewarm na entrada, sem reabastecimento); grupos evictados e shutdown
   também não reabastecem. O piso continua valendo do teto `maxProcesses`, do
-  LRU e das métricas; a evicção LRU segue terminando o grupo inteiro.
+  LRU e das métricas; a evicção LRU segue terminando o grupo inteiro. O
+  install, o promote e o enable pré-aquecem o piso em segundo plano (a
+  resposta dessas rotas não espera o prewarm e informa `prewarm:
+  "scheduled" | "not_configured"`); o startup e o rescan com `dryRun: false`
+  também pré-aquecem, mas esperam o prewarm (o boot e a resposta do rescan).
 - `concurrency`: alias operacional normalizado junto com `maxProcesses`.
 - `queueLimit`: quantidade máxima de requests persistentes esperando quando
   todos os processos daquele worker estão ocupados.
