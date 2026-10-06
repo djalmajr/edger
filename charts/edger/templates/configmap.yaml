@@ -19,6 +19,12 @@ data:
   # URL do endpoint /v1/identify passa a ser obrigatória.
   EDGER_TENANT_ROUTING_ENABLED: {{ .Values.tenantRouting.enabled | quote }}
   EDGER_WEIGHTED_ROUTING_ENABLED: {{ .Values.weightedRouting.enabled | quote }}
+  # Data plane compression (EDG-6): on/off and the level (default | fastest |
+  # best | integer) are validated by the binary — an invalid value logs a
+  # warning and falls back to the default (on / 1024 / default).
+  EDGER_COMPRESSION: {{ if .Values.compression.enabled }}"on"{{ else }}"off"{{ end }}
+  EDGER_COMPRESSION_MIN_BYTES: {{ .Values.compression.minBytes | quote }}
+  EDGER_COMPRESSION_LEVEL: {{ .Values.compression.level | quote }}
   {{- if .Values.tenantRouting.enabled }}
   # O token do API client Tenancit vem do Secret montado no Deployment
   # (EDGER_TENANCIT_TOKEN_FILE); apenas a URL do endpoint entra aqui.

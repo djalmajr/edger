@@ -69,6 +69,18 @@ userWorkers:
 cron:
   enabled: true
 
+# Data plane compression (brotli + gzip): app responses are compressed
+# based on Accept-Encoding; 406 is returned ONLY for apps when none of
+# br/gzip/identity is accepted (the control plane is never compressed and
+# never 406s). minBytes is the minimum body size when the size is known;
+# streaming bodies are always candidates. level: default | fastest | best |
+# integer — best is brotli quality 11, the most expensive setting for
+# dynamic/streaming bodies.
+compression:
+  enabled: true
+  minBytes: 1024
+  level: default
+
 otel:
   enabled: false
   endpoint: ""

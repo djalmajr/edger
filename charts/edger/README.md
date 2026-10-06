@@ -196,6 +196,54 @@ Limits:
 - The chart remains single-replica (see the topology section above), so
   nothing in this section claims production readiness.
 
+## Compression
+
+EdgeR compresses **app responses** (brotli + gzip) through the full pipeline.
+Three independent switches in the **Runtime** group, all mapped to the
+`EDGER_COMPRESSION*` envs of the ConfigMap:
+
+- **Enable Response Compression** (`compression.enabled`) — mounts the
+  compression layer. When disabled, **no layer is mounted at all**: no
+  `content-encoding`, no `406` for an unsatisfiable `Accept-Encoding`, and
+  no `Vary` added by the layer.
+- **Compression Minimum Body Size** (`compression.minBytes`, default `1024`)
+  — the minimum body size to compress **when the size is known**. Unknown-size
+  (streaming) bodies are always candidates: the encoder flushes per chunk.
+- **Compression Level** (`compression.level`, default `default`) —
+  `default`, `fastest`, `best` or a precise integer. `best` is brotli quality
+  11, the most expensive setting for dynamic/streaming bodies; prefer
+  `default` (quality 4) unless a specific ratio target justifies it.
+
+Behavior, always on with compression enabled:
+
+- Only responses marked as app are compressed; the control plane
+  (`/health`, `/ready`, `/metrics`, admin API, MCP) is never compressed.
+- Responses that already carry a `content-encoding`, `Cache-Control:
+  no-transform`, an already-compressed media type, or an `attachment`
+  disposition pass through intact.
+- An `Accept-Encoding` that accepts **neither `br`, `gzip` nor `identity`**
+  answers `406 Not Acceptable` **only for app responses** (same body and
+  headers the layer would pass through, plus `Vary: Accept-Encoding`);
+  the control plane returns its normal response, uncompressed, and never
+  answers 406.
+- `/metrics` exposes the byte counters
+  `edger_http_compression_bytes_in_total{encoding="br"|"gzip"}` (response
+  bytes before compression) and
+  `edger_http_compression_bytes_out_total{encoding="br"|"gzip"}` (compressed
+  bytes delivered), recorded when the compressed body ends — streaming and
+  abandoned bodies count whatever passed.
+
+Invalid `EDGER_COMPRESSION*` values never fail the boot: the binary logs a
+warning and falls back to the default of that variable (`on` / `1024` /
+`default`).
+
+Breach note (size channel): a compressed body leaks information through its
+size. Responses that reflect user input together with a secret (CSRF token,
+session data) can leak the secret by size — mitigate with `Cache-Control:
+no-transform` on those routes, per-request masked tokens, or
+`EDGER_COMPRESSION=off`. See
+[planning doc](../../planning/edger/docs/compression.md#nota-breach-canal-de-tamanho).
+
 ## Helm (terminal)
 
 ### Get the overlay

@@ -21,6 +21,13 @@
 //! - `EDGER_WEIGHTED_ROUTING_ENABLED` — opt in to weighted version selection (default false)
 //! - `EDGER_TENANCIT_IDENTIFY_URL` — exact Tenancit Consumer API `/v1/identify` URL
 //! - `EDGER_TENANCIT_TOKEN_FILE` — file containing the `tenant:identify` API client token
+//! - `EDGER_COMPRESSION` — `on` (default) | `off`: data-plane compression
+//!   layer (brotli + gzip); `off` mounts no layer (no 406, no Vary from it)
+//! - `EDGER_COMPRESSION_MIN_BYTES` — minimum compressible body size (default 1024)
+//! - `EDGER_COMPRESSION_LEVEL` — `default` (default) | `fastest` | `best` | integer
+//!   (`best` is brotli quality 11 — expensive for dynamic/streaming bodies)
+//!
+//! Invalid values log a warning and fall back to the default.
 
 use anyhow::Context;
 use std::path::{Path, PathBuf};
@@ -31,6 +38,7 @@ use edger_isolation::{
     ConsoleLogContext, ConsoleLogSender, ConsoleStream, DenoFacade, DenoIsolate,
     DenoProcessIsolate, StreamDetachBudget, WasiConfig, WasmIsolate,
 };
+use edger_orchestrator::compression::{CompressionConfig, MIN_COMPRESSIBLE_BYTES};
 use edger_orchestrator::observability::{
     OperationalEventInput, OperationalEventLevel, OperationalEventSource, OperationalStore,
 };
@@ -160,6 +168,9 @@ async fn main() -> anyhow::Result<()> {
     let port = port_from_env();
     let config = ServerConfig::from_bind(bind_ip_from_env().map_err(anyhow::Error::msg)?, port);
     let server = ServerState::new_unready();
+    // EDG-6: data-plane compression settings are read once at boot and
+    // mounted by `build_pipeline` (the first `set_compression_config` wins).
+    server.set_compression_config(compression_config_from_env());
     if opt_in_flag("EDGER_TENANT_ROUTING_ENABLED")? {
         configure_tenant_identity(&server)?;
         server.enable_tenant_routing();
@@ -333,6 +344,44 @@ fn opt_in_flag(name: &str) -> anyhow::Result<bool> {
             _ => anyhow::bail!("{name} must be true or false"),
         },
     }
+}
+
+/// Read the `EDGER_COMPRESSION*` envs into a `CompressionConfig` (EDG-6).
+/// Unset variables keep the defaults; an invalid value logs a `warn` and
+/// falls back to the default of that variable (boot never fails on them).
+fn compression_config_from_env() -> CompressionConfig {
+    let mut config = CompressionConfig::default();
+    if let Ok(raw) = std::env::var("EDGER_COMPRESSION") {
+        match CompressionConfig::parse_enabled(&raw) {
+            Some(enabled) => config.enabled = enabled,
+            None => tracing::warn!(
+                var = "EDGER_COMPRESSION",
+                value = %raw,
+                "invalid value (expected on or off); using the default (on)"
+            ),
+        }
+    }
+    if let Ok(raw) = std::env::var("EDGER_COMPRESSION_MIN_BYTES") {
+        match raw.trim().parse::<u64>() {
+            Ok(parsed) => config.min_bytes = parsed,
+            Err(_) => tracing::warn!(
+                var = "EDGER_COMPRESSION_MIN_BYTES",
+                value = %raw,
+                "invalid value (expected a non-negative integer); using the default ({MIN_COMPRESSIBLE_BYTES})"
+            ),
+        }
+    }
+    if let Ok(raw) = std::env::var("EDGER_COMPRESSION_LEVEL") {
+        match CompressionConfig::parse_level(&raw) {
+            Some(level) => config.level = level,
+            None => tracing::warn!(
+                var = "EDGER_COMPRESSION_LEVEL",
+                value = %raw,
+                "invalid value (expected default, fastest, best or an integer); using the default"
+            ),
+        }
+    }
+    config
 }
 
 fn start_console_capture(server: &ServerState) -> Option<ConsoleLogSender> {
@@ -645,6 +694,79 @@ mod tests {
             assert!(opt_in_flag(name).is_err());
             std::env::remove_var(name);
         }
+    }
+
+    // --- EDG-6: compression env reading --------------------------------------
+
+    fn clear_compression_envs() {
+        std::env::remove_var("EDGER_COMPRESSION");
+        std::env::remove_var("EDGER_COMPRESSION_MIN_BYTES");
+        std::env::remove_var("EDGER_COMPRESSION_LEVEL");
+    }
+
+    #[test]
+    fn compression_env_unset_keeps_defaults() {
+        let _guard = env_lock().lock().unwrap();
+        clear_compression_envs();
+        assert_eq!(compression_config_from_env(), CompressionConfig::default());
+    }
+
+    #[test]
+    fn compression_env_valid_values_are_applied() {
+        let _guard = env_lock().lock().unwrap();
+        clear_compression_envs();
+        std::env::set_var("EDGER_COMPRESSION", "off");
+        std::env::set_var("EDGER_COMPRESSION_MIN_BYTES", "4096");
+        std::env::set_var("EDGER_COMPRESSION_LEVEL", "best");
+        assert_eq!(
+            compression_config_from_env(),
+            CompressionConfig {
+                enabled: false,
+                min_bytes: 4096,
+                level: tower_http::compression::CompressionLevel::Best,
+            }
+        );
+        // Precise level via integer.
+        std::env::set_var("EDGER_COMPRESSION", "ON");
+        std::env::set_var("EDGER_COMPRESSION_LEVEL", "11");
+        assert_eq!(
+            compression_config_from_env(),
+            CompressionConfig {
+                enabled: true,
+                min_bytes: 4096,
+                level: tower_http::compression::CompressionLevel::Precise(11),
+            }
+        );
+        clear_compression_envs();
+    }
+
+    #[test]
+    fn compression_env_invalid_values_fall_back_to_defaults() {
+        let _guard = env_lock().lock().unwrap();
+        clear_compression_envs();
+        std::env::set_var("EDGER_COMPRESSION", "maybe");
+        std::env::set_var("EDGER_COMPRESSION_MIN_BYTES", "-3");
+        std::env::set_var("EDGER_COMPRESSION_LEVEL", "maximum");
+        assert_eq!(compression_config_from_env(), CompressionConfig::default());
+        clear_compression_envs();
+    }
+
+    #[test]
+    fn compression_env_invalid_values_mix_with_valid_ones() {
+        let _guard = env_lock().lock().unwrap();
+        clear_compression_envs();
+        std::env::set_var("EDGER_COMPRESSION", "off");
+        std::env::set_var("EDGER_COMPRESSION_MIN_BYTES", "not-a-number");
+        std::env::set_var("EDGER_COMPRESSION_LEVEL", "fastest");
+        assert_eq!(
+            compression_config_from_env(),
+            CompressionConfig {
+                enabled: false,
+                min_bytes: MIN_COMPRESSIBLE_BYTES,
+                level: tower_http::compression::CompressionLevel::Fastest,
+            }
+        );
+        clear_compression_envs();
     }
 
     // --- P1: open mode + senha como credencial (wire_console_open_mode) ---

@@ -18,7 +18,8 @@ use tower_http::trace::TraceLayer;
 use crate::admin_api;
 use crate::auth::ControlAuth;
 use crate::compression::{
-    compression_layer, mark_app_response, mark_worker_without_encoding, weaken_worker_etag,
+    compression_layer_with_config, compression_request_scope, count_compression_input,
+    mark_app_response, mark_worker_without_encoding, weaken_worker_etag,
 };
 use crate::manifest_index_stub::ManifestIndex;
 use crate::metrics::{
@@ -54,7 +55,7 @@ pub(crate) const ADMIN_CONTROL_AUTH_HEADER: &str = "x-edger-control-authorizatio
 /// Build the full axum application (health + readiness + pipeline fallback).
 pub fn build_pipeline(state: OrchestratorState) -> Router {
     let metrics_state = state.server.clone();
-    Router::new()
+    let inner = Router::new()
         .route("/", get(root_redirect))
         .route("/health", get(health_handler))
         .route("/healthz", get(health_handler))
@@ -79,22 +80,46 @@ pub fn build_pipeline(state: OrchestratorState) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             owned_host_middleware,
-        ))
-        // EDG-2/EDG-3: compression (brotli + gzip) sits OUTSIDE
-        // `owned_host_middleware` — covering the fallback and owned domains —
-        // and INSIDE `request_metrics_middleware`. Only responses marked as
-        // app (`pipeline_handler`) are compressed; the control plane passes
-        // through untouched. Immediately outside the compression layer, the
-        // ETag middleware weakens a worker's strong ETag once compression
-        // changed the content-coding.
-        .layer(compression_layer())
-        .layer(axum::middleware::from_fn(weaken_worker_etag))
+        ));
+    // EDG-2/EDG-3/EDG-6: the compression stack is mounted only while
+    // `EDGER_COMPRESSION` is on — `off` means no layer at all: no
+    // `content-encoding`, no 406, no `Vary` added by the layer. The stack
+    // wraps the owned-host dispatch (covering the fallback and owned
+    // domains) and sits inside `request_metrics_middleware`. Outermost →
+    // innermost: the scope middleware (406 scoped to apps + byte
+    // accounting), the ETag middleware (immediately outside the compression
+    // layer, as before — a strict no-op without it), the compression layer
+    // at the configured quality/floor, and the pre-compression byte counter
+    // inside the layer.
+    let config = state.server.compression_config();
+    let router = if config.enabled {
+        inner
+            .layer(axum::middleware::from_fn(count_compression_input))
+            .layer(compression_layer_with_config(&config))
+            .layer(axum::middleware::from_fn(weaken_worker_etag))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                compression_request_scope,
+            ))
+    } else {
+        inner
+    };
+    // RFC 9110 §15.4.5: a 304 carries no representation data. Mounted as the
+    // OUTERMOST layer — outside every other middleware, where the axum
+    // `RouteFuture` post-processing (`set_content_length`) has already run —
+    // it strips any `content-length` from a 304 (GET or HEAD, apps and
+    // control plane) and leaves the body unknown-sized so no later stamp can
+    // re-record an exact-0 size. Unconditional: not a compression feature.
+    router
         .layer(axum::middleware::from_fn_with_state(
             metrics_state,
             request_metrics_middleware,
         ))
         .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn(
+            crate::compression::strip_304_content_length,
+        ))
         .with_state(state)
 }
 
@@ -147,6 +172,9 @@ async fn metrics_handler(
     body.push_str(&cron_metrics_prometheus(&state.server.cron_metrics()));
     body.push_str(&crate::metrics::http_metrics_prometheus(
         &state.server.http_metrics(),
+    ));
+    body.push_str(&crate::metrics::compression_metrics_prometheus(
+        &state.server.compression_metrics(),
     ));
     body.push_str(&tenant_routing_metrics_prometheus(
         &state.server.tenant_routing_metrics(),

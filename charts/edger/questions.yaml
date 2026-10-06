@@ -54,6 +54,30 @@ questions:
     default: true
     group: Runtime
 
+  - variable: compression.enabled
+    label: Enable Response Compression
+    description: Compress app responses with brotli or gzip based on Accept-Encoding. When disabled, no compression layer is mounted at all (no 406 for an unsatisfiable Accept-Encoding, no Vary added by it).
+    type: boolean
+    default: true
+    group: Runtime
+
+  - variable: compression.minBytes
+    label: Compression Minimum Body Size
+    description: Minimum body size in bytes to compress when the size is known. Unknown-size (streaming) bodies are always candidates.
+    type: int
+    default: 1024
+    min: 0
+    show_if: "compression.enabled=true"
+    group: Runtime
+
+  - variable: compression.level
+    label: Compression Level
+    description: "Quality level: default, fastest, best, or a precise integer. best is brotli quality 11 — the most expensive setting for dynamic/streaming bodies."
+    type: string
+    default: "default"
+    show_if: "compression.enabled=true"
+    group: Runtime
+
   - variable: otel.enabled
     label: Enable OpenTelemetry Export
     description: Export traces and operational events to an external OTLP Collector. Local cPanel observability remains available when disabled.

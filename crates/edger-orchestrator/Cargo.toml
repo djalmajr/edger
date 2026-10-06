@@ -50,6 +50,7 @@ axum.workspace = true
 tower.workspace = true
 futures-util = { version = "0.3", default-features = false }
 tower-http.workspace = true
+http-body = "1"
 http.workspace = true
 hyper.workspace = true
 jsonwebtoken = "9"
