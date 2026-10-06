@@ -136,6 +136,8 @@ pub fn try_serve_fullstack_asset(
 /// Leitura e montagem da resposta dos dois caminhos de serve (prefixo
 /// casado e arquivo público existente, D27): mesmo `content_type_for`,
 /// mesmo `cache_control_for` e mesma transformação de HTML de entrada.
+/// EDG-4: an immutable asset with a pre-compressed variant is served through
+/// `Accept-Encoding` (same weak ETag as the original, `Vary: accept-encoding`).
 fn serve_fullstack_file(
     req: &SerializedRequest,
     config: &WorkerConfig,
@@ -158,12 +160,37 @@ fn serve_fullstack_file(
         let entry_base_href = base_href(&base_path);
         body = crate::static_spa::transform_entry_html(body, Some(&entry_base_href), config);
     }
+    let cache_control = cache_control_for(path);
     let etag = crate::static_spa::weak_etag(&body);
+    let accept_encoding = crate::static_spa::accept_encoding_header(&req.headers);
+    if cache_control == crate::static_spa::IMMUTABLE_CACHE_CONTROL {
+        if let Some(response) = crate::static_spa::serve_precompressed_variant(
+            file_path,
+            &body,
+            content_type,
+            cache_control,
+            accept_encoding,
+        ) {
+            return Ok(response);
+        }
+        if crate::static_spa::has_precompressed_variant(file_path) {
+            return Ok(SerializedResponse {
+                status: 200,
+                headers: vec![
+                    ("content-type".into(), content_type.into()),
+                    ("cache-control".into(), cache_control.into()),
+                    ("vary".into(), "accept-encoding".into()),
+                    ("etag".into(), etag),
+                ],
+                body: Some(Bytes::from(body)),
+            });
+        }
+    }
     Ok(SerializedResponse {
         status: 200,
         headers: vec![
             ("content-type".into(), content_type.into()),
-            ("cache-control".into(), cache_control_for(path).into()),
+            ("cache-control".into(), cache_control.into()),
             ("etag".into(), etag),
         ],
         body: Some(Bytes::from(body)),
@@ -296,7 +323,12 @@ fn is_client_index_html(file_path: &Path, client_root: &Path) -> bool {
         && file_path.file_name().and_then(|name| name.to_str()) == Some("index.html")
 }
 
-fn path_has_forbidden_components(path: &str) -> bool {
+/// Path components that would escape the containing directory: `..`, an
+/// absolute root or a platform prefix (`C:`). Used both by the serving path
+/// (`resolve_client_root`, asset paths) and by the deploy-time pre-compression
+/// (the SAME validation, so generation cannot reach a directory the service
+/// would refuse to serve).
+pub(crate) fn path_has_forbidden_components(path: &str) -> bool {
     Path::new(path).components().any(|component| {
         matches!(
             component,
@@ -429,9 +461,16 @@ fn set_header(headers: &mut Vec<(String, String)>, name: &str, value: &str) {
     }
 }
 
+/// EDG-4: the same predicate that defines the immutable cache-control also
+/// decides which assets get pre-compressed variants at deploy time — the
+/// `/assets/` rule is not duplicated in `precompress`.
+pub(crate) fn is_immutable_asset_path(path: &str) -> bool {
+    path == "/assets" || path.starts_with("/assets/")
+}
+
 fn cache_control_for(path: &str) -> &'static str {
-    if path == "/assets" || path.starts_with("/assets/") {
-        "public, max-age=31536000, immutable"
+    if is_immutable_asset_path(path) {
+        crate::static_spa::IMMUTABLE_CACHE_CONTROL
     } else {
         "no-cache"
     }
@@ -1001,5 +1040,222 @@ mod tests {
             let served = try_serve_fullstack_asset(&req(path), &config).unwrap();
             assert!(served.is_none(), "expected SSR fallback for {path}");
         }
+    }
+
+    // ---- EDG-4: pre-compressed variant serving ------------------------------
+
+    fn req_with_headers(uri: &str, headers: &[(&str, &str)]) -> SerializedRequest {
+        SerializedRequest {
+            method: "GET".into(),
+            uri: uri.into(),
+            headers: headers
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+            body: None,
+            request_id: "req".into(),
+            base_href: Some("/tanstack-demo/".into()),
+        }
+    }
+
+    fn fullstack_root_with_variant() -> (tempfile::TempDir, WorkerConfig) {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/assets")).unwrap();
+        fs::write(
+            root.path().join("client/assets/app-a1b2c3d4.js"),
+            vec![b'j'; 2048],
+        )
+        .unwrap();
+        let variant_config = config(root.path());
+        crate::precompress::precompress_worker_assets(
+            root.path(),
+            &edger_core::ExecutionKind::Fullstack {
+                adapter: "tanstack".into(),
+            },
+            &variant_config,
+            u64::MAX,
+        );
+        let final_config = config(root.path());
+        (root, final_config)
+    }
+
+    fn response_header<'a>(response: &'a SerializedResponse, name: &str) -> Option<&'a str> {
+        response
+            .headers
+            .iter()
+            .find(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
+    #[test]
+    fn fullstack_serves_negotiated_variant_with_original_etag_and_vary() {
+        let (root, config) = fullstack_root_with_variant();
+        let original = fs::read(root.path().join("client/assets/app-a1b2c3d4.js")).unwrap();
+
+        let br = try_serve_fullstack_asset(
+            &req_with_headers("/assets/app-a1b2c3d4.js", &[("accept-encoding", "br")]),
+            &config,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(br.status, 200);
+        assert_eq!(response_header(&br, "content-encoding"), Some("br"));
+        assert_eq!(
+            response_header(&br, "content-type"),
+            Some("application/javascript; charset=utf-8")
+        );
+        assert_eq!(
+            response_header(&br, "cache-control"),
+            Some("public, max-age=31536000, immutable")
+        );
+        assert!(response_header(&br, "vary")
+            .is_some_and(|vary| vary.to_ascii_lowercase().contains("accept-encoding")));
+        assert_eq!(
+            response_header(&br, "etag"),
+            Some(crate::static_spa::weak_etag(&original).as_str())
+        );
+        assert_eq!(
+            br.body.unwrap().as_ref(),
+            fs::read(root.path().join("client/assets/app-a1b2c3d4.js.br"))
+                .unwrap()
+                .as_slice()
+        );
+
+        // `br;q=0, gzip` negotiates gzip; the header lookup is
+        // case-insensitive.
+        let gz = try_serve_fullstack_asset(
+            &req_with_headers(
+                "/assets/app-a1b2c3d4.js",
+                &[("Accept-Encoding", "br;q=0, gzip")],
+            ),
+            &config,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(response_header(&gz, "content-encoding"), Some("gzip"));
+        assert_eq!(
+            response_header(&gz, "etag"),
+            Some(crate::static_spa::weak_etag(&original).as_str())
+        );
+    }
+
+    #[test]
+    fn fullstack_identity_of_variant_asset_carries_vary_but_no_encoding() {
+        let (root, config) = fullstack_root_with_variant();
+        let original = fs::read(root.path().join("client/assets/app-a1b2c3d4.js")).unwrap();
+
+        let identity = try_serve_fullstack_asset(
+            &req_with_headers(
+                "/assets/app-a1b2c3d4.js",
+                &[("accept-encoding", "identity")],
+            ),
+            &config,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(response_header(&identity, "content-encoding").is_none());
+        assert!(response_header(&identity, "vary")
+            .is_some_and(|vary| vary.to_ascii_lowercase().contains("accept-encoding")));
+        assert_eq!(identity.body.unwrap().as_ref(), original.as_slice());
+
+        // No Accept-Encoding header at all: same identity + vary.
+        let bare = try_serve_fullstack_asset(&req("/assets/app-a1b2c3d4.js"), &config)
+            .unwrap()
+            .unwrap();
+        assert!(response_header(&bare, "content-encoding").is_none());
+        assert!(response_header(&bare, "vary")
+            .is_some_and(|vary| vary.to_ascii_lowercase().contains("accept-encoding")));
+        assert_eq!(bare.body.unwrap().as_ref(), original.as_slice());
+    }
+
+    #[test]
+    fn fullstack_without_variants_keeps_current_behavior() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/assets")).unwrap();
+        fs::write(root.path().join("client/assets/app.css"), "body{}").unwrap();
+        let config = config(root.path());
+
+        let res = try_serve_fullstack_asset(
+            &req_with_headers("/assets/app.css", &[("accept-encoding", "br")]),
+            &config,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(response_header(&res, "content-encoding").is_none());
+        assert!(
+            response_header(&res, "vary").is_none(),
+            "no variant, no vary"
+        );
+        assert_eq!(res.body.unwrap().as_ref(), b"body{}");
+    }
+
+    #[test]
+    fn fullstack_symlinked_variant_is_never_served() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/assets")).unwrap();
+        fs::write(root.path().join("client/index.html"), "<html></html>").unwrap();
+        let original = vec![b'y'; 2048];
+        fs::write(root.path().join("client/assets/app-a1b2c3d4.js"), &original).unwrap();
+        // The `.br` variant is a symlink to a file OUTSIDE the worker: the
+        // variant must be refused, never the external bytes served.
+        let external = b"EXTERNAL-FULLSTACK-BYTES";
+        fs::write(outside.path().join("external.br"), external).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("external.br"),
+            root.path().join("client/assets/app-a1b2c3d4.js.br"),
+        )
+        .unwrap();
+        let config = config(root.path());
+
+        let res = try_serve_fullstack_asset(
+            &req_with_headers("/assets/app-a1b2c3d4.js", &[("accept-encoding", "br")]),
+            &config,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(res.status, 200);
+        // Identity original: no content-encoding, no Vary, original bytes.
+        assert!(response_header(&res, "content-encoding").is_none());
+        assert!(
+            response_header(&res, "vary").is_none(),
+            "a symlinked variant is not a variant: no Vary"
+        );
+        assert_eq!(res.body.unwrap().as_ref(), original.as_slice());
+    }
+
+    #[test]
+    fn fullstack_html_variant_is_never_served() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client/assets")).unwrap();
+        fs::write(root.path().join("client/index.html"), "<html></html>").unwrap();
+        let html = "<html><body>page</body></html>".repeat(50);
+        fs::write(root.path().join("client/assets/page.html"), &html).unwrap();
+        // A framework-built variant of the HTML (a regular file): it must
+        // never be served — the HTML is transformed at runtime (base href /
+        // env) and the variant would skip that transformation.
+        let shipped = b"PRE-COMPRESSED-HTML-VARIANT";
+        fs::write(root.path().join("client/assets/page.html.br"), shipped).unwrap();
+        let config = config(root.path());
+
+        let res = try_serve_fullstack_asset(
+            &req_with_headers("/assets/page.html", &[("accept-encoding", "br")]),
+            &config,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(res.status, 200);
+        assert!(
+            response_header(&res, "content-encoding").is_none(),
+            "HTML never negotiates a variant"
+        );
+        assert_eq!(res.body.unwrap().as_ref(), html.as_bytes());
+
+        // The identity of an HTML asset does not advertise a variant either.
+        let identity = try_serve_fullstack_asset(&req("/assets/page.html"), &config)
+            .unwrap()
+            .unwrap();
+        assert!(response_header(&identity, "vary").is_none());
+        assert_eq!(identity.body.unwrap().as_ref(), html.as_bytes());
     }
 }

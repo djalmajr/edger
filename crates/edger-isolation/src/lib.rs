@@ -13,6 +13,7 @@ pub mod isolate;
 pub mod kinds;
 pub mod limits;
 pub mod mock;
+pub mod precompress;
 pub mod static_spa;
 pub mod wire;
 

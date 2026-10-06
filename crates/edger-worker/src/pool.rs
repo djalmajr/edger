@@ -1546,7 +1546,10 @@ fn serve_static_spa_request(
     } else {
         None
     };
-    edger_isolation::static_spa::serve_static_spa(&req.uri, base, config)
+    // EDG-4: the request's Accept-Encoding selects a pre-compressed variant
+    // of an immutable asset (`.br`/`.gz` generated at deploy time).
+    let accept_encoding = edger_isolation::static_spa::accept_encoding_header(&req.headers);
+    edger_isolation::static_spa::serve_static_spa_encoded(&req.uri, base, accept_encoding, config)
         .map_err(WorkerError::Isolation)
 }
 

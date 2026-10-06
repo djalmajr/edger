@@ -361,6 +361,38 @@ pub fn install_worker_from_zip(
         ));
     }
 
+    // EDG-4: fingerprinted assets are immutable per version — generate their
+    // .br/.gz variants here, inside staging, so they travel with the atomic
+    // swap and a rollback removes them together with the target. The
+    // function never fails the deploy: files that cannot be compressed are
+    // skipped and keep the real-time compression layer.
+    let precompress = edger_isolation::precompress::precompress_worker_assets(
+        &package_dir,
+        &worker.kind,
+        &worker.config,
+        MAX_DEPLOY_EXPANDED_BYTES,
+    );
+    if precompress.variants_generated > 0 {
+        tracing::info!(
+            worker = %worker.name,
+            version = %worker.version,
+            eligible_files = precompress.eligible_files,
+            variants = precompress.variants_generated,
+            existing = precompress.variants_existing,
+            bytes = precompress.generated_bytes,
+            "deploy: pre-compressed immutable assets at deploy time"
+        );
+    }
+    if precompress.budget_exhausted {
+        tracing::warn!(
+            worker = %worker.name,
+            version = %worker.version,
+            budget_bytes = MAX_DEPLOY_EXPANDED_BYTES,
+            generated_bytes = precompress.generated_bytes,
+            "deploy: pre-compression budget exhausted; remaining assets use real-time compression"
+        );
+    }
+
     // Grava a revisão nova DENTRO do pacote antes do swap: ela viaja junto na
     // troca atômica e passa a ser a verdade da versão instalada.
     let revision = uuid::Uuid::new_v4().to_string();
