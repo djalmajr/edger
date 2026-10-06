@@ -69,6 +69,8 @@ cargo test -p edger-isolation --features multiproc --test streaming
 cargo build --workspace
 ```
 
+> **Nota (2026-10-05, EDG-7):** `EDGER_STREAM_IDLE_MS` e `EDGER_STREAM_MAX_MS` (e o `drainBounded`) foram substituídos pelo protocolo de frames marcados da Story 16.D e não são lidos por nenhum código. A proteção vigente é o teto `EDGER_STREAM_MAX_BYTES` no harness mais o timeout de leitura por frame no Rust (igual ao `timeout` do worker). O texto abaixo fica como histórico.
+
 ## Status
 
 **completed** (2026-07-02) — Fecha a fundação durável. O harness passou a ler o
