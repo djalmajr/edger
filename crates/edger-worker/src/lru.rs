@@ -14,6 +14,20 @@ use crate::metrics::{MetricsCollector, WorkerGroupIdentity};
 use crate::state::{accepts_dispatch, WorkerState};
 use crate::types::WorkerCacheKey;
 
+/// (EDG-13) Identity and process capacity captured when a group is created,
+/// from its first instance. An EMPTIED group keeps it: a floored
+/// generation that lost its last instance stays admitted (the same
+/// generation) for the min-processes replenishment, and the stats report it
+/// (`totalProcesses 0`, its `maxProcesses`) instead of dropping it — which
+/// is what hid the missing floor in production. Groups created without
+/// instances (test fixtures) have no origin and are reported only while
+/// they still have instances, as before.
+#[derive(Clone, Debug)]
+pub struct GroupOrigin {
+    pub identity: WorkerGroupIdentity,
+    pub max_processes: usize,
+}
+
 /// Outcome of `WorkerLru::insert_group`.
 pub enum GroupInsertOutcome {
     /// The caller's group became the cached group for the key, optionally
@@ -52,6 +66,8 @@ pub struct WorkerGroup {
     /// (recycle/shutdown), which is terminal for the queue and maps to
     /// `Shutdown`; eviction is a retryable `Retired`, never `Shutdown`.
     evicted: AtomicBool,
+    /// (EDG-13) Creation-time identity and capacity (see [`GroupOrigin`]).
+    origin: Option<GroupOrigin>,
     instances: Mutex<Vec<Arc<WorkerInstance>>>,
     next_index: AtomicUsize,
     queue_waiters: AtomicUsize,
@@ -60,14 +76,29 @@ pub struct WorkerGroup {
 
 impl WorkerGroup {
     pub fn new(instances: Vec<Arc<WorkerInstance>>) -> Self {
+        // (EDG-13) capture the origin from the first instance when the
+        // group is created with members (every pool-created group has at
+        // least one placeholder); an empty fixture group keeps `None`.
+        let origin = instances.first().map(|instance| GroupOrigin {
+            identity: WorkerGroupIdentity::from_worker_ref(&instance.worker_ref),
+            max_processes: instance.worker_ref.config.max_processes,
+        });
         Self {
             closed: AtomicUsize::new(0),
             evicted: AtomicBool::new(false),
+            origin,
             instances: Mutex::new(instances),
             next_index: AtomicUsize::new(0),
             queue_waiters: AtomicUsize::new(0),
             queue_notify: Notify::new(),
         }
+    }
+
+    /// (EDG-13) The identity captured at creation: stable for the whole
+    /// generation, including after the group is EMPTIED (no instance left
+    /// to read it from). `None` for groups created without instances.
+    pub fn origin(&self) -> Option<&GroupOrigin> {
+        self.origin.as_ref()
     }
 
     /// Marks the group as evicted from the LRU by capacity and wakes queued
@@ -387,13 +418,39 @@ impl WorkerLru {
         self.group_count() == 0
     }
 
-    pub fn remove_instance(&self, key: &WorkerCacheKey, instance_id: Uuid) {
+    /// Remove one instance from the group holding `key`. When the removal
+    /// EMPTIES the group, `keep_empty` decides whether the empty group stays
+    /// admitted as the SAME generation or leaves the cache:
+    ///
+    /// * `true` — a floored generation (the caller verified
+    ///   `min_processes > 0`, `ttl_ms > 0` and a non-shutting-down pool):
+    ///   the empty group stays in the cache so the min-processes
+    ///   replenishment (EDG-10) revalidates it (`Arc::ptr_eq`) and refills
+    ///   it, and the next request serves the same generation through the
+    ///   demand path (EDG-13);
+    /// * `false` — no floor (`min_processes == 0` / `ttl_ms == 0`) or a
+    ///   shutting-down pool: the group leaves the cache as before.
+    ///
+    /// The evicted/closed revalidation runs UNDER this lock, atomic with
+    /// the removal: a close that lands after the caller's decision still
+    /// pops the group here (and the close paths — `recycle_worker` /
+    /// `shutdown` — remove the whole group anyway).
+    pub fn remove_instance(&self, key: &WorkerCacheKey, instance_id: Uuid, keep_empty: bool) {
         let mut cache = self.inner.lock().expect("lru lock");
         let remove_group = cache
             .peek(key)
             .map(|group| group.remove_instance(instance_id))
             .unwrap_or(false);
         if remove_group {
+            if keep_empty
+                && cache
+                    .peek(key)
+                    .is_some_and(|group| !group.is_evicted() && !group.is_closed())
+            {
+                // (EDG-13) The emptied floored generation stays admitted:
+                // `peek` only — the keep does not refresh LRU recency.
+                return;
+            }
             cache.pop(key);
         }
     }

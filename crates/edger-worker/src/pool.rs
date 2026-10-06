@@ -388,6 +388,17 @@ impl WorkerPool {
         Ok(())
     }
 
+    /// (EDG-13) Namespace mismatch against a group's own origin (captured
+    /// at creation): an emptied floored generation is still admitted — it
+    /// waits for the min-processes replenishment — and has no instance to
+    /// read the namespace from. A group without an origin (created without
+    /// instances; pool groups always have one) cannot mismatch.
+    fn group_namespace_mismatch(group: &WorkerGroup, worker_ref: &WorkerRef) -> bool {
+        group
+            .origin()
+            .is_some_and(|origin| origin.identity.namespace != worker_ref.namespace)
+    }
+
     fn sync_worker_counts(&self) {
         let active = self.inner.cache.len();
         let idle = self.inner.cache.count_idle();
@@ -531,13 +542,15 @@ impl WorkerPool {
         let key = WorkerCacheKey::from_worker_ref(worker_ref);
 
         if let Some(group) = self.inner.cache.get_group(&key) {
-            if let Some(instance) = group.instances_snapshot().first() {
-                if instance.worker_ref.namespace != worker_ref.namespace {
-                    return Err(WorkerError::Collision {
-                        key: format!("{key:?}"),
-                        detail: "namespace mismatch for cache key".into(),
-                    });
-                }
+            // (EDG-13) the namespace check reads the group's OWN origin:
+            // an emptied floored generation is still admitted (it waits for
+            // the min-processes replenishment) and has no instance to read
+            // from.
+            if Self::group_namespace_mismatch(&group, worker_ref) {
+                return Err(WorkerError::Collision {
+                    key: format!("{key:?}"),
+                    detail: "namespace mismatch for cache key".into(),
+                });
             }
             self.inner.metrics.record_hit();
             return Ok(group);
@@ -546,13 +559,11 @@ impl WorkerPool {
         let spawn_start = Instant::now();
         let group = self.create_group(worker_ref);
 
-        if let Some(instance) = group.instances_snapshot().first() {
-            if instance.worker_ref.namespace != worker_ref.namespace {
-                return Err(WorkerError::Collision {
-                    key: format!("{key:?}"),
-                    detail: "namespace mismatch for cache key".into(),
-                });
-            }
+        if Self::group_namespace_mismatch(&group, worker_ref) {
+            return Err(WorkerError::Collision {
+                key: format!("{key:?}"),
+                detail: "namespace mismatch for cache key".into(),
+            });
         }
 
         match self
@@ -565,14 +576,14 @@ impl WorkerPool {
             // placeholders with no queue waiters, so dropping them is safe).
             GroupInsertOutcome::Existing(winner) => {
                 // Revalidate the winner the same way the hit path does: the
-                // miss path never checked the group it is about to use.
-                if let Some(instance) = winner.instances_snapshot().first() {
-                    if instance.worker_ref.namespace != worker_ref.namespace {
-                        return Err(WorkerError::Collision {
-                            key: format!("{key:?}"),
-                            detail: "namespace mismatch for cache key".into(),
-                        });
-                    }
+                // miss path never checked the group it is about to use
+                // (EDG-13: through the winner's own origin — it may be an
+                // emptied floored generation without instances).
+                if Self::group_namespace_mismatch(&winner, worker_ref) {
+                    return Err(WorkerError::Collision {
+                        key: format!("{key:?}"),
+                        detail: "namespace mismatch for cache key".into(),
+                    });
                 }
                 self.inner.metrics.record_hit();
                 return Ok(winner);
@@ -1372,7 +1383,21 @@ impl WorkerPool {
         policy: ReplenishPolicy,
     ) {
         let key = WorkerCacheKey::from_worker_ref(&instance.worker_ref);
-        self.inner.cache.remove_instance(&key, instance.id());
+        // (EDG-13) a removal that empties a FLOORED generation keeps the
+        // empty group admitted (same generation), so the min-processes
+        // replenishment (EDG-10) finds the generation it captured and
+        // refills it instead of giving up on a missing one. No floor
+        // (`min_processes == 0`, `ttl_ms == 0`) or a pool that is shutting
+        // down: the group leaves the cache as before (the close paths clear
+        // the cache anyway and the replenishment gates on shutdown). The
+        // lru revalidates evicted/closed under its own lock, atomic with
+        // the removal.
+        let keep_empty = !self.inner.shutdown.load(Ordering::SeqCst)
+            && instance.worker_ref.config.min_processes > 0
+            && instance.worker_ref.config.ttl_ms > 0;
+        self.inner
+            .cache
+            .remove_instance(&key, instance.id(), keep_empty);
         self.inner
             .metrics
             .record_worker_group_recycle(&instance.worker_ref, cause);
@@ -1496,9 +1521,11 @@ impl WorkerPool {
             let key = WorkerCacheKey::from_worker_ref(worker_ref);
             match self.inner.cache.get_group(&key) {
                 // The generation left the cache (capacity eviction without a
-                // re-admission, or `recycle_worker`/`shutdown`): nothing to
-                // refill — a later request re-admits a fresh generation on
-                // demand.
+                // re-admission, `recycle_worker`/`shutdown`, or a non-floored
+                // group whose removal emptied it): nothing to refill — a
+                // later request re-admits a fresh generation on demand.
+                // (EDG-13: an emptied FLOORED generation stays admitted as
+                // the same generation and is refilled below.)
                 None => return,
                 // A NEWER generation owns the identity: the captured group
                 // is stale; its floor is not this attempt's to restore.
@@ -1981,10 +2008,22 @@ impl WorkerPool {
         let mut live = BTreeMap::new();
         for group in self.inner.cache.groups_snapshot() {
             let instances = group.instances_snapshot();
-            let Some(first) = instances.first() else {
-                continue;
+            // (EDG-13) an emptied FLOORED generation stays in the cache
+            // until the min-processes replenishment refills it: it has no
+            // instance to derive the identity from, so it reports the
+            // origin captured at creation with `totalProcesses 0` — the
+            // entry must not disappear (that is what hid the missing floor
+            // in production).
+            let (identity, max_processes) = match instances.first() {
+                Some(first) => (
+                    WorkerGroupIdentity::from_worker_ref(&first.worker_ref),
+                    first.worker_ref.config.max_processes,
+                ),
+                None => match group.origin() {
+                    Some(origin) => (origin.identity.clone(), origin.max_processes),
+                    None => continue,
+                },
             };
-            let identity = WorkerGroupIdentity::from_worker_ref(&first.worker_ref);
             let processes = instances
                 .iter()
                 .map(|instance| WorkerProcessMetrics {
@@ -2007,18 +2046,18 @@ impl WorkerPool {
                 .filter(|process| process.state == WorkerState::Terminating)
                 .count();
             live.insert(
-                identity,
+                identity.clone(),
                 WorkerGroupMetrics {
                     active_processes,
                     idle_processes,
-                    max_processes: first.worker_ref.config.max_processes.max(1),
-                    name: first.worker_ref.name.clone(),
-                    namespace: first.worker_ref.namespace.clone(),
+                    max_processes: max_processes.max(1),
+                    name: identity.name.clone(),
+                    namespace: identity.namespace.clone(),
                     processes,
                     queued: group.queued_waiters() as u64,
                     terminating_processes,
                     total_processes: instances.len(),
-                    version: first.worker_ref.version.clone(),
+                    version: identity.version.clone(),
                     ..Default::default()
                 },
             );
