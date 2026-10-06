@@ -187,6 +187,13 @@ async fn main() -> anyhow::Result<()> {
     // limit disables the drain AND the pool's relay wait (immediate
     // recycle, `socket_poisoned` sub-cause).
     let isolate_factory = RuntimeIsolateFactory::from_env(console_sender);
+    // Only the multiproc backend wires the detach pipeline into the isolates
+    // (and therefore feeds the shared budget's counters). With the legacy
+    // bridge backend there is no budget snapshot to expose, so the
+    // stream-detach /metrics block must stay absent.
+    if isolate_factory.js_uses_process {
+        server.set_stream_detach_budget(Arc::clone(&isolate_factory.stream_detach_budget));
+    }
     let abandon_drain = edger_worker::AbandonDrainLimits {
         max_bytes: isolate_factory.abandon_drain_max_bytes,
         max_ms: isolate_factory.abandon_drain_max_ms,

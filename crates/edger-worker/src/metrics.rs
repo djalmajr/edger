@@ -75,6 +75,20 @@ pub struct WorkerGroupMetrics {
     pub request_duration_ms_last: u64,
     pub request_duration_ms_p95: u64,
     pub request_total: u64,
+    /// Dispatches that obtained a process slot and ended in a worker/isolate
+    /// error (timeout, crash, protocol error). Per worker identity
+    /// (name/namespace/version) for the life of the `edger` process: NOT
+    /// reset by instance recycling or LRU eviction/readmission — resets only
+    /// when the `edger` process restarts.
+    pub requests_error_total: u64,
+    /// Dispatches that obtained a process slot and were cancelled before a
+    /// known result (the dispatch future was dropped mid-flight). Same
+    /// per-worker-identity lifetime as `requests_error_total`.
+    pub requests_cancelled_total: u64,
+    /// Dispatches that obtained a process slot and whose worker returned a
+    /// response (any HTTP status). Same per-worker-identity lifetime as
+    /// `requests_error_total`.
+    pub requests_ok_total: u64,
     pub terminating_processes: usize,
     pub timeout_total: u64,
     pub total_processes: usize,
@@ -274,6 +288,9 @@ pub struct WorkerGroupRuntimeMetrics {
     pub request_duration_ms_last: u64,
     pub request_duration_ms_p95: u64,
     pub request_total: u64,
+    pub requests_error_total: u64,
+    pub requests_cancelled_total: u64,
+    pub requests_ok_total: u64,
     pub timeout_total: u64,
     /// (EDG-10) TTL expirations kept alive by the `minProcesses` floor.
     pub ttl_kept_total: u64,
@@ -547,6 +564,34 @@ impl MetricsCollector {
         self.update_worker_group(worker_ref, |metrics| {
             metrics.record_request(duration_ms.max(1))
         });
+    }
+
+    /// Count one dispatch that obtained a process slot as `ok`: the worker
+    /// returned a response, with any HTTP status. Per worker identity
+    /// (name/namespace/version) for the life of the `edger` process: NOT
+    /// reset by instance recycling or LRU eviction/readmission — resets only
+    /// when the `edger` process restarts. Queue rejections and queue timeouts
+    /// are NOT counted here — they have their own group counters
+    /// (`rejected_total` / `timeout_total`). Synthetic health checks
+    /// (`x-edger-health-check`) are excluded by the dispatch paths.
+    pub fn record_worker_group_requests_ok(&self, worker_ref: &WorkerRef) {
+        self.update_worker_group(worker_ref, |metrics| metrics.requests_ok_total += 1);
+    }
+
+    /// Count one dispatch that obtained a process slot as `error`: a
+    /// worker/isolate error (timeout, crash, protocol error), including an
+    /// abnormal stream end. Same per-worker-identity semantics as
+    /// `record_worker_group_requests_ok`.
+    pub fn record_worker_group_requests_error(&self, worker_ref: &WorkerRef) {
+        self.update_worker_group(worker_ref, |metrics| metrics.requests_error_total += 1);
+    }
+
+    /// Count one dispatch that obtained a process slot as `cancelled`: the
+    /// dispatch future was dropped before a known result (the
+    /// `DispatchCancelGuard` cancel path). Same per-worker-identity semantics
+    /// as `record_worker_group_requests_ok`.
+    pub fn record_worker_group_requests_cancelled(&self, worker_ref: &WorkerRef) {
+        self.update_worker_group(worker_ref, |metrics| metrics.requests_cancelled_total += 1);
     }
 
     pub fn record_worker_group_outcome(

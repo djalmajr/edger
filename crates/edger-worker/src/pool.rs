@@ -1039,10 +1039,15 @@ impl WorkerPool {
 
         Supervisor::on_request_start(&instance).await?;
 
+        // Synthetic health checks are excluded from the request counters,
+        // consistent with the buffered path.
+        let count_metrics = !is_health_check_request(&req);
         let mut cancel_guard = DispatchCancelGuard {
             pool: self,
             instance: instance.clone(),
-            armed: true,
+            terminal: DispatchTerminal::Pending,
+            protect: true,
+            count_metrics,
         };
 
         let mut isolate_guard = instance.isolate().lock_owned().await;
@@ -1057,8 +1062,12 @@ impl WorkerPool {
         match res {
             Ok(WorkerResponse::Buffered(res)) => {
                 drop(isolate_guard);
+                // Known result: count `ok` NOW (centralized in the guard,
+                // skips synthetic health checks); the cleanup protection
+                // stays armed until on_request_complete finishes.
+                cancel_guard.finish_ok();
                 Supervisor::on_request_complete(instance, &config, self).await?;
-                cancel_guard.armed = false;
+                cancel_guard.complete();
                 let duration_ms = started.elapsed().as_millis().max(1) as u64;
                 self.inner.metrics.record_request_duration(duration_ms);
                 self.inner
@@ -1074,13 +1083,19 @@ impl WorkerPool {
             Ok(WorkerResponse::Streamed(streamed)) => {
                 // The guards move INTO the body: the instance stays Active and
                 // the process exclusive until the stream ends or is dropped.
-                cancel_guard.armed = false;
+                // The stream lifecycle owns the terminal request count
+                // (completion/recycle), so the guard counts nothing here.
+                cancel_guard.hand_off_to_stream();
                 let state = StreamDispatchState {
                     pool: self.clone(),
                     instance,
                     config,
                     outcome: request_outcome_for_status(streamed.status),
                     started,
+                    // The health-check exclusion travels WITH the body: the
+                    // stream terminals (completion/recycle) apply the same
+                    // exclusion to the group request counter.
+                    count_metrics,
                     _dispatch_slot: dispatch_slot,
                     isolate_guard: Some(isolate_guard),
                 };
@@ -1140,7 +1155,9 @@ impl WorkerPool {
             }
             Err(err) => {
                 drop(isolate_guard);
-                cancel_guard.armed = false;
+                // Terminal count, exactly once, centralized in the guard
+                // (skips synthetic health checks).
+                cancel_guard.finish_error();
                 let _ = Supervisor::on_critical_error(&instance, self).await;
                 self.remove_instance(&instance);
                 let duration_ms = started.elapsed().as_millis().max(1) as u64;
@@ -1256,7 +1273,10 @@ impl WorkerPool {
         let mut cancel_guard = DispatchCancelGuard {
             pool: self,
             instance: instance.clone(),
-            armed: true,
+            terminal: DispatchTerminal::Pending,
+            protect: true,
+            // Synthetic health checks are excluded from the request counters.
+            count_metrics: record_observation,
         };
 
         let isolate_arc = instance.isolate();
@@ -1265,9 +1285,19 @@ impl WorkerPool {
         drop(isolate);
 
         let res = match res {
-            Ok(res) => res,
+            Ok(res) => {
+                // Known result: count `ok` NOW (centralized in the guard,
+                // skips synthetic health checks); the cleanup protection
+                // stays armed until on_request_complete finishes, so a drop
+                // or supervisor error in that window recycles the instance
+                // without reclassifying the known result.
+                cancel_guard.finish_ok();
+                res
+            }
             Err(err) => {
-                cancel_guard.armed = false;
+                // Terminal count, exactly once, centralized in the guard
+                // (skips synthetic health checks).
+                cancel_guard.finish_error();
                 // An isolate failure must not leave the instance stuck in
                 // `Active`: recycle it so the next dispatch gets a fresh worker.
                 let _ = Supervisor::on_critical_error(&instance, self).await;
@@ -1289,7 +1319,9 @@ impl WorkerPool {
         };
 
         Supervisor::on_request_complete(instance, &config, self).await?;
-        cancel_guard.armed = false;
+        // The cleanup finished: disarm the guard's recycle protection (the
+        // `ok` was already counted at `finish_ok`).
+        cancel_guard.complete();
 
         if record_observation {
             let duration_ms = started.elapsed().as_millis().max(1) as u64;
@@ -1932,6 +1964,9 @@ fn merge_worker_group_metrics(
         group.request_duration_ms_last = counters.request_duration_ms_last;
         group.request_duration_ms_p95 = counters.request_duration_ms_p95;
         group.request_total = counters.request_total;
+        group.requests_error_total = counters.requests_error_total;
+        group.requests_cancelled_total = counters.requests_cancelled_total;
+        group.requests_ok_total = counters.requests_ok_total;
         group.timeout_total = counters.timeout_total;
         group.ttl_kept_total = counters.ttl_kept_total;
         group.wait_ms_last = counters.wait_ms_last;
@@ -2065,6 +2100,11 @@ struct StreamDispatchState {
     config: WorkerConfig,
     outcome: WorkerRequestOutcome,
     started: Instant,
+    /// Synthetic health-check traffic (`x-edger-health-check`): the stream
+    /// terminals (completion/recycle) skip the group request counters, the
+    /// same exclusion the dispatch entry applies. Existing counters (duration,
+    /// outcome) are unaffected.
+    count_metrics: bool,
     _dispatch_slot: DispatchSlot,
     isolate_guard: Option<tokio::sync::OwnedMutexGuard<Box<dyn Isolate>>>,
 }
@@ -2337,6 +2377,7 @@ async fn complete_stream_state(state: StreamDispatchState) {
         config,
         outcome,
         started,
+        count_metrics,
         _dispatch_slot,
         isolate_guard,
     } = state;
@@ -2348,6 +2389,13 @@ async fn complete_stream_state(state: StreamDispatchState) {
     pool.inner
         .metrics
         .record_worker_group_request(&worker_ref, duration_ms);
+    // Group request counter only (health checks are excluded, like at the
+    // dispatch entry); the existing outcome/duration counters are unaffected.
+    if count_metrics {
+        pool.inner
+            .metrics
+            .record_worker_group_requests_ok(&worker_ref);
+    }
     pool.inner
         .metrics
         .record_worker_group_outcome(&worker_ref, outcome);
@@ -2378,6 +2426,15 @@ async fn recycle_stream_state(
         .inner
         .metrics
         .record_worker_group_request(&worker_ref, duration_ms);
+    // Group request counter only (health checks are excluded, like at the
+    // dispatch entry); the existing outcome/duration counters are unaffected.
+    if state.count_metrics {
+        state
+            .pool
+            .inner
+            .metrics
+            .record_worker_group_requests_error(&worker_ref);
+    }
     state
         .pool
         .inner
@@ -2494,19 +2551,113 @@ fn emit_lifecycle(sender: Option<&LifecycleEventSender>, event: WorkerLifecycleE
     }
 }
 
-/// RAII guard that recycles an `Active` instance if the dispatch future is
-/// dropped before it completes (cancellation, e.g. an HTTP client disconnect).
-/// Disarmed on the normal completion and explicit-error paths, so it only fires
-/// on an otherwise-silent cancellation.
+/// The terminal state of a dispatch that obtained a process slot. The
+/// `DispatchCancelGuard` uses it to record the group request counter EXACTLY
+/// ONCE per dispatch:
+/// - a known result is finalized by the terminal site (`finish_ok` /
+///   `finish_error`) and counted there;
+/// - a response handed to the stream is `hand_off_to_stream`ed: the stream
+///   lifecycle counts at completion/recycle, so the guard counts nothing;
+/// - a future dropped before a known result (`Pending` at `Drop`) counts
+///   `cancelled` in `Drop` — the cancel path. (Recycling an incomplete exit
+///   is a separate duty, owned by the guard's `protect` flag.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DispatchTerminal {
+    /// Dropped before a known result: `cancelled` in `Drop`.
+    Pending,
+    /// The worker returned a response (any HTTP status).
+    Ok,
+    /// A worker/isolate error.
+    Error,
+    /// The stream lifecycle owns the terminal count.
+    Streamed,
+}
+
+/// RAII guard that recycles an `Active` instance if the dispatch exits
+/// incompletely (cancellation, e.g. an HTTP client disconnect, or a
+/// supervisor cleanup failure) and centralizes the terminal group request
+/// counter (ok / error / cancelled): each dispatch that obtained a process
+/// slot is counted exactly once. It carries two independent duties:
+/// - the TERMINAL RESULT (`terminal`): a known result is counted the moment
+///   the isolate returns it (`finish_ok`/`finish_error`), so a drop or a
+///   supervisor error DURING the `on_request_complete` cleanup can never
+///   reclassify a known result as `cancelled`;
+/// - the CLEANUP PROTECTION (`protect`): stays armed until the dispatch's
+///   cleanup has fully finished (`complete` after `on_request_complete`,
+///   `hand_off_to_stream` when the stream takes over, or `finish_error`
+///   when the site explicitly evicts the instance); a drop while it is
+///   armed recycles the instance.
+///
+/// `count_metrics` is false for synthetic health-check traffic
+/// (`x-edger-health-check`), which is excluded from the counters.
 struct DispatchCancelGuard<'a> {
     pool: &'a WorkerPool,
     instance: Arc<WorkerInstance>,
-    armed: bool,
+    terminal: DispatchTerminal,
+    protect: bool,
+    count_metrics: bool,
+}
+
+impl DispatchCancelGuard<'_> {
+    /// A known success: the worker returned a response (any HTTP status).
+    /// Counts the group `ok` once NOW — before the supervisor cleanup below —
+    /// and marks the result known so `Drop` never counts `cancelled`. The
+    /// cleanup protection stays armed until `complete()`.
+    fn finish_ok(&mut self) {
+        self.terminal = DispatchTerminal::Ok;
+        if self.count_metrics {
+            self.pool
+                .inner
+                .metrics
+                .record_worker_group_requests_ok(&self.instance.worker_ref);
+        }
+    }
+
+    /// A known failure: a worker/isolate error. Counts the group `error`
+    /// once, marks the result known, and disarms the cleanup protection —
+    /// the calling site explicitly evicts the instance.
+    fn finish_error(&mut self) {
+        self.terminal = DispatchTerminal::Error;
+        if self.count_metrics {
+            self.pool
+                .inner
+                .metrics
+                .record_worker_group_requests_error(&self.instance.worker_ref);
+        }
+        self.protect = false;
+    }
+
+    /// The response became a stream: its terminal count belongs to the stream
+    /// lifecycle (completion/recycle sites), so the guard counts nothing —
+    /// no double count on the hand-off — and the stream owns the lifecycle,
+    /// so the cleanup protection disarms here.
+    fn hand_off_to_stream(&mut self) {
+        self.terminal = DispatchTerminal::Streamed;
+        self.protect = false;
+    }
+
+    /// The supervisor cleanup (`on_request_complete`) finished: the dispatch
+    /// fully completed, so the cleanup protection disarms.
+    fn complete(&mut self) {
+        self.protect = false;
+    }
 }
 
 impl Drop for DispatchCancelGuard<'_> {
     fn drop(&mut self) {
-        if self.armed {
+        if self.terminal == DispatchTerminal::Pending {
+            // Cancelled before a known result: count it (exactly once — the
+            // guard is per dispatch). A known result (`Ok`) already counted
+            // at `finish_ok`, so a drop inside the `on_request_complete`
+            // cleanup never reclassifies it.
+            if self.count_metrics {
+                self.pool
+                    .inner
+                    .metrics
+                    .record_worker_group_requests_cancelled(&self.instance.worker_ref);
+            }
+        }
+        if self.protect {
             self.pool.recycle_cancelled(&self.instance);
         }
     }
