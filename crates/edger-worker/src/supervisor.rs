@@ -6,9 +6,23 @@ use std::time::Duration;
 use edger_core::WorkerConfig;
 
 use crate::error::WorkerError;
-use crate::instance::WorkerInstance;
+use crate::instance::{TtlArm, WorkerInstance};
 use crate::pool::WorkerPool;
 use crate::state::{accepts_dispatch, transition, WorkerEvent, WorkerState};
+
+/// Outcome of the atomic TTL-floor decision made by the pool (EDG-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TtlFloorDecision {
+    /// The group's `min_processes` floor keeps the instance alive: it stays
+    /// `Idle` and its TTL timer is re-armed with the same `ttl_ms`.
+    Keep,
+    /// The instance was atomically transitioned `Idle -> Terminating` by the
+    /// decision and must be cleaned up and removed from the pool.
+    Terminate,
+    /// The instance is no longer `Idle` (a dispatch won the race): nothing
+    /// to do.
+    NotIdle,
+}
 
 /// Lifecycle orchestration for a single worker instance.
 pub struct Supervisor;
@@ -86,7 +100,7 @@ impl Supervisor {
             instance.record_idle_notification();
 
             if ttl_ms > 0 {
-                Self::schedule_ttl_timer(instance, pool.clone(), ttl_ms);
+                Self::schedule_ttl_timer(&instance, pool, ttl_ms);
             }
         } else if next == WorkerState::EphemeralTerm {
             Self::finish_ephemeral(&instance, pool).await?;
@@ -110,14 +124,41 @@ impl Supervisor {
     }
 
     /// Invoked by TTL timer when sliding window expires (also used in tests).
+    ///
+    /// (EDG-10) `min_processes` is a MAINTAINED floor, not a one-shot
+    /// prewarm: the terminate-or-keep decision is made ATOMICALLY with the
+    /// group's living count inside the pool (`reserve_ttl_termination`).
+    /// When terminating this instance would drop the group below
+    /// `min_processes`, the instance stays `Idle` and the timer is re-armed
+    /// with the same `ttl_ms` (if the group grows later, the surplus expires
+    /// normally); otherwise the pre-transitioned instance is cleaned up and
+    /// removed, which triggers the pool's min-processes replenishment.
     pub async fn on_ttl_expired(
-        instance: &WorkerInstance,
+        instance: &Arc<WorkerInstance>,
         pool: &WorkerPool,
-    ) -> Result<(), WorkerError> {
-        if instance.state() != WorkerState::Idle {
-            return Ok(());
+    ) -> Result<TtlFloorDecision, WorkerError> {
+        match pool.reserve_ttl_termination(instance) {
+            TtlFloorDecision::NotIdle => Ok(TtlFloorDecision::NotIdle),
+            TtlFloorDecision::Keep => {
+                pool.record_ttl_kept(&instance.worker_ref);
+                // The re-arm belongs to the FIRED timer task (it alone
+                // carries the generation it claimed — rev2 P2 #1): after
+                // the 1ms barrier it re-arms with its own generation. A
+                // direct call (no fired timer task exists) records the
+                // decision only: there is no claimed generation whose
+                // window to re-arm.
+                Ok(TtlFloorDecision::Keep)
+            }
+            TtlFloorDecision::Terminate => {
+                // Already `Terminating` (the decision took the transition
+                // atomically): run the cleanup + removal. Detach semantics
+                // are the same as before — this runs inside the fired timer
+                // task, so its own handle was already cleared by the timer.
+                Self::cleanup(instance, pool, "ttl_expired").await?;
+                pool.remove_instance(instance);
+                Ok(TtlFloorDecision::Terminate)
+            }
         }
-        Self::begin_termination(instance, pool, WorkerEvent::TtlExpired).await
     }
 
     async fn retire_for_max_requests(
@@ -128,25 +169,6 @@ impl Supervisor {
         pool.terminate_isolate_with_lifecycle(instance, "max_requests")
             .await;
         instance.set_state(WorkerState::Terminated);
-        pool.remove_instance(instance);
-        Ok(())
-    }
-
-    async fn begin_termination(
-        instance: &WorkerInstance,
-        pool: &WorkerPool,
-        event: WorkerEvent,
-    ) -> Result<(), WorkerError> {
-        // Detach (do NOT abort): this runs inside the fired TTL timer task, so
-        // aborting its own handle here would cancel the termination before
-        // `cleanup()` -> `Terminated` -> `remove_instance` complete, leaving the
-        // instance wedged in `Terminating` and permanently `WorkerError::Retired`.
-        instance.clear_ttl_timer();
-        {
-            let mut state = instance.state_lock();
-            *state = transition(*state, event)?;
-        }
-        Self::cleanup(instance, pool, "ttl_expired").await?;
         pool.remove_instance(instance);
         Ok(())
     }
@@ -188,17 +210,80 @@ impl Supervisor {
         Ok(())
     }
 
-    fn schedule_ttl_timer(instance: Arc<WorkerInstance>, pool: WorkerPool, ttl_ms: u64) {
-        let timer_instance = Arc::clone(&instance);
-        let handle = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(ttl_ms)).await;
-            // Detach our own handle BEFORE running termination. `sleep` returned
-            // and no `.await` precedes this `clear`, so it runs atomically: from
-            // here on neither `begin_termination` nor a racing request's
-            // `cancel_ttl_timer()` can `abort()` this task mid-`cleanup()`.
-            timer_instance.clear_ttl_timer();
-            let _ = Supervisor::on_ttl_expired(&timer_instance, &pool).await;
+    /// (EDG-10 review P2 #3 / rev2 P2 #1) Arm the TTL timer for a FRESH idle
+    /// window (request completed). The `Idle` validation, the generation
+    /// bump, the abort of the previous sleeping timer, the task spawn and
+    /// the handle install are ONE critical section
+    /// (`arm_and_install`): no firing can observe a half-armed slot.
+    fn schedule_ttl_timer(instance: &Arc<WorkerInstance>, pool: &WorkerPool, ttl_ms: u64) {
+        if ttl_ms == 0 {
+            return;
+        }
+        let _ = instance.arm_and_install(TtlArm::New, |gen| {
+            Self::spawn_timer_task(instance, pool, ttl_ms, gen)
         });
-        instance.set_ttl_handle(handle);
+    }
+
+    /// (EDG-10 review P2 #3 / rev2 P2 #1) The Keep path of a FIRED timer
+    /// re-arms, carrying the task's OWN generation (the one it was armed
+    /// with and claimed): the re-arm is valid only while `slot.gen` AND
+    /// `slot.claimed` both still equal it — a newer task's claim (which
+    /// overwrote `claimed`) or a request's fresh arm (which bumped
+    /// `slot.gen`) drops the stale re-arm, and the validation + spawn +
+    /// install happen in one critical section.
+    fn rearm_keep_ttl_timer(
+        instance: &Arc<WorkerInstance>,
+        pool: &WorkerPool,
+        ttl_ms: u64,
+        task_gen: u64,
+    ) {
+        if ttl_ms == 0 {
+            return;
+        }
+        let _ = instance.arm_and_install(TtlArm::KeepRearm(task_gen), |gen| {
+            Self::spawn_timer_task(instance, pool, ttl_ms, gen)
+        });
+    }
+
+    /// The TTL timer task body: sleep for the window, claim OWN generation
+    /// before any further await, run the floor decision, and — on Keep —
+    /// re-arm carrying that same generation.
+    fn spawn_timer_task(
+        instance: &Arc<WorkerInstance>,
+        pool: &WorkerPool,
+        ttl_ms: u64,
+        gen: u64,
+    ) -> tokio::task::JoinHandle<()> {
+        let timer_instance = Arc::clone(instance);
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(ttl_ms)).await;
+            // (EDG-10 review P2 #3 / rev2 P2 #1) Claim our generation BEFORE
+            // any further await: only the CURRENT timer acts. A stale task
+            // (its window was superseded) does nothing — no decision, no
+            // re-arm — and it never clears a newer timer's handle.
+            if !timer_instance.claim_ttl_timer(gen) {
+                return;
+            }
+            let Ok(decision) = Supervisor::on_ttl_expired(&timer_instance, &pool).await else {
+                return;
+            };
+            if decision != TtlFloorDecision::Keep {
+                return;
+            }
+            // Real preemption window (EDG-10 review P2 #3): the decision and
+            // the re-arm install are separated by a 1ms timer sleep, so a
+            // request that completes in the window ALWAYS runs to completion
+            // before this (suspended) task can re-arm: it cancels the
+            // (already claimed) timer and installs its own. A bare
+            // `yield_now` would not be enough: the re-arm could win the race
+            // to the first internal yield of the request.
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            // Re-arm carrying THIS task's generation: the re-arm compares
+            // `slot.gen` AND `slot.claimed` against it, so a newer task that
+            // fired and claimed in the meantime owns the window — this stale
+            // re-arm is dropped.
+            Self::rearm_keep_ttl_timer(&timer_instance, &pool, ttl_ms, gen);
+        })
     }
 }

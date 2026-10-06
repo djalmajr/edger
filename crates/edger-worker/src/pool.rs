@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -28,9 +28,143 @@ use crate::metrics::{
     MetricsCollector, PoolMetrics, WorkerGroupIdentity, WorkerGroupMetrics, WorkerProcessMetrics,
     WorkerRecycleCause, WorkerRequestOutcome, WorkerStats,
 };
-use crate::state::WorkerState;
-use crate::supervisor::Supervisor;
+use crate::state::{transition, WorkerEvent, WorkerState};
+use crate::supervisor::{Supervisor, TtlFloorDecision};
 use crate::types::{PoolConfig, WorkerCacheKey};
+
+/// (EDG-10 review P2 #1) Whether a removal may trigger a min-processes
+/// replenishment attempt. Explicit on the removal itself — never inferred
+/// from timing or instance state.
+enum ReplenishPolicy {
+    /// Regular removals (TTL expiry, `max_requests`, eviction cleanup, ...):
+    /// when the group drops below `min_processes`, one background attempt is
+    /// scheduled.
+    Regular,
+    /// A placeholder whose SPAWN failed (the error branch of
+    /// `spawn_instance`): the failed attempt must NEVER schedule its
+    /// successor — an always-failing `prepare` would otherwise retry
+    /// forever, with no traffic and no backoff, whenever the circuit
+    /// breaker is disabled (`circuit_breaker_failures = 0`). The next
+    /// request or removal re-tries through the demand paths.
+    SpawnFailed,
+}
+
+/// (EDG-10 rev3) Test seam for the min-processes admission section.
+/// Compiled ONLY with the `test-hooks` feature (enabled by this
+/// package's own test targets) and inert unless a test arms it: it
+/// lets a test pause the admission section — after generation
+/// revalidation, before placeholder admission — while it still holds
+/// the `close_admission` lock, so a close path fired from another task
+/// must wait on the held section; after release, the admitted
+/// placeholder must be in the close-time drained set.
+#[cfg(feature = "test-hooks")]
+#[derive(Default)]
+pub struct AdmissionSectionSeam {
+    /// The next admission section pauses after validation (sticky until
+    /// released).
+    armed: AtomicBool,
+    /// True while an admission section is paused (holding
+    /// `close_admission`).
+    paused: AtomicBool,
+    /// Set by the test (or the release guard's Drop) to release a paused
+    /// section.
+    released: AtomicBool,
+    /// True when a hold gave up on the deadline WITHOUT being released —
+    /// the test consults this and fails: a held section that is never
+    /// released means the test lost its own release path.
+    timed_out: AtomicBool,
+}
+
+/// (EDG-10 rev4) Scope guard that releases the admission seam on DROP:
+/// a failed assertion (unwinding) still drops the guard, so a test failure
+/// never leaves the replenishment attempt parked in
+/// [`AdmissionSectionSeam::hold_section_if_armed`]. Release it explicitly
+/// at the intended point; `Drop` is the safety net.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub struct AdmissionSectionReleaseGuard<'a> {
+    seam: &'a AdmissionSectionSeam,
+}
+
+#[cfg(feature = "test-hooks")]
+impl<'a> AdmissionSectionReleaseGuard<'a> {
+    /// Take over release responsibility for this seam.
+    pub fn new(seam: &'a AdmissionSectionSeam) -> Self {
+        Self { seam }
+    }
+
+    /// Release at the intended point (idempotent; `Drop` repeats it).
+    pub fn release(&self) {
+        self.seam.release();
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+impl Drop for AdmissionSectionReleaseGuard<'_> {
+    fn drop(&mut self) {
+        self.seam.release();
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+impl AdmissionSectionSeam {
+    /// Arm: the next admission section of THIS pool pauses after
+    /// generation revalidation, before placeholder admission. Re-arming
+    /// resets the release and timeout flags. Must happen BEFORE the
+    /// removal that schedules the attempt (the attempt may run on another
+    /// worker of a multi-threaded runtime at any moment).
+    pub fn arm(&self) {
+        self.released.store(false, Ordering::SeqCst);
+        self.timed_out.store(false, Ordering::SeqCst);
+        self.armed.store(true, Ordering::SeqCst);
+    }
+
+    /// True while an admission section is paused on this seam.
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+
+    /// Release the paused section: it completes the admission and drops
+    /// the `close_admission` lock. Idempotent.
+    pub fn release(&self) {
+        self.released.store(true, Ordering::SeqCst);
+    }
+
+    /// True when a hold gave up on its deadline without being released.
+    pub fn timed_out(&self) -> bool {
+        self.timed_out.load(Ordering::SeqCst)
+    }
+
+    /// Called from the admission section (under `close_admission`): pauses
+    /// while armed. Polls with short REAL-TIME sleeps (no `await`) so the
+    /// section's lock guard is never held across an await (the attempt's
+    /// future stays `Send` for `tokio::spawn`): while this thread holds
+    /// the section, the close task blocks on `close_admission` on its own
+    /// worker and the test that will release runs on another — the test
+    /// needs at least 3 workers (spinner + blocked close + test).
+    ///
+    /// BOUNDED: the hold gives up after 10s of real time, recording the
+    /// timeout in `timed_out` (the test fails on it). `Runtime::drop`
+    /// waits for spawned tasks, so an unbounded hold after a failed test
+    /// would hang the whole test binary; the deadline bounds that. On
+    /// success the release (explicit or via the guard's `Drop`) arrives in
+    /// milliseconds — the budget only bounds failures.
+    pub(crate) fn hold_section_if_armed(&self) {
+        if !self.armed.load(Ordering::SeqCst) {
+            return;
+        }
+        self.paused.store(true, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !self.released.load(Ordering::SeqCst) {
+            if std::time::Instant::now() >= deadline {
+                self.timed_out.store(true, Ordering::SeqCst);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        self.paused.store(false, Ordering::SeqCst);
+    }
+}
 
 struct WorkerPoolInner {
     #[allow(dead_code)]
@@ -41,6 +175,23 @@ struct WorkerPoolInner {
     ephemeral: EphemeralGate,
     circuit_breakers: Mutex<HashMap<WorkerCacheKey, CircuitBreakerState>>,
     shutdown: AtomicBool,
+    /// (EDG-10) Serializes the atomic TTL-floor decisions (count of living
+    /// group members + the `Idle -> Terminating` transition): two timers
+    /// expiring together must each observe the other's decision, so the
+    /// `min_processes` floor can never be breached by a simultaneous burst.
+    ttl_decision: Mutex<()>,
+    /// (EDG-10 rev2 P2 #2) Serializes group CLOSE (shutdown / recycle:
+    /// `close_queue` + drained-set snapshot) with min-processes REPLENISH
+    /// admission (generation revalidation + `ensure_min_processes`): a
+    /// close that lands after the revalidation but before admission is
+    /// impossible — it is queued behind the same lock — and a close before
+    /// it is seen by the admission's `closed`/`shutdown` checks. No `await`
+    /// is ever held under this lock.
+    close_admission: Mutex<()>,
+    /// (EDG-10 rev3) Test seam for the admission section (see
+    /// [`AdmissionSectionSeam`]); not compiled without `test-hooks`.
+    #[cfg(feature = "test-hooks")]
+    admission_seam: AdmissionSectionSeam,
     lifecycle_events: Option<LifecycleEventSender>,
     /// Abandon-drain policy (EDG-9): a body dropped or errored BEFORE
     /// production completed waits at most `abandon_drain.drain_wait()` for
@@ -220,6 +371,10 @@ impl WorkerPool {
                 ephemeral,
                 circuit_breakers: Mutex::new(HashMap::new()),
                 shutdown: AtomicBool::new(false),
+                ttl_decision: Mutex::new(()),
+                close_admission: Mutex::new(()),
+                #[cfg(feature = "test-hooks")]
+                admission_seam: AdmissionSectionSeam::default(),
                 lifecycle_events,
                 abandon_drain,
             }),
@@ -254,7 +409,13 @@ impl WorkerPool {
         let instances = (0..initial_processes)
             .map(|_| self.create_instance(worker_ref))
             .collect();
-        Arc::new(WorkerGroup::new(instances))
+        let group = Arc::new(WorkerGroup::new(instances));
+        // (EDG-10) every instance learns its owning group for the TTL-floor
+        // decision and the min-processes replenishment.
+        for instance in group.instances_snapshot() {
+            instance.attach_group(&group);
+        }
+        group
     }
 
     fn worker_ref_with_dir(worker_ref: &WorkerRef) -> WorkerRef {
@@ -326,7 +487,11 @@ impl WorkerPool {
 
     async fn spawn_instance(&self, instance: &Arc<WorkerInstance>) -> Result<(), WorkerError> {
         if let Err(err) = self.ensure_circuit_closed(&instance.worker_ref) {
-            self.remove_instance_with_cause(instance, WorkerRecycleCause::Error);
+            self.remove_instance_with_cause(
+                instance,
+                WorkerRecycleCause::Error,
+                ReplenishPolicy::SpawnFailed,
+            );
             self.sync_worker_counts();
             return Err(err);
         }
@@ -343,7 +508,18 @@ impl WorkerPool {
             }
             Err(err) => {
                 self.record_spawn_failure(&instance.worker_ref);
-                self.remove_instance_with_cause(instance, WorkerRecycleCause::Error);
+                // (EDG-10 review P2 #1) a placeholder whose SPAWN failed is
+                // removed with the explicit `SpawnFailed` policy: it never
+                // schedules another replenishment attempt, whatever the
+                // spawn was (request, prewarm or a replenishment itself). An
+                // always-failing `prepare` would otherwise chain attempts
+                // forever — no traffic, no backoff — whenever the circuit
+                // breaker is disabled (`circuit_breaker_failures = 0`).
+                self.remove_instance_with_cause(
+                    instance,
+                    WorkerRecycleCause::Error,
+                    ReplenishPolicy::SpawnFailed,
+                );
                 self.sync_worker_counts();
                 Err(err)
             }
@@ -493,6 +669,7 @@ impl WorkerPool {
         let instances = group.ensure_min_processes(target, || {
             let spawn_start = Instant::now();
             let instance = self.create_instance(&worker_ref);
+            instance.attach_group(&group);
             self.inner.metrics.record_miss();
             self.inner
                 .metrics
@@ -548,6 +725,7 @@ impl WorkerPool {
         match group.reserve_slot_with_min(max_processes, worker_ref.config.min_processes, || {
             let spawn_start = Instant::now();
             let instance = self.create_instance(worker_ref);
+            instance.attach_group(&group);
             self.inner.metrics.record_miss();
             self.inner
                 .metrics
@@ -578,6 +756,7 @@ impl WorkerPool {
         match group.reserve_slot(usize::MAX, || {
             let spawn_start = Instant::now();
             let instance = self.create_instance(worker_ref);
+            instance.attach_group(&group);
             self.inner.metrics.record_miss();
             self.inner
                 .metrics
@@ -649,6 +828,7 @@ impl WorkerPool {
                 || {
                     let spawn_start = Instant::now();
                     let instance = self.create_instance(worker_ref);
+                    instance.attach_group(&group);
                     self.inner.metrics.record_miss();
                     self.inner
                         .metrics
@@ -1140,16 +1320,25 @@ impl WorkerPool {
     /// spawned next time, instead of leaving it wedged in `Active`.
     fn recycle_cancelled(&self, instance: &Arc<WorkerInstance>) {
         instance.set_state(WorkerState::Terminated);
-        self.remove_instance_with_cause(instance, WorkerRecycleCause::Error);
+        self.remove_instance_with_cause(
+            instance,
+            WorkerRecycleCause::Error,
+            ReplenishPolicy::Regular,
+        );
     }
 
     /// Remove a terminated/ephemeral worker from the LRU cache.
     pub fn remove_instance(&self, instance: &WorkerInstance) {
         let cause = infer_recycle_cause(instance);
-        self.remove_instance_with_cause(instance, cause);
+        self.remove_instance_with_cause(instance, cause, ReplenishPolicy::Regular);
     }
 
-    fn remove_instance_with_cause(&self, instance: &WorkerInstance, cause: WorkerRecycleCause) {
+    fn remove_instance_with_cause(
+        &self,
+        instance: &WorkerInstance,
+        cause: WorkerRecycleCause,
+        policy: ReplenishPolicy,
+    ) {
         let key = WorkerCacheKey::from_worker_ref(&instance.worker_ref);
         self.inner.cache.remove_instance(&key, instance.id());
         self.inner
@@ -1157,6 +1346,263 @@ impl WorkerPool {
             .record_worker_group_recycle(&instance.worker_ref, cause);
         self.inner.metrics.record_terminated();
         self.sync_worker_counts();
+        // (EDG-10 review P2 #1) only regular removals may trigger the
+        // min-processes replenishment; a failed-spawn placeholder never
+        // chains another attempt (explicit policy, not a timing heuristic).
+        if matches!(policy, ReplenishPolicy::Regular) {
+            self.maybe_replenish_min_processes(instance);
+        }
+    }
+
+    /// (EDG-10) One BACKGROUND min-processes replenishment attempt per
+    /// removal: when a removal dropped the instance's group below
+    /// `min_processes`, refill THAT group generation in the background. The
+    /// attempt revalidates the generation at execution time (P2 #2) and
+    /// never goes through `get_or_create_group` (P2 #2: it must not re-admit
+    /// a removed identity or evict another group). There is no retry loop —
+    /// a failed attempt is logged; the next removal or request tries again,
+    /// and a failed-spawn placeholder never schedules its successor (P2 #1,
+    /// `ReplenishPolicy::SpawnFailed`).
+    ///
+    /// No replenishment when: the pool is shutting down, the group was
+    /// LRU-evicted (`is_evicted`) or closed (`recycle_worker`/`shutdown`), or
+    /// `ttl_ms == 0` (ephemeral workers keep the current semantics, where
+    /// `minProcesses` only prewarms at startup).
+    fn maybe_replenish_min_processes(&self, removed: &WorkerInstance) {
+        let worker_ref = &removed.worker_ref;
+        if self.inner.shutdown.load(Ordering::SeqCst) {
+            return;
+        }
+        if worker_ref.config.ttl_ms == 0 || worker_ref.config.min_processes == 0 {
+            return;
+        }
+        // Capture the instance's OWN group as a WEAK now (promoted only at
+        // execution — rev2 P2 #3): the task revalidates this exact
+        // generation (P2 #2) at execution time.
+        let Some(group) = removed.own_group() else {
+            return;
+        };
+        if group.is_evicted() || group.is_closed() {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            // No runtime to run the attempt on (synchronous teardown paths):
+            // the next request re-establishes the floor through the demand
+            // path instead.
+            return;
+        };
+        // The removed instance is already out of the set (the caller removed
+        // it first): this is the post-removal living count.
+        let living = group
+            .instances_snapshot()
+            .iter()
+            .filter(|instance| is_living(instance.state()))
+            .count();
+        if living >= worker_ref.config.min_processes {
+            return;
+        }
+        // Counted at DISPATCH: "replenishments triggered" (the attempt itself
+        // may still fail, e.g. on an open circuit — that failure is logged by
+        // the attempt, not counted here).
+        self.inner.metrics.record_worker_group_replenish(worker_ref);
+        let pool = self.clone();
+        let worker_ref = worker_ref.clone();
+        let group_weak = Arc::downgrade(&group);
+        handle.spawn(async move {
+            pool.replenish_group(&group_weak, &worker_ref).await;
+        });
+    }
+
+    /// (EDG-10 review P2 #2 / rev2 P2 #1-#3) The min-processes
+    /// replenishment attempt, scoped to ONE group generation. The task
+    /// captured a `Weak<WorkerGroup>` of the generation that originated the
+    /// removal and promotes it ONLY at execution (a dropped generation —
+    /// evicted and drained, recycled, or shut down — is a no-op). At
+    /// execution the generation is revalidated and the placeholders are
+    /// admitted in ONE critical section under the pool's `close_admission`
+    /// lock, which the group-close paths (`shutdown`, `recycle_worker`)
+    /// hold for their `close_queue` + drained-set snapshot:
+    ///
+    /// * the group must not have been evicted (LRU capacity) or closed
+    ///   (`recycle_worker`/`shutdown`) since the task was scheduled;
+    /// * the cache must still hold THIS exact generation for the worker's
+    ///   identity (`Arc::ptr_eq`): a group that left the cache and was
+    ///   re-admitted in the meantime is a DIFFERENT generation — its floor
+    ///   is maintained by its own removals, and re-admitting here could
+    ///   evict an unrelated group without any traffic.
+    ///
+    /// When valid, instances are created and spawned DIRECTLY into the
+    /// captured group (`ensure_min_processes`), never through
+    /// `get_or_create_group`: the attempt can neither re-admit a removed
+    /// identity nor evict another group. A close that lands after the
+    /// admission (the snapshot is taken under the same lock, later) puts
+    /// the admitted placeholders INTO the drained set; the spawn revalidates
+    /// `closed`/`evicted`/`shutdown` after each wait, so no prepare runs
+    /// outside the drain. One attempt, no retry: a spawn failure removes
+    /// the placeholder with `ReplenishPolicy::SpawnFailed` (P2 #1) and
+    /// stops the loop.
+    async fn replenish_group(&self, group: &Weak<WorkerGroup>, worker_ref: &WorkerRef) {
+        // (rev2 P2 #3) Promote the captured WEAK only at execution: a
+        // dropped generation has nothing left to replenish.
+        let Some(group) = group.upgrade() else {
+            return;
+        };
+        // (rev2 P2 #2) The admission critical section: generation
+        // revalidation and placeholder admission share the `close_admission`
+        // lock with the close paths, so no close can slip in between the
+        // revalidation and `ensure_min_processes`.
+        let admitted: Vec<Arc<WorkerInstance>> = {
+            let _admission = self
+                .inner
+                .close_admission
+                .lock()
+                .expect("close/admission lock");
+            if group.is_evicted() || group.is_closed() || self.inner.shutdown.load(Ordering::SeqCst)
+            {
+                return;
+            }
+            let key = WorkerCacheKey::from_worker_ref(worker_ref);
+            match self.inner.cache.get_group(&key) {
+                // The generation left the cache (capacity eviction without a
+                // re-admission, or `recycle_worker`/`shutdown`): nothing to
+                // refill — a later request re-admits a fresh generation on
+                // demand.
+                None => return,
+                // A NEWER generation owns the identity: the captured group
+                // is stale; its floor is not this attempt's to restore.
+                Some(cached) if !Arc::ptr_eq(&cached, &group) => return,
+                Some(_) => {}
+            }
+            if let Err(err) = self.ensure_circuit_closed(worker_ref) {
+                tracing::warn!(
+                    worker = %worker_ref.name,
+                    version = %worker_ref.version,
+                    "min-processes replenishment skipped (circuit open): {err}"
+                );
+                return;
+            }
+            // (EDG-10 rev3) Test seam: a test may pause the section HERE —
+            // after generation revalidation, before placeholder admission,
+            // still holding `close_admission` — to race a close against a
+            // held section. Inert unless armed; not compiled without
+            // `test-hooks`. Synchronous (no `await` while the guard is
+            // held): the attempt's future must stay `Send`.
+            #[cfg(feature = "test-hooks")]
+            self.inner.admission_seam.hold_section_if_armed();
+            let target = worker_ref
+                .config
+                .min_processes
+                .min(worker_ref.config.max_processes.max(1));
+            let before = group.instances_snapshot();
+            let worker_ref = Self::worker_ref_with_dir(worker_ref);
+            let instances = group.ensure_min_processes(target, || {
+                let instance = self.create_instance(&worker_ref);
+                instance.attach_group(&group);
+                self.inner.metrics.record_miss();
+                instance
+            });
+            // Only the instances THIS attempt added: the pre-existing
+            // (living or already-spawned) members keep their own state.
+            instances
+                .into_iter()
+                .filter(|instance| !before.iter().any(|existing| existing.id() == instance.id()))
+                .collect()
+        };
+        self.sync_worker_counts();
+        for instance in &admitted {
+            let dispatch_lock = instance.dispatch_lock();
+            let _guard = dispatch_lock.lock_owned().await;
+            // (rev2 P2 #2) Re-validate after the wait: a close (shutdown /)
+            // recycle or eviction that landed while the dispatch lock was
+            // taken must not prepare an orphan OUTSIDE the drained set —
+            // the admitted placeholders stay in the group's vector, and the
+            // close-time snapshot (taken under the same lock, after this
+            // admission) includes them, so the drain terminates them.
+            if group.is_evicted() || group.is_closed() || self.inner.shutdown.load(Ordering::SeqCst)
+            {
+                break;
+            }
+            if instance.state() == WorkerState::Creating {
+                if let Err(err) = self.spawn_instance(instance).await {
+                    // One attempt, no retry: the failed placeholder was
+                    // removed WITHOUT scheduling another attempt (P2 #1).
+                    tracing::warn!(
+                        worker = %worker_ref.name,
+                        version = %worker_ref.version,
+                        "min-processes replenishment attempt failed: {err}"
+                    );
+                    break;
+                }
+            }
+            if instance.state() == WorkerState::Ready {
+                instance.set_state(WorkerState::Idle);
+            }
+        }
+        self.sync_worker_counts();
+    }
+
+    /// (EDG-10) Atomic TTL-floor decision: may the TTL of this idle instance
+    /// terminate it without dropping its group below `min_processes`?
+    ///
+    /// The count of living group members and the `Idle -> Terminating`
+    /// transition happen under the pool-wide `ttl_decision` lock: two timers
+    /// expiring together are serialized, and each one observes the other's
+    /// committed transition (or the already-removed member), so at most
+    /// `living - min_processes` instances may terminate in one burst and the
+    /// floor is never breached. Instances whose group left the pool (LRU-
+    /// evicted, closed, or dropped) have no floor to protect and terminate
+    /// as before (the eviction drain owns their cleanup).
+    pub(crate) fn reserve_ttl_termination(&self, instance: &WorkerInstance) -> TtlFloorDecision {
+        let _decision = self.inner.ttl_decision.lock().expect("ttl decision lock");
+        if instance.state() != WorkerState::Idle {
+            return TtlFloorDecision::NotIdle;
+        }
+        let group = instance.own_group();
+        let floor = group
+            .as_ref()
+            .filter(|group| !group.is_evicted() && !group.is_closed())
+            .map(|_| instance.worker_ref.config.min_processes)
+            .unwrap_or(0);
+        if floor == 0 {
+            return self.transition_ttl_to_terminating(instance);
+        }
+        // The removed-member count is taken from the instance's own group
+        // (not from the LRU: a re-admitted generation is a different group
+        // and must not donate its floor to an evicted instance's timer).
+        let living = group
+            .expect("a nonzero floor implies a live, admitted group")
+            .instances_snapshot()
+            .iter()
+            .filter(|member| is_living(member.state()))
+            .count();
+        if living.saturating_sub(1) < floor {
+            return TtlFloorDecision::Keep;
+        }
+        self.transition_ttl_to_terminating(instance)
+    }
+
+    /// `Idle -> Terminating` under the instance state lock. Called with the
+    /// decision lock held, which is what makes the count + transition atomic
+    /// with respect to the other TTL decisions (EDG-10).
+    fn transition_ttl_to_terminating(&self, instance: &WorkerInstance) -> TtlFloorDecision {
+        let mut state = instance.state_lock();
+        if *state != WorkerState::Idle {
+            return TtlFloorDecision::NotIdle;
+        }
+        match transition(*state, WorkerEvent::TtlExpired) {
+            Ok(next) => {
+                *state = next;
+                TtlFloorDecision::Terminate
+            }
+            // Unreachable: `(Idle, TtlExpired)` is a valid transition.
+            Err(_) => TtlFloorDecision::NotIdle,
+        }
+    }
+
+    /// (EDG-10) Count a TTL expiry that kept the instance alive because the
+    /// `min_processes` floor required it.
+    pub(crate) fn record_ttl_kept(&self, worker_ref: &WorkerRef) {
+        self.inner.metrics.record_worker_group_ttl_kept(worker_ref);
     }
 
     pub(crate) async fn terminate_isolate_with_lifecycle(
@@ -1275,14 +1721,25 @@ impl WorkerPool {
     /// identity. Removing the groups first guarantees that the next dispatch
     /// cold-starts from the current files while in-flight work drains.
     pub async fn recycle_worker(&self, name: &str, version: Option<&str>) -> usize {
-        let removed = self.inner.cache.remove_worker_groups(name, version);
-        for (_, group) in &removed {
-            group.close_queue();
-        }
-        let instances = removed
-            .iter()
-            .flat_map(|(_, group)| group.instances_snapshot())
-            .collect::<Vec<_>>();
+        // (EDG-10 rev2 P2 #2) Remove + close + drained-set snapshot in ONE
+        // critical section with min-processes replenishment admission
+        // (`close_admission`): placeholders admitted before the section are
+        // in the snapshot (drained); an admission after it sees the
+        // closed/removed generation and refuses.
+        let instances: Vec<Arc<WorkerInstance>> = {
+            let _admission = self
+                .inner
+                .close_admission
+                .lock()
+                .expect("close/admission lock");
+            let removed = self.inner.cache.remove_worker_groups(name, version);
+            let mut instances: Vec<Arc<WorkerInstance>> = Vec::new();
+            for (_, group) in &removed {
+                group.close_queue();
+                instances.extend(group.instances_snapshot());
+            }
+            instances
+        };
         self.inner
             .circuit_breakers
             .lock()
@@ -1313,10 +1770,23 @@ impl WorkerPool {
             return None;
         }
 
-        let groups = self.inner.cache.groups_snapshot();
-        for group in &groups {
-            group.close_queue();
-        }
+        let groups = {
+            // (EDG-10 rev2 P2 #2) Close + drained-set snapshot in ONE
+            // critical section with min-processes replenishment admission
+            // (`close_admission`): placeholders admitted before the section
+            // are in the snapshot (drained); an admission after it sees the
+            // closed generation and refuses.
+            let _admission = self
+                .inner
+                .close_admission
+                .lock()
+                .expect("close/admission lock");
+            let groups = self.inner.cache.groups_snapshot();
+            for group in &groups {
+                group.close_queue();
+            }
+            groups
+        };
         let instances = groups
             .iter()
             .flat_map(|group| group.instances_snapshot())
@@ -1363,6 +1833,24 @@ impl WorkerPool {
             .map(|instance| worker_stats_for_instance(instance.as_ref()))
     }
 
+    /// The current [`WorkerGroup`] generation held in the cache for this
+    /// worker identity (no recency update). Test support: lets a test close
+    /// or observe the exact generation a replenishment attempt captured.
+    pub fn worker_group(&self, worker_ref: &WorkerRef) -> Option<Arc<WorkerGroup>> {
+        self.inner
+            .cache
+            .get_group(&WorkerCacheKey::from_worker_ref(worker_ref))
+    }
+
+    /// (EDG-10 rev3) The admission-section test seam (see
+    /// [`AdmissionSectionSeam`]). Compiled only with `test-hooks` — this
+    /// package's own test targets.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn admission_section_seam(&self) -> &AdmissionSectionSeam {
+        &self.inner.admission_seam
+    }
+
     pub fn worker_stats(&self) -> Vec<WorkerStats> {
         let mut workers = self
             .inner
@@ -1407,6 +1895,18 @@ fn infer_recycle_cause(instance: &WorkerInstance) -> WorkerRecycleCause {
     WorkerRecycleCause::Ttl
 }
 
+/// (EDG-10) States that count as a "living" group member for the floor
+/// decision: anything that has not started terminating. `Terminating`
+/// members already committed their TTL decision (their slot is reserved),
+/// and `Terminated`/`EphemeralTerm` members are removed from the set by the
+/// pool.
+fn is_living(state: WorkerState) -> bool {
+    matches!(
+        state,
+        WorkerState::Creating | WorkerState::Ready | WorkerState::Idle | WorkerState::Active
+    )
+}
+
 fn merge_worker_group_metrics(
     mut live: BTreeMap<WorkerGroupIdentity, WorkerGroupMetrics>,
     runtime: BTreeMap<WorkerGroupIdentity, crate::metrics::WorkerGroupRuntimeMetrics>,
@@ -1427,11 +1927,13 @@ fn merge_worker_group_metrics(
         group.recycle_max_requests_total = counters.recycle_max_requests_total;
         group.recycle_oom_shutdown_total = counters.recycle_oom_shutdown_total;
         group.recycle_ttl_total = counters.recycle_ttl_total;
+        group.replenish_total = counters.replenish_total;
         group.rejected_total = counters.rejected_total;
         group.request_duration_ms_last = counters.request_duration_ms_last;
         group.request_duration_ms_p95 = counters.request_duration_ms_p95;
         group.request_total = counters.request_total;
         group.timeout_total = counters.timeout_total;
+        group.ttl_kept_total = counters.ttl_kept_total;
         group.wait_ms_last = counters.wait_ms_last;
         group.wait_ms_p50 = counters.wait_ms_p50;
         group.wait_ms_p95 = counters.wait_ms_p95;
@@ -2663,8 +3165,7 @@ mod stream_drop_flag_tests {
         let terminated = terminated_event(&mut lifecycle_rx);
         assert!(
             terminated.is_some_and(|event| {
-                event.reason == "stream_abandoned_recycled"
-                    && event.detail.as_deref() == Some("bytes_limit")
+                event.reason == "stream_abandoned_recycled" && event.detail == Some("bytes_limit")
             }),
             "the recycle detail must carry the drain cause (bytes_limit)"
         );
@@ -2726,8 +3227,7 @@ mod stream_drop_flag_tests {
             .find(|event| event.kind == WorkerLifecycleEventKind::Terminated);
         assert!(
             terminated.is_some_and(|event| {
-                event.reason == "stream_abandoned_recycled"
-                    && event.detail.as_deref() == Some("relay_timeout")
+                event.reason == "stream_abandoned_recycled" && event.detail == Some("relay_timeout")
             }),
             "the expired wait must recycle with the explicit relay_timeout sub-cause"
         );
@@ -2788,7 +3288,7 @@ mod stream_drop_flag_tests {
         assert!(
             terminated.is_some_and(|event| {
                 event.reason == "socket_poisoned"
-                    && event.detail.as_deref() == Some("bytes_limit")
+                    && event.detail == Some("bytes_limit")
             }),
             "the termination must carry the reason socket_poisoned, keeping the drain cause in the detail"
         );
@@ -2872,8 +3372,7 @@ mod stream_drop_flag_tests {
             .find(|event| event.kind == WorkerLifecycleEventKind::Terminated);
         assert!(
             terminated.is_some_and(|event| {
-                event.reason == "stream_abandoned_recycled"
-                    && event.detail.as_deref() == Some("bytes_limit")
+                event.reason == "stream_abandoned_recycled" && event.detail == Some("bytes_limit")
             }),
             "the real reason must be preserved (no drain_timeout rewrite)"
         );
@@ -2916,7 +3415,7 @@ mod stream_drop_flag_tests {
         assert!(
             terminated.is_some_and(|event| {
                 event.reason == "stream_abandoned_recycled"
-                    && event.detail.as_deref() == Some("socket_poisoned")
+                    && event.detail == Some("socket_poisoned")
             }),
             "a disabled-drain recycle must carry the socket_poisoned sub-cause"
         );

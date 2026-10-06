@@ -12,7 +12,21 @@ L1 é configurado no manifesto de cada worker, não no chart global:
 
 - `maxProcesses`: teto de processos persistentes para o mesmo worker dentro de
   uma réplica do EdgeR.
-- `minProcesses`: processos pré-criados quando o worker entra no pool.
+- `minProcesses`: piso mantido do grupo de processos do worker, não um prewarm
+  de uma vez: o pool pré-cria as instâncias quando o worker entra e mantém ao
+  menos `minProcesses` vivas. Expirações de `ttl` que derrubariam o grupo
+  abaixo do piso mantêm a instância `Idle` com o timer rearmado (a decisão é
+  atômica com a contagem de instâncias vivas), e qualquer remoção que deixe o
+  grupo abaixo do piso agenda uma tentativa de reabastecimento em segundo
+  plano (uma por remoção, sem loop de retry; a tentativa que falha no spawn
+  nunca agenda sucessora). A tentativa revalida a GERAÇÃO do grupo no
+  momento de executar: se o grupo foi evictado pelo LRU, fechado ou saiu do
+  cache (inclusive esvaziado pela própria remoção), ela não faz nada — a
+  identidade só volta no caminho sob demanda (próxima requisição pré-cria
+  uma geração nova com o piso). `ttl: 0` mantém a semântica efêmera (apenas
+  prewarm na entrada, sem reabastecimento); grupos evictados e shutdown
+  também não reabastecem. O piso continua valendo do teto `maxProcesses`, do
+  LRU e das métricas; a evicção LRU segue terminando o grupo inteiro.
 - `concurrency`: alias operacional normalizado junto com `maxProcesses`.
 - `queueLimit`: quantidade máxima de requests persistentes esperando quando
   todos os processos daquele worker estão ocupados.

@@ -504,9 +504,12 @@ async fn late_cleanup_of_old_generation_does_not_remove_new_group() {
     // the eviction-time drain (e.g. one created on the old group by a queued
     // waiter after the drain's snapshot) runs its TTL path now, after the
     // readmission. The real timer path is
-    // `on_ttl_expired` -> `begin_termination` -> `cleanup` ->
+    // `on_ttl_expired` -> `reserve_ttl_termination` -> `cleanup` ->
     // `pool::remove_instance`, which looks up the SAME key in the cache.
-    let old = WorkerInstance::new(wa.clone(), Box::new(factory.direct_isolate("t-a@latest")));
+    let old = Arc::new(WorkerInstance::new(
+        wa.clone(),
+        Box::new(factory.direct_isolate("t-a@latest")),
+    ));
     old.set_state(WorkerState::Idle);
     Supervisor::on_ttl_expired(&old, &pool).await.unwrap();
 

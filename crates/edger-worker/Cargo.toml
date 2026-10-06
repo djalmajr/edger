@@ -10,6 +10,13 @@ documentation.workspace = true
 description = "Worker pools, lifecycle and runtime metrics for EdgeR"
 publish = false
 
+[features]
+# (EDG-10 rev3) Test seam for the min-processes admission section
+# (`AdmissionSectionSeam` in pool.rs): inert unless armed from a test.
+# Enabled for this package's own test targets via the self dev-dependency
+# below; production builds (default features) compile none of it.
+test-hooks = []
+
 [dependencies]
 edger-core = { path = "../edger-core" }
 edger-isolation = { path = "../edger-isolation" }
@@ -24,6 +31,7 @@ thiserror.workspace = true
 bytes.workspace = true
 
 [dev-dependencies]
+edger-worker = { path = ".", features = ["test-hooks"] } # (EDG-10 rev3) self-reference: compile the `test-hooks` seam for this package's integration tests
 tokio = { workspace = true, features = ["rt", "macros", "test-util", "time"] }
 edger-isolation = { path = "../edger-isolation", features = ["wasm"] }
 serde_yaml.workspace = true
