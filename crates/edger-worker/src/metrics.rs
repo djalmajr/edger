@@ -68,6 +68,9 @@ pub struct WorkerGroupMetrics {
     pub recycle_max_requests_total: u64,
     pub recycle_oom_shutdown_total: u64,
     pub recycle_ttl_total: u64,
+    /// (EDG-10) Background min-processes replenishments triggered after a
+    /// removal dropped the group below `minProcesses`.
+    pub replenish_total: u64,
     pub rejected_total: u64,
     pub request_duration_ms_last: u64,
     pub request_duration_ms_p95: u64,
@@ -75,6 +78,10 @@ pub struct WorkerGroupMetrics {
     pub terminating_processes: usize,
     pub timeout_total: u64,
     pub total_processes: usize,
+    /// (EDG-10) TTL expirations that kept the instance `Idle` because the
+    /// `minProcesses` floor required it (the timer was re-armed with the
+    /// same `ttl_ms`).
+    pub ttl_kept_total: u64,
     pub version: String,
     pub wait_ms_last: u64,
     pub wait_ms_p50: u64,
@@ -261,11 +268,15 @@ pub struct WorkerGroupRuntimeMetrics {
     pub recycle_max_requests_total: u64,
     pub recycle_oom_shutdown_total: u64,
     pub recycle_ttl_total: u64,
+    /// (EDG-10) Background min-processes replenishments triggered.
+    pub replenish_total: u64,
     pub rejected_total: u64,
     pub request_duration_ms_last: u64,
     pub request_duration_ms_p95: u64,
     pub request_total: u64,
     pub timeout_total: u64,
+    /// (EDG-10) TTL expirations kept alive by the `minProcesses` floor.
+    pub ttl_kept_total: u64,
     pub wait_ms_last: u64,
     pub wait_ms_p50: u64,
     pub wait_ms_p95: u64,
@@ -519,6 +530,17 @@ impl MetricsCollector {
 
     pub fn record_worker_group_recycle(&self, worker_ref: &WorkerRef, cause: WorkerRecycleCause) {
         self.update_worker_group(worker_ref, |metrics| metrics.record_recycle(cause));
+    }
+
+    /// (EDG-10) A background min-processes replenishment was triggered.
+    pub fn record_worker_group_replenish(&self, worker_ref: &WorkerRef) {
+        self.update_worker_group(worker_ref, |metrics| metrics.replenish_total += 1);
+    }
+
+    /// (EDG-10) A TTL expiry kept the instance alive by the `minProcesses`
+    /// floor.
+    pub fn record_worker_group_ttl_kept(&self, worker_ref: &WorkerRef) {
+        self.update_worker_group(worker_ref, |metrics| metrics.ttl_kept_total += 1);
     }
 
     pub fn record_worker_group_request(&self, worker_ref: &WorkerRef, duration_ms: u64) {

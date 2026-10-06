@@ -92,6 +92,16 @@ são configuração L1 por worker no manifesto, não env global do pod. Por isso
 chart não cria um valor global de pool: um único knob de Deployment misturaria
 workloads diferentes e esconderia o orçamento de memória por processo.
 
+`minProcesses` é um piso mantido do pool (não prewarm de uma vez): expirações
+de `ttl` que derrubariam o grupo abaixo dele mantêm a instância `Idle` (timer
+rearmado) e qualquer remoção que deixe o grupo abaixo do piso agenda uma
+tentativa de reabastecimento em segundo plano, que revalida a geração do
+grupo ao executar (se o grupo saiu do cache — evicção, fechamento ou
+esvaziamento — a tentativa não faz nada e a identidade volta pela próxima
+requisição); `ttl: 0` mantém a semântica efêmera (apenas prewarm na
+entrada). O piso conta do teto `maxProcesses` e do LRU, e a evicção
+LRU segue terminando o grupo inteiro.
+
 Use L1 para remover head-of-line blocking de um worker quente dentro da réplica;
 use L2 para multiplicar a capacidade total com mais pods. HPA sozinho não
 resolve o caso em que cada réplica mantém `maxProcesses: 1` e o mesmo worker
