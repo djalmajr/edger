@@ -354,6 +354,120 @@ pub fn http_metrics_prometheus(metrics: &HttpMetrics) -> String {
     out
 }
 
+/// Content-codings the data plane can deliver through the compression layer
+/// (EDG-6 byte counters). The label set is fixed at two values — no
+/// worker/route labels, to keep cardinality bounded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompressionEncoding {
+    /// Brotli (`br`).
+    Br,
+    /// Gzip (`gzip`).
+    Gzip,
+}
+
+impl CompressionEncoding {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CompressionEncoding::Br => "br",
+            CompressionEncoding::Gzip => "gzip",
+        }
+    }
+}
+
+/// Byte counters of the data-plane compression, per content-coding (EDG-6):
+/// `*_in` counts the response bytes BEFORE compression, `*_out` the
+/// compressed bytes delivered. Both are recorded when the compressed body
+/// ends — including streaming (the encoder flushes per chunk) and abandoned
+/// bodies (whatever passed is counted). Cloned handles share the same
+/// counters, like `HttpMetrics`.
+#[derive(Clone, Debug, Default)]
+pub struct CompressionMetrics {
+    inner: Arc<CompressionMetricsInner>,
+}
+
+#[derive(Debug, Default)]
+struct CompressionMetricsInner {
+    br_bytes_in: AtomicU64,
+    br_bytes_out: AtomicU64,
+    gzip_bytes_in: AtomicU64,
+    gzip_bytes_out: AtomicU64,
+}
+
+impl CompressionMetrics {
+    /// Record one completed compressed response (exactly once per response,
+    /// fired by the drop of the final-body wrapper).
+    pub fn add(&self, encoding: CompressionEncoding, bytes_in: u64, bytes_out: u64) {
+        match encoding {
+            CompressionEncoding::Br => {
+                self.inner
+                    .br_bytes_in
+                    .fetch_add(bytes_in, Ordering::Relaxed);
+                self.inner
+                    .br_bytes_out
+                    .fetch_add(bytes_out, Ordering::Relaxed);
+            }
+            CompressionEncoding::Gzip => {
+                self.inner
+                    .gzip_bytes_in
+                    .fetch_add(bytes_in, Ordering::Relaxed);
+                self.inner
+                    .gzip_bytes_out
+                    .fetch_add(bytes_out, Ordering::Relaxed);
+            }
+        }
+    }
+
+    pub fn br_bytes_in(&self) -> u64 {
+        self.inner.br_bytes_in.load(Ordering::Relaxed)
+    }
+
+    pub fn br_bytes_out(&self) -> u64 {
+        self.inner.br_bytes_out.load(Ordering::Relaxed)
+    }
+
+    pub fn gzip_bytes_in(&self) -> u64 {
+        self.inner.gzip_bytes_in.load(Ordering::Relaxed)
+    }
+
+    pub fn gzip_bytes_out(&self) -> u64 {
+        self.inner.gzip_bytes_out.load(Ordering::Relaxed)
+    }
+}
+
+/// Prometheus rendering of the compression byte counters. Both label sets
+/// are always present (even at zero) so the counters exist before the first
+/// compressed response.
+pub fn compression_metrics_prometheus(metrics: &CompressionMetrics) -> String {
+    let mut out = String::new();
+    push_metric_header(
+        &mut out,
+        "edger_http_compression_bytes_in_total",
+        "counter",
+        "Response bytes of compressed app responses before compression, by content-encoding",
+    );
+    out.push_str("edger_http_compression_bytes_in_total{encoding=\"br\"} ");
+    out.push_str(&metrics.br_bytes_in().to_string());
+    out.push('\n');
+    out.push_str("edger_http_compression_bytes_in_total{encoding=\"gzip\"} ");
+    out.push_str(&metrics.gzip_bytes_in().to_string());
+    out.push('\n');
+    out.push('\n');
+    push_metric_header(
+        &mut out,
+        "edger_http_compression_bytes_out_total",
+        "counter",
+        "Compressed response bytes delivered to clients, by content-encoding",
+    );
+    out.push_str("edger_http_compression_bytes_out_total{encoding=\"br\"} ");
+    out.push_str(&metrics.br_bytes_out().to_string());
+    out.push('\n');
+    out.push_str("edger_http_compression_bytes_out_total{encoding=\"gzip\"} ");
+    out.push_str(&metrics.gzip_bytes_out().to_string());
+    out.push('\n');
+    out.push('\n');
+    out
+}
+
 fn escape_label_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }

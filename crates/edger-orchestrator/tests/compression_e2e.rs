@@ -1,5 +1,5 @@
-//! EDG-2/EDG-3: gzip + brotli compression of app responses, negotiated via
-//! `Accept-Encoding`, through the full pipeline.
+//! EDG-2/EDG-3/EDG-6: gzip + brotli compression of app responses, negotiated
+//! via `Accept-Encoding`, through the full pipeline.
 //!
 //! - only responses marked by `pipeline_handler` (apps) are compressed;
 //!   the control plane (`/health`, admin API) passes through untouched;
@@ -13,7 +13,16 @@
 //!   responses stay intact;
 //! - cancelling a compressed stream recycles the worker, like an identity
 //!   stream;
-//! - `Accept-Encoding: identity;q=0` answers 406 (tower-http, RFC 9110).
+//! - `Accept-Encoding` that accepts neither `br`, `gzip` nor `identity`
+//!   (the tower-http 406 case, RFC 9110 §12.5.3) is answered 406 ONLY for
+//!   app responses (same body/headers the layer would pass through); the
+//!   control plane returns its normal response, uncompressed, and never
+//!   406s (EDG-6);
+//! - the compression byte counters (`edger_http_compression_bytes_{in,
+//!   out}_total{encoding}`) record the pre/post-compression sizes when the
+//!   compressed body ends (EDG-6);
+//! - `EDGER_COMPRESSION=off` mounts no layer at all: no `content-encoding`,
+//!   no 406, no `Vary` from the layer (EDG-6).
 //!
 //! Deno-backed tests are ignored by default; run explicitly.
 
@@ -30,6 +39,7 @@ use edger_core::ExecutionKind;
 use edger_isolation::{DenoProcessIsolate, WasmIsolate};
 use edger_orchestrator::compression::{
     compression_layer, mark_app_response, mark_worker_without_encoding, weaken_worker_etag,
+    CompressionConfig,
 };
 use edger_orchestrator::{
     build_pipeline, load_manifests_from_dirs, ControlAuth, OrchestratorState, ServerState,
@@ -62,6 +72,48 @@ fn state(root: std::path::PathBuf) -> OrchestratorState {
         index: load_manifests_from_dirs(&[root]).unwrap(),
         auth: ControlAuth::with_static_key("test-root"),
     }
+}
+
+/// Like [`state`], but with an explicit `CompressionConfig` mounted on the
+/// shared server state before `build_pipeline` (EDG-6).
+fn state_with_compression(
+    root: std::path::PathBuf,
+    compression: CompressionConfig,
+) -> (
+    OrchestratorState,
+    edger_orchestrator::metrics::CompressionMetrics,
+) {
+    let server = ServerState::new_unready();
+    server.set_compression_config(compression);
+    let metrics = server.compression_metrics();
+    let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(ProcessFactory));
+    server.mark_ready(pool.clone());
+    (
+        OrchestratorState {
+            server,
+            pool,
+            index: load_manifests_from_dirs(&[root]).unwrap(),
+            auth: ControlAuth::with_static_key("test-root"),
+        },
+        metrics,
+    )
+}
+
+/// Write a static SPA app (kind `spa`) with a 2048 B `index.html` and a
+/// 2048 B hashed JS asset — the deno-free compressible app fixture.
+fn spa_app(root: &std::path::Path) -> (String, String) {
+    let dir = root.join("spa-app");
+    fs::create_dir_all(dir.join("assets")).unwrap();
+    fs::write(
+        dir.join("manifest.yaml"),
+        "name: spa-app\nversion: \"1.0.0\"\nentrypoint: index.html\nkind: spa\n",
+    )
+    .unwrap();
+    let html = format!("<!doctype html><html><body>{}", "h".repeat(2048));
+    fs::write(dir.join("index.html"), html.clone()).unwrap();
+    let js = format!("// spa bundle\n{}", "s".repeat(2048));
+    fs::write(dir.join("assets").join("app-AbCd1234.js"), js.clone()).unwrap();
+    (html, js)
 }
 
 fn worker(root: &std::path::Path, name: &str, index: &str) {
@@ -211,6 +263,51 @@ async fn send(app: Router, uri: &str, accept_encoding: Option<&str>) -> axum::ht
         .header("authorization", "Bearer test-root");
     if let Some(encoding) = accept_encoding {
         builder = builder.header("accept-encoding", encoding);
+    }
+    app.oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+/// HEAD variant of [`send`], with an optional `If-None-Match`.
+async fn head_request(
+    app: Router,
+    uri: &str,
+    accept_encoding: Option<&str>,
+    if_none_match: Option<&str>,
+) -> axum::http::Response<Body> {
+    let mut builder = Request::builder()
+        .method("HEAD")
+        .uri(uri)
+        .header("authorization", "Bearer test-root");
+    if let Some(encoding) = accept_encoding {
+        builder = builder.header("accept-encoding", encoding);
+    }
+    if let Some(value) = if_none_match {
+        builder = builder.header("if-none-match", value);
+    }
+    app.oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+/// GET variant of the request above, with an optional `If-None-Match`
+/// (the 304 case).
+async fn get_request(
+    app: Router,
+    uri: &str,
+    accept_encoding: Option<&str>,
+    if_none_match: Option<&str>,
+) -> axum::http::Response<Body> {
+    let mut builder = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("authorization", "Bearer test-root");
+    if let Some(encoding) = accept_encoding {
+        builder = builder.header("accept-encoding", encoding);
+    }
+    if let Some(value) = if_none_match {
+        builder = builder.header("if-none-match", value);
     }
     app.oneshot(builder.body(Body::empty()).unwrap())
         .await
@@ -697,16 +794,139 @@ mod compression {
         }
     }
 
-    // tower-http answers 406 (RFC 9110 §12.5.3) when no supported encoding is
-    // accepted — including on control-plane routes, because the layer sits
-    // outside the fixed routes. Recorded behavior, not a workaround.
+    // EDG-6: the tower-http 406 (RFC 9110 §12.5.3) is scoped to the data
+    // plane. `Accept-Encoding` accepting neither `br`, `gzip` nor
+    // `identity` no longer makes the control plane answer 406: the request
+    // is renegotiated to identity and every control-plane route returns its
+    // normal response, uncompressed.
     #[tokio::test]
-    async fn control_plane_also_gets_406_when_no_encoding_is_accepted() {
+    async fn control_plane_never_406s_and_stays_plain_when_no_encoding_is_accepted() {
+        let root = tempfile::tempdir().unwrap();
+        for i in 0..10 {
+            let name = format!("control-plane-app-{i:02}");
+            worker(root.path(), &name, "Deno.serve(() => new Response('ok'))");
+        }
+        let app = build_pipeline(state(root.path().to_path_buf()));
+
+        let res = send(app.clone(), "/health", Some("identity;q=0")).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(!res.headers().contains_key(header::CONTENT_ENCODING));
+        assert!(!vary_has_accept_encoding(res.headers()));
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..], br#"{"status":"ok"}"#);
+
+        // Same for the admin API (large body, >= 1024 B: the plain response
+        // must come from the renegotiation, not the size floor).
+        let res = send(app.clone(), "/api/admin/workers", Some("*;q=0")).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(!res.headers().contains_key(header::CONTENT_ENCODING));
+        assert!(!vary_has_accept_encoding(res.headers()));
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            bytes.len() >= 1024,
+            "the fixture must push the listing past the 1024 B floor; got {} bytes",
+            bytes.len()
+        );
+
+        // The 406 used to mask an EXECUTED admin mutation (the layer 406'd
+        // after the handler ran). Now the operation must execute with a
+        // NORMAL response: disable a worker and prove the effect persists.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/admin/workers/control-plane-app-01/disable")
+                    .header("authorization", "Bearer test-root")
+                    .header("accept-encoding", "identity;q=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "an unsatisfiable Accept-Encoding must not mask an executed admin operation"
+        );
+        assert!(!res.headers().contains_key(header::CONTENT_ENCODING));
+        let value: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["status"], "disabled", "the operation itself ran");
+
+        // The operation was executed exactly once: the worker stays disabled
+        // in the listing (read back without the unsatisfiable header).
+        let res = send(app, "/api/admin/workers", None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let value: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let workers = value["workers"].as_array().expect("worker listing");
+        let disabled = workers
+            .iter()
+            .find(|w| w["name"] == "control-plane-app-01")
+            .expect("worker listed");
+        assert_eq!(
+            disabled["status"].as_str(),
+            Some("disabled"),
+            "the disable mutation must have taken effect: {value:?}"
+        );
+    }
+
+    // EDG-6: an APP response to the same unsatisfiable `Accept-Encoding`
+    // still answers 406 Not Acceptable — with the same body/headers the
+    // tower-http layer passes through today (the plain body, the status
+    // overwritten, `Vary: Accept-Encoding` appended when missing).
+    #[tokio::test]
+    async fn app_response_still_gets_406_when_no_encoding_is_accepted() {
         let root = tempfile::tempdir().unwrap();
         worker(root.path(), "hello", "Deno.serve(() => new Response('ok'))");
         let app = build_pipeline(state(root.path().to_path_buf()));
-        let res = send(app, "/health", Some("identity;q=0")).await;
+
+        // Any app route: with deno the worker answers; without it the
+        // pipeline returns a JSON error — both are app responses
+        // (`AppResponse` marker), so the 406 scoping applies and the PLAIN
+        // body must pass through unchanged.
+        let res = send(app.clone(), "/hello/", Some("identity;q=0")).await;
         assert_eq!(res.status(), StatusCode::NOT_ACCEPTABLE);
+        assert!(!res.headers().contains_key(header::CONTENT_ENCODING));
+        assert!(vary_has_accept_encoding(res.headers()));
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        if &body[..] == b"ok" {
+            // deno is on PATH: the worker's plain body passes through.
+        } else {
+            let value: serde_json::Value = serde_json::from_slice(&body).expect("JSON error body");
+            assert!(
+                value.get("code").is_some(),
+                "the plain error body passes through: {value:?}"
+            );
+        }
+
+        for reject in ["*;q=0", "br;q=0,gzip;q=0,identity;q=0"] {
+            let res = send(app.clone(), "/hello/", Some(reject)).await;
+            assert_eq!(
+                res.status(),
+                StatusCode::NOT_ACCEPTABLE,
+                "{reject} must be 406 for app responses"
+            );
+        }
+
+        // The control plane on the SAME pipeline stays 200.
+        let res = send(app, "/health", Some("identity;q=0")).await;
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     // ---- full pipeline: fullstack/SPA static assets (no deno) -------------------
@@ -755,6 +975,339 @@ mod compression {
             String::from_utf8(brotli_decode(&bytes.to_vec())).unwrap(),
             js
         );
+    }
+
+    // ---- EDG-6: configuration + byte counters (no deno) ---------------------
+
+    #[tokio::test]
+    async fn compression_off_mounts_no_layer() {
+        let root = tempfile::tempdir().unwrap();
+        let (_html, js) = spa_app(root.path());
+        let (st, _) = state_with_compression(
+            root.path().to_path_buf(),
+            CompressionConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        let app = build_pipeline(st);
+
+        // No content-encoding even when br is accepted: there is no layer
+        // at all.
+        let res = send(app.clone(), "/spa-app/assets/app-AbCd1234.js", Some("br")).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(!res.headers().contains_key(header::CONTENT_ENCODING));
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(String::from_utf8(bytes.to_vec()).unwrap(), js);
+
+        // And no 406: the unsatisfiable Accept-Encoding is renegotiated to
+        // identity and the asset is served plain.
+        let res = send(app, "/spa-app/assets/app-AbCd1234.js", Some("identity;q=0")).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(!res.headers().contains_key(header::CONTENT_ENCODING));
+    }
+
+    #[tokio::test]
+    async fn compression_min_bytes_config_is_applied() {
+        let root = tempfile::tempdir().unwrap();
+        spa_app(root.path());
+        // Second, 8 KiB asset: with a 4096 B floor the 2 KiB asset must NOT
+        // be compressed while the 8 KiB one must.
+        fs::write(
+            root.path()
+                .join("spa-app")
+                .join("assets")
+                .join("big-AbCd1234.js"),
+            format!("// big bundle\n{}", "t".repeat(8192)),
+        )
+        .unwrap();
+        let (st, _) = state_with_compression(
+            root.path().to_path_buf(),
+            CompressionConfig {
+                min_bytes: 4096,
+                ..Default::default()
+            },
+        );
+        let app = build_pipeline(st);
+
+        // ~2 KiB body, below the 4096 B floor: plain.
+        let res = send(app.clone(), "/spa-app/assets/app-AbCd1234.js", Some("br")).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(!res.headers().contains_key(header::CONTENT_ENCODING));
+
+        // ~8 KiB body, above the floor: compressed.
+        let res = send(app, "/spa-app/assets/big-AbCd1234.js", Some("br")).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|v| v.to_str().ok()),
+            Some("br")
+        );
+    }
+
+    #[tokio::test]
+    async fn compression_byte_counters_record_br_and_gzip() {
+        let root = tempfile::tempdir().unwrap();
+        let (_html, _js) = spa_app(root.path());
+        let (st, metrics) =
+            state_with_compression(root.path().to_path_buf(), CompressionConfig::default());
+        let app = build_pipeline(st);
+
+        // brotli: when the compressed body ends, the wrapper drops and the
+        // counters are updated.
+        let res = send(app.clone(), "/spa-app/assets/app-AbCd1234.js", Some("br")).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_ENCODING)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "br"
+        );
+        let _compressed = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            metrics.br_bytes_in() >= 1024,
+            "pre-compression bytes counted"
+        );
+        assert!(metrics.br_bytes_out() > 0, "compressed bytes counted");
+        assert!(
+            metrics.br_bytes_out() < metrics.br_bytes_in(),
+            "br must actually shrink the body: in={} out={}",
+            metrics.br_bytes_in(),
+            metrics.br_bytes_out()
+        );
+        // The gzip counter is untouched by the br response.
+        assert_eq!(metrics.gzip_bytes_in(), 0);
+        assert_eq!(metrics.gzip_bytes_out(), 0);
+
+        // gzip: counted under its own label set.
+        let res = send(app.clone(), "/spa-app/assets/app-AbCd1234.js", Some("gzip")).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_ENCODING)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "gzip"
+        );
+        let _compressed = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(metrics.gzip_bytes_in() >= 1024);
+        assert!(metrics.gzip_bytes_out() > 0);
+        assert!(metrics.gzip_bytes_out() < metrics.gzip_bytes_in());
+
+        // Uncompressed traffic is not counted at all.
+        let in_before = metrics.br_bytes_in();
+        let out_before = metrics.br_bytes_out();
+        let res = send(app.clone(), "/spa-app/assets/app-AbCd1234.js", None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let _plain = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            metrics.br_bytes_in(),
+            in_before,
+            "identity traffic is not counted"
+        );
+        assert_eq!(metrics.br_bytes_out(), out_before);
+
+        // The control plane /metrics renders the counters with the non-zero
+        // values.
+        let res = send(app, "/metrics", None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        for line in [
+            "edger_http_compression_bytes_in_total{encoding=\"br\"} ",
+            "edger_http_compression_bytes_out_total{encoding=\"br\"} ",
+            "edger_http_compression_bytes_in_total{encoding=\"gzip\"} ",
+            "edger_http_compression_bytes_out_total{encoding=\"gzip\"} ",
+        ] {
+            let sample = text
+                .lines()
+                .find(|l| l.starts_with(line))
+                .unwrap_or_else(|| panic!("missing {line:?} in /metrics"));
+            let value = sample
+                .split_whitespace()
+                .next_back()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or_else(|| panic!("bad sample {sample:?}"));
+            assert!(value > 0, "{line:?} must be non-zero: {sample:?}");
+        }
+        assert!(text.contains("# TYPE edger_http_compression_bytes_in_total counter"));
+        assert!(text.contains("# TYPE edger_http_compression_bytes_out_total counter"));
+    }
+
+    // EDG-6 correction 1 + 2: HEAD is never compressed and its metadata
+    // passes through untouched; and a 304 carries NO content-length
+    // (artificial or not), for GET and HEAD alike — the main 0154d3a
+    // criterion (static fixture, no deno).
+    #[tokio::test]
+    async fn head_response_preserves_metadata_and_is_never_compressed() {
+        let root = tempfile::tempdir().unwrap();
+        spa_app(root.path());
+        let app = build_pipeline(state(root.path().to_path_buf()));
+        let uri = "/spa-app/assets/app-AbCd1234.js";
+
+        // Reference: the identity GET (no Accept-Encoding) — the HEAD
+        // metadata must match its content-length (present or absent alike).
+        let res = send(app.clone(), uri, None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let get_content_length = res
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .map(|value| value.to_str().ok().map(|s| s.to_string()));
+        let etag_value = res
+            .headers()
+            .get(header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .expect("static asset carries a weak etag")
+            .to_string();
+        drop(
+            axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        );
+
+        // HEAD without Accept-Encoding: the same content-length as the
+        // identity GET (or absent, exactly like the GET) and no
+        // content-encoding.
+        let res = head_request(app.clone(), uri, None, None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let head_content_length = res
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .map(|value| value.to_str().ok().map(|s| s.to_string()));
+        assert_eq!(
+            head_content_length, get_content_length,
+            "HEAD must preserve the GET's content-length (or its absence)"
+        );
+        assert!(!res.headers().contains_key(header::CONTENT_ENCODING));
+        drop(
+            axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        );
+
+        // HEAD with br accepted: never compressed — no content-encoding.
+        let res = head_request(app.clone(), uri, Some("br"), None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(!res.headers().contains_key(header::CONTENT_ENCODING));
+        drop(
+            axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        );
+
+        // GET with a matching If-None-Match: 304 with NO content-length —
+        // not even an artificial 0 — no content-encoding, empty body.
+        // main 0154d3a returned no content-length on a 304 (verified on a
+        // base copy); the pipeline gives the 304 an unknown-size empty
+        // stream so axum's `set_content_length` stamp is skipped
+        // (pipeline.rs, RFC 9110 §15.4.5).
+        let res = get_request(app.clone(), uri, None, Some(&etag_value)).await;
+        assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+        assert!(
+            !res.headers().contains_key(header::CONTENT_LENGTH),
+            "a 304 carries no content-length, artificial or not (got {:?})",
+            res.headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+        );
+        assert!(!res.headers().contains_key(header::CONTENT_ENCODING));
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(bytes.is_empty(), "a 304 carries no body, got {bytes:?}");
+
+        // HEAD with a matching If-None-Match: 304 with no content-encoding
+        // and — correction 2 — NO content-length at all, not even the
+        // artificial `content-length: 0`. Since the EDG-6 rework a HEAD 304
+        // carried the framework's exact-0 stamp (main 0154d3a returned no
+        // content-length on a 304); the outermost pipeline middleware
+        // (`strip_304_content_length`) removes the header and leaves the
+        // body unknown-sized, so axum's `RouteFuture`
+        // `set_content_length` — which records `size_hint().exact()` when
+        // the header is absent and empties the HEAD body to the exact-0
+        // `Body::empty()` around the layers — has nothing to record.
+        let res = head_request(app, uri, None, Some(&etag_value)).await;
+        assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+        assert!(
+            !res.headers().contains_key(header::CONTENT_LENGTH),
+            "a 304 carries no content-length, artificial or not (got {:?})",
+            res.headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+        );
+        assert!(!res.headers().contains_key(header::CONTENT_ENCODING));
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(bytes.is_empty(), "a 304 carries no body, got {bytes:?}");
+    }
+
+    // EDG-6 correction 3: a COMPRESSED app error response (the pipeline Err
+    // branch, which `pipeline_handler` does not mark with
+    // `WorkerResponseWithoutEncoding`) still advances the byte counters
+    // exactly once — the transformation marker is inserted by the inner
+    // middleware, which covers both pipeline branches (no deno).
+    #[tokio::test]
+    async fn compressed_app_error_advances_byte_counters_once() {
+        let root = tempfile::tempdir().unwrap();
+        worker(root.path(), "hello", "Deno.serve(() => new Response('ok'))");
+        let (st, metrics) = state_with_compression(
+            root.path().to_path_buf(),
+            CompressionConfig {
+                min_bytes: 32,
+                ..Default::default()
+            },
+        );
+        let app = build_pipeline(st);
+
+        // The route does not resolve to any worker: the pipeline answers its
+        // JSON error (404) — deterministically, with or without deno.
+        let res = send(app, "/missing-app", Some("gzip")).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|v| v.to_str().ok()),
+            Some("gzip"),
+            "the pipeline error JSON must be compressed (32 B floor)"
+        );
+        let compressed = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let plain = gzip_decode(&compressed.to_vec());
+        let value: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+        assert_eq!(value["code"], "NOT_FOUND");
+        assert!(
+            plain.len() >= 32,
+            "the error body is above the 32 B floor: {plain:?}"
+        );
+
+        // Both counters advanced ONCE: `in` equals the plain body length (a
+        // double add would be 2x) and `out` equals exactly the compressed
+        // bytes collected above. (No shrink assertion: a small body can
+        // legitimately grow under gzip — the codec's fixed header overhead
+        // exceeds the savings; that is a property of the codec, not of the
+        // counting. The pipeline's real min_bytes floor prevents it in
+        // production traffic.)
+        assert_eq!(metrics.gzip_bytes_in(), plain.len() as u64);
+        assert_eq!(metrics.gzip_bytes_out(), compressed.len() as u64);
+        // The br label set is untouched.
+        assert_eq!(metrics.br_bytes_in(), 0);
+        assert_eq!(metrics.br_bytes_out(), 0);
     }
 
     // ---- deno-backed (run explicitly) -------------------------------------------
@@ -1065,6 +1618,39 @@ mod compression {
         let res = send(app, "/big-app", Some("identity;q=0")).await;
         assert_eq!(res.status(), StatusCode::NOT_ACCEPTABLE);
         assert!(vary_has_accept_encoding(res.headers()));
+    }
+
+    // EDG-6: streaming compressed response — when the compressed body ends,
+    // the counters record the pre/post-compression totals (the encoder
+    // flushes per chunk; the body is counted as it passes).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs deno on PATH; run explicitly"]
+    async fn compression_byte_counters_record_streamed_response() {
+        let root = tempfile::tempdir().unwrap();
+        worker(root.path(), "big-app", BIG_WORKER);
+        let (st, metrics) =
+            state_with_compression(root.path().to_path_buf(), CompressionConfig::default());
+        let app = build_pipeline(st);
+
+        let res = send(app, "/big-app", Some("gzip")).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|v| v.to_str().ok()),
+            Some("gzip")
+        );
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let plain = gzip_decode(&bytes.to_vec());
+        let expected_plain_len = "/* edger bundle */\n".len() + 4096;
+        assert_eq!(plain.len(), expected_plain_len);
+        assert_eq!(metrics.gzip_bytes_in(), expected_plain_len as u64);
+        assert_eq!(metrics.gzip_bytes_out(), bytes.len() as u64);
+        assert!(metrics.gzip_bytes_out() < metrics.gzip_bytes_in());
+        assert_eq!(metrics.br_bytes_in(), 0);
+        assert_eq!(metrics.br_bytes_out(), 0);
     }
 
     // ETag through the full pipeline: a worker's strong ETag must be weakened

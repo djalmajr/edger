@@ -18,10 +18,11 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 use uuid::Uuid;
 
+use crate::compression::CompressionConfig;
 use crate::cron::CronMetrics;
 use crate::metrics::{
     cron_metrics_prometheus, http_metrics_prometheus, pool_metrics_prometheus,
-    tenant_routing_metrics_prometheus, HttpMetrics, TenantRoutingMetrics,
+    tenant_routing_metrics_prometheus, CompressionMetrics, HttpMetrics, TenantRoutingMetrics,
 };
 
 /// Listener configuration (addr from `PORT` env in the binary).
@@ -52,6 +53,12 @@ struct ServerStateInner {
     cron_metrics: CronMetrics,
     http_metrics: HttpMetrics,
     tenant_routing_metrics: TenantRoutingMetrics,
+    /// Data-plane compression settings (EDG-6). Set once before
+    /// `build_pipeline` (first call wins); read at pipeline assembly.
+    compression_config: std::sync::OnceLock<CompressionConfig>,
+    /// Compression byte counters (EDG-6): shared by the pipeline layers and
+    /// rendered by `/metrics`.
+    compression_metrics: CompressionMetrics,
     operational_events: crate::observability::OperationalStore,
     worker_errors: crate::worker_errors::WorkerErrorLog,
 }
@@ -74,6 +81,8 @@ impl ServerState {
                 cron_metrics: CronMetrics::default(),
                 http_metrics: HttpMetrics::default(),
                 tenant_routing_metrics: TenantRoutingMetrics::default(),
+                compression_config: std::sync::OnceLock::new(),
+                compression_metrics: CompressionMetrics::default(),
                 operational_events: crate::observability::OperationalStore::default(),
                 worker_errors: crate::worker_errors::WorkerErrorLog::default(),
             }),
@@ -152,6 +161,27 @@ impl ServerState {
         self.inner.http_metrics.clone()
     }
 
+    /// Set the data-plane compression settings (EDG-6). Must be called
+    /// BEFORE `build_pipeline`: the first call wins, later calls are
+    /// ignored (the pipeline reads the snapshot once at assembly).
+    pub fn set_compression_config(&self, config: CompressionConfig) {
+        let _ = self.inner.compression_config.set(config);
+    }
+
+    /// The effective data-plane compression settings (EDG-6); the default
+    /// config when `set_compression_config` was never called.
+    pub fn compression_config(&self) -> CompressionConfig {
+        self.inner
+            .compression_config
+            .get()
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn compression_metrics(&self) -> CompressionMetrics {
+        self.inner.compression_metrics.clone()
+    }
+
     pub fn tenant_routing_metrics(&self) -> TenantRoutingMetrics {
         self.inner.tenant_routing_metrics.clone()
     }
@@ -189,6 +219,9 @@ async fn metrics(State(state): State<ServerState>) -> impl IntoResponse {
     let mut body = pool_metrics_prometheus(&metrics);
     body.push_str(&cron_metrics_prometheus(&state.cron_metrics()));
     body.push_str(&http_metrics_prometheus(&state.http_metrics()));
+    body.push_str(&crate::metrics::compression_metrics_prometheus(
+        &state.compression_metrics(),
+    ));
     body.push_str(&tenant_routing_metrics_prometheus(
         &state.tenant_routing_metrics(),
     ));
