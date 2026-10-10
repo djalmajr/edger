@@ -9,12 +9,13 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use edger_core::wire::StreamProductionState;
 use edger_core::{
     AbandonedStream, CompletionSignal, DenoCacheMode, Isolate, IsolationError, SerializedRequest,
     SerializedResponse, StreamCompletion, StreamedResponse, TerminationOutcome, TerminationReport,
@@ -27,6 +28,7 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixListener;
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio::time::Instant as TokioInstant;
 
 use crate::deno_bundle::{
     default_deno_executable, entry_needs_bundle, DenoCliBundler, ModuleBundler,
@@ -254,6 +256,12 @@ impl AbandonDrain {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DrainOrigin {
+    ClientGone,
+    MaxDuration,
+}
+
 /// Snapshot of the stream-detach counters (byte-semaphore budget accounting).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StreamDetachStats {
@@ -283,6 +291,14 @@ pub struct StreamDetachStats {
     /// (`{"cancelled":true}`, EDG-9 slice 2): the socket was restored and
     /// the process was reused.
     pub abandoned_cancelled_total: u64,
+    /// Max-duration cuts by EDG-9 drain outcome. Kept separate from client
+    /// abandonment so this family means the configured duration limit fired.
+    pub max_duration_drained_total: u64,
+    pub max_duration_drain_bytes_limit_total: u64,
+    pub max_duration_drain_time_limit_total: u64,
+    pub max_duration_drain_stream_error_total: u64,
+    pub max_duration_socket_poisoned_total: u64,
+    pub max_duration_cancelled_total: u64,
 }
 
 /// Process-wide budget for the stream-detach pipelines, shared by every
@@ -309,6 +325,12 @@ struct StreamDetachStatsInner {
     abandoned_drain_stream_error_total: AtomicU64,
     abandoned_socket_poisoned_total: AtomicU64,
     abandoned_cancelled_total: AtomicU64,
+    max_duration_drained_total: AtomicU64,
+    max_duration_drain_bytes_limit_total: AtomicU64,
+    max_duration_drain_time_limit_total: AtomicU64,
+    max_duration_drain_stream_error_total: AtomicU64,
+    max_duration_socket_poisoned_total: AtomicU64,
+    max_duration_cancelled_total: AtomicU64,
 }
 
 impl StreamDetachBudget {
@@ -353,6 +375,30 @@ impl StreamDetachBudget {
                 .abandoned_socket_poisoned_total
                 .load(Ordering::Acquire),
             abandoned_cancelled_total: self.stats.abandoned_cancelled_total.load(Ordering::Acquire),
+            max_duration_drained_total: self
+                .stats
+                .max_duration_drained_total
+                .load(Ordering::Acquire),
+            max_duration_drain_bytes_limit_total: self
+                .stats
+                .max_duration_drain_bytes_limit_total
+                .load(Ordering::Acquire),
+            max_duration_drain_time_limit_total: self
+                .stats
+                .max_duration_drain_time_limit_total
+                .load(Ordering::Acquire),
+            max_duration_drain_stream_error_total: self
+                .stats
+                .max_duration_drain_stream_error_total
+                .load(Ordering::Acquire),
+            max_duration_socket_poisoned_total: self
+                .stats
+                .max_duration_socket_poisoned_total
+                .load(Ordering::Acquire),
+            max_duration_cancelled_total: self
+                .stats
+                .max_duration_cancelled_total
+                .load(Ordering::Acquire),
         }
     }
 
@@ -419,6 +465,34 @@ impl StreamDetachBudget {
             .abandoned_cancelled_total
             .fetch_add(1, Ordering::AcqRel);
     }
+
+    fn record_max_duration(&self, outcome: AbandonedStream) {
+        let counter = match outcome {
+            AbandonedStream::Drained => &self.stats.max_duration_drained_total,
+            AbandonedStream::BytesLimit => &self.stats.max_duration_drain_bytes_limit_total,
+            AbandonedStream::TimeLimit => &self.stats.max_duration_drain_time_limit_total,
+            AbandonedStream::StreamError => &self.stats.max_duration_drain_stream_error_total,
+            AbandonedStream::SocketPoisoned => &self.stats.max_duration_socket_poisoned_total,
+            AbandonedStream::Cancelled => &self.stats.max_duration_cancelled_total,
+            AbandonedStream::RelayTimeout => return,
+        };
+        counter.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn record_drain_outcome(&self, origin: DrainOrigin, outcome: AbandonedStream) {
+        match origin {
+            DrainOrigin::ClientGone => match outcome {
+                AbandonedStream::Drained => self.record_abandoned_drained(),
+                AbandonedStream::BytesLimit => self.record_abandoned_drain_bytes_limit(),
+                AbandonedStream::TimeLimit => self.record_abandoned_drain_time_limit(),
+                AbandonedStream::StreamError => self.record_abandoned_drain_stream_error(),
+                AbandonedStream::SocketPoisoned => self.record_abandoned_socket_poisoned(),
+                AbandonedStream::Cancelled => self.record_abandoned_cancelled(),
+                AbandonedStream::RelayTimeout => {}
+            },
+            DrainOrigin::MaxDuration => self.record_max_duration(outcome),
+        }
+    }
 }
 
 /// Detach-pipeline policy for one persistent-process isolate: the per-response
@@ -431,6 +505,8 @@ pub struct StreamDetach {
     pub max_bytes: u64,
     pub budget: Arc<StreamDetachBudget>,
     pub drain: AbandonDrain,
+    /// Optional total duration from response-header arrival.
+    pub max_duration: Option<Duration>,
 }
 
 /// One item of the detach pipeline's internal FIFO queue. The single queue
@@ -583,6 +659,34 @@ struct DetachPipeline {
     budget: Arc<StreamDetachBudget>,
     cancel: watch::Receiver<bool>,
     abandon_drain: AbandonDrain,
+    max_duration: Option<StreamDuration>,
+}
+
+#[derive(Clone)]
+struct StreamDuration {
+    started: TokioInstant,
+    limit: Duration,
+    elapsed_ms: Arc<AtomicU64>,
+    budget: Arc<StreamDetachBudget>,
+    drain: AbandonDrain,
+}
+
+enum StreamFrameRead {
+    Frame(Result<Vec<u8>, StreamFrameReadError>),
+    MaxDuration {
+        started: TokioInstant,
+        cancel_written: bool,
+        frame: Result<Vec<u8>, StreamFrameReadError>,
+    },
+}
+
+enum StreamFrameReadError {
+    Timeout,
+    Io(std::io::Error),
+}
+
+fn enabled_stream_max_duration(limit: Option<Duration>) -> Option<Duration> {
+    limit.filter(|duration| !duration.is_zero())
 }
 
 /// A streamed response from the worker process: status/headers up front, body
@@ -592,12 +696,13 @@ pub struct ProcessStreamedResponse {
     pub headers: Vec<(String, String)>,
     pub chunks: mpsc::Receiver<Result<Bytes, IsolationError>>,
     /// Production-complete signal (see `StreamedResponse::completed`); `None`
-    /// when the detach pipeline is not configured for this isolate.
+    /// when neither detach nor max-duration tracking is configured.
     pub completed: Option<CompletionSignal>,
     /// Shared production-complete flag (see
-    /// `StreamedResponse::production_complete`); `None` when the detach
-    /// pipeline is not configured for this isolate.
-    pub production_complete: Option<Arc<AtomicBool>>,
+    /// `StreamedResponse::production_complete`); `None` when neither detach
+    /// nor max-duration tracking is configured.
+    pub production_complete: Option<Arc<StreamProductionState>>,
+    pub max_duration_elapsed_ms: Option<Arc<AtomicU64>>,
 }
 
 #[derive(Deserialize)]
@@ -1058,10 +1163,32 @@ impl DenoWorkerProcess {
         let (restore_tx, restore_rx) = oneshot::channel();
         self.restore_rx = Some(restore_rx);
         let frame_timeout = self.timeout;
+        let stream_started = TokioInstant::now();
+        let max_duration =
+            enabled_stream_max_duration(detach.and_then(|policy| policy.max_duration));
+        let max_duration_elapsed_ms = max_duration.map(|_| Arc::new(AtomicU64::new(0)));
+        let duration_context = max_duration.map(|limit| StreamDuration {
+            started: stream_started,
+            limit,
+            elapsed_ms: Arc::clone(
+                max_duration_elapsed_ms
+                    .as_ref()
+                    .expect("max duration has an elapsed-time recorder"),
+            ),
+            budget: Arc::clone(
+                &detach
+                    .expect("max duration requires its stream policy")
+                    .budget,
+            ),
+            drain: detach
+                .expect("max duration requires its stream policy")
+                .drain,
+        });
 
         // Detach pipeline (EDG-8): a policy of `0` (or none) disables it
-        // entirely — no queue, no semaphores, no signal: the exact pre-slice
-        // path (blocking channel send, slot held until the body ends).
+        // entirely — no queue or semaphores. A max-duration policy still
+        // gives the legacy reader a completion signal so it can cancel and
+        // drain at the total-duration cutoff.
         let (completed, production_complete) = match detach.filter(|policy| policy.max_bytes > 0) {
             Some(policy) => {
                 let per_response_cap = policy.max_bytes.min(usize::MAX as u64) as usize;
@@ -1077,8 +1204,9 @@ impl DenoWorkerProcess {
                     budget: Arc::clone(&policy.budget),
                     cancel: cancel_rx,
                     abandon_drain: policy.drain,
+                    max_duration: duration_context.clone(),
                 };
-                let production_complete = Arc::new(AtomicBool::new(false));
+                let production_complete = Arc::new(StreamProductionState::default());
                 let (done_tx, done_rx) = oneshot::channel::<StreamCompletion>();
 
                 // Reader: reads frames, reserves the chunk's bytes (waits
@@ -1116,13 +1244,30 @@ impl DenoWorkerProcess {
                 )
             }
             None => {
+                let production_complete = duration_context
+                    .as_ref()
+                    .map(|_| Arc::new(StreamProductionState::default()));
+                let (done_tx, done_rx) = if duration_context.is_some() {
+                    let (tx, rx) = oneshot::channel::<StreamCompletion>();
+                    (Some(tx), Some(rx))
+                } else {
+                    (None, None)
+                };
                 tokio::spawn(Self::legacy_stream_pump(
                     read_half,
                     tx,
                     restore_tx,
                     frame_timeout,
+                    duration_context,
+                    production_complete.clone(),
+                    done_tx,
+                    Arc::clone(&self.write_half),
                 ));
-                (None, None)
+                let completed = done_rx.map(|done_rx| {
+                    Box::pin(async move { done_rx.await.unwrap_or(StreamCompletion::Incomplete) })
+                        as CompletionSignal
+                });
+                (completed, production_complete)
             }
         };
 
@@ -1132,7 +1277,174 @@ impl DenoWorkerProcess {
             chunks: rx,
             completed,
             production_complete,
+            max_duration_elapsed_ms,
         })
+    }
+
+    async fn read_stream_frame(
+        read_half: &mut OwnedReadHalf,
+        write_half: &Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
+        frame_timeout: Duration,
+        max_duration: Option<&StreamDuration>,
+    ) -> StreamFrameRead {
+        let Some(max_duration) = max_duration else {
+            return match tokio::time::timeout(frame_timeout, read_frame(read_half)).await {
+                Ok(Ok(frame)) => StreamFrameRead::Frame(Ok(frame)),
+                Ok(Err(err)) => StreamFrameRead::Frame(Err(StreamFrameReadError::Io(err))),
+                Err(_) => StreamFrameRead::Frame(Err(StreamFrameReadError::Timeout)),
+            };
+        };
+
+        let deadline = max_duration.started + max_duration.limit;
+        let mut read = Box::pin(read_frame(read_half));
+        tokio::select! {
+            biased;
+            _ = tokio::time::sleep_until(deadline) => {
+                let started = TokioInstant::now();
+                max_duration.elapsed_ms.store(
+                    started.duration_since(max_duration.started).as_millis() as u64,
+                    Ordering::Release,
+                );
+                if !max_duration.drain.enabled() {
+                    return StreamFrameRead::MaxDuration {
+                        started,
+                        cancel_written: false,
+                        frame: Err(StreamFrameReadError::Timeout),
+                    };
+                }
+
+                let cancel_payload = serde_json::to_vec(&WireCancel { control: "cancel" })
+                    .expect("static cancel frame serializes");
+                let write_budget = Duration::from_millis(max_duration.drain.max_ms)
+                    .min(frame_timeout);
+                let cancel_written = matches!(
+                    tokio::time::timeout(write_budget, async {
+                        let mut writer = write_half.lock().await;
+                        write_frame(&mut *writer, &cancel_payload).await
+                    })
+                    .await,
+                    Ok(Ok(()))
+                );
+                if !cancel_written {
+                    return StreamFrameRead::MaxDuration {
+                        started,
+                        cancel_written,
+                        frame: Err(StreamFrameReadError::Timeout),
+                    };
+                }
+
+                let time_remaining = Duration::from_millis(max_duration.drain.max_ms)
+                    .saturating_sub(started.elapsed())
+                    .min(frame_timeout);
+                let frame = match tokio::time::timeout(time_remaining, &mut read).await {
+                    Ok(Ok(frame)) => Ok(frame),
+                    Ok(Err(err)) => Err(StreamFrameReadError::Io(err)),
+                    Err(_) => Err(StreamFrameReadError::Timeout),
+                };
+                StreamFrameRead::MaxDuration {
+                    started,
+                    cancel_written,
+                    frame,
+                }
+            }
+            result = tokio::time::timeout(frame_timeout, &mut read) => {
+                match result {
+                    Ok(Ok(frame)) => StreamFrameRead::Frame(Ok(frame)),
+                    Ok(Err(err)) => StreamFrameRead::Frame(Err(StreamFrameReadError::Io(err))),
+                    Err(_) => StreamFrameRead::Frame(Err(StreamFrameReadError::Timeout)),
+                }
+            }
+        }
+    }
+
+    fn report_drain_outcome(
+        budget: &StreamDetachBudget,
+        origin: DrainOrigin,
+        outcome: AbandonedStream,
+        done_tx: oneshot::Sender<StreamCompletion>,
+    ) {
+        budget.record_drain_outcome(origin, outcome);
+        let completion = match origin {
+            DrainOrigin::ClientGone if outcome == AbandonedStream::Drained => {
+                StreamCompletion::Completed
+            }
+            DrainOrigin::ClientGone => StreamCompletion::Abandoned(outcome),
+            DrainOrigin::MaxDuration => StreamCompletion::MaxDuration(outcome),
+        };
+        let _ = done_tx.send(completion);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_max_duration_frame(
+        frame: Vec<u8>,
+        read_half: OwnedReadHalf,
+        write_half: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
+        budget: Arc<StreamDetachBudget>,
+        drain: AbandonDrain,
+        restore_tx: oneshot::Sender<OwnedReadHalf>,
+        production_complete: Arc<StreamProductionState>,
+        done_tx: oneshot::Sender<StreamCompletion>,
+        frame_timeout: Duration,
+        started: TokioInstant,
+        pre_discarded: u64,
+        detach_active: bool,
+    ) {
+        let Ok((tag, body)) = split_tag(&frame) else {
+            Self::report_drain_outcome(
+                &budget,
+                DrainOrigin::MaxDuration,
+                AbandonedStream::StreamError,
+                done_tx,
+            );
+            return;
+        };
+        match tag {
+            TAG_CHUNK => {
+                Self::drain_on_abandon(
+                    read_half,
+                    write_half,
+                    budget,
+                    drain,
+                    restore_tx,
+                    production_complete,
+                    done_tx,
+                    frame_timeout,
+                    pre_discarded.saturating_add(body.len() as u64),
+                    DrainOrigin::MaxDuration,
+                    started,
+                    true,
+                    detach_active,
+                )
+                .await;
+            }
+            TAG_END => {
+                let end: WireEndFrame = serde_json::from_slice(body).unwrap_or_default();
+                let outcome = if end.error.is_some() {
+                    AbandonedStream::StreamError
+                } else if end.cancelled {
+                    AbandonedStream::Cancelled
+                } else {
+                    AbandonedStream::Drained
+                };
+                if matches!(
+                    outcome,
+                    AbandonedStream::Drained | AbandonedStream::Cancelled
+                ) {
+                    let _ = restore_tx.send(read_half);
+                    production_complete.mark_max_duration_complete(outcome);
+                    if detach_active {
+                        budget.record_detached();
+                    }
+                }
+                Self::report_drain_outcome(&budget, DrainOrigin::MaxDuration, outcome, done_tx);
+            }
+            _ => Self::report_drain_outcome(
+                &budget,
+                DrainOrigin::MaxDuration,
+                AbandonedStream::StreamError,
+                done_tx,
+            ),
+        }
     }
 
     /// Detach-pipeline reader task (EDG-8): reads frames from the worker
@@ -1156,7 +1468,7 @@ impl DenoWorkerProcess {
         q_tx: mpsc::UnboundedSender<QueueItem>,
         pipeline: DetachPipeline,
         restore_tx: oneshot::Sender<OwnedReadHalf>,
-        production_complete: Arc<AtomicBool>,
+        production_complete: Arc<StreamProductionState>,
         done_tx: oneshot::Sender<StreamCompletion>,
         frame_timeout: Duration,
     ) {
@@ -1171,19 +1483,85 @@ impl DenoWorkerProcess {
                 return Self::drain_on_abandon(
                     read_half,
                     write_half,
-                    &pipeline,
+                    Arc::clone(&pipeline.budget),
+                    pipeline.abandon_drain,
                     restore_tx,
                     production_complete,
                     done_tx,
                     frame_timeout,
                     0,
+                    DrainOrigin::ClientGone,
+                    TokioInstant::now(),
+                    false,
+                    true,
                 )
                 .await;
             }
-            let frame = match tokio::time::timeout(frame_timeout, read_frame(&mut read_half)).await
+            let frame = match Self::read_stream_frame(
+                &mut read_half,
+                &write_half,
+                frame_timeout,
+                pipeline.max_duration.as_ref(),
+            )
+            .await
             {
-                Ok(Ok(frame)) => frame,
-                Ok(Err(err)) => {
+                StreamFrameRead::MaxDuration {
+                    started,
+                    cancel_written,
+                    frame,
+                } => {
+                    if !pipeline.abandon_drain.enabled() {
+                        Self::report_drain_outcome(
+                            &pipeline.budget,
+                            DrainOrigin::MaxDuration,
+                            AbandonedStream::SocketPoisoned,
+                            done_tx,
+                        );
+                        return;
+                    }
+                    if !cancel_written {
+                        Self::report_drain_outcome(
+                            &pipeline.budget,
+                            DrainOrigin::MaxDuration,
+                            AbandonedStream::SocketPoisoned,
+                            done_tx,
+                        );
+                        return;
+                    }
+                    match frame {
+                        Ok(frame) => {
+                            Self::finish_max_duration_frame(
+                                frame,
+                                read_half,
+                                write_half,
+                                Arc::clone(&pipeline.budget),
+                                pipeline.abandon_drain,
+                                restore_tx,
+                                Arc::clone(&production_complete),
+                                done_tx,
+                                frame_timeout,
+                                started,
+                                0,
+                                true,
+                            )
+                            .await;
+                        }
+                        Err(StreamFrameReadError::Timeout) => Self::report_drain_outcome(
+                            &pipeline.budget,
+                            DrainOrigin::MaxDuration,
+                            AbandonedStream::TimeLimit,
+                            done_tx,
+                        ),
+                        Err(StreamFrameReadError::Io(_)) => Self::report_drain_outcome(
+                            &pipeline.budget,
+                            DrainOrigin::MaxDuration,
+                            AbandonedStream::StreamError,
+                            done_tx,
+                        ),
+                    }
+                    return;
+                }
+                StreamFrameRead::Frame(Err(StreamFrameReadError::Io(err))) => {
                     // Abnormal: surface the error IN ORDER (the forwarder
                     // delivers it) and drop the read half — poisoned.
                     let _ = q_tx.send(QueueItem::End(Err(IsolationError::new(
@@ -1192,13 +1570,14 @@ impl DenoWorkerProcess {
                     ))));
                     return;
                 }
-                Err(_) => {
+                StreamFrameRead::Frame(Err(StreamFrameReadError::Timeout)) => {
                     let _ = q_tx.send(QueueItem::End(Err(IsolationError::new(
                         "UDS_TIMEOUT",
                         "stream stalled past the frame timeout",
                     ))));
                     return; // abnormal
                 }
+                StreamFrameRead::Frame(Ok(frame)) => frame,
             };
             let Ok((tag, body)) = split_tag(&frame) else {
                 return; // abnormal: empty frame — the queue close ends the body
@@ -1220,12 +1599,17 @@ impl DenoWorkerProcess {
                         return Self::drain_on_abandon(
                             read_half,
                             write_half,
-                            &pipeline,
+                            Arc::clone(&pipeline.budget),
+                            pipeline.abandon_drain,
                             restore_tx,
                             production_complete,
                             done_tx,
                             frame_timeout,
-                            discarded,
+                            discarded as u64,
+                            DrainOrigin::ClientGone,
+                            TokioInstant::now(),
+                            false,
+                            true,
                         )
                         .await;
                     };
@@ -1248,12 +1632,17 @@ impl DenoWorkerProcess {
                             return Self::drain_on_abandon(
                                 read_half,
                                 write_half,
-                                &pipeline,
+                                Arc::clone(&pipeline.budget),
+                                pipeline.abandon_drain,
                                 restore_tx,
                                 production_complete,
                                 done_tx,
                                 frame_timeout,
-                                discarded,
+                                discarded as u64,
+                                DrainOrigin::ClientGone,
+                                TokioInstant::now(),
+                                false,
+                                true,
                             )
                             .await;
                         }
@@ -1297,7 +1686,7 @@ impl DenoWorkerProcess {
                     // observer can never recycle a socket that is in sync and
                     // reusable.
                     let _ = restore_tx.send(read_half);
-                    production_complete.store(true, Ordering::SeqCst);
+                    production_complete.mark_complete();
                     pipeline.budget.record_detached();
                     let _ = q_tx.send(QueueItem::End(Ok(())));
                     let _ = done_tx.send(StreamCompletion::Completed);
@@ -1331,41 +1720,42 @@ impl DenoWorkerProcess {
     /// the byte limit is applied before a following `TAG_END` can be
     /// accepted when the budget is already spent.
     ///
-    /// A clean `TAG_END` within the limits restores the read half, sets the
-    /// production-complete flag and fires the completion signal as
-    /// `Completed`: the pool reuses the process. Past a limit, a read error
-    /// or an end frame with an error the drain stops WITHOUT restoring (the
-    /// socket is desynced) and reports the CAUSE on the signal: the pool
-    /// recycles, as before. A `0` in any limit disables the drain and
-    /// abandons the socket, reporting `SocketPoisoned`.
+    /// A clean `TAG_END` within the limits restores the read half and sets
+    /// the production-complete flag. Client-abandon drains complete as
+    /// `Completed`; max-duration drains carry their own outcome. Past a
+    /// limit, a read error or an end frame with an error the drain stops
+    /// WITHOUT restoring (the socket is desynced) and reports the cause so
+    /// the pool recycles. A `0` in any limit disables the drain and abandons
+    /// the socket, reporting `SocketPoisoned`.
     #[allow(clippy::too_many_arguments)]
     async fn drain_on_abandon(
         mut read_half: OwnedReadHalf,
         write_half: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
-        pipeline: &DetachPipeline,
+        budget: Arc<StreamDetachBudget>,
+        drain: AbandonDrain,
         restore_tx: oneshot::Sender<OwnedReadHalf>,
-        production_complete: Arc<AtomicBool>,
+        production_complete: Arc<StreamProductionState>,
         done_tx: oneshot::Sender<StreamCompletion>,
         frame_timeout: Duration,
-        pre_discarded: usize,
+        pre_discarded: u64,
+        origin: DrainOrigin,
+        started: TokioInstant,
+        cancel_already_sent: bool,
+        detach_active: bool,
     ) {
-        let drain = pipeline.abandon_drain;
         if !drain.enabled() {
-            // Drain disabled: abandon the socket, as before the drain
-            // existed — the process is poisoned by the mid-response socket.
-            // No cancel frame is written (current pre-slice-2 behavior).
-            pipeline.budget.record_abandoned_socket_poisoned();
+            // A disabled drain leaves the socket mid-response and recycles
+            // the process. No cancel frame is written.
             tracing::info!(
                 target: "edger.stream",
                 max_bytes = drain.max_bytes,
                 max_ms = drain.max_ms,
-                "stream abandoned with drain disabled; socket poisoned, process will be recycled"
+                "stream drain disabled; socket poisoned, process will be recycled"
             );
-            let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::SocketPoisoned));
+            Self::report_drain_outcome(&budget, origin, AbandonedStream::SocketPoisoned, done_tx);
             return;
         }
         let time_budget = Duration::from_millis(drain.max_ms);
-        let started = Instant::now();
         // (EDG-9 slice 2) Tell the harness to cancel the in-flight response
         // NOW, before the discard loop starts: an endless stream (SSE) can
         // never reach TAG_END on its own, so without the cancel the drain
@@ -1373,72 +1763,57 @@ impl DenoWorkerProcess {
         // bounded by the REMAINING drain time budget (short): a stalled
         // socket cannot hold the writer — and the pool's relay wait — open
         // past the budget.
-        let write_budget = time_budget
-            .saturating_sub(started.elapsed())
-            .min(frame_timeout);
-        let cancel_payload = serde_json::to_vec(&WireCancel { control: "cancel" })
-            .expect("static cancel frame serializes");
-        match tokio::time::timeout(write_budget, async {
-            let mut write_half = write_half.lock().await;
-            write_frame(&mut *write_half, &cancel_payload).await
-        })
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) => {
-                // Write failed (broken pipe / reset by peer): the socket is
-                // poisoned — recycle with the socket_poisoned sub-cause.
-                pipeline.budget.record_abandoned_socket_poisoned();
-                tracing::info!(
-                    target: "edger.stream",
-                    "abandon drain could not write the cancel frame; socket poisoned, process will be recycled"
-                );
-                let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::SocketPoisoned));
-                return;
-            }
-            Err(_) => {
-                // The write stalled past the remaining drain budget: the
-                // socket cannot be trusted in time — recycle with the
-                // socket_poisoned sub-cause.
-                pipeline.budget.record_abandoned_socket_poisoned();
-                tracing::info!(
-                    target: "edger.stream",
-                    elapsed_ms = started.elapsed().as_millis() as u64,
-                    "abandon drain cancel write stalled past the time budget; socket poisoned, process will be recycled"
-                );
-                let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::SocketPoisoned));
-                return;
+        if !cancel_already_sent {
+            let write_budget = time_budget
+                .saturating_sub(started.elapsed())
+                .min(frame_timeout);
+            let cancel_payload = serde_json::to_vec(&WireCancel { control: "cancel" })
+                .expect("static cancel frame serializes");
+            match tokio::time::timeout(write_budget, async {
+                let mut write_half = write_half.lock().await;
+                write_frame(&mut *write_half, &cancel_payload).await
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) | Err(_) => {
+                    Self::report_drain_outcome(
+                        &budget,
+                        origin,
+                        AbandonedStream::SocketPoisoned,
+                        done_tx,
+                    );
+                    return;
+                }
             }
         }
         // The pre-discarded chunk counts toward the byte budget from the
         // start: the limit is checked (and can stop the drain) before the
         // next frame — a `TAG_END` included — is accepted.
-        let mut discarded = pre_discarded as u64;
+        let mut discarded = pre_discarded;
         loop {
             let elapsed = started.elapsed();
             if elapsed >= time_budget {
                 // Time limit: the response did not finish in budget.
-                pipeline.budget.record_abandoned_drain_time_limit();
                 tracing::info!(
                     target: "edger.stream",
                     discarded_bytes = discarded,
                     elapsed_ms = elapsed.as_millis() as u64,
                     "abandon drain stopped at the time limit; socket poisoned, process will be recycled"
                 );
-                let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::TimeLimit));
+                Self::report_drain_outcome(&budget, origin, AbandonedStream::TimeLimit, done_tx);
                 return;
             }
             if discarded > drain.max_bytes {
                 // Byte limit: more of the response was in flight (or
                 // pre-discarded) than the drain may discard.
-                pipeline.budget.record_abandoned_drain_bytes_limit();
                 tracing::info!(
                     target: "edger.stream",
                     discarded_bytes = discarded,
                     max_bytes = drain.max_bytes,
                     "abandon drain stopped at the byte limit; socket poisoned, process will be recycled"
                 );
-                let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::BytesLimit));
+                Self::report_drain_outcome(&budget, origin, AbandonedStream::BytesLimit, done_tx);
                 return;
             }
             // Bound every frame read by the REMAINING drain budget as well as
@@ -1450,34 +1825,41 @@ impl DenoWorkerProcess {
                 Ok(Ok(frame)) => frame,
                 Ok(Err(_)) => {
                     // Read error: the socket is desynced — recycle.
-                    pipeline.budget.record_abandoned_drain_stream_error();
                     tracing::info!(
                         target: "edger.stream",
                         discarded_bytes = discarded,
                         "abandon drain stopped on a stream read error; socket poisoned, process will be recycled"
                     );
-                    let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::StreamError));
+                    Self::report_drain_outcome(
+                        &budget,
+                        origin,
+                        AbandonedStream::StreamError,
+                        done_tx,
+                    );
                     return;
                 }
                 Err(_) => {
                     // The frame stalled or the drain time budget ran out
                     // while reading — either way the response did not end
                     // in time: recycle.
-                    pipeline.budget.record_abandoned_drain_time_limit();
                     tracing::info!(
                         target: "edger.stream",
                         discarded_bytes = discarded,
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         "abandon drain stopped at the time limit; socket poisoned, process will be recycled"
                     );
-                    let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::TimeLimit));
+                    Self::report_drain_outcome(
+                        &budget,
+                        origin,
+                        AbandonedStream::TimeLimit,
+                        done_tx,
+                    );
                     return;
                 }
             };
             let Ok((tag, body)) = split_tag(&frame) else {
                 // Protocol error (empty frame): the socket is desynced.
-                pipeline.budget.record_abandoned_drain_stream_error();
-                let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::StreamError));
+                Self::report_drain_outcome(&budget, origin, AbandonedStream::StreamError, done_tx);
                 return;
             };
             match tag {
@@ -1488,9 +1870,12 @@ impl DenoWorkerProcess {
                     let end: WireEndFrame = serde_json::from_slice(body).unwrap_or_default();
                     if end.error.is_some() {
                         // The response itself ended in error: recycle.
-                        pipeline.budget.record_abandoned_drain_stream_error();
-                        let _ =
-                            done_tx.send(StreamCompletion::Abandoned(AbandonedStream::StreamError));
+                        Self::report_drain_outcome(
+                            &budget,
+                            origin,
+                            AbandonedStream::StreamError,
+                            done_tx,
+                        );
                         return;
                     }
                     if end.cancelled {
@@ -1503,38 +1888,57 @@ impl DenoWorkerProcess {
                         // completes with the `stream_abandoned_drained` reason
                         // and the `cancelled` sub-cause).
                         let _ = restore_tx.send(read_half);
-                        production_complete.store(true, Ordering::SeqCst);
-                        pipeline.budget.record_detached();
-                        pipeline.budget.record_abandoned_cancelled();
+                        if origin == DrainOrigin::MaxDuration {
+                            production_complete
+                                .mark_max_duration_complete(AbandonedStream::Cancelled);
+                        } else {
+                            production_complete.mark_complete();
+                        }
+                        if detach_active {
+                            budget.record_detached();
+                        }
                         tracing::info!(
                             target: "edger.stream",
                             discarded_bytes = discarded,
                             elapsed_ms = started.elapsed().as_millis() as u64,
                             "abandon drain reached the cancel end within the limits; process reused"
                         );
-                        let _ =
-                            done_tx.send(StreamCompletion::Abandoned(AbandonedStream::Cancelled));
+                        Self::report_drain_outcome(
+                            &budget,
+                            origin,
+                            AbandonedStream::Cancelled,
+                            done_tx,
+                        );
                         return;
                     }
                     // Clean end WITHIN the limits: the socket is in sync —
                     // reuse the process exactly as on a normal clean end.
                     let _ = restore_tx.send(read_half);
-                    production_complete.store(true, Ordering::SeqCst);
-                    pipeline.budget.record_detached();
-                    pipeline.budget.record_abandoned_drained();
+                    if origin == DrainOrigin::MaxDuration {
+                        production_complete.mark_max_duration_complete(AbandonedStream::Drained);
+                    } else {
+                        production_complete.mark_complete();
+                    }
+                    if detach_active {
+                        budget.record_detached();
+                    }
                     tracing::info!(
                         target: "edger.stream",
                         discarded_bytes = discarded,
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         "abandon drain reached a clean end within the limits; process reused"
                     );
-                    let _ = done_tx.send(StreamCompletion::Completed);
+                    Self::report_drain_outcome(&budget, origin, AbandonedStream::Drained, done_tx);
                     return;
                 }
                 _ => {
                     // Protocol error (unknown tag): the socket is desynced.
-                    pipeline.budget.record_abandoned_drain_stream_error();
-                    let _ = done_tx.send(StreamCompletion::Abandoned(AbandonedStream::StreamError));
+                    Self::report_drain_outcome(
+                        &budget,
+                        origin,
+                        AbandonedStream::StreamError,
+                        done_tx,
+                    );
                     return;
                 }
             }
@@ -1602,17 +2006,83 @@ impl DenoWorkerProcess {
     /// Legacy stream pump (pre-EDG-8): one task reads frames and blocking
     /// sends chunks on the body channel; the worker slot stays held until the
     /// body is fully consumed or dropped.
+    #[allow(clippy::too_many_arguments)]
     async fn legacy_stream_pump(
         mut read_half: OwnedReadHalf,
         tx: mpsc::Sender<Result<Bytes, IsolationError>>,
         restore_tx: oneshot::Sender<OwnedReadHalf>,
         frame_timeout: Duration,
+        max_duration: Option<StreamDuration>,
+        production_complete: Option<Arc<StreamProductionState>>,
+        done_tx: Option<oneshot::Sender<StreamCompletion>>,
+        write_half: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
     ) {
         loop {
-            let frame = match tokio::time::timeout(frame_timeout, read_frame(&mut read_half)).await
+            let frame = match Self::read_stream_frame(
+                &mut read_half,
+                &write_half,
+                frame_timeout,
+                max_duration.as_ref(),
+            )
+            .await
             {
-                Ok(Ok(frame)) => frame,
-                Ok(Err(err)) => {
+                StreamFrameRead::MaxDuration {
+                    started,
+                    cancel_written,
+                    frame,
+                } => {
+                    let Some(max_duration) = max_duration.as_ref() else {
+                        return;
+                    };
+                    let Some(done_tx) = done_tx else {
+                        return;
+                    };
+                    if !max_duration.drain.enabled() || !cancel_written {
+                        Self::report_drain_outcome(
+                            &max_duration.budget,
+                            DrainOrigin::MaxDuration,
+                            AbandonedStream::SocketPoisoned,
+                            done_tx,
+                        );
+                        return;
+                    }
+                    match frame {
+                        Ok(frame) => {
+                            Self::finish_max_duration_frame(
+                                frame,
+                                read_half,
+                                write_half,
+                                Arc::clone(&max_duration.budget),
+                                max_duration.drain,
+                                restore_tx,
+                                production_complete
+                                    .as_ref()
+                                    .expect("max duration has a production-complete flag")
+                                    .clone(),
+                                done_tx,
+                                frame_timeout,
+                                started,
+                                0,
+                                false,
+                            )
+                            .await;
+                        }
+                        Err(StreamFrameReadError::Timeout) => Self::report_drain_outcome(
+                            &max_duration.budget,
+                            DrainOrigin::MaxDuration,
+                            AbandonedStream::TimeLimit,
+                            done_tx,
+                        ),
+                        Err(StreamFrameReadError::Io(_)) => Self::report_drain_outcome(
+                            &max_duration.budget,
+                            DrainOrigin::MaxDuration,
+                            AbandonedStream::StreamError,
+                            done_tx,
+                        ),
+                    }
+                    return;
+                }
+                StreamFrameRead::Frame(Err(StreamFrameReadError::Io(err))) => {
                     let _ = tx
                         .send(Err(IsolationError::new(
                             "UDS_IO",
@@ -1621,7 +2091,7 @@ impl DenoWorkerProcess {
                         .await;
                     return; // abnormal: read half dropped, process poisoned
                 }
-                Err(_) => {
+                StreamFrameRead::Frame(Err(StreamFrameReadError::Timeout)) => {
                     let _ = tx
                         .send(Err(IsolationError::new(
                             "UDS_TIMEOUT",
@@ -1630,6 +2100,7 @@ impl DenoWorkerProcess {
                         .await;
                     return; // abnormal
                 }
+                StreamFrameRead::Frame(Ok(frame)) => frame,
             };
             let Ok((tag, body)) = split_tag(&frame) else {
                 return; // abnormal: empty frame
@@ -1664,6 +2135,12 @@ impl DenoWorkerProcess {
                         return;
                     }
                     let _ = restore_tx.send(read_half); // clean end: reusable
+                    if let Some(production_complete) = production_complete {
+                        production_complete.mark_complete();
+                    }
+                    if let Some(done_tx) = done_tx {
+                        let _ = done_tx.send(StreamCompletion::Completed);
+                    }
                     return;
                 }
                 _ => return, // abnormal: unknown tag
@@ -2093,6 +2570,8 @@ pub struct DenoProcessIsolate {
     /// Stream-detach policy (EDG-8): releases the worker slot as soon as
     /// production completes; `None` keeps the legacy blocking behavior.
     detach: Option<StreamDetach>,
+    /// Process-wide default duration from the orchestrator environment.
+    stream_max_duration_default_ms: Option<u64>,
 }
 
 impl DenoProcessIsolate {
@@ -2108,28 +2587,37 @@ impl DenoProcessIsolate {
         }
     }
 
-    /// Enable the stream-detach pipeline: `max_bytes` caps how much of ONE
+    /// Configure the stream policy: `max_bytes` caps how much of ONE
     /// response may be buffered (read but not yet delivered) before the
     /// reader applies backpressure; `budget` is the process-wide cap shared
-    /// by all isolates. A `max_bytes` of `0` disables the pipeline entirely:
-    /// the legacy pre-EDG-8 path (no queue, no semaphores, no completion
-    /// signal) applies. The abandon-drain policy (EDG-9) defaults to the
-    /// shared defaults; `with_abandon_drain_limits` overrides it.
+    /// by all isolates. A `max_bytes` of `0` disables the detach queue and
+    /// semaphores. The policy remains available so a configured max duration
+    /// can still cancel and drain. The abandon-drain policy (EDG-9) defaults
+    /// to the shared defaults; `with_abandon_drain_limits` overrides it.
     pub fn with_stream_detach(self, max_bytes: u64, budget: Arc<StreamDetachBudget>) -> Self {
-        let detach = (max_bytes > 0).then_some(StreamDetach {
+        let detach = Some(StreamDetach {
             max_bytes,
             budget,
             drain: AbandonDrain::default(),
+            max_duration: None,
         });
         Self { detach, ..self }
+    }
+
+    /// Set the process-wide max-duration default. A worker manifest value,
+    /// including `0`, takes precedence at dispatch time.
+    pub fn with_stream_max_duration_default_ms(mut self, duration_ms: u64) -> Self {
+        self.stream_max_duration_default_ms = Some(duration_ms);
+        self
     }
 
     /// Set the abandon-drain limits (EDG-9): when the response body is
     /// dropped before the end frame, the reader keeps reading and discarding
     /// frames up to `max_bytes` bytes and `max_ms` milliseconds before the
     /// socket is abandoned and the process recycled. `0` in EITHER limit
-    /// disables the drain (the pre-EDG-9 behavior). A no-op when the detach
-    /// pipeline itself is disabled (`max_bytes` of `0`).
+    /// disables the drain (the pre-EDG-9 behavior). These limits also govern
+    /// a configured max-duration cut when `max_bytes` disables the detach
+    /// queue.
     pub fn with_abandon_drain_limits(self, max_bytes: u64, max_ms: u64) -> Self {
         let detach = self.detach.map(|detach| StreamDetach {
             drain: AbandonDrain { max_bytes, max_ms },
@@ -2201,11 +2689,19 @@ impl DenoProcessIsolate {
         config: &WorkerConfig,
     ) -> Result<WorkerResponse, IsolationError> {
         self.ensure_process(config).await?;
+        let mut policy = self.detach.clone();
+        if let Some(policy) = policy.as_mut() {
+            let duration_ms = config
+                .stream_max_duration_ms
+                .or(self.stream_max_duration_default_ms)
+                .unwrap_or(0);
+            policy.max_duration = Some(Duration::from_millis(duration_ms));
+        }
         let result = self
             .process
             .as_mut()
             .expect("process just set")
-            .request_stream_with_detach(req, self.detach.as_ref())
+            .request_stream_with_detach(req, policy.as_ref())
             .await;
         match result {
             Ok(streamed) => Ok(WorkerResponse::Streamed(StreamedResponse {
@@ -2214,6 +2710,7 @@ impl DenoProcessIsolate {
                 body: Box::pin(ReceiverBody(streamed.chunks)),
                 completed: streamed.completed,
                 production_complete: streamed.production_complete,
+                max_duration_elapsed_ms: streamed.max_duration_elapsed_ms,
             })),
             Err(err) => {
                 // Drop the (possibly dead/poisoned) process so the next request
@@ -2376,15 +2873,133 @@ mod console_tests {
 #[cfg(test)]
 mod stream_detach_tests {
     use super::{
-        read_frame, reserve_chunk, AbandonDrain, DenoProcessIsolate, DenoWorkerProcess,
-        DetachPipeline, OwnedReadHalf, QueueItem, StreamDetach, StreamDetachBudget, TAG_CHUNK,
-        TAG_END,
+        enabled_stream_max_duration, read_frame, reserve_chunk, write_frame, AbandonDrain,
+        DenoProcessIsolate, DenoWorkerProcess, DetachPipeline, DrainOrigin, OwnedReadHalf,
+        QueueItem, StreamDetach, StreamDetachBudget, StreamDuration, StreamProductionState,
+        TAG_CHUNK, TAG_END,
     };
     use bytes::Bytes;
     use edger_core::Isolate;
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
+    use tokio::time::Instant as TokioInstant;
+
+    struct TestReader {
+        task: tokio::task::JoinHandle<()>,
+        done: tokio::sync::oneshot::Receiver<edger_core::StreamCompletion>,
+        restored: tokio::sync::oneshot::Receiver<OwnedReadHalf>,
+        queued: tokio::sync::mpsc::UnboundedReceiver<QueueItem>,
+        budget: Arc<StreamDetachBudget>,
+        elapsed_ms: Option<Arc<std::sync::atomic::AtomicU64>>,
+    }
+
+    #[cfg(unix)]
+    fn start_test_reader(
+        read_end: tokio::net::UnixStream,
+        limit: Option<Duration>,
+        drain: AbandonDrain,
+    ) -> TestReader {
+        let (read_half, write_half_a) = read_end.into_split();
+        let write_half = Arc::new(tokio::sync::Mutex::new(write_half_a));
+        let budget = Arc::new(StreamDetachBudget::new(1_000_000));
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        std::mem::forget(cancel_tx);
+        let elapsed_ms = enabled_stream_max_duration(limit)
+            .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        let stream_started = TokioInstant::now();
+        let max_duration = enabled_stream_max_duration(limit).map(|limit| StreamDuration {
+            started: stream_started,
+            limit,
+            elapsed_ms: Arc::clone(elapsed_ms.as_ref().expect("duration recorder")),
+            budget: Arc::clone(&budget),
+            drain,
+        });
+        let pipeline = DetachPipeline {
+            per_response: Arc::new(tokio::sync::Semaphore::new(1_000_000)),
+            per_response_cap: 1_000_000,
+            budget: Arc::clone(&budget),
+            cancel: cancel_rx,
+            abandon_drain: drain,
+            max_duration,
+        };
+        let (q_tx, queued) = tokio::sync::mpsc::unbounded_channel();
+        let (restore_tx, restored) = tokio::sync::oneshot::channel();
+        let production_complete = Arc::new(StreamProductionState::default());
+        let (done_tx, done) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(DenoWorkerProcess::detach_reader(
+            read_half,
+            write_half,
+            q_tx,
+            pipeline,
+            restore_tx,
+            production_complete,
+            done_tx,
+            Duration::from_secs(2),
+        ));
+        TestReader {
+            task,
+            done,
+            restored,
+            queued,
+            budget,
+            elapsed_ms,
+        }
+    }
+
+    #[cfg(unix)]
+    fn start_heartbeat_worker(
+        peer: tokio::net::UnixStream,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        tokio::task::JoinHandle<()>,
+        tokio::sync::oneshot::Sender<()>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let (mut worker_reader, mut worker_writer) = peer.into_split();
+        let (cancel_seen_tx, cancel_seen_rx) = tokio::sync::oneshot::channel();
+        let cancel_received = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_cancel_received = Arc::clone(&cancel_received);
+        let control_reader = tokio::spawn(async move {
+            if let Ok(frame) = read_frame(&mut worker_reader).await {
+                let is_cancel = frame
+                    .windows(b"__control".len())
+                    .any(|part| part == b"__control");
+                reader_cancel_received.store(is_cancel, std::sync::atomic::Ordering::Release);
+                let _ = cancel_seen_tx.send(is_cancel);
+            } else {
+                let _ = cancel_seen_tx.send(false);
+            }
+        });
+        let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel();
+        let worker_writer_task = tokio::spawn(async move {
+            let mut heartbeat = tokio::time::interval(Duration::from_millis(50));
+            let mut cancel_seen_rx = cancel_seen_rx;
+            loop {
+                tokio::select! {
+                    biased;
+                    cancelled = &mut cancel_seen_rx => {
+                        if cancelled.unwrap_or(false) {
+                            let mut end = vec![TAG_END];
+                            end.extend_from_slice(br#"{"cancelled":true}"#);
+                            let _ = write_frame(&mut worker_writer, &end).await;
+                        }
+                        break;
+                    }
+                    _ = &mut stop_rx => {
+                        let mut end = vec![TAG_END];
+                        end.extend_from_slice(b"{}");
+                        let _ = write_frame(&mut worker_writer, &end).await;
+                        break;
+                    }
+                    _ = heartbeat.tick() => {
+                        let _ = write_frame(&mut worker_writer, &[TAG_CHUNK, b'h']).await;
+                    }
+                }
+            }
+        });
+        (control_reader, worker_writer_task, stop_tx, cancel_received)
+    }
 
     fn pipeline(per_response_cap: usize, budget: Arc<StreamDetachBudget>) -> DetachPipeline {
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
@@ -2402,6 +3017,7 @@ mod stream_detach_tests {
                 max_bytes: 0,
                 max_ms: 0,
             },
+            max_duration: None,
         }
     }
 
@@ -2414,14 +3030,156 @@ mod stream_detach_tests {
             max_bytes: 0,
             budget: Arc::clone(&budget),
             drain: AbandonDrain::default(),
+            max_duration: None,
         };
         assert!(off.max_bytes == 0 && (off.max_bytes > 0).then_some(&off).is_none());
         let on = StreamDetach {
             max_bytes: 8,
             budget,
             drain: AbandonDrain::default(),
+            max_duration: None,
         };
         assert!((on.max_bytes > 0).then_some(&on).is_some());
+        assert_eq!(enabled_stream_max_duration(Some(Duration::ZERO)), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn max_duration_cancels_and_reuses_after_the_clean_end() {
+        use tokio::net::UnixStream;
+
+        let (read_end, peer) = UnixStream::pair().unwrap();
+        let (control_reader, worker, _stop, cancel_received) = start_heartbeat_worker(peer);
+        let mut reader = start_test_reader(
+            read_end,
+            Some(Duration::from_millis(200)),
+            AbandonDrain {
+                max_bytes: 1_000_000,
+                max_ms: 2_000,
+            },
+        );
+
+        tokio::time::timeout(Duration::from_secs(3), &mut reader.task)
+            .await
+            .expect("the total duration cuts the heartbeat stream")
+            .unwrap();
+        assert!(cancel_received.load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            reader.restored.await.is_ok(),
+            "clean cancel restores the socket"
+        );
+        assert_eq!(
+            reader.done.await.unwrap(),
+            edger_core::StreamCompletion::MaxDuration(edger_core::AbandonedStream::Cancelled)
+        );
+        let stats = reader.budget.stats();
+        assert_eq!(stats.max_duration_cancelled_total, 1);
+        assert_eq!(stats.max_duration_drained_total, 0);
+        assert_eq!(stats.max_duration_socket_poisoned_total, 0);
+        assert_eq!(stats.abandoned_cancelled_total, 0);
+        assert_eq!(stats.abandoned_drained_total, 0);
+        assert_eq!(stats.abandoned_socket_poisoned_total, 0);
+        assert_eq!(stats.detached_total, 1);
+        assert!(
+            reader
+                .elapsed_ms
+                .unwrap()
+                .load(std::sync::atomic::Ordering::Acquire)
+                >= 200
+        );
+
+        control_reader.abort();
+        worker.await.unwrap();
+        drop(reader.queued);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn zero_max_duration_leaves_the_heartbeat_stream_running() {
+        use tokio::net::UnixStream;
+
+        let (read_end, peer) = UnixStream::pair().unwrap();
+        let (control_reader, worker, stop, cancel_received) = start_heartbeat_worker(peer);
+        let mut reader = start_test_reader(
+            read_end,
+            Some(Duration::ZERO),
+            AbandonDrain {
+                max_bytes: 1_000_000,
+                max_ms: 2_000,
+            },
+        );
+
+        tokio::time::sleep(Duration::from_millis(450)).await;
+        assert!(
+            !reader.task.is_finished(),
+            "the stream ran over twice 200 ms"
+        );
+        assert_eq!(reader.budget.stats().max_duration_cancelled_total, 0);
+        assert!(reader.elapsed_ms.is_none());
+        stop.send(()).unwrap();
+        worker.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), &mut reader.task)
+            .await
+            .expect("the natural end completes the reader")
+            .unwrap();
+        assert_eq!(
+            reader.done.await.unwrap(),
+            edger_core::StreamCompletion::Completed
+        );
+        assert!(reader.restored.await.is_ok());
+        assert!(!cancel_received.load(std::sync::atomic::Ordering::Acquire));
+        let stats = reader.budget.stats();
+        assert_eq!(stats.max_duration_cancelled_total, 0);
+        assert_eq!(stats.abandoned_cancelled_total, 0);
+
+        control_reader.abort();
+        drop(reader.queued);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn max_duration_with_disabled_drain_reports_socket_poisoned() {
+        use tokio::net::UnixStream;
+
+        let (read_end, peer) = UnixStream::pair().unwrap();
+        let (control_reader, worker, _stop, cancel_received) = start_heartbeat_worker(peer);
+        let mut reader = start_test_reader(
+            read_end,
+            Some(Duration::from_millis(200)),
+            AbandonDrain {
+                max_bytes: 0,
+                max_ms: 2_000,
+            },
+        );
+
+        tokio::time::timeout(Duration::from_secs(3), &mut reader.task)
+            .await
+            .expect("disabled drain returns promptly at the duration limit")
+            .unwrap();
+        assert!(
+            reader.restored.await.is_err(),
+            "poisoned socket is not reused"
+        );
+        assert_eq!(
+            reader.done.await.unwrap(),
+            edger_core::StreamCompletion::MaxDuration(edger_core::AbandonedStream::SocketPoisoned)
+        );
+        assert!(!cancel_received.load(std::sync::atomic::Ordering::Acquire));
+        let stats = reader.budget.stats();
+        assert_eq!(stats.max_duration_socket_poisoned_total, 1);
+        assert_eq!(stats.abandoned_socket_poisoned_total, 0);
+        assert_eq!(stats.abandoned_cancelled_total, 0);
+        assert!(
+            reader
+                .elapsed_ms
+                .unwrap()
+                .load(std::sync::atomic::Ordering::Acquire)
+                >= 200
+        );
+
+        control_reader.abort();
+        let _ = worker.await;
+        drop(reader.queued);
     }
 
     // A `0` in EITHER abandon-drain limit disables the drain (the socket is
@@ -2603,6 +3361,7 @@ mod stream_detach_tests {
                 max_bytes: 0,
                 max_ms: 0,
             },
+            max_duration: None,
         };
         let (q_tx, q_rx) = tokio::sync::mpsc::unbounded_channel::<QueueItem>();
         let (tx, rx) = tokio::sync::mpsc::channel(16);
@@ -2691,6 +3450,7 @@ mod stream_detach_tests {
                 max_bytes: 0,
                 max_ms: 0,
             },
+            max_duration: None,
         };
         let (q_tx, q_rx) = tokio::sync::mpsc::unbounded_channel::<QueueItem>();
         let (tx, rx) = tokio::sync::mpsc::channel(16);
@@ -2799,10 +3559,11 @@ mod stream_detach_tests {
                 max_bytes: 100,
                 max_ms: 10_000,
             },
+            max_duration: None,
         };
         let (q_tx, _q_rx) = tokio::sync::mpsc::unbounded_channel::<QueueItem>();
         let (restore_tx, restore_rx) = tokio::sync::oneshot::channel();
-        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::new(StreamProductionState::default());
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
 
         // Frame wire format: 4-byte LE length, then tag byte + payload.
@@ -2868,10 +3629,7 @@ mod stream_detach_tests {
             stats.abandoned_drained_total, 0,
             "the TAG_END must not be accepted"
         );
-        assert!(
-            !flag.load(std::sync::atomic::Ordering::Acquire),
-            "no production-complete flag"
-        );
+        assert!(!flag.is_complete(), "no production-complete flag");
         assert!(
             restore_rx.await.is_err(),
             "the socket must NOT be restored (desynced)"
@@ -2910,9 +3668,10 @@ mod stream_detach_tests {
                 max_bytes: 10_000,
                 max_ms: 10_000,
             },
+            max_duration: None,
         };
         let (restore_tx, restore_rx) = tokio::sync::oneshot::channel();
-        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::new(StreamProductionState::default());
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         let flag_inner = Arc::clone(&flag);
 
@@ -2920,12 +3679,17 @@ mod stream_detach_tests {
             DenoWorkerProcess::drain_on_abandon(
                 read_half,
                 write_half,
-                &pipeline,
+                Arc::clone(&pipeline.budget),
+                pipeline.abandon_drain,
                 restore_tx,
                 flag_inner,
                 done_tx,
                 Duration::from_secs(5),
                 0,
+                DrainOrigin::ClientGone,
+                TokioInstant::now(),
+                false,
+                true,
             )
             .await
         });
@@ -2962,7 +3726,7 @@ mod stream_detach_tests {
             "the cancel end frame restores the read half (the process is reusable)"
         );
         assert!(
-            flag.load(std::sync::atomic::Ordering::Acquire),
+            flag.is_complete(),
             "the production-complete flag is set on a cancel end"
         );
         assert_eq!(
@@ -2979,6 +3743,7 @@ mod stream_detach_tests {
             stats.abandoned_drained_total, 0,
             "a cancel end is distinct from a plain drained end"
         );
+        assert_eq!(stats.max_duration_cancelled_total, 0);
         assert!(
             stats.detached_total >= 1,
             "the aborted production still counts as detached"
@@ -3008,9 +3773,10 @@ mod stream_detach_tests {
                 max_bytes: 10_000,
                 max_ms: 10_000,
             },
+            max_duration: None,
         };
         let (restore_tx, restore_rx) = tokio::sync::oneshot::channel();
-        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::new(StreamProductionState::default());
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         let flag_inner = Arc::clone(&flag);
 
@@ -3018,12 +3784,17 @@ mod stream_detach_tests {
             DenoWorkerProcess::drain_on_abandon(
                 read_half,
                 write_half,
-                &pipeline,
+                Arc::clone(&pipeline.budget),
+                pipeline.abandon_drain,
                 restore_tx,
                 flag_inner,
                 done_tx,
                 Duration::from_secs(5),
                 0,
+                DrainOrigin::ClientGone,
+                TokioInstant::now(),
+                false,
+                true,
             )
             .await
         });
@@ -3038,7 +3809,7 @@ mod stream_detach_tests {
             "a failed cancel write must NOT restore the read half"
         );
         assert!(
-            !flag.load(std::sync::atomic::Ordering::Acquire),
+            !flag.is_complete(),
             "no production-complete flag on a failed cancel write"
         );
         assert_eq!(
@@ -3081,21 +3852,27 @@ mod stream_detach_tests {
                 max_bytes: 0,
                 max_ms: 0,
             },
+            max_duration: None,
         };
         let (restore_tx, restore_rx) = tokio::sync::oneshot::channel();
-        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::new(StreamProductionState::default());
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
 
         let mut drain = tokio::spawn(async move {
             DenoWorkerProcess::drain_on_abandon(
                 read_half,
                 write_half,
-                &pipeline,
+                Arc::clone(&pipeline.budget),
+                pipeline.abandon_drain,
                 restore_tx,
                 flag,
                 done_tx,
                 Duration::from_secs(5),
                 0,
+                DrainOrigin::ClientGone,
+                TokioInstant::now(),
+                false,
+                true,
             )
             .await
         });
@@ -3174,6 +3951,7 @@ mod stream_detach_tests {
             shutdown_grace: Duration::from_millis(100),
             console_sender: None,
             console_context: None,
+            stream_max_duration_default_ms: None,
             detach: None,
         };
         (isolate, stream_b)
@@ -3307,6 +4085,7 @@ mod stream_detach_tests {
             shutdown_grace: Duration::from_millis(100),
             console_sender: None,
             console_context: None,
+            stream_max_duration_default_ms: None,
             detach: None,
         };
         (isolate, stream_b)

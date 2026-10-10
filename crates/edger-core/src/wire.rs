@@ -51,6 +51,9 @@ pub type BodyStream = std::pin::Pin<
 /// operational event.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AbandonedStream {
+    /// The max-duration cut reached a clean natural end while discarding the
+    /// in-flight response. Client-abandon drains keep using `Completed`.
+    Drained,
     /// The drain is disabled (a `0` limit): the socket was abandoned
     /// mid-response and poisoned.
     SocketPoisoned,
@@ -74,17 +77,20 @@ pub enum AbandonedStream {
     RelayTimeout,
 }
 
-/// The outcome of a streamed response's production (EDG-8/EDG-9), delivered
-/// through the completion signal.
+/// The outcome of a streamed response's production (EDG-8/EDG-9/EDG-16),
+/// delivered through the completion signal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StreamCompletion {
     /// Production reached a clean end frame and the socket is in sync —
-    /// the process is reusable, either directly or after the EDG-9 abandon
+    /// the process is reusable, either directly or after a client-abandon
     /// drain finished the response within its limits.
     Completed,
     /// The consumer was lost before the end frame and the response was
     /// abandoned; the variant names the cause (EDG-9).
     Abandoned(AbandonedStream),
+    /// The total stream-duration limit fired; the outcome records whether the
+    /// EDG-9 cancel/drain left the process reusable or required a recycle.
+    MaxDuration(AbandonedStream),
     /// Production did not complete cleanly and no cause was reported: the
     /// producer went away before reporting one (error end or an abnormal
     /// task exit). The pool recycles with the body-level detail it has.
@@ -94,14 +100,53 @@ pub enum StreamCompletion {
 /// Production-complete signal for a streamed response (no I/O, pure std):
 /// resolves to `StreamCompletion::Completed` once the worker has fully
 /// produced the response (end of production without error, all chunks
-/// already in flight — possibly via the EDG-9 abandon drain), so the runtime
+/// already in flight — possibly via a client-abandon drain), so the runtime
 /// may release the worker slot before a slow client finishes downloading the
 /// buffered tail. Resolves to `Abandoned(cause)` when the consumer was lost
-/// and the abandon drain reports why the response did not finish cleanly,
-/// and to `Incomplete` when production did not complete cleanly without a
+/// and its drain fails, `MaxDuration(cause)` when the total duration limit
+/// fires, and `Incomplete` when production did not complete cleanly without a
 /// reported cause.
 pub type CompletionSignal =
     std::pin::Pin<Box<dyn std::future::Future<Output = StreamCompletion> + Send>>;
+
+/// Shared production state for a streamed response. A clean max-duration
+/// cutoff records its outcome before marking production complete, allowing a
+/// body that reaches EOF before the completion observer to preserve the
+/// max-duration lifecycle event without waiting for the relay.
+#[derive(Debug, Default)]
+pub struct StreamProductionState {
+    production_complete: std::sync::atomic::AtomicBool,
+    max_duration_outcome: std::sync::OnceLock<AbandonedStream>,
+}
+
+impl StreamProductionState {
+    /// Marks a clean production end that did not result from the duration cap.
+    pub fn mark_complete(&self) {
+        self.production_complete
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Marks a clean duration cutoff after recording its reusable outcome.
+    pub fn mark_max_duration_complete(&self, outcome: AbandonedStream) {
+        debug_assert!(matches!(
+            outcome,
+            AbandonedStream::Drained | AbandonedStream::Cancelled
+        ));
+        let _ = self.max_duration_outcome.set(outcome);
+        self.mark_complete();
+    }
+
+    /// Whether production ended with the socket in a reusable state.
+    pub fn is_complete(&self) -> bool {
+        self.production_complete
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The clean outcome recorded by a max-duration cutoff, if any.
+    pub fn max_duration_outcome(&self) -> Option<AbandonedStream> {
+        self.max_duration_outcome.get().copied()
+    }
+}
 
 /// A response whose body streams incrementally from the worker (SSE, chunked
 /// SSR). Status/headers are available up front; chunks arrive as the worker
@@ -113,13 +158,17 @@ pub struct StreamedResponse {
     pub headers: Vec<(String, String)>,
     pub body: BodyStream,
     pub completed: Option<CompletionSignal>,
-    /// Set to `true` once production finished cleanly (end frame without
-    /// error — possibly after the EDG-9 abandon drain), BEFORE `completed`
-    /// resolves. A body that is dropped or errors
+    /// Marked complete once production finished cleanly (end frame without
+    /// error — possibly after an abandon or max-duration drain), BEFORE `completed`
+    /// resolves. A clean max-duration outcome is stored in the same shared
+    /// state before completion is marked. A body that is dropped or errors
     /// after this flag is set must COMPLETE the dispatch instead of
     /// recycling: the producer socket is already in sync and the process is
     /// reusable. Backends without the mechanism leave this `None`.
-    pub production_complete: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub production_complete: Option<std::sync::Arc<StreamProductionState>>,
+    /// Milliseconds from response-header arrival to the max-duration cutoff.
+    /// Set by the multiprocess reader before it starts the bounded drain.
+    pub max_duration_elapsed_ms: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl std::fmt::Debug for StreamedResponse {
@@ -130,6 +179,10 @@ impl std::fmt::Debug for StreamedResponse {
             .field("body", &"<stream>")
             .field("completed", &self.completed.is_some())
             .field("production_complete", &self.production_complete.is_some())
+            .field(
+                "max_duration_elapsed_ms",
+                &self.max_duration_elapsed_ms.is_some(),
+            )
             .finish()
     }
 }

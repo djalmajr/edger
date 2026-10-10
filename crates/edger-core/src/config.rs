@@ -24,6 +24,8 @@ pub struct WorkerConfig {
     pub public_env: Vec<String>,
     pub allow_net: Option<Vec<String>>,
     pub ttl_ms: u64,
+    /// Optional maximum response-stream body duration; `Some(0)` disables it.
+    pub stream_max_duration_ms: Option<u64>,
     pub timeout_ms: u64,
     pub idle_timeout_ms: u64,
     /// Grace budget (ms) for the beforeunload/waitUntil drain on graceful shutdown.
@@ -350,6 +352,10 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         .as_ref()
         .and_then(parse_duration_to_ms)
         .unwrap_or(default_ttl_ms);
+    let stream_max_duration_ms = manifest
+        .stream_timeout
+        .as_ref()
+        .and_then(parse_duration_to_ms);
 
     let timeout_ms = manifest
         .timeout
@@ -456,6 +462,7 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
             .map(normalize_allow_net)
             .or_else(|| manifest.allow_net.as_ref().map(|_| Vec::new())),
         ttl_ms,
+        stream_max_duration_ms,
         timeout_ms,
         idle_timeout_ms,
         shutdown_grace_ms,

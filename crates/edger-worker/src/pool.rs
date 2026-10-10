@@ -2,11 +2,12 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use edger_core::wire::StreamProductionState;
 use edger_core::{
     create_worker_ref, AbandonedStream, BodyStream, ExecutionKind, Isolate, SerializedRequest,
     SerializedResponse, StreamCompletion, StreamedResponse, TerminationOutcome, WorkerConfig,
@@ -256,6 +257,7 @@ impl AbandonDrainLimits {
 /// it, the operational event) when the abandon drain reports a cause.
 fn abandoned_detail(cause: AbandonedStream) -> &'static str {
     match cause {
+        AbandonedStream::Drained => "drained",
         AbandonedStream::SocketPoisoned => "socket_poisoned",
         AbandonedStream::BytesLimit => "bytes_limit",
         AbandonedStream::TimeLimit => "time_limit",
@@ -277,6 +279,7 @@ pub enum WorkerLifecycleEventKind {
     DrainCompleted,
     DrainTimedOut,
     Terminated,
+    StreamMaxDuration,
 }
 
 #[derive(Clone, Debug)]
@@ -284,6 +287,7 @@ pub struct WorkerLifecycleEvent {
     pub kind: WorkerLifecycleEventKind,
     pub worker_ref: WorkerRef,
     pub process_id: Option<String>,
+    pub request_id: Option<String>,
     pub drained_count: Option<u64>,
     pub duration_ms: Option<u64>,
     pub reason: &'static str,
@@ -780,7 +784,7 @@ impl WorkerPool {
                 ("x-edger-health-check".into(), "warmup".into()),
             ],
             body: None,
-            request_id,
+            request_id: request_id.clone(),
             base_href: Some(format!("/{}/", instance.worker_ref.name)),
         };
         let mut warm_config = instance.worker_ref.config.clone();
@@ -794,9 +798,11 @@ impl WorkerPool {
         let started = Instant::now();
         let isolate = instance.isolate();
         let mut isolate_guard = isolate.lock().await;
+        instance.start_active_request(request_id);
         let outcome =
             dispatch_to_isolate(isolate_guard.as_mut(), kind, request, &warm_config).await;
         drop(isolate_guard);
+        instance.clear_active_request();
         let duration_ms = started.elapsed().as_millis().max(1) as u64;
         match outcome {
             Ok(response) if (200..400).contains(&response.status) => {
@@ -1185,6 +1191,8 @@ impl WorkerPool {
         let instance = Arc::clone(&dispatch_slot.instance);
 
         Supervisor::on_request_start(&instance).await?;
+        let request_id = req.request_id.clone();
+        instance.start_active_request(request_id.clone());
 
         // Synthetic health checks are excluded from the request counters,
         // consistent with the buffered path.
@@ -1228,6 +1236,7 @@ impl WorkerPool {
                 Ok(WorkerResponse::Buffered(res))
             }
             Ok(WorkerResponse::Streamed(streamed)) => {
+                instance.mark_active_request_streaming();
                 // The guards move INTO the body: the instance stays Active and
                 // the process exclusive until the stream ends or is dropped.
                 // The stream lifecycle owns the terminal request count
@@ -1239,6 +1248,9 @@ impl WorkerPool {
                     config,
                     outcome: request_outcome_for_status(streamed.status),
                     started,
+                    stream_started: Instant::now(),
+                    request_id,
+                    max_duration_elapsed_ms: streamed.max_duration_elapsed_ms,
                     // The health-check exclusion travels WITH the body: the
                     // stream terminals (completion/recycle) apply the same
                     // exclusion to the group request counter.
@@ -1254,6 +1266,7 @@ impl WorkerPool {
                 // wins the race drives the SAME lifecycle. (EDG-9) The relay
                 // below lets a pre-completion drop/error WAIT (bounded) for
                 // the in-flight abandon drain before deciding to recycle.
+                let has_max_duration = state.max_duration_elapsed_ms.is_some();
                 let shared_state = Arc::new(Mutex::new(Some(state)));
                 let (completion_wait, drain_wait) = match streamed.completed {
                     Some(signal) => {
@@ -1267,7 +1280,11 @@ impl WorkerPool {
                             // it into the recycle detail. If that wait is
                             // gone already, the send just fails — harmless.
                             let _ = relay_tx.send(outcome);
-                            if matches!(outcome, StreamCompletion::Completed) {
+                            if matches!(outcome, StreamCompletion::MaxDuration(_)) {
+                                if let Some(state) = take_stream_state(&observer) {
+                                    finish_max_duration_state(state, outcome).await;
+                                }
+                            } else if matches!(outcome, StreamCompletion::Completed) {
                                 // Production completed (clean end frame,
                                 // possibly via the EDG-9 abandon drain):
                                 // release the slot and isolate NOW, even
@@ -1281,7 +1298,13 @@ impl WorkerPool {
                             // complete cleanly; the body's own
                             // error/end/drop path owns the lifecycle.
                         });
-                        (Some(relay_rx), self.inner.abandon_drain.drain_wait())
+                        let drain_wait = self.inner.abandon_drain.drain_wait();
+                        let drain_wait = if has_max_duration {
+                            drain_wait.max(Duration::from_millis(10))
+                        } else {
+                            drain_wait
+                        };
+                        (Some(relay_rx), drain_wait)
                     }
                     None => (None, Duration::ZERO),
                 };
@@ -1298,6 +1321,7 @@ impl WorkerPool {
                     }),
                     completed: None,           // consumed by the observer above
                     production_complete: None, // consumed by the guarded body
+                    max_duration_elapsed_ms: None,
                 }))
             }
             Err(err) => {
@@ -1409,6 +1433,7 @@ impl WorkerPool {
         let _dispatch_slot = dispatch_slot;
 
         Supervisor::on_request_start(&instance).await?;
+        instance.start_active_request(req.request_id.clone());
 
         // Cancellation-safety: if this future is dropped while a dispatch is in
         // flight (e.g. the HTTP client disconnected mid-request — easy to hit
@@ -1498,6 +1523,7 @@ impl WorkerPool {
     /// non-dispatchable and evict it so a fresh instance (and process) is
     /// spawned next time, instead of leaving it wedged in `Active`.
     fn recycle_cancelled(&self, instance: &Arc<WorkerInstance>) {
+        instance.clear_active_request();
         instance.set_state(WorkerState::Terminated);
         self.remove_instance_with_cause(
             instance,
@@ -1858,6 +1884,7 @@ impl WorkerPool {
                 kind: WorkerLifecycleEventKind::DrainStarted,
                 worker_ref: instance.worker_ref.clone(),
                 process_id: None,
+                request_id: None,
                 drained_count: None,
                 duration_ms: None,
                 reason,
@@ -1913,6 +1940,7 @@ impl WorkerPool {
                 },
                 worker_ref: instance.worker_ref.clone(),
                 process_id: report.as_ref().and_then(|report| report.process_id.clone()),
+                request_id: None,
                 drained_count: report.as_ref().and_then(|report| report.drained_count),
                 duration_ms: Some(duration_ms),
                 reason,
@@ -1925,6 +1953,7 @@ impl WorkerPool {
                 kind: WorkerLifecycleEventKind::Terminated,
                 worker_ref: instance.worker_ref.clone(),
                 process_id: report.and_then(|report| report.process_id),
+                request_id: None,
                 drained_count: None,
                 duration_ms: Some(duration_ms),
                 reason: if timed_out {
@@ -2209,10 +2238,12 @@ impl WorkerPool {
             let processes = instances
                 .iter()
                 .map(|instance| WorkerProcessMetrics {
+                    id: instance.id(),
                     request_count: instance.request_count(),
                     state: instance.state(),
                     unhealthy: instance.is_unhealthy(),
                     uptime_seconds: instance.uptime_seconds(),
+                    active_request: instance.active_request_metrics(),
                 })
                 .collect::<Vec<_>>();
             let active_processes = processes
@@ -2321,6 +2352,9 @@ struct StreamDispatchState {
     config: WorkerConfig,
     outcome: WorkerRequestOutcome,
     started: Instant,
+    stream_started: Instant,
+    request_id: String,
+    max_duration_elapsed_ms: Option<Arc<AtomicU64>>,
     /// Synthetic health-check traffic (`x-edger-health-check`): the stream
     /// terminals (completion/recycle) skip the group request counters, the
     /// same exclusion the dispatch entry applies. Existing counters (duration,
@@ -2371,7 +2405,7 @@ impl Drop for DispatchSlot {
 struct GuardedBody {
     inner: BodyStream,
     state: Arc<Mutex<Option<StreamDispatchState>>>,
-    production_complete: Option<Arc<AtomicBool>>,
+    production_complete: Option<Arc<StreamProductionState>>,
     completion_wait: Option<tokio::sync::oneshot::Receiver<StreamCompletion>>,
     drain_wait: Duration,
     /// The pool's abandon-drain policy is disabled (a `0` limit): the reader
@@ -2387,6 +2421,41 @@ fn take_stream_state(state: &Mutex<Option<StreamDispatchState>>) -> Option<Strea
         .take()
 }
 
+async fn finish_max_duration_state(state: StreamDispatchState, outcome: StreamCompletion) {
+    let StreamCompletion::MaxDuration(cause) = outcome else {
+        return;
+    };
+    let detail = abandoned_detail(cause);
+    let duration_ms = state
+        .max_duration_elapsed_ms
+        .as_ref()
+        .map(|elapsed| elapsed.load(Ordering::Acquire))
+        .unwrap_or_else(|| state.stream_started.elapsed().as_millis() as u64);
+    let drained = matches!(cause, AbandonedStream::Drained | AbandonedStream::Cancelled);
+    emit_lifecycle(
+        state.pool.inner.lifecycle_events.as_ref(),
+        WorkerLifecycleEvent {
+            kind: WorkerLifecycleEventKind::StreamMaxDuration,
+            worker_ref: state.instance.worker_ref.clone(),
+            process_id: Some(state.instance.id().to_string()),
+            request_id: Some(state.request_id.clone()),
+            drained_count: None,
+            duration_ms: Some(duration_ms),
+            reason: if drained {
+                "stream_max_duration_drained"
+            } else {
+                "stream_max_duration_recycled"
+            },
+            detail: Some(detail),
+        },
+    );
+    if drained {
+        complete_stream_state(state).await;
+    } else {
+        recycle_stream_state(state, "stream_max_duration_recycled", Some(detail)).await;
+    }
+}
+
 /// Drive the lifecycle for a dispatch state whose body ended BEFORE
 /// production completed (mid-stream error or early drop). The decision is
 /// made with the state ALREADY taken (see `GuardedBody::finish_abandoned`):
@@ -2399,13 +2468,21 @@ fn take_stream_state(state: &Mutex<Option<StreamDispatchState>>) -> Option<Strea
 fn finish_stream_state(
     state: StreamDispatchState,
     production_completed: bool,
+    max_duration_outcome: Option<AbandonedStream>,
     completion_wait: Option<tokio::sync::oneshot::Receiver<StreamCompletion>>,
     drain_wait: Duration,
     recycle_reason: &'static str,
     detail: Option<&'static str>,
 ) {
     if production_completed {
-        tokio::spawn(complete_stream_state(state));
+        if let Some(outcome) = max_duration_outcome {
+            tokio::spawn(finish_max_duration_state(
+                state,
+                StreamCompletion::MaxDuration(outcome),
+            ));
+        } else {
+            tokio::spawn(complete_stream_state(state));
+        }
         return;
     }
     match completion_wait {
@@ -2426,6 +2503,10 @@ fn finish_stream_state(
                     Ok(result) => result.ok(),
                     Err(_) => None,
                 };
+                if let Some(outcome @ StreamCompletion::MaxDuration(_)) = outcome {
+                    finish_max_duration_state(state, outcome).await;
+                    return;
+                }
                 let drained = outcome.as_ref().is_some_and(|outcome| {
                     matches!(
                         outcome,
@@ -2456,6 +2537,7 @@ fn finish_stream_state(
                             kind: WorkerLifecycleEventKind::DrainCompleted,
                             worker_ref: state.instance.worker_ref.clone(),
                             process_id: None,
+                            request_id: None,
                             drained_count: None,
                             duration_ms: Some(started.elapsed().as_millis() as u64),
                             reason: "stream_abandoned_drained",
@@ -2515,7 +2597,12 @@ impl futures_core::Stream for GuardedBody {
                 std::task::Poll::Ready(Some(Err(err)))
             }
             std::task::Poll::Ready(None) => {
-                if let Some(state) = take_stream_state(&self.state) {
+                if self.completion_wait.is_some() {
+                    // The production signal carries a max-duration outcome
+                    // (or the EDG-9 client-abandon result); let it decide
+                    // whether to reuse or recycle the process.
+                    self.finish_abandoned(None);
+                } else if let Some(state) = take_stream_state(&self.state) {
                     tokio::spawn(complete_stream_state(state));
                 }
                 std::task::Poll::Ready(None)
@@ -2541,7 +2628,7 @@ impl GuardedBody {
     fn production_completed(&self) -> bool {
         self.production_complete
             .as_ref()
-            .is_some_and(|flag| flag.load(Ordering::Acquire))
+            .is_some_and(|state| state.is_complete())
     }
 
     /// Body end before production completed (drop or mid-stream error).
@@ -2563,6 +2650,13 @@ impl GuardedBody {
             return;
         };
         let production_completed = self.production_completed();
+        let max_duration_outcome = production_completed
+            .then(|| {
+                self.production_complete
+                    .as_ref()
+                    .and_then(|state| state.max_duration_outcome())
+            })
+            .flatten();
         // A completion relay exists only when the detach pipeline is
         // active: with no pipeline the behavior is the pre-EDG-9 immediate
         // recycle (`stream_recycle`), exactly as before.
@@ -2577,6 +2671,7 @@ impl GuardedBody {
         finish_stream_state(
             state,
             production_completed,
+            max_duration_outcome,
             self.completion_wait.take(),
             self.drain_wait,
             if has_pipeline {
@@ -2601,6 +2696,7 @@ async fn complete_stream_state(state: StreamDispatchState) {
         count_metrics,
         _dispatch_slot,
         isolate_guard,
+        ..
     } = state;
     drop(isolate_guard);
     let worker_ref = instance.worker_ref.clone();
@@ -2687,6 +2783,7 @@ async fn shutdown_instances_after_drain(
                 kind: WorkerLifecycleEventKind::DrainStarted,
                 worker_ref: instance.worker_ref.clone(),
                 process_id: None,
+                request_id: None,
                 drained_count: None,
                 duration_ms: None,
                 reason,
@@ -2746,6 +2843,7 @@ async fn terminate_shutdown_instance(
             },
             worker_ref: instance.worker_ref.clone(),
             process_id: report.as_ref().and_then(|report| report.process_id.clone()),
+            request_id: None,
             drained_count: report.as_ref().and_then(|report| report.drained_count),
             duration_ms: Some(duration_ms),
             reason,
@@ -2758,6 +2856,7 @@ async fn terminate_shutdown_instance(
             kind: WorkerLifecycleEventKind::Terminated,
             worker_ref: instance.worker_ref.clone(),
             process_id: report.and_then(|report| report.process_id),
+            request_id: None,
             drained_count: None,
             duration_ms: Some(duration_ms),
             reason: if timed_out { "drain_timeout" } else { reason },
@@ -2893,6 +2992,7 @@ mod stream_drop_flag_tests {
 
     use super::*;
     use edger_core::{AbandonedStream, CompletionSignal, IsolationError, StreamCompletion};
+    use futures_util::StreamExt;
     use std::task::{Context, Poll};
 
     /// Body that yields exactly one chunk and then stays open (pending
@@ -2914,6 +3014,19 @@ mod stream_drop_flag_tests {
                 self.consumed = true;
                 Poll::Ready(Some(Ok(Bytes::from_static(b"chunk-0"))))
             }
+        }
+    }
+
+    struct ImmediateEofBody;
+
+    impl futures_core::Stream for ImmediateEofBody {
+        type Item = Result<Bytes, IsolationError>;
+
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Self::Item>> {
+            Poll::Ready(None)
         }
     }
 
@@ -3001,7 +3114,7 @@ mod stream_drop_flag_tests {
             req: SerializedRequest,
             config: &WorkerConfig,
         ) -> Result<WorkerResponse, IsolationError> {
-            if req.uri != "/stream" {
+            if req.uri != "/stream" && req.uri != "/stream-max-duration" {
                 return self
                     .execute_fetch(req, config)
                     .await
@@ -3009,17 +3122,28 @@ mod stream_drop_flag_tests {
             }
             // Production has ALREADY completed (flag `true`), but the signal
             // is still PENDING: the observer cannot take the dispatch state
-            // before the body is dropped.
-            let flag = Arc::new(AtomicBool::new(true));
+            // before the body ends.
             let fire_rx = self.fire_rx.take().expect("signal created by the factory");
             let signal: CompletionSignal =
                 Box::pin(async move { fire_rx.await.unwrap_or(StreamCompletion::Incomplete) });
+            let max_duration = req.uri == "/stream-max-duration";
+            let production_state = Arc::new(StreamProductionState::default());
+            if max_duration {
+                production_state.mark_max_duration_complete(AbandonedStream::Cancelled);
+            } else {
+                production_state.mark_complete();
+            }
             Ok(WorkerResponse::Streamed(StreamedResponse {
                 status: 200,
                 headers: vec![],
-                body: Box::pin(OneThenPendingBody { consumed: false }),
+                body: if max_duration {
+                    Box::pin(ImmediateEofBody)
+                } else {
+                    Box::pin(OneThenPendingBody { consumed: false })
+                },
                 completed: Some(signal),
-                production_complete: Some(flag),
+                production_complete: Some(production_state),
+                max_duration_elapsed_ms: max_duration.then(|| Arc::new(AtomicU64::new(10))),
             }))
         }
 
@@ -3121,6 +3245,86 @@ mod stream_drop_flag_tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn eof_before_max_duration_observer_still_emits_one_lifecycle_event() {
+        let fixture = Arc::new(DropFlagFixture::default());
+        let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(16);
+        let pool = WorkerPool::with_factory_and_lifecycle_abandon_drain(
+            PoolConfig {
+                max_size: 16,
+                ephemeral_concurrency: 4,
+                ephemeral_queue_limit: 8,
+            },
+            Arc::new(DropFlagFactory {
+                fixture: Arc::clone(&fixture),
+            }),
+            Some(lifecycle_tx),
+            AbandonDrainLimits {
+                max_bytes: edger_core::STREAM_ABANDON_DRAIN_MAX_BYTES_DEFAULT,
+                max_ms: 50,
+            },
+        );
+        let worker_ref = create_worker_ref(
+            std::path::PathBuf::from("/workers/edg16-eof-race"),
+            WorkerManifest {
+                name: "edg16-eof-race".into(),
+                max_processes: Some(1),
+                ttl: Some(serde_yaml::Value::String("30s".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let request_id = "edg16-eof-before-observer";
+        let streamed = pool
+            .fetch_worker_stream(
+                &worker_ref,
+                SerializedRequest {
+                    method: "GET".into(),
+                    uri: "/stream-max-duration".into(),
+                    headers: vec![],
+                    body: None,
+                    request_id: request_id.into(),
+                    base_href: None,
+                },
+                Some(ExecutionKind::FetchHandler),
+            )
+            .await
+            .unwrap();
+        let WorkerResponse::Streamed(streamed) = streamed else {
+            panic!("expected a streamed response");
+        };
+        let mut body = streamed.body;
+
+        // Poll EOF first: production_complete is already set, so this body
+        // path takes the dispatch state before the observer receives the
+        // reader's MaxDuration relay outcome.
+        assert!(body.next().await.is_none());
+        fixture
+            .fire
+            .lock()
+            .unwrap()
+            .take()
+            .expect("signal still pending")
+            .send(StreamCompletion::MaxDuration(AbandonedStream::Cancelled))
+            .unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(200), lifecycle_rx.recv())
+            .await
+            .expect("max-duration lifecycle event arrives")
+            .expect("lifecycle channel remains open");
+        assert_eq!(event.kind, WorkerLifecycleEventKind::StreamMaxDuration);
+        assert_eq!(event.request_id.as_deref(), Some(request_id));
+        assert_eq!(event.reason, "stream_max_duration_drained");
+        assert_eq!(event.detail, Some("cancelled"));
+        tokio::task::yield_now().await;
+        assert!(
+            lifecycle_rx.try_recv().is_err(),
+            "the observer must not emit a duplicate lifecycle event"
+        );
+        assert_eq!(fixture.terminated.load(Ordering::SeqCst), 0);
+        assert_eq!(pool.worker_stats()[0].state, WorkerState::Idle);
+    }
+
     // (EDG-9) Abandon-drain fixtures: production had NOT completed at fetch
     // time (flag `false`, signal pending) and the test plays the reader's
     // drain: it stores the flag and fires the signal at a deterministic
@@ -3130,7 +3334,7 @@ mod stream_drop_flag_tests {
 
     #[derive(Default)]
     struct DropAbandonFixture {
-        flag: std::sync::Mutex<Option<Arc<AtomicBool>>>,
+        flag: std::sync::Mutex<Option<Arc<StreamProductionState>>>,
         fire: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<StreamCompletion>>>,
         terminated: std::sync::atomic::AtomicUsize,
         /// The outcome the fixture's `terminate_with_report` returns
@@ -3220,7 +3424,7 @@ mod stream_drop_flag_tests {
                     .map(WorkerResponse::Buffered);
             }
             // Production has NOT completed yet: flag `false`, signal pending.
-            let flag = Arc::new(AtomicBool::new(false));
+            let flag = Arc::new(StreamProductionState::default());
             self.fixture.flag.lock().unwrap().replace(flag.clone());
             let fire_rx = self.fire_rx.take().expect("signal created by the factory");
             // The reader sends a cause on every abandon-drain exit (EDG-9);
@@ -3234,6 +3438,7 @@ mod stream_drop_flag_tests {
                 body: Box::pin(OneThenPendingBody { consumed: false }),
                 completed: Some(signal),
                 production_complete: Some(flag),
+                max_duration_elapsed_ms: None,
             }))
         }
 
@@ -3387,7 +3592,7 @@ mod stream_drop_flag_tests {
             .unwrap()
             .clone()
             .expect("flag created by the isolate");
-        flag.store(true, Ordering::SeqCst);
+        flag.mark_complete();
         fixture
             .fire
             .lock()
@@ -3474,7 +3679,7 @@ mod stream_drop_flag_tests {
         // The drain finished (flag + signal) — but on the current-thread
         // runtime the observer task cannot run before the drop, so the DROP
         // takes the dispatch state first.
-        flag.store(true, Ordering::SeqCst);
+        flag.mark_complete();
         fixture
             .fire
             .lock()

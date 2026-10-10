@@ -9,6 +9,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
 use crate::lru::WorkerGroup;
+use crate::metrics::ActiveRequestMetrics;
 use crate::state::WorkerState;
 
 /// (EDG-10 review P2 #3 / rev2 P2 #1) How a TTL timer arm was requested.
@@ -55,6 +56,7 @@ pub struct WorkerInstance {
     isolate: Arc<AsyncMutex<Box<dyn Isolate>>>,
     state: Mutex<WorkerState>,
     request_count: Mutex<u32>,
+    active_request: Mutex<Option<ActiveRequestState>>,
     unhealthy: AtomicBool,
     idle_notifications: AtomicU32,
     /// (EDG-10 review P2 #3) The TTL timer slot: the generation of the
@@ -73,6 +75,12 @@ pub struct WorkerInstance {
     group: Mutex<Option<Weak<WorkerGroup>>>,
 }
 
+struct ActiveRequestState {
+    request_id: String,
+    started: Instant,
+    streaming: bool,
+}
+
 impl WorkerInstance {
     pub fn new(worker_ref: WorkerRef, isolate: Box<dyn Isolate>) -> Self {
         Self {
@@ -83,6 +91,7 @@ impl WorkerInstance {
             isolate: Arc::new(AsyncMutex::new(isolate)),
             state: Mutex::new(WorkerState::Creating),
             request_count: Mutex::new(0),
+            active_request: Mutex::new(None),
             unhealthy: AtomicBool::new(false),
             idle_notifications: AtomicU32::new(0),
             ttl_timer: Mutex::new(TtlTimerSlot {
@@ -128,6 +137,9 @@ impl WorkerInstance {
     }
 
     pub fn set_state(&self, state: WorkerState) {
+        if state != WorkerState::Active {
+            self.clear_active_request();
+        }
         *self.state.lock().expect("state lock") = state;
     }
 
@@ -147,6 +159,44 @@ impl WorkerInstance {
         let mut count = self.request_count.lock().expect("request_count lock");
         *count += 1;
         *count
+    }
+
+    pub fn start_active_request(&self, request_id: String) {
+        *self.active_request.lock().expect("active request lock") = Some(ActiveRequestState {
+            request_id,
+            started: Instant::now(),
+            streaming: false,
+        });
+    }
+
+    pub fn mark_active_request_streaming(&self) {
+        if let Some(request) = self
+            .active_request
+            .lock()
+            .expect("active request lock")
+            .as_mut()
+        {
+            request.streaming = true;
+        }
+    }
+
+    pub fn clear_active_request(&self) {
+        self.active_request
+            .lock()
+            .expect("active request lock")
+            .take();
+    }
+
+    pub fn active_request_metrics(&self) -> Option<ActiveRequestMetrics> {
+        self.active_request
+            .lock()
+            .expect("active request lock")
+            .as_ref()
+            .map(|request| ActiveRequestMetrics {
+                request_id: request.request_id.clone(),
+                age_ms: request.started.elapsed().as_millis() as u64,
+                streaming: request.streaming,
+            })
     }
 
     pub fn is_unhealthy(&self) -> bool {

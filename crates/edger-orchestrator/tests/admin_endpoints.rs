@@ -6,10 +6,11 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use edger_core::WorkerManifest;
+use edger_core::{CreateApiKeyRequest, ExecutionKind, SerializedRequest, WorkerManifest};
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
-    build_pipeline, ControlAuth, ControlAuthConfig, ManifestIndex, OrchestratorState, ServerState,
+    api_keys::ApiKeyService, build_pipeline, ControlAuth, ControlAuthConfig, ManifestIndex,
+    OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use serde_json::Value;
@@ -44,10 +45,13 @@ fn state_with_auth(auth: ControlAuth) -> OrchestratorState {
         )
         .unwrap();
 
+    state_with_index(auth, index)
+}
+
+fn state_with_index(auth: ControlAuth, index: ManifestIndex) -> OrchestratorState {
     let server = ServerState::new_unready();
     let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(StubFactory));
     server.mark_ready(pool.clone());
-
     OrchestratorState {
         server,
         pool,
@@ -327,6 +331,210 @@ async fn worker_disable_and_enable_controls_data_plane_route() {
     let (status, _json, text) = send(app, "GET", "/hello", None, Body::empty()).await;
     assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
     assert!(text.contains("fetch:GET /"));
+}
+
+#[tokio::test]
+async fn worker_recycle_targets_one_version_and_requires_an_existing_version() {
+    let mut index = ManifestIndex::new();
+    for version in ["1.0.0", "2.0.0"] {
+        index
+            .insert(
+                PathBuf::from(format!("/workers/hello-{version}")),
+                WorkerManifest {
+                    name: "hello".into(),
+                    version: Some(version.into()),
+                    min_processes: Some(0),
+                    max_processes: Some(1),
+                    ttl: Some(serde_yaml::Value::String("30s".into())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let state = state_with_index(ControlAuth::with_static_key(ROOT_KEY), index);
+    let workers = state.index.worker_refs();
+    for worker in &workers {
+        state
+            .pool
+            .fetch_worker(
+                worker,
+                SerializedRequest {
+                    method: "GET".into(),
+                    uri: "/warm".into(),
+                    headers: vec![],
+                    body: None,
+                    request_id: format!("recycle-{}", worker.version),
+                    base_href: None,
+                },
+                Some(ExecutionKind::FetchHandler),
+            )
+            .await
+            .unwrap();
+    }
+    let before = state.pool.get_metrics();
+    assert_eq!(before.worker_groups.len(), 2);
+    let version_b_id = before
+        .worker_groups
+        .iter()
+        .find(|group| group.version == "2.0.0")
+        .unwrap()
+        .processes[0]
+        .id;
+    let app = build_pipeline(state.clone());
+
+    let (status, json, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/hello/recycle?version=1.0.0",
+        Some(ROOT_KEY),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(json["name"], "hello");
+    assert_eq!(json["version"], "1.0.0");
+    assert!(json["recycled"].as_u64().unwrap() >= 1, "{json}");
+    assert_eq!(json["prewarm"], "not_configured");
+    let after = state.pool.get_metrics();
+    let version_a = after
+        .worker_groups
+        .iter()
+        .find(|group| group.version == "1.0.0")
+        .expect("version A metrics remain available after recycling");
+    assert_eq!(version_a.total_processes, 0);
+    assert!(version_a.processes.is_empty());
+    let version_b = after
+        .worker_groups
+        .iter()
+        .find(|group| group.version == "2.0.0")
+        .expect("recycling version A must preserve version B");
+    assert_eq!(version_b.total_processes, 1);
+    assert_eq!(version_b.processes[0].id, version_b_id);
+
+    let (status, json, _) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/hello/recycle",
+        Some(ROOT_KEY),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["code"], "VALIDATION_ERROR");
+
+    let (status, json, _) = send(
+        app,
+        "POST",
+        "/api/admin/workers/hello/recycle?version=9.9.9",
+        Some(ROOT_KEY),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json["code"], "NOT_FOUND");
+}
+
+#[tokio::test]
+async fn worker_recycle_requires_workers_toggle_permission() {
+    let keys = Arc::new(ApiKeyService::in_memory().unwrap());
+    let state =
+        state_with_auth(ControlAuth::with_static_key(ROOT_KEY).with_key_service(Arc::clone(&keys)));
+    let read_only = keys
+        .create(
+            &edger_core::root_principal(),
+            CreateApiKeyRequest {
+                name: "recycle-read-only".into(),
+                permissions: vec!["workers:read".into()],
+                namespaces: vec!["*".into()],
+                workers: vec!["*".into()],
+                expires_at: None,
+                role: None,
+            },
+        )
+        .unwrap();
+
+    let (status, json, _) = send(
+        build_pipeline(state),
+        "POST",
+        "/api/admin/workers/hello/recycle?version=1.0.0",
+        Some(&read_only.raw_key),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(json["code"], "FORBIDDEN");
+}
+
+#[tokio::test]
+async fn worker_recycle_rewarms_an_enabled_min_process_floor() {
+    let mut state = root_state();
+    state
+        .index
+        .insert(
+            PathBuf::from("/workers/recycle-prewarm"),
+            WorkerManifest {
+                name: "recycle-prewarm".into(),
+                version: Some("1.0.0".into()),
+                min_processes: Some(1),
+                max_processes: Some(1),
+                ttl: Some(serde_yaml::Value::String("30s".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let worker = state
+        .index
+        .worker_refs()
+        .into_iter()
+        .find(|worker| worker.name == "recycle-prewarm")
+        .unwrap();
+    state
+        .pool
+        .fetch_worker(
+            &worker,
+            SerializedRequest {
+                method: "GET".into(),
+                uri: "/warm".into(),
+                headers: vec![],
+                body: None,
+                request_id: "recycle-prewarm-initial".into(),
+                base_href: None,
+            },
+            Some(ExecutionKind::FetchHandler),
+        )
+        .await
+        .unwrap();
+    let app = build_pipeline(state.clone());
+
+    let (status, json, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/recycle-prewarm/recycle?version=1.0.0",
+        Some(ROOT_KEY),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert!(json["recycled"].as_u64().unwrap() >= 1, "{json}");
+    assert_eq!(json["prewarm"], "scheduled");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let group = state
+            .pool
+            .get_metrics()
+            .worker_groups
+            .into_iter()
+            .find(|group| group.name == "recycle-prewarm" && group.version == "1.0.0");
+        if group.is_some_and(|group| group.total_processes == 1) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "minProcesses floor was not restored"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 
 // Mutation captured: removing the worker error log from either admin response

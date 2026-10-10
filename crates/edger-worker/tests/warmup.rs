@@ -803,6 +803,20 @@ async fn user_request_during_warmup_waits_and_is_served_by_the_same_process() {
     });
     wait_until(|| factory.warmup_started()).await;
 
+    let metrics = pool.get_metrics();
+    let process = &metrics
+        .worker_groups
+        .iter()
+        .find(|group| group.name == "warm-concurrent")
+        .unwrap()
+        .processes[0];
+    let active_request = process
+        .active_request
+        .as_ref()
+        .expect("the synthetic warmup is visible while it is in flight");
+    assert!(active_request.request_id.starts_with("warmup-"));
+    assert!(!active_request.streaming);
+
     // The user request arrives while the warmup is held: it must wait on
     // the dispatch lock, never run concurrently in the same process.
     let user = tokio::spawn({
@@ -829,6 +843,18 @@ async fn user_request_during_warmup_waits_and_is_served_by_the_same_process() {
         String::from_utf8_lossy(res.body.as_deref().unwrap_or(&[])),
         "isolate-1",
         "the user request was served by the same (warmed) process"
+    );
+
+    let metrics = pool.get_metrics();
+    let process = &metrics
+        .worker_groups
+        .iter()
+        .find(|group| group.name == "warm-concurrent")
+        .unwrap()
+        .processes[0];
+    assert!(
+        process.active_request.is_none(),
+        "the warmup cleared on completion"
     );
 
     // Order inside the single process: the warmup FIRST, then the user
