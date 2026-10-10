@@ -692,20 +692,156 @@ impl WorkerPool {
         let mut spawned = 0;
         for instance in instances {
             let dispatch_lock = instance.dispatch_lock();
-            let _guard = dispatch_lock.lock_owned().await;
+            let guard = dispatch_lock.lock_owned().await;
             if group.is_evicted() {
                 break;
             }
-            if instance.state() == WorkerState::Creating {
+            let just_spawned = instance.state() == WorkerState::Creating;
+            if just_spawned {
                 self.spawn_instance(&instance).await?;
-                spawned += 1;
+                // (EDG-15) Opt-in warmup (manifest `warmup`): right after
+                // this spawn — still holding the instance's dispatch lock,
+                // before the `Ready -> Idle` transition below — one
+                // synthetic GET makes the first user request find the code
+                // already executed once. A warmup failure terminates the
+                // process and removes the instance WITHOUT scheduling a
+                // replenishment, and never fails the prewarm.
+                let warmed = self.warm_up_instance(&instance).await;
+                // Revalidate after the warmup await: a close
+                // (shutdown/recycle) or an eviction that landed while the
+                // synthetic request ran owns this instance now — the close
+                // path drains the group (and the failed warmup already
+                // removed its instance), so do not put it `Idle`; just
+                // leave the loop.
+                if group.is_evicted()
+                    || group.is_closed()
+                    || self.inner.shutdown.load(Ordering::SeqCst)
+                {
+                    wake_waiters_after_warmup(&instance, &group, guard);
+                    break;
+                }
+                if warmed {
+                    spawned += 1;
+                }
             }
             if instance.state() == WorkerState::Ready {
                 instance.set_state(WorkerState::Idle);
             }
+            wake_waiters_after_warmup(&instance, &group, guard);
         }
         self.sync_worker_counts();
         Ok(spawned)
+    }
+
+    /// (EDG-15) Opt-in warmup for a freshly spawned process: when the
+    /// worker's manifest declares `warmup`, send exactly ONE synthetic
+    /// `GET` to the new process — while the caller still holds the
+    /// instance's dispatch lock and before the `Ready -> Idle` transition
+    /// — so the first user request finds the code already executed once.
+    /// Called ONLY from `prewarm_worker` and `replenish_group`, right
+    /// after a successful `spawn_instance` of a `Creating` instance:
+    /// never on the demand path, never for ephemeral workers, never on
+    /// existing instances.
+    ///
+    /// The warmup does NOT count: it does not increment the instance's
+    /// `request_count` (the `maxRequests` budget stays whole for users),
+    /// does not go through the `Supervisor` (no TTL arming), and touches
+    /// no request counters, metrics, or circuit-breaker state.
+    ///
+    /// Results:
+    /// - `Ok` 200..=399: `tracing::debug!`; the process stays.
+    /// - `Ok` any other status: `tracing::warn!`; the process stays (the
+    ///   socket is intact — the warmup did not desync it).
+    /// - `Err` (timeout, crash, protocol error): `tracing::warn!`; the
+    ///   process is terminated and the instance is removed with the
+    ///   `SpawnFailed` policy — WITHOUT scheduling a replenishment, so a
+    ///   warmup failure can never chain spawn -> warmup failure ->
+    ///   replenishment.
+    ///
+    /// The dispatch is NOT wrapped in an outer `tokio::time::timeout`:
+    /// cancelling it mid-flight would desync the process socket. The
+    /// warmup budget is applied by the isolate itself — `dispatch_to_isolate`
+    /// runs under the wall-clock limit built from `warm_config.timeout_ms`
+    /// (the instance's config with the warmup's `timeout_ms`).
+    ///
+    /// Returns `true` when the process survived the warmup (or no warmup
+    /// is configured) and `false` when it was terminated for a warmup
+    /// failure.
+    async fn warm_up_instance(&self, instance: &Arc<WorkerInstance>) -> bool {
+        let Some(warmup) = &instance.worker_ref.config.warmup else {
+            return true;
+        };
+        let request_id = format!("warmup-{}", Uuid::new_v4());
+        let request = SerializedRequest {
+            method: "GET".into(),
+            uri: warmup.path.clone(),
+            headers: vec![
+                ("x-request-id".into(), request_id.clone()),
+                ("x-edger-health-check".into(), "warmup".into()),
+            ],
+            body: None,
+            request_id,
+            base_href: Some(format!("/{}/", instance.worker_ref.name)),
+        };
+        let mut warm_config = instance.worker_ref.config.clone();
+        warm_config.timeout_ms = warmup.timeout_ms;
+        let kind = instance
+            .worker_ref
+            .config
+            .kind
+            .clone()
+            .unwrap_or_else(|| instance.worker_ref.kind.clone());
+        let started = Instant::now();
+        let isolate = instance.isolate();
+        let mut isolate_guard = isolate.lock().await;
+        let outcome =
+            dispatch_to_isolate(isolate_guard.as_mut(), kind, request, &warm_config).await;
+        drop(isolate_guard);
+        let duration_ms = started.elapsed().as_millis().max(1) as u64;
+        match outcome {
+            Ok(response) if (200..400).contains(&response.status) => {
+                tracing::debug!(
+                    worker = %instance.worker_ref.name,
+                    version = %instance.worker_ref.version,
+                    status = response.status,
+                    duration_ms,
+                    "worker warmup completed"
+                );
+                true
+            }
+            Ok(response) => {
+                tracing::warn!(
+                    worker = %instance.worker_ref.name,
+                    version = %instance.worker_ref.version,
+                    status = response.status,
+                    duration_ms,
+                    "worker warmup answered with a non-2xx/3xx status (the socket is intact; the process is kept)"
+                );
+                true
+            }
+            Err(err) => {
+                tracing::warn!(
+                    worker = %instance.worker_ref.name,
+                    version = %instance.worker_ref.version,
+                    duration_ms,
+                    "worker warmup failed; terminating the process without scheduling a replenishment: {err}"
+                );
+                instance.set_state(WorkerState::Terminating);
+                self.terminate_isolate_with_lifecycle(instance, "warmup_failed")
+                    .await;
+                instance.set_state(WorkerState::Terminated);
+                // Explicit `SpawnFailed` policy: this removal must NEVER
+                // schedule a min-processes replenishment — a warmup failure
+                // is a failed attempt, like a failed spawn (the next request
+                // or removal re-tries through the demand paths).
+                self.remove_instance_with_cause(
+                    instance,
+                    WorkerRecycleCause::Error,
+                    ReplenishPolicy::SpawnFailed,
+                );
+                false
+            }
+        }
     }
 
     /// Resolve or create a pooled worker instance (new entries start in `Creating`).
@@ -1570,7 +1706,7 @@ impl WorkerPool {
         self.sync_worker_counts();
         for instance in &admitted {
             let dispatch_lock = instance.dispatch_lock();
-            let _guard = dispatch_lock.lock_owned().await;
+            let guard = dispatch_lock.lock_owned().await;
             // (rev2 P2 #2) Re-validate after the wait: a close (shutdown /)
             // recycle or eviction that landed while the dispatch lock was
             // taken must not prepare an orphan OUTSIDE the drained set —
@@ -1581,7 +1717,8 @@ impl WorkerPool {
             {
                 break;
             }
-            if instance.state() == WorkerState::Creating {
+            let just_spawned = instance.state() == WorkerState::Creating;
+            if just_spawned {
                 if let Err(err) = self.spawn_instance(instance).await {
                     // One attempt, no retry: the failed placeholder was
                     // removed WITHOUT scheduling another attempt (P2 #1).
@@ -1592,10 +1729,36 @@ impl WorkerPool {
                     );
                     break;
                 }
+                // (EDG-15) Opt-in warmup: the same rule as the prewarm —
+                // one synthetic GET right after this spawn, still holding
+                // the dispatch lock, before the instance goes Idle. A
+                // warmup failure terminates the process and removes the
+                // instance WITHOUT scheduling a replenishment (one attempt,
+                // no retry), and never fails the attempt.
+                let warmed = self.warm_up_instance(instance).await;
+                if group.is_evicted()
+                    || group.is_closed()
+                    || self.inner.shutdown.load(Ordering::SeqCst)
+                {
+                    // A close/eviction that landed while the warmup ran owns
+                    // the remaining placeholders — the close path drains
+                    // them (they stay in the group's vector and in the
+                    // close-time snapshot).
+                    wake_waiters_after_warmup(instance, &group, guard);
+                    break;
+                }
+                if !warmed {
+                    // The failed warmup already removed its instance and
+                    // does not schedule a retry; continue this admitted
+                    // batch so its other placeholders do not remain Creating.
+                    wake_waiters_after_warmup(instance, &group, guard);
+                    continue;
+                }
             }
             if instance.state() == WorkerState::Ready {
                 instance.set_state(WorkerState::Idle);
             }
+            wake_waiters_after_warmup(instance, &group, guard);
         }
         self.sync_worker_counts();
     }
@@ -1940,6 +2103,25 @@ fn is_health_check_request(request: &SerializedRequest) -> bool {
         .headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case("x-edger-health-check"))
+}
+
+/// (EDG-15) End of the dispatch-lock hold that spanned a warmup: when the
+/// manifest declares `warmup`, the warmup held the instance's dispatch
+/// lock across the synthetic request — a raw lock guard (unlike
+/// `DispatchSlot`) does not wake the queue on drop, so wake it explicitly:
+/// a user request queued during the warmup must be served after it (never
+/// concurrently) and must not sit until its queue deadline. Inert without
+/// a `warmup` (the lock was then never held across a warmup await) and a
+/// no-op when the close paths already woke the whole queue.
+fn wake_waiters_after_warmup(
+    instance: &WorkerInstance,
+    group: &WorkerGroup,
+    guard: tokio::sync::OwnedMutexGuard<()>,
+) {
+    if instance.worker_ref.config.warmup.is_some() {
+        drop(guard);
+        group.notify_slot_released();
+    }
 }
 
 fn infer_recycle_cause(instance: &WorkerInstance) -> WorkerRecycleCause {

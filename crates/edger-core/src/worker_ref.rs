@@ -98,6 +98,20 @@ pub fn validate_worker_manifest(manifest: &WorkerManifest) -> Result<(), crate::
         }
     }
 
+    if let Some(warmup) = manifest.warmup.as_ref() {
+        // Same error pattern as `basePath` above: a warmup path is always
+        // an absolute worker pathname (the synthetic request is a GET to
+        // that path). An unparseable `timeout` is NOT rejected here — the
+        // normalization falls back to the 10 s default.
+        let path = warmup.path.trim();
+        if path.is_empty() || !path.starts_with('/') {
+            return Err(crate::error::CoreError::validation(
+                "manifest.warmup.path",
+                "warmup.path must be an absolute path starting with /",
+            ));
+        }
+    }
+
     let Some(kind) = manifest.kind.as_deref() else {
         return Ok(());
     };

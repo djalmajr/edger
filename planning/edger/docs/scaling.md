@@ -31,6 +31,39 @@ L1 é configurado no manifesto de cada worker, não no chart global:
   resposta dessas rotas não espera o prewarm e informa `prewarm:
   "scheduled" | "not_configured"`); o startup e o rescan com `dryRun: false`
   também pré-aquecem, mas esperam o prewarm (o boot e a resposta do rescan).
+- Aquecimento (`warmup`): campo opcional do manifesto que, logo depois do
+  spawn feito pelo prewarm ou pela reposição do piso — e antes de o processo
+  ficar `Idle` — envia **uma** requisição sintética `GET` (sempre `GET`, não
+  há campo de método) ao próprio processo novo, para o primeiro usuário
+  encontrar o código já executado uma vez. O formato é um objeto com `path`
+  (obrigatório, pathname absoluto iniciado por `/`) e `timeout` (opcional,
+  mesma duração do `timeout` do `healthCheck`), com default de **10 s**
+  quando ausente ou não parseável. O limite efetivo do aquecimento é o menor
+  entre `warmup.timeout` e o `timeout` do worker, porque o processo inicia com
+  o timeout de quadro do worker; ao estourar, o aquecimento conta como falha
+  (o processo é terminado, sem reposição automática):
+
+  ```yaml
+  minProcesses: 2
+  warmup:
+    path: /
+    timeout: 5s
+  ```
+
+  O aquecimento **não conta**: não incrementa o `request_count` da instância
+  (o orçamento de `maxRequests` inteiro fica para os usuários), não passa
+  pelo `Supervisor` (não arma TTL), não entra nos contadores de requisições
+  nem nas métricas e não registra sucesso nem falha no circuit breaker.
+  Status 2xx/3xx e qualquer outro status deixam o processo `Idle` (o socket
+  está íntegro; status fora de 2xx/3xx só gera `warn` no log). Falha de
+  dispatch do aquecimento (timeout, crash ou erro de protocolo) só gera log;
+  o processo é terminado e a instância é removida **sem reposição
+  automática** (evita o laço spawn → falha no aquecimento → reposição) e a
+  falha nunca derruba o boot, o rescan ou o install. Uma requisição de
+  usuário que chega durante o aquecimento espera pelo dispatch lock e é
+  atendida depois, no mesmo processo. O aquecimento só roda em processos
+  criados pelo prewarm ou pela reposição: nunca no caminho sob demanda, em
+  workers efêmeros (`ttl: 0`) nem em instâncias já existentes.
 - `concurrency`: alias operacional normalizado junto com `maxProcesses`.
 - `queueLimit`: quantidade máxima de requests persistentes esperando quando
   todos os processos daquele worker estão ocupados.
