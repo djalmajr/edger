@@ -1,4 +1,9 @@
 //! edger-orchestrator — HTTP server, routing, auth, and worker dispatch.
+// Rust 1.99 clippy `double_must_use` rejects the `#[must_use]` that
+// `async_trait` attributes to the generated `JwksSource` methods (a boxed
+// `Future` is already considered `#[must_use]`). Lint suppression only —
+// no code generation changes.
+#![allow(clippy::double_must_use)]
 
 pub mod admin_api;
 pub mod api_keys;

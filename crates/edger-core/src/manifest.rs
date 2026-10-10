@@ -66,6 +66,22 @@ pub struct WorkerHealthCheck {
     pub timeout: Option<String>,
 }
 
+/// Opt-in process warmup (EDG-15): after a process created by the
+/// `minProcesses` prewarm or the floor replenishment is spawned, the pool
+/// sends ONE synthetic `GET` to it (always `GET` — there is no method
+/// field) before the process goes `Idle`, so the first user request finds
+/// the code already executed once.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerWarmup {
+    /// Absolute worker pathname the synthetic request targets.
+    pub path: String,
+    /// Duration of the warmup dispatch (same format as `healthCheck.timeout`);
+    /// absent/unparseable values normalize to the 10 s default.
+    #[serde(default)]
+    pub timeout: Option<String>,
+}
+
 /// Human-editable worker manifest (from manifest.yaml / package.json fallback).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +96,8 @@ pub struct WorkerManifest {
     /// Command run once per deployed version before the worker serves (migrations, etc.).
     pub release: Option<String>,
     pub health_check: Option<WorkerHealthCheck>,
+    /// Opt-in warmup of prewarmed/replenished processes (EDG-15).
+    pub warmup: Option<WorkerWarmup>,
     pub env: Option<std::collections::HashMap<String, String>>,
     #[serde(default)]
     pub env_prefix: Vec<String>,

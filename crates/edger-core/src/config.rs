@@ -16,6 +16,9 @@ pub struct WorkerConfig {
     /// Release command (migrations etc.) run once per version before serving.
     pub release_command: Option<String>,
     pub health_check: Option<WorkerHealthCheckConfig>,
+    /// Opt-in warmup of prewarmed/replenished processes (EDG-15): one
+    /// synthetic `GET` right after the spawn, before the process goes Idle.
+    pub warmup: Option<WorkerWarmupConfig>,
     pub env: std::collections::HashMap<String, String>,
     pub env_prefix: Vec<String>,
     pub public_env: Vec<String>,
@@ -66,6 +69,15 @@ pub struct WorkerHealthCheckConfig {
     pub path: String,
     pub method: String,
     pub mode: WorkerHealthCheckMode,
+    pub timeout_ms: u64,
+}
+
+/// Normalized opt-in process warmup (EDG-15).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerWarmupConfig {
+    pub path: String,
+    /// Wall-clock budget of the warmup dispatch; applied by the isolate.
+    /// Absent or unparseable `timeout` normalizes to the 10 s default.
     pub timeout_ms: u64,
 }
 
@@ -286,6 +298,9 @@ fn normalize_fullstack_base_path(value: Option<&str>) -> FullstackBasePath {
 /// `entrypoint` stay ephemeral because the parser cannot prove they should use
 /// the warm process path.
 const WARM_WORKER_DEFAULT_TTL_MS: u64 = 300_000;
+/// Default warmup (EDG-15) dispatch budget when the manifest `warmup`
+/// timeout is absent or does not parse.
+const DEFAULT_WARMUP_TIMEOUT_MS: u64 = 10_000;
 /// Small non-zero queue depth preserves 18.A's default "wait briefly" behavior
 /// while bounding memory and surfacing overload under sustained saturation.
 const DEFAULT_WORKER_QUEUE_LIMIT: usize = 8;
@@ -424,6 +439,14 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
                     .and_then(parse_duration_string_to_ms)
                     .unwrap_or(2_000),
             }),
+        warmup: manifest.warmup.as_ref().map(|warmup| WorkerWarmupConfig {
+            path: warmup.path.clone(),
+            timeout_ms: warmup
+                .timeout
+                .as_deref()
+                .and_then(parse_duration_string_to_ms)
+                .unwrap_or(DEFAULT_WARMUP_TIMEOUT_MS),
+        }),
         env: manifest.env.clone().unwrap_or_default(),
         env_prefix: manifest.env_prefix.clone(),
         public_env: manifest.public_env.clone(),

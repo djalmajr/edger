@@ -33,7 +33,8 @@ use axum::Router;
 use edger_core::ExecutionKind;
 use edger_isolation::{DenoProcessIsolate, WasmIsolate};
 use edger_orchestrator::{
-    build_pipeline, load_manifests_from_dirs, ControlAuth, OrchestratorState, ServerState,
+    build_pipeline, load_manifests_from_dirs, prewarm_min_process_workers, ControlAuth,
+    OrchestratorState, ServerState,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -242,6 +243,112 @@ async fn stats_has_idle_process(app: &Router, name: &str, timeout: Duration) -> 
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+// EDG-15: opt-in process warmup. With `minProcesses: 1`, `maxRequests: 3`
+// and `warmup: {path: /}`, the `edger` startup prewarm spawns the process
+// and sends ONE synthetic GET to it BEFORE it goes Idle (x-seq 1 is the
+// warmup). The first user request must therefore see `x-seq: 2` on the
+// same process — without the warmup it would cold-start and see `1`. The
+// third user request retires the process (maxRequests) and the background
+// replenishment refills the floor with a NEW, ALSO-WARMED process: the
+// fourth user request sees `x-seq: 2` again (its seq 1 was the warmup),
+// with no cold start on the request path (the process was observed Idle in
+// /metrics/stats BEFORE the fourth request).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs deno on PATH; run explicitly"]
+async fn warmup_process_answers_the_first_request_with_executed_code() {
+    let root = tempfile::tempdir().unwrap();
+    write_warmup_worker(root.path(), "warm-app");
+    let st = state(root.path().to_path_buf());
+    // The `edger` binary prewarms the minProcesses floor at startup and
+    // waits for it: the warmup GET runs on the freshly spawned process
+    // before it goes Idle.
+    prewarm_min_process_workers(&st.index, &st.pool)
+        .await
+        .unwrap();
+    let app = build_pipeline(st);
+
+    // User request #1: the SAME warmed process serves it — the module-scope
+    // counter continues at 2 (a cold start, i.e. no warmup, would answer 1).
+    let res = send(app.clone(), "/warm-app").await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get("x-seq").unwrap(),
+        "2",
+        "the warmup ran on this process: the first user request is seq 2"
+    );
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(body, axum::body::Bytes::from_static(b"ok"));
+
+    // User requests #2/#3: same process (seq 3, 4); on #3 the process
+    // reaches maxRequests and retires — the group is emptied and the
+    // background replenishment spawns a new, warmed process (its seq 1 is
+    // the warmup).
+    for expected in ["3", "4"] {
+        let res = send(app.clone(), "/warm-app").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get("x-seq").unwrap(),
+            expected,
+            "requests #2/#3 run on the first (warmed) process"
+        );
+        let _ = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+    }
+
+    // Wait WITHOUT a data-plane request until the replenished process is
+    // Idle in /metrics/stats: the fourth request must land on an already
+    // alive (and warmed) process, not cold-start it.
+    let seen_idle = stats_has_idle_process(&app, "warm-app", Duration::from_secs(15)).await;
+    assert!(
+        seen_idle,
+        "the replenished process must be idle before the fourth request"
+    );
+
+    // User request #4: the NEW, warmed process — x-seq 2 (its seq 1 was
+    // the warmup), no cold start on the request path.
+    let res = send(app, "/warm-app").await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get("x-seq").unwrap(),
+        "2",
+        "the replenished process was warmed too: the fourth user request is seq 2"
+    );
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(body, axum::body::Bytes::from_static(b"ok"));
+}
+
+/// Worker with the same module-scope `x-seq` counter as
+/// `write_max_requests_worker`, plus `minProcesses: 1`, `maxRequests: 3`
+/// and the opt-in `warmup` manifest field.
+fn write_warmup_worker(root: &std::path::Path, name: &str) {
+    let dir = root.join(name);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("manifest.yaml"),
+        format!(
+            "name: {name}\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nminProcesses: 1\nmaxRequests: 3\nttl: \"60s\"\nwarmup:\n  path: /\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("index.ts"),
+        r#"let seq = 0;
+Deno.serve(() => {
+  seq += 1;
+  return new Response("ok", {
+    headers: { "content-type": "text/plain", "x-seq": String(seq) },
+  });
+});
+"#,
+    )
+    .unwrap();
 }
 
 // EDG-13: the floor is re-established when the LAST instance retires. With

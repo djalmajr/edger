@@ -22,6 +22,15 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Added
 
+- Opt-in worker `warmup` manifest field (an object with `path` and optional
+  `timeout`, default 10 s): right after a process created by the
+  `minProcesses` prewarm or the floor replenishment is spawned — before it
+  goes `Idle` — the pool sends ONE synthetic `GET` (always GET) to it, so the
+  first user request finds the code already executed once. The warmup is not
+  counted toward `maxRequests` or the request metrics, a non-2xx/3xx answer
+  only warns (the socket is intact), and a warmup dispatch failure only logs:
+  the process is terminated and removed without automatic replenishment, and
+  it never fails the boot, the rescan or the install.
 - cPanel column visibility controls for API Keys and Users: permissions are
   hidden by default, choices persist independently per table in the browser,
   and management actions remain visible. API Keys keeps compact trailing
