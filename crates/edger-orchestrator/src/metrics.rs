@@ -89,10 +89,20 @@ pub struct MetricsWorkerHealthStats {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MetricsWorkerProcessStats {
+    pub id: String,
     pub requests: u32,
     pub state: &'static str,
     pub unhealthy: bool,
     pub uptime_seconds: u64,
+    pub active_request: Option<MetricsWorkerActiveRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricsWorkerActiveRequest {
+    pub request_id: String,
+    pub age_ms: u64,
+    pub streaming: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
@@ -554,10 +564,12 @@ fn metrics_worker_stats_from_group(
 
 fn metrics_worker_stats_from_instance(worker: &WorkerStats) -> MetricsWorkerStats {
     let process = WorkerProcessMetrics {
+        id: worker.worker_id,
         request_count: worker.request_count,
         state: worker.state,
         unhealthy: worker.unhealthy,
         uptime_seconds: worker.uptime_seconds,
+        active_request: None,
     };
     MetricsWorkerStats {
         active_processes: usize::from(worker.state == WorkerState::Active),
@@ -607,10 +619,19 @@ fn metrics_health_stats(health: &WorkerHealthMetrics) -> MetricsWorkerHealthStat
 
 fn metrics_process_stats(process: &WorkerProcessMetrics) -> MetricsWorkerProcessStats {
     MetricsWorkerProcessStats {
+        id: process.id.to_string(),
         requests: process.request_count,
         state: worker_state_label(process.state),
         unhealthy: process.unhealthy,
         uptime_seconds: process.uptime_seconds,
+        active_request: process
+            .active_request
+            .as_ref()
+            .map(|request| MetricsWorkerActiveRequest {
+                request_id: request.request_id.clone(),
+                age_ms: request.age_ms,
+                streaming: request.streaming,
+            }),
     }
 }
 
@@ -931,6 +952,29 @@ pub fn stream_detach_metrics_prometheus(stats: &StreamDetachStats) -> String {
         );
     }
     out.push('\n');
+    let max_duration_outcomes: [(&str, u64); 6] = [
+        ("drained", stats.max_duration_drained_total),
+        ("bytes_limit", stats.max_duration_drain_bytes_limit_total),
+        ("time_limit", stats.max_duration_drain_time_limit_total),
+        ("stream_error", stats.max_duration_drain_stream_error_total),
+        ("socket_poisoned", stats.max_duration_socket_poisoned_total),
+        ("cancelled", stats.max_duration_cancelled_total),
+    ];
+    push_metric_header(
+        &mut out,
+        "edger_stream_max_duration_total",
+        "counter",
+        "Streams cut by the configured total response-stream duration, by drain outcome",
+    );
+    for (outcome, count) in max_duration_outcomes {
+        push_labeled_sample(
+            &mut out,
+            "edger_stream_max_duration_total",
+            &[("outcome", outcome)],
+            count,
+        );
+    }
+    out.push('\n');
     out
 }
 
@@ -1110,6 +1154,12 @@ mod tests {
             abandoned_drain_stream_error_total: 4,
             abandoned_socket_poisoned_total: 5,
             abandoned_cancelled_total: 6,
+            max_duration_drained_total: 7,
+            max_duration_drain_bytes_limit_total: 8,
+            max_duration_drain_time_limit_total: 9,
+            max_duration_drain_stream_error_total: 10,
+            max_duration_socket_poisoned_total: 11,
+            max_duration_cancelled_total: 12,
         });
 
         assert!(output.contains("# TYPE edger_stream_detached_total counter"));
@@ -1124,6 +1174,14 @@ mod tests {
         assert!(output.contains("edger_stream_abandoned_total{outcome=\"stream_error\"} 4"));
         assert!(output.contains("edger_stream_abandoned_total{outcome=\"socket_poisoned\"} 5"));
         assert!(output.contains("edger_stream_abandoned_total{outcome=\"cancelled\"} 6"));
+        assert!(output.contains("# HELP edger_stream_max_duration_total"));
+        assert!(output.contains("# TYPE edger_stream_max_duration_total counter"));
+        assert!(output.contains("edger_stream_max_duration_total{outcome=\"drained\"} 7"));
+        assert!(output.contains("edger_stream_max_duration_total{outcome=\"bytes_limit\"} 8"));
+        assert!(output.contains("edger_stream_max_duration_total{outcome=\"time_limit\"} 9"));
+        assert!(output.contains("edger_stream_max_duration_total{outcome=\"stream_error\"} 10"));
+        assert!(output.contains("edger_stream_max_duration_total{outcome=\"socket_poisoned\"} 11"));
+        assert!(output.contains("edger_stream_max_duration_total{outcome=\"cancelled\"} 12"));
         // Process-global counters: no worker label of any kind.
         assert!(!output.contains("worker="));
     }

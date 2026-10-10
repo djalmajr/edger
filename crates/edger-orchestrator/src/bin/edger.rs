@@ -26,6 +26,9 @@
 //! - `EDGER_COMPRESSION_MIN_BYTES` — minimum compressible body size (default 1024)
 //! - `EDGER_COMPRESSION_LEVEL` — `default` (default) | `fastest` | `best` | integer
 //!   (`best` is brotli quality 11 — expensive for dynamic/streaming bodies)
+//! - `EDGER_STREAM_MAX_DURATION_MS` — total response-stream duration limit in
+//!   milliseconds (default `300000`; `0` disables; manifest `streamTimeout`
+//!   overrides this value)
 //!
 //! Invalid values log a warning and fall back to the default.
 
@@ -65,12 +68,15 @@ struct RuntimeIsolateFactory {
     /// pool's completion wait): `0` in either one disables the drain.
     abandon_drain_max_bytes: u64,
     abandon_drain_max_ms: u64,
+    stream_max_duration_ms: u64,
 }
 
 /// `EDGER_STREAM_DETACH_MAX_BYTES` default: 8 MiB per-response buffered tail.
 const DEFAULT_STREAM_DETACH_MAX_BYTES: u64 = 8 * 1024 * 1024;
 /// `EDGER_STREAM_DETACH_TOTAL_BYTES` default: 64 MiB process-wide budget.
 const DEFAULT_STREAM_DETACH_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+/// `EDGER_STREAM_MAX_DURATION_MS` default: five minutes per streamed response.
+const DEFAULT_STREAM_MAX_DURATION_MS: u64 = 300_000;
 
 /// Parse a detach-bytes env var: invalid values (including empty or negative
 /// text) fall back to the default with a warning; `0` is a valid disable.
@@ -111,6 +117,10 @@ impl RuntimeIsolateFactory {
             "EDGER_STREAM_ABANDON_DRAIN_MAX_MS",
             edger_core::STREAM_ABANDON_DRAIN_MAX_MS_DEFAULT,
         );
+        let stream_max_duration_ms = stream_detach_env(
+            "EDGER_STREAM_MAX_DURATION_MS",
+            DEFAULT_STREAM_MAX_DURATION_MS,
+        );
         Self {
             console_sender,
             js_uses_process,
@@ -118,6 +128,7 @@ impl RuntimeIsolateFactory {
             stream_detach_budget: Arc::new(StreamDetachBudget::new(stream_detach_total_bytes)),
             abandon_drain_max_bytes,
             abandon_drain_max_ms,
+            stream_max_duration_ms,
         }
     }
 }
@@ -152,7 +163,8 @@ impl IsolateFactory for RuntimeIsolateFactory {
                         .with_abandon_drain_limits(
                             self.abandon_drain_max_bytes,
                             self.abandon_drain_max_ms,
-                        ),
+                        )
+                        .with_stream_max_duration_default_ms(self.stream_max_duration_ms),
                 )
             }
             _ => Box::new(DenoIsolate::new(DenoFacade::new())),
@@ -438,6 +450,11 @@ fn record_lifecycle_event(events: &OperationalStore, record: WorkerLifecycleEven
             OperationalEventLevel::Info,
             record.reason,
         ),
+        WorkerLifecycleEventKind::StreamMaxDuration => (
+            "stream.max_duration",
+            OperationalEventLevel::Warn,
+            record.detail.unwrap_or("stream_error"),
+        ),
     };
     // (EDG-9) Preserve the reason and the drain sub-cause on the
     // operational surface (the old fields above stay untouched): the REUSE
@@ -476,7 +493,7 @@ fn record_lifecycle_event(events: &OperationalStore, record: WorkerLifecycleEven
         worker: Some(record.worker_ref.name),
         version: Some(record.worker_ref.version),
         process_id: record.process_id,
-        request_id: None,
+        request_id: record.request_id,
         trace_id: None,
         outcome: Some(outcome.into()),
         status: None,
@@ -886,6 +903,7 @@ mod tests {
                 kind: WorkerLifecycleEventKind::DrainCompleted,
                 worker_ref: worker_ref.clone(),
                 process_id: None,
+                request_id: None,
                 drained_count: None,
                 duration_ms: Some(12),
                 reason: "stream_abandoned_drained",
@@ -899,6 +917,7 @@ mod tests {
                 kind: WorkerLifecycleEventKind::Terminated,
                 worker_ref: worker_ref.clone(),
                 process_id: Some("proc-1".into()),
+                request_id: None,
                 drained_count: None,
                 duration_ms: Some(34),
                 reason: "stream_abandoned_recycled",
@@ -954,5 +973,49 @@ mod tests {
             Some("stream_abandoned_recycled")
         );
         assert_eq!(terminated.code.as_deref(), Some("bytes_limit"));
+    }
+
+    #[test]
+    fn max_duration_lifecycle_event_keeps_stream_identity_and_outcome() {
+        use edger_orchestrator::observability::OperationalEventQuery;
+
+        let mut worker_ref = edger_core::create_worker_ref(
+            std::path::PathBuf::from("/workers/max-duration"),
+            edger_core::WorkerManifest {
+                name: "max-duration".into(),
+                version: Some("1.2.3".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        worker_ref.namespace = Some("tenant-a".into());
+        let store = OperationalStore::default();
+
+        record_lifecycle_event(
+            &store,
+            WorkerLifecycleEvent {
+                kind: WorkerLifecycleEventKind::StreamMaxDuration,
+                worker_ref,
+                process_id: Some("instance-42".into()),
+                request_id: Some("request-7".into()),
+                drained_count: None,
+                duration_ms: Some(1_001),
+                reason: "stream_max_duration_drained",
+                detail: Some("cancelled"),
+            },
+        );
+
+        let page = store.query(OperationalEventQuery::default());
+        assert_eq!(page.events.len(), 1);
+        let event = &page.events[0];
+        assert_eq!(event.kind, "stream.max_duration");
+        assert_eq!(event.level, OperationalEventLevel::Warn);
+        assert_eq!(event.namespace.as_deref(), Some("tenant-a"));
+        assert_eq!(event.worker.as_deref(), Some("max-duration"));
+        assert_eq!(event.version.as_deref(), Some("1.2.3"));
+        assert_eq!(event.process_id.as_deref(), Some("instance-42"));
+        assert_eq!(event.request_id.as_deref(), Some("request-7"));
+        assert_eq!(event.duration_ms, Some(1_001));
+        assert_eq!(event.outcome.as_deref(), Some("cancelled"));
     }
 }

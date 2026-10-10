@@ -196,10 +196,19 @@ impl WorkerGroupMetrics {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerProcessMetrics {
+    pub id: uuid::Uuid,
     pub request_count: u32,
     pub state: WorkerState,
     pub unhealthy: bool,
     pub uptime_seconds: u64,
+    pub active_request: Option<ActiveRequestMetrics>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRequestMetrics {
+    pub request_id: String,
+    pub age_ms: u64,
+    pub streaming: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

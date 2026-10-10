@@ -264,6 +264,7 @@ impl Isolate for NumberedStreamingIsolate {
                 body: pending_body_stream(),
                 completed: None,
                 production_complete: None,
+                max_duration_elapsed_ms: None,
             }));
         }
         self.execute_fetch(req, config)

@@ -83,6 +83,10 @@ pub fn router() -> Router<OrchestratorState> {
         .route("/api/admin/workers/{name}/enable", post(enable_worker))
         .route("/api/admin/workers/{name}/disable", post(disable_worker))
         .route("/api/admin/workers/{name}/promote", post(promote_worker))
+        .route(
+            "/api/admin/workers/{name}/recycle",
+            post(recycle_worker_route),
+        )
         .route("/api/admin/workers/{name}/invoke", any(invoke_worker_root))
         .route(
             "/api/admin/workers/{name}/invoke/{*path}",
@@ -1655,6 +1659,49 @@ async fn disable_worker(
     Query(query): Query<WorkerVersionQuery>,
 ) -> Response {
     worker_mutation(state, headers, name, query.version, false).await
+}
+
+async fn recycle_worker_route(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(query): Query<WorkerVersionQuery>,
+) -> Response {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "workers:toggle")?;
+        validate_admin_mutation_security("POST", &headers, &principal)?;
+        let version = query
+            .version
+            .as_deref()
+            .ok_or_else(|| CoreError::validation("version", "version is required"))?;
+        require_visible_worker(&state, &principal, &name, Some(version))?;
+        let worker = state
+            .index
+            .worker_refs()
+            .into_iter()
+            .find(|worker| worker.name == name && worker.version == version)
+            .ok_or_else(|| {
+                CoreError::new("NOT_FOUND", format!("worker {name}@{version} not found"))
+            })?;
+        let recycled = state.pool.recycle_worker(&name, Some(version)).await;
+        let prewarm = if worker.config.enabled {
+            schedule_min_process_prewarm(&state, &worker.name, &worker.version)
+        } else {
+            "not_configured"
+        };
+        Ok(json!({
+            "name": name,
+            "version": version,
+            "recycled": recycled,
+            "prewarm": prewarm,
+        }))
+    }
+    .await;
+    match result {
+        Ok(response) => Json(response).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
 }
 
 async fn run_health_check(

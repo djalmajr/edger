@@ -106,6 +106,7 @@ pub struct WorkerManifest {
     #[serde(default, alias = "allow_net")]
     pub allow_net: Option<Vec<String>>,
     pub ttl: Option<serde_yaml::Value>,
+    pub stream_timeout: Option<serde_yaml::Value>,
     pub timeout: Option<String>,
     pub idle_timeout: Option<String>,
     #[serde(default, alias = "shutdown_grace")]

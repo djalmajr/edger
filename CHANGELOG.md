@@ -22,6 +22,21 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Added
 
+- Worker manifests may set `streamTimeout` as a duration (including `0` to
+  disable it); otherwise `EDGER_STREAM_MAX_DURATION_MS` applies, defaulting to
+  five minutes (`0` disables the global default). When a multiprocess streamed
+  response reaches its total duration, EdgeR sends the existing cancel frame,
+  drains within the configured abandon-drain limits, and reuses the process
+  after a clean end or recycles it when draining fails. `/metrics` exposes
+  `edger_stream_max_duration_total{outcome=...}`, and the cut emits a
+  `stream.max_duration` operational event with the worker, process, request,
+  duration and drain outcome. `/metrics/stats` includes each process's
+  `activeRequest` (`requestId`, `ageMs`, and `streaming`), including synthetic
+  health-check and warmup requests; every process item also exposes its own
+  `id` while the worker-group `id` stays compatible. Admins with
+  `workers:toggle` can recycle one version's processes through
+  `POST /api/admin/workers/{name}/recycle?version=<versão>` without deleting
+  the version or changing its activation.
 - Opt-in worker `warmup` manifest field (an object with `path` and optional
   `timeout`, default 10 s): right after a process created by the
   `minProcesses` prewarm or the floor replenishment is spawned — before it

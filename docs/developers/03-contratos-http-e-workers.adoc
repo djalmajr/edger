@@ -210,6 +210,51 @@ inexistente, revogada ou expirada falha ali mesmo com `401`, sem cair no
 OIDC. A root key nunca está no store, e portanto não é revogável por esta
 via.
 
+==== Controle de workers
+
+As rotas de ativação e reciclagem exigem `workers:toggle`; promover a versão
+default exige `workers:promote`.
+
+[cols="1,2,3",options="header"]
+|===
+| Método | Path | Contrato
+
+| `POST`
+| `/api/admin/workers/{name}/enable?version=<versão>`
+| Habilita a versão indicada; `version` é opcional. Permission `workers:toggle`.
+
+| `POST`
+| `/api/admin/workers/{name}/disable?version=<versão>`
+| Desabilita a versão indicada; `version` é opcional. Permission `workers:toggle`.
+
+| `POST`
+| `/api/admin/workers/{name}/promote?version=<versão>`
+| Define a versão default. Permission `workers:promote`.
+
+| `POST`
+| `/api/admin/workers/{name}/recycle?version=<versão>`
+| Recicla somente os processos da versão. `version` é obrigatório; sem ele,
+  responde `400` com `VALIDATION_ERROR`, e uma versão inexistente responde
+  `404` com `NOT_FOUND`. Permission `workers:toggle`.
+|===
+
+Reciclar remove e encerra os processos daquela versão, sem apagar seus arquivos
+nem alterar `enabled`, a versão default ou a ativação. Use a rota para liberar
+os processos de uma versão presa sem remover a versão. Se ela estiver
+habilitada e tiver `minProcesses`, a resposta agenda o prewarm do piso em
+segundo plano.
+
+A resposta `200` informa quantos processos foram reciclados e se o prewarm foi
+agendado:
+
+[source,json]
+----
+{"name":"<name>","version":"<versão>","recycled":2,"prewarm":"scheduled"}
+----
+
+`prewarm` será `not_configured` quando a versão estiver desabilitada, não tiver
+`minProcesses` ou não usar um backend de processos.
+
 ==== Arquivos de workers
 
 As rotas de arquivos operam sobre uma versão instalada; `?version=` é
