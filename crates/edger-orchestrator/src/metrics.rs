@@ -1002,6 +1002,42 @@ pub fn stream_detach_metrics_prometheus(stats: &StreamDetachStats) -> String {
         );
     }
     out.push('\n');
+    // (EDG-20) The per-version bundle cache rides this snapshot: the
+    // `/metrics` multiproc block is the only rendering seam (the handlers
+    // live outside this file), and the counters are process-wide.
+    out.push_str(&bundle_cache_metrics_prometheus(stats));
+    out
+}
+
+/// Prometheus text exposition for the process-wide per-version bundle cache
+/// counters (EDG-20): one `edger_worker_bundle_total` sample per outcome.
+/// `hit` = a spawn reused an existing bundle (no `deno bundle` ran); `miss`
+/// = a spawn built and published the bundle; `error` = a build failed
+/// (never cached); `uncached` = the worker dir was not writable and the
+/// legacy per-process tempdir bundle ran instead.
+pub fn bundle_cache_metrics_prometheus(stats: &StreamDetachStats) -> String {
+    let mut out = String::new();
+    let bundle_outcomes: [(&str, u64); 4] = [
+        ("hit", stats.bundle_hit_total),
+        ("miss", stats.bundle_miss_total),
+        ("error", stats.bundle_error_total),
+        ("uncached", stats.bundle_uncached_total),
+    ];
+    push_metric_header(
+        &mut out,
+        "edger_worker_bundle_total",
+        "counter",
+        "Worker bundle resolutions by outcome (hit = reused cached bundle, miss = built and published, error = build failed, uncached = per-process fallback because the worker dir is not writable)",
+    );
+    for (outcome, count) in bundle_outcomes {
+        push_labeled_sample(
+            &mut out,
+            "edger_worker_bundle_total",
+            &[("outcome", outcome)],
+            count,
+        );
+    }
+    out.push('\n');
     out
 }
 
@@ -1193,6 +1229,10 @@ mod tests {
             frame_timeout_drain_stream_error_total: 16,
             frame_timeout_socket_poisoned_total: 17,
             frame_timeout_cancelled_total: 18,
+            bundle_hit_total: 1,
+            bundle_miss_total: 2,
+            bundle_error_total: 3,
+            bundle_uncached_total: 4,
         });
 
         assert!(output.contains("# TYPE edger_stream_detached_total counter"));
@@ -1223,6 +1263,14 @@ mod tests {
         assert!(output.contains("edger_stream_frame_timeout_total{outcome=\"stream_error\"} 16"));
         assert!(output.contains("edger_stream_frame_timeout_total{outcome=\"socket_poisoned\"} 17"));
         assert!(output.contains("edger_stream_frame_timeout_total{outcome=\"cancelled\"} 18"));
+        // (EDG-20) the bundle cache family renders next to the multiproc
+        // counters, with the four outcomes and no worker label.
+        assert!(output.contains("# HELP edger_worker_bundle_total"));
+        assert!(output.contains("# TYPE edger_worker_bundle_total counter"));
+        assert!(output.contains("edger_worker_bundle_total{outcome=\"hit\"} 1"));
+        assert!(output.contains("edger_worker_bundle_total{outcome=\"miss\"} 2"));
+        assert!(output.contains("edger_worker_bundle_total{outcome=\"error\"} 3"));
+        assert!(output.contains("edger_worker_bundle_total{outcome=\"uncached\"} 4"));
         // Process-global counters: no worker label of any kind.
         assert!(!output.contains("worker="));
     }

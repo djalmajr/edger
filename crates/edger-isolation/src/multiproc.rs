@@ -31,7 +31,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant as TokioInstant;
 
 use crate::deno_bundle::{
-    default_deno_executable, entry_needs_bundle, DenoCliBundler, ModuleBundler,
+    bundle_cache_stats, default_deno_executable, entry_needs_bundle, BundleEntry, DenoCliBundler,
 };
 use crate::deno_sandbox_policy::{
     deno_network_permission_args_with_uds, read_allowlist, select_deno_dir,
@@ -312,6 +312,14 @@ pub struct StreamDetachStats {
     pub frame_timeout_drain_stream_error_total: u64,
     pub frame_timeout_socket_poisoned_total: u64,
     pub frame_timeout_cancelled_total: u64,
+    /// Per-version bundle cache outcomes for `edger_worker_bundle_total`
+    /// (EDG-20): process-wide, read from the isolation bundle cache (the
+    /// counters ride this snapshot because the `/metrics` multiproc block is
+    /// only emitted when the multiproc backend is active).
+    pub bundle_hit_total: u64,
+    pub bundle_miss_total: u64,
+    pub bundle_error_total: u64,
+    pub bundle_uncached_total: u64,
 }
 
 /// Process-wide budget for the stream-detach pipelines, shared by every
@@ -442,6 +450,12 @@ impl StreamDetachBudget {
                 .stats
                 .frame_timeout_cancelled_total
                 .load(Ordering::Acquire),
+            // (EDG-20) process-wide bundle-cache counters: the multiproc
+            // backend is the only bundling path that feeds them.
+            bundle_hit_total: bundle_cache_stats().hit_total,
+            bundle_miss_total: bundle_cache_stats().miss_total,
+            bundle_error_total: bundle_cache_stats().error_total,
+            bundle_uncached_total: bundle_cache_stats().uncached_total,
         }
     }
 
@@ -919,15 +933,17 @@ impl DenoWorkerProcess {
         std::fs::write(&harness_path, harness_script()).map_err(|err| {
             IsolationError::new("UDS_HARNESS", format!("write harness failed: {err}"))
         })?;
-        let (entry_url, bundle_dir) =
-            if bundle_entrypoint && entry_needs_bundle(&worker_dir, &entry)? {
-                let bundle_dir = create_bundle_dir(&worker_dir, workdir.path())?;
-                let bundler = DenoCliBundler::default();
-                let bundle = bundler.bundle_entrypoint(&worker_dir, &entry, bundle_dir.path())?;
-                (path_to_file_url(Path::new(&bundle.path))?, Some(bundle_dir))
-            } else {
-                (path_to_file_url(&entry)?, None)
-            };
+        let (entry_url, bundle_dir) = if bundle_entrypoint {
+            match resolve_worker_bundle_entry(&worker_dir, &entry, workdir.path(), timeout).await? {
+                WorkerBundleEntry::Direct(entry) => (path_to_file_url(&entry)?, None),
+                WorkerBundleEntry::Bundled(bundle_entry) => (
+                    path_to_file_url(Path::new(&bundle_entry.bundle.path))?,
+                    bundle_entry.dir,
+                ),
+            }
+        } else {
+            (path_to_file_url(&entry)?, None)
+        };
 
         let listener = UnixListener::bind(&socket_path).map_err(|err| {
             IsolationError::new("UDS_BIND", format!("bind {}: {err}", socket_path.display()))
@@ -2794,22 +2810,42 @@ fn deno_config_path(worker_dir: &Path) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-fn create_bundle_dir(worker_dir: &Path, fallback_dir: &Path) -> Result<TempDir, IsolationError> {
-    let mut builder = tempfile::Builder::new();
-    builder.prefix(".edger-bundle-");
-    builder
-        .tempdir_in(worker_dir)
-        .or_else(|_| {
-            let mut fallback = tempfile::Builder::new();
-            fallback.prefix("edger-bundle-");
-            fallback.tempdir_in(fallback_dir)
-        })
-        .map_err(|err| {
-            IsolationError::new(
-                "UDS_BUNDLE_TMP",
-                format!("failed to create bundle tempdir: {err}"),
-            )
-        })
+/// A spawn's resolved entry: either the raw entrypoint (no bundle needed) or
+/// a bundle resolved through the per-version cache (EDG-20).
+enum WorkerBundleEntry {
+    Direct(PathBuf),
+    Bundled(BundleEntry),
+}
+
+/// Resolve the spawn entry OFF THE ASYNC RUNTIME (EDG-20): the
+/// `entry_needs_bundle` check, the content fingerprint and the `deno bundle`
+/// call all run in `tokio::task::spawn_blocking` (no `std::process` on an
+/// async runtime thread). Bundled workers reuse the per-version bundle cache
+/// inside the worker dir; a non-writable worker dir keeps the legacy
+/// per-process tempdir behavior.
+async fn resolve_worker_bundle_entry(
+    worker_dir: &Path,
+    entry: &Path,
+    fallback_dir: &Path,
+    timeout: Duration,
+) -> Result<WorkerBundleEntry, IsolationError> {
+    let worker_dir = worker_dir.to_path_buf();
+    let entry = entry.to_path_buf();
+    let check_dir = worker_dir.clone();
+    let check_entry = entry.clone();
+    let needs_bundle =
+        tokio::task::spawn_blocking(move || entry_needs_bundle(&check_dir, &check_entry))
+            .await
+            .map_err(|err| {
+                IsolationError::new("UDS_BUNDLE_BLOCKING", format!("bundle check failed: {err}"))
+            })??;
+    if !needs_bundle {
+        return Ok(WorkerBundleEntry::Direct(entry));
+    }
+    let bundle_entry = DenoCliBundler::default()
+        .resolve_bundle_entry(&worker_dir, &entry, fallback_dir, timeout)
+        .await?;
+    Ok(WorkerBundleEntry::Bundled(bundle_entry))
 }
 
 fn path_to_file_url(path: &Path) -> Result<String, IsolationError> {

@@ -21,6 +21,13 @@ pub mod wire;
 #[path = "deno/bundle.rs"]
 mod deno_bundle;
 
+#[cfg(any(feature = "deno", feature = "multiproc"))]
+pub use deno_bundle::{
+    bundle_cache_stats, deno_version_for_candidates, entry_needs_bundle, fingerprint_worker_dir,
+    worker_bundle_key, BundleCacheStats, BundleEntry, BundleFormat, DenoCliBundler, ModuleBundle,
+    ModuleBundler, BUNDLE_CACHE_DIR,
+};
+
 #[cfg(feature = "deno")]
 pub mod deno;
 

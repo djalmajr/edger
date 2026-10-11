@@ -1008,6 +1008,120 @@ async fn worker_files_downloads_a_file_and_a_folder_zip() {
 }
 
 #[tokio::test]
+async fn worker_files_listing_and_zip_hide_edge_r_bundle_artifacts() {
+    let root = tempfile::tempdir().unwrap();
+    write_manual_worker(root.path(), "hide-app", "hide-body");
+    let dir = root.path().join("hide-app");
+    // EdgeR's own bundle artifacts (EDG-20): the per-version cache dir with a
+    // published bundle inside, and the legacy per-process tempdir shapes.
+    let cache_key = dir.join(".edger-bundle-cache").join("v1-abc123");
+    fs::create_dir_all(&cache_key).unwrap();
+    fs::write(cache_key.join("x.bundle.mjs"), b"/*bundle*/").unwrap();
+    fs::create_dir_all(dir.join(".edger-bundle-abc")).unwrap();
+    fs::write(
+        dir.join(".edger-bundle-abc").join("index.bundle.mjs"),
+        b"/*stale*/",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.join(".edger-bridge-abc")).unwrap();
+    fs::write(
+        dir.join(".edger-bridge-abc").join("script.mjs"),
+        b"/*script*/",
+    )
+    .unwrap();
+    // A user dot-dir stays visible; an artifact nested under a user dir is
+    // hidden at any depth.
+    fs::create_dir_all(dir.join(".well-known")).unwrap();
+    fs::write(dir.join(".well-known").join("a.txt"), b"dot-file").unwrap();
+    fs::create_dir_all(dir.join("src").join(".edger-bundle-deep")).unwrap();
+    fs::write(
+        dir.join("src")
+            .join(".edger-bundle-deep")
+            .join("y.bundle.mjs"),
+        b"/*deep*/",
+    )
+    .unwrap();
+    fs::write(dir.join("src").join("visible.txt"), b"src-main").unwrap();
+    let app = build_pipeline(state_with_root(root.path().to_path_buf()));
+
+    let (status, json, text) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/hide-app/files?version=1.0.0",
+        Some("test-root"),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let names: Vec<&str> = json["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect();
+    for kept in ["index.html", "manifest.yaml", ".well-known", "src"] {
+        assert!(names.contains(&kept), "missing from the listing: {kept}");
+    }
+    for hidden in [
+        ".edger-bundle-cache",
+        ".edger-bundle-abc",
+        ".edger-bridge-abc",
+    ] {
+        assert!(!names.contains(&hidden), "leaked in the listing: {hidden}");
+    }
+
+    // The nested listing keeps the user dir visible and hides the artifact
+    // one level down.
+    let (status, json, text) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/hide-app/files?version=1.0.0&path=src",
+        Some("test-root"),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let names: Vec<&str> = json["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"visible.txt"), "{text}");
+    assert!(!names.contains(&".edger-bundle-deep"), "{text}");
+
+    let (status, _, body) = download(
+        app,
+        "/api/admin/workers/hide-app/files/download?version=1.0.0&path=",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(body)).unwrap();
+    let names: Vec<&str> = archive.file_names().collect();
+    for kept in [
+        "manifest.yaml",
+        "index.html",
+        ".well-known/a.txt",
+        "src/visible.txt",
+    ] {
+        assert!(
+            names.iter().any(|name| *name == kept),
+            "missing from the zip: {kept}"
+        );
+    }
+    assert!(
+        names.iter().all(|name| !name.starts_with(".edger-")),
+        "an EdgeR bundle artifact leaked into the zip: {names:?}"
+    );
+    let mut dot = String::new();
+    std::io::Read::read_to_string(&mut archive.by_name(".well-known/a.txt").unwrap(), &mut dot)
+        .unwrap();
+    assert_eq!(dot, "dot-file");
+}
+
+#[tokio::test]
 async fn worker_files_rejects_uploads_to_core_origins() {
     let bundled = tempfile::tempdir().unwrap();
     let overlay = tempfile::tempdir().unwrap();

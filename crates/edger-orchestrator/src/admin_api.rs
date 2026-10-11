@@ -2248,6 +2248,26 @@ async fn delete_worker_files(
     }
 }
 
+// EdgeR-owned bundle artifact prefixes (EDG-20). The cache dir name is the
+// public constant from edger-isolation; the two legacy per-process tempdir
+// prefixes are private there, so the admin surfaces carry them here once.
+const LEGACY_BUNDLE_TMP_PREFIX: &str = ".edger-bundle-";
+const LEGACY_BRIDGE_TMP_PREFIX: &str = ".edger-bridge-";
+
+/// True when `name` is one of EdgeR's own bundle artifacts (EDG-20) that
+/// stays out of the worker file listing and the zip export, at any depth:
+/// the per-version bundle cache dir, the legacy per-process bundle tempdirs
+/// and the legacy bridge script tempdirs. User dot files (`.env.example`,
+/// `.well-known/`, ...) stay visible.
+fn is_edger_bundle_artifact(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    name == edger_isolation::BUNDLE_CACHE_DIR
+        || name.starts_with(LEGACY_BUNDLE_TMP_PREFIX)
+        || name.starts_with(LEGACY_BRIDGE_TMP_PREFIX)
+}
+
 // Read-only browse of a deployed version's directory. The dir comes from the
 // admin index (`source`), scoped to what the principal can see; the requested
 // subpath is canonicalized and checked to stay within that dir (no traversal).
@@ -2266,6 +2286,9 @@ fn list_worker_files(
         .map_err(|err| CoreError::new("BAD_REQUEST", format!("not a directory: {err}")))?;
     let mut entries = Vec::new();
     for entry in read.flatten() {
+        if is_edger_bundle_artifact(entry.file_name().as_ref()) {
+            continue;
+        }
         let meta = entry.metadata().ok();
         let is_dir = meta.as_ref().is_some_and(|meta| meta.is_dir());
         let size = meta.as_ref().map(|meta| meta.len()).unwrap_or(0);
@@ -2388,6 +2411,9 @@ fn append_directory_to_zip<W: Write + Seek>(
             .file_type()
             .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot inspect entry: {err}")))?;
         if file_type.is_symlink() {
+            continue;
+        }
+        if is_edger_bundle_artifact(entry.file_name().as_ref()) {
             continue;
         }
         let path = entry.path();
