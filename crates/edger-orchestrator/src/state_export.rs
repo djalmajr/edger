@@ -501,6 +501,7 @@ mod tests {
     /// mutações com `STATE_EXPORT_IN_PROGRESS` até a montagem terminar.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn guard_survives_future_drop_until_build_finishes() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.lock().await;
         let _lock = TEST_BUILD_LOCK.lock().await;
 
         let root = tempfile::tempdir().unwrap();
@@ -632,6 +633,7 @@ mod tests {
     /// `TempPath` apaga o ZIP.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelled_export_leaves_zero_zips() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.lock().await;
         let _lock = TEST_BUILD_LOCK.lock().await;
 
         let root = tempfile::tempdir().unwrap();
