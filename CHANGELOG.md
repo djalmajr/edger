@@ -230,6 +230,11 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Dependencies
 
+- `wasmtime` and `wasmtime-wasi` 36 -> 49 (49.0.2) and `wat` 1.261.0: the
+  WASI preview1 bindings moved from `wasmtime_wasi::preview1` to
+  `wasmtime_wasi::p1`; the sandbox capability configuration, the
+  epoch watchdog and the memory limits are unchanged.
+
 - Wasmtime and wasmtime-wasi 36.0.16 patch the RustSec advisories
   RUSTSEC-2026-0316 and RUSTSEC-2026-0314 while keeping the current major.
 
