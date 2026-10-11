@@ -2079,7 +2079,10 @@ fn write_worker_files(
     std::fs::create_dir_all(&requested)
         .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot create path: {err}")))?;
     let dest = resolve_within(&base, rel)?;
-    extract_zip(zip_bytes, &dest)?;
+    // EDG-21: uma extração na raiz da versão nunca escreve o marcador de
+    // toggle (estado de operador) — um upload não pode substituí-lo; em
+    // subcaminhos o nome é arquivo comum e segue para o destino.
+    extract_zip(zip_bytes, &dest, rel.is_empty())?;
     // Arquivos mudaram: a revisão CAS avança, senão um autosave force com a
     // revisão antiga passaria por cima da edição sem conflito.
     let revision = crate::deploy::bump_worker_revision(&base)?;
@@ -2147,6 +2150,13 @@ fn delete_within(base: &std::path::Path, rel: &str) -> Result<(), CoreError> {
         }
     };
     if name == crate::deploy::REVISION_FILE {
+        return Err(CoreError::new("FORBIDDEN", "reserved file"));
+    }
+    // EDG-21: o toggle é estado de operador, nunca conteúdo de usuário —
+    // apagar o marcador pela API de arquivos desfaria o enable/disable
+    // persistido (voltaria ao valor do manifesto no boot) sem
+    // `workers:toggle`; o nome reservado vale só na raiz da versão.
+    if segments.len() == 1 && crate::deploy::is_enabled_marker_name(name) {
         return Err(CoreError::new("FORBIDDEN", "reserved file"));
     }
     if target == *base {

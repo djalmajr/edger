@@ -42,8 +42,38 @@ fn write_worker(root: &std::path::Path, directory: &str, _name: &str, manifest: 
     .unwrap();
 }
 
+/// A zip package with root-level entries (the install / files-upload shape),
+/// keeping the temp dir alive for the caller.
+fn zip_bytes(entries: &[(&str, &str)]) -> (Vec<u8>, tempfile::TempDir) {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("upload.zip");
+    let file = fs::File::create(&path).unwrap();
+    {
+        let mut writer = zip::ZipWriter::new(file);
+        for (name, contents) in entries {
+            writer
+                .start_file(name.to_string(), SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(contents.as_bytes()).unwrap();
+        }
+    }
+    (fs::read(&path).unwrap(), temp)
+}
+
 fn state_for(root: &std::path::Path) -> (OrchestratorState, axum::Router) {
-    let index = load_manifests_from_roots(&[], None, &[root.to_path_buf()]).unwrap();
+    state_for_roots(&[], None, &[root.to_path_buf()])
+}
+
+/// Same as `state_for`, but loads the index from bundled and core-overlay
+/// roots (cPanel family) plus the user root, the way boot does.
+fn state_for_roots(
+    bundled: &[std::path::PathBuf],
+    overlay: Option<&std::path::PathBuf>,
+    user: &[std::path::PathBuf],
+) -> (OrchestratorState, axum::Router) {
+    let index = load_manifests_from_roots(bundled, overlay, user).unwrap();
     let server = ServerState::new_unready();
     let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(StubFactory));
     server.mark_ready(pool.clone());
@@ -54,6 +84,28 @@ fn state_for(root: &std::path::Path) -> (OrchestratorState, axum::Router) {
         auth: ControlAuth::with_static_key(ROOT_KEY),
     };
     (state.clone(), build_pipeline(state))
+}
+
+async fn send_bytes(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    body: Vec<u8>,
+) -> (StatusCode, Value, String) {
+    let request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {ROOT_KEY}"))
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json, text)
 }
 
 async fn send(app: &axum::Router, method: &str, uri: &str) -> (StatusCode, Value, String) {
@@ -146,13 +198,12 @@ async fn disabled_version_survives_a_restart_and_reenabling_persists() {
 }
 
 // A persisted toggle records the operator's last explicit choice and wins
-// over `manifest.yaml`'s `enabled` at load. A version that is indexed loads
-// with the manifest default (`enabled` absent or `true`); the marker
-// `enabled=false` keeps it disabled across a restart. (A manifest with
-// `enabled: false` is skipped by the scan entirely — pre-existing behavior —
-// so a marker can only override versions that actually load; the reader
-// itself applies the marker in both directions, covered by the
-// `persisted_enabled_marker_wins_over_the_manifest_at_load` unit test.)
+// over `manifest.yaml`'s `enabled` at load, in BOTH directions through the
+// real scan (boot reload): the marker `enabled=false` keeps an
+// `enabled: true` manifest version disabled, and the marker `enabled=true`
+// keeps a version whose manifest later says `enabled: false` enabled — the
+// scan must not drop the dir before `insert_with_origin` can read the
+// marker.
 #[test]
 fn persisted_toggle_beats_the_manifest_in_both_directions() {
     let root = tempfile::tempdir().unwrap();
@@ -164,14 +215,28 @@ fn persisted_toggle_beats_the_manifest_in_both_directions() {
     );
     write_worker(
         root.path(),
+        "manifest-off@1.0.0",
+        "manifest-off",
+        "name: manifest-off\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nenabled: false\n",
+    );
+    write_worker(
+        root.path(),
         "no-toggle@1.0.0",
         "no-toggle",
         "name: no-toggle\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n",
     );
-    // the operator explicitly disabled the manifest-on version.
+    // the operator explicitly disabled the manifest-on version and enabled
+    // the manifest-off one.
     fs::write(
         root.path().join("manifest-on@1.0.0").join(".edger-enabled"),
         "enabled=false\n",
+    )
+    .unwrap();
+    fs::write(
+        root.path()
+            .join("manifest-off@1.0.0")
+            .join(".edger-enabled"),
+        "enabled=true\n",
     )
     .unwrap();
 
@@ -180,6 +245,11 @@ fn persisted_toggle_beats_the_manifest_in_both_directions() {
         index.resolve_worker("manifest-on", None).unwrap_err().code,
         "NOT_FOUND",
         "the marker must beat the manifest enabled: true"
+    );
+    assert_eq!(
+        index.resolve_worker("manifest-off", None).unwrap().version,
+        "1.0.0",
+        "the marker must beat the manifest enabled: false through the scan"
     );
     assert_eq!(
         index.resolve_worker("no-toggle", None).unwrap().version,
@@ -371,5 +441,193 @@ fn no_toggle_keeps_the_manifest_behavior() {
             .join(".edger-enabled")
             .exists(),
         "boot must not invent a toggle"
+    );
+}
+
+// The `.edger-enabled` marker is operator state, not package content: a
+// package that ships one (e.g. a state export imported back as a deploy)
+// has it discarded on the cPanel replace branch — the version still gets the
+// cPanel mutual disable at load and the marker must not remain on disk.
+#[tokio::test]
+async fn install_drops_a_shipped_enabled_marker_on_the_older_cpanel_branch() {
+    let bundled = tempfile::tempdir().unwrap();
+    let overlay = tempfile::tempdir().unwrap();
+    let user = tempfile::tempdir().unwrap();
+    // the active cPanel version, from the core overlay (never core-bundled,
+    // so the install takes the cPanel family branch).
+    let overlay_root = overlay.path();
+    let active = overlay_root.join("cpanel@2.0.0");
+    fs::create_dir_all(&active).unwrap();
+    fs::write(
+        active.join("manifest.yaml"),
+        "name: cpanel\nversion: \"2.0.0\"\nentrypoint: index.html\nkind: static\n",
+    )
+    .unwrap();
+    fs::write(active.join("index.html"), "<html>2.0.0</html>").unwrap();
+
+    // the package ships an enabled toggle for the older version.
+    let (zip_bytes, _temp) = zip_bytes(&[
+        (
+            "manifest.yaml",
+            "name: cpanel\nversion: \"1.0.0\"\nentrypoint: index.html\nkind: static\nenabled: true\n",
+        ),
+        ("index.html", "<html>1.0.0</html>"),
+        (".edger-enabled", "enabled=true\n"),
+    ]);
+    let (state, app) = state_for_roots(
+        &[bundled.path().to_path_buf()],
+        Some(&overlay.path().to_path_buf()),
+        &[user.path().to_path_buf()],
+    );
+    let (status, json, text) =
+        send_bytes(&app, "POST", "/api/admin/workers/install", zip_bytes).await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    assert_eq!(
+        json.get("activation"),
+        Some(&Value::String("inactive".into())),
+        "the older cPanel version must stay disabled: {json}"
+    );
+    // the install lands in the core-overlay root; the shipped marker must
+    // not survive there while the manifest itself is untouched by the purge.
+    let installed_dir = std::path::PathBuf::from(json.get("source").unwrap().as_str().unwrap());
+    let canonical_overlay = std::fs::canonicalize(&overlay_root).unwrap();
+    assert!(
+        installed_dir
+            .parent()
+            .map(|parent| parent.starts_with(&canonical_overlay))
+            .unwrap_or(false),
+        "the core family installs into the core overlay root: {}",
+        installed_dir.display()
+    );
+    assert!(
+        !installed_dir.join(".edger-enabled").exists(),
+        "the shipped marker must be discarded, not persisted"
+    );
+    assert!(
+        installed_dir.join("manifest.yaml").exists(),
+        "the manifest itself is untouched by the marker purge"
+    );
+
+    // boot reload: the mutual disable still holds for the shipped manifest's
+    // enabled: true — no marker on disk, the version stays inactive.
+    let reloaded = load_manifests_from_roots(
+        &[bundled.path().to_path_buf()],
+        Some(&overlay.path().to_path_buf()),
+        &[user.path().to_path_buf()],
+    )
+    .unwrap();
+    assert_eq!(
+        reloaded.resolve_worker("cpanel", None).unwrap().version,
+        "2.0.0"
+    );
+    assert_eq!(
+        reloaded
+            .admin_workers()
+            .into_iter()
+            .find(|worker| worker.version == "1.0.0")
+            .unwrap()
+            .status,
+        "disabled"
+    );
+    drop(state);
+}
+
+// The files delete API refuses to delete the reserved marker (it is managed
+// by the enable/disable endpoints), answering the per-path FORBIDDEN error
+// without touching the file.
+#[tokio::test]
+async fn files_delete_rejects_the_reserved_marker() {
+    let root = tempfile::tempdir().unwrap();
+    write_worker(
+        root.path(),
+        "hello@1.0.0",
+        "hello",
+        "name: hello\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n",
+    );
+    let dir = root.path().join("hello@1.0.0");
+    let marker = dir.join(".edger-enabled");
+    fs::write(&marker, "enabled=false\n").unwrap();
+    let (state, app) = state_for(root.path());
+
+    let (status, json, text) = send_bytes(
+        &app,
+        "POST",
+        "/api/admin/workers/hello/files/delete?version=1.0.0",
+        r#"{"paths":[".edger-enabled"]}"#.as_bytes().to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(json.get("deleted"), Some(&Value::Array(vec![])), "{json}");
+    let errors = json
+        .get("errors")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(errors.len(), 1, "{json}");
+    assert_eq!(
+        errors[0].get("path"),
+        Some(&Value::String(".edger-enabled".into()))
+    );
+    assert_eq!(
+        errors[0].get("code"),
+        Some(&Value::String("FORBIDDEN".into())),
+        "{json}"
+    );
+    assert!(
+        marker.is_file(),
+        "the marker must not be deleted by the files API"
+    );
+    assert_eq!(fs::read_to_string(&marker).unwrap(), "enabled=false\n");
+    drop(state);
+}
+
+// The files upload API skips a zip-root entry named like the marker (and its
+// temp files): the upload succeeds, the regular file lands, and the marker
+// keeps its operator-set value.
+#[tokio::test]
+async fn files_upload_cannot_replace_the_marker() {
+    let root = tempfile::tempdir().unwrap();
+    write_worker(
+        root.path(),
+        "hello@1.0.0",
+        "hello",
+        "name: hello\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n",
+    );
+    let dir = root.path().join("hello@1.0.0");
+    let marker = dir.join(".edger-enabled");
+    fs::write(&marker, "enabled=true\n").unwrap();
+    let (state, app) = state_for(root.path());
+
+    let (zip_bytes, _temp) = zip_bytes(&[
+        ("notes.txt", "hello from the upload"),
+        (".edger-enabled", "enabled=false\n"),
+        (".edger-enabled-writer.tmp", "enabled=false\n"),
+    ]);
+    let (status, json, text) = send_bytes(
+        &app,
+        "POST",
+        "/api/admin/workers/hello/files?version=1.0.0",
+        zip_bytes,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "upload body {text}; json {json}");
+    assert_eq!(
+        fs::read_to_string(&marker).unwrap(),
+        "enabled=true\n",
+        "the marker must keep its operator-set value"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("notes.txt")).unwrap(),
+        "hello from the upload",
+        "regular files must still land"
+    );
+    assert!(!dir.join(".edger-enabled-writer.tmp").exists());
+    // disk and memory agree: the marker still names the manifest value, so
+    // the version loads enabled both in memory and after a reload.
+    drop(state);
+    let reloaded = load_manifests_from_roots(&[], None, &[root.path().to_path_buf()]).unwrap();
+    assert_eq!(
+        reloaded.resolve_worker("hello", None).unwrap().version,
+        "1.0.0"
     );
 }

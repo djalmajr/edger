@@ -239,12 +239,19 @@ default exige `workers:promote`.
 |===
 
 O enable/disable é persistido por versão (EDG-21): a escolha fica registrada
-no arquivo `.edger-enabled` dentro do diretório da versão, escrito sob o
-slot de mutação da versão, e é reaplicado em todo carregamento do índice
-(boot, rescan e readmissão) vencendo o `enabled` do manifesto, antes do
-prewarm de `minProcesses`; se a persistência falhar, a API responde erro e o
-estado em memória fica como estava, e o arquivo acompanha a versão no
-export/import de estado.
+no arquivo `.edger-enabled` dentro do diretório da versão, e é reaplicado em
+todo carregamento do índice (boot, rescan e readmissão) vencendo o `enabled`
+do manifesto nos dois sentidos (um `enabled=true` persistido mantém uma
+versão cujo manifesto diz `enabled: false`), antes do prewarm de
+`minProcesses`. A operação reserva o slot de mutação de TODAS as versões
+indexadas do worker antes de planejar e desfaz todos os marcadores (e um
+ponteiro de default persistido que limpou) em qualquer falha posterior, para
+que memória e disco nunca discordem; um toggle que desliga a versão nomeada
+pelo ponteiro de default persistido também limpa esse ponteiro. O marcador é
+estado do operador, não conteúdo do pacote ou do usuário: um install descarta
+um marcador que viaje no pacote, a API de exclusão de arquivos recusa apagá-lo
+(reservado) e um upload de arquivos ignora uma entrada na raiz do zip com o
+nome do marcador; no export/import ele acompanha a versão.
 
 Reciclar remove e encerra os processos daquela versão, sem apagar seus arquivos
 nem alterar `enabled`, a versão default ou a ativação. Use a rota para liberar
@@ -290,6 +297,8 @@ worker fora do escopo da key responde `404` com `NOT_FOUND`.
 | `/api/admin/workers/{name}/files`
 | Upload de um zip para a raiz ou um subdiretório (`?path=`). Qualquer
   versão de origem `user` aceita, pública ou interna; core responde `403`.
+  Uma entrada na raiz do zip com o nome do marcador `.edger-enabled` (ou dos
+  seus temporários) é ignorada — o toggle é estado do operador (EDG-21).
   Responde a listagem atualizada e a nova `revision`; o worker é reciclado
   antes da resposta. Permission `files:write`.
 
@@ -300,7 +309,8 @@ worker fora do escopo da key responde `404` com `NOT_FOUND`.
   não quebra o resto — a resposta é sempre `200` com
   `{"deleted":[...], "errors":[{"path","code","message"}], "revision",
   "entries"}`, onde `entries` é a listagem da raiz após a operação. Por
-  path: raiz (`.`) e o arquivo reservado `.edger-revision` são recusados,
+  path: raiz (`.`), o arquivo reservado `.edger-revision` e o marcador
+  reservado `.edger-enabled` (EDG-21) são recusados,
   `..` ou saída da pasta responde `FORBIDDEN` no item e path inexistente
   responde `NOT_FOUND`; symlink é removido como link, nunca o destino. A
   revisão avança e o worker é reciclado só quando pelo menos um item foi

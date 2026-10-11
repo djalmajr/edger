@@ -60,10 +60,89 @@ pub struct WorkerEnabledPlan {
     pub removes_default: bool,
 }
 
+/// Two enable/disable plans move the same flags the same way (the disk
+/// half and the in-memory half must apply the identical change set; `prior`
+/// and `dir` may legitimately differ — the disk already carries the values
+/// the first plan wrote).
+fn plan_effects_match(left: &WorkerEnabledPlan, right: &WorkerEnabledPlan) -> bool {
+    left.name == right.name
+        && left.target_version == right.target_version
+        && left.removes_default == right.removes_default
+        && {
+            let mut left: Vec<(String, bool)> = left
+                .changes
+                .iter()
+                .map(|change| (change.version.clone(), change.enabled))
+                .collect();
+            let mut right: Vec<(String, bool)> = right
+                .changes
+                .iter()
+                .map(|change| (change.version.clone(), change.enabled))
+                .collect();
+            left.sort();
+            right.sort();
+            left == right
+        }
+}
+
 /// Minimal manifest index used by `resolve_route`.
-#[derive(Clone, Debug, Default)]
 pub struct ManifestIndex {
     inner: Arc<RwLock<ManifestIndexState>>,
+    /// (EDG-21 test hook) one-shot callback run by `persist_worker_enabled`
+    /// between the disk half and the in-memory apply. It lives on the index
+    /// instance (not in a global), so parallel tests that park or poison the
+    /// apply never see each other's hook; clones carry an empty hook.
+    #[cfg(test)]
+    persist_enabled_apply_hook: std::sync::Mutex<Option<Box<dyn Fn(&ManifestIndex) + Send>>>,
+}
+
+impl Clone for ManifestIndex {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            #[cfg(test)]
+            persist_enabled_apply_hook: std::sync::Mutex::new(None),
+        }
+    }
+}
+
+impl std::fmt::Debug for ManifestIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManifestIndex").finish()
+    }
+}
+
+impl Default for ManifestIndex {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(ManifestIndexState::default())),
+            #[cfg(test)]
+            persist_enabled_apply_hook: std::sync::Mutex::new(None),
+        }
+    }
+}
+
+impl ManifestIndex {
+    #[cfg(test)]
+    pub(crate) fn set_persist_worker_enabled_before_apply_for_test(
+        &self,
+        hook: Option<Box<dyn Fn(&ManifestIndex) + Send>>,
+    ) {
+        *self
+            .persist_enabled_apply_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_persist_worker_enabled_before_apply_hook(
+        &self,
+    ) -> Option<Box<dyn Fn(&ManifestIndex) + Send>> {
+        self.persist_enabled_apply_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -703,6 +782,42 @@ impl ManifestIndex {
     ) -> Result<AdminWorkerInfo, CoreError> {
         let mut state = self.inner.write().map_err(|_| lock_err())?;
         let plan = self.worker_enabled_plan_locked(&state, name, version, enabled)?;
+        Self::apply_plan_locked(&mut state, &plan);
+        Ok(plan.info)
+    }
+
+    /// The in-memory half of a persisted enable/disable: re-plan under the
+    /// write lock and apply ONLY when the fresh plan still matches the
+    /// snapshot the disk half was written from. A mismatch (a concurrent
+    /// mutation moved memory between the snapshot and the apply) answers
+    /// `DEPLOY_IN_PROGRESS` so the caller rolls the disk half back and the
+    /// operator retries — memory and disk never apply two different change
+    /// sets.
+    pub(crate) fn apply_persisted_worker_enabled(
+        &self,
+        name: &str,
+        version: Option<&str>,
+        enabled: bool,
+        expected: &WorkerEnabledPlan,
+    ) -> Result<AdminWorkerInfo, CoreError> {
+        let mut state = self.inner.write().map_err(|_| lock_err())?;
+        let fresh = self.worker_enabled_plan_locked(&state, name, version, enabled)?;
+        if !plan_effects_match(expected, &fresh) {
+            return Err(CoreError::new(
+                "DEPLOY_IN_PROGRESS",
+                format!("the enable/disable of {name} raced with a concurrent mutation; retry"),
+            ));
+        }
+        Self::apply_plan_locked(&mut state, &fresh);
+        Ok(fresh.info)
+    }
+
+    /// The in-memory half of an enable/disable operation: assign every flag
+    /// the plan moves and drop the default pointer when the plan says the
+    /// operation turns the pointed version off. Callers hold the index write
+    /// lock and the plan is the same snapshot the disk half was written
+    /// from, so memory and disk apply the identical change set.
+    fn apply_plan_locked(state: &mut ManifestIndexState, plan: &WorkerEnabledPlan) {
         for change in &plan.changes {
             if let Some(entry) = state.entries.get_mut(&plan.name).and_then(|bucket| {
                 bucket
@@ -715,18 +830,18 @@ impl ManifestIndex {
         if plan.removes_default {
             state.default_versions.remove(&plan.name);
         }
-        Ok(plan.info)
     }
 
     /// Read-only snapshot of the enable/disable operation for `name`: the
     /// same validation and rules as `set_worker_enabled` (NOT_FOUND for the
     /// worker or the resolved version, the core-worker floor, the cPanel
-    /// mutual disable when the target is not staged), plus the versions whose
-    /// flag the operation assigns and the toggle each one carries on disk
-    /// right now. `persist_worker_enabled` plans under this snapshot, writes
-    /// the markers and only then applies through `set_worker_enabled`, so a
-    /// failed disk write or a failed apply never leaves memory and disk
-    /// apart.
+    /// mutual disable when the target is not staged), plus the versions
+    /// whose flag the operation assigns and the toggle each one carries on
+    /// disk right now. `persist_worker_enabled` claims the slots of EVERY
+    /// indexed version before taking this snapshot, writes the markers from
+    /// it, and re-plans under the write lock before applying: a plan that no
+    /// longer matches the disk half is rolled back, so memory and disk
+    /// never apply two different change sets.
     pub fn plan_worker_enabled(
         &self,
         name: &str,
@@ -735,6 +850,29 @@ impl ManifestIndex {
     ) -> Result<WorkerEnabledPlan, CoreError> {
         let state = self.inner.read().map_err(|_| lock_err())?;
         self.worker_enabled_plan_locked(&state, name, version, enabled)
+    }
+
+    /// Sorted (version, dir) of every indexed version of `name` under the
+    /// read lock. `persist_worker_enabled` claims the mutation slot of ALL
+    /// of them before planning — a stale snapshot must never decide the
+    /// claim set, because a version the snapshot omitted is exactly the
+    /// version a concurrent operation can move between the snapshot and the
+    /// writes.
+    pub(crate) fn worker_version_dirs(
+        &self,
+        name: &str,
+    ) -> Result<Vec<(String, PathBuf)>, CoreError> {
+        let state = self.inner.read().map_err(|_| lock_err())?;
+        let bucket = state
+            .entries
+            .get(name)
+            .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
+        let mut versions: Vec<(String, PathBuf)> = bucket
+            .iter()
+            .map(|entry| (entry.worker.version.clone(), entry.worker.dir.clone()))
+            .collect();
+        versions.sort();
+        Ok(versions)
     }
 
     fn worker_enabled_plan_locked(
@@ -808,17 +946,25 @@ impl ManifestIndex {
         }
         let mut info = target.clone();
         info.worker.config.enabled = enabled;
+        // The default pointer is dropped whenever ANY change of the
+        // operation turns off the version the in-memory default names —
+        // not only when the target itself is disabled. The cPanel mutual
+        // disable pushes the current default onto `changes` with
+        // `enabled: false` while the target is being enabled; without this,
+        // the boot restore (`restore_promoted_worker` → `set_default_version`)
+        // would re-enable the version the operator just switched off.
+        let removes_default = state.default_versions.get(name).is_some_and(|default| {
+            changes
+                .iter()
+                .any(|change| !change.enabled && &change.version == default)
+        });
         Ok(WorkerEnabledPlan {
             name: name.to_string(),
             target_version,
             target_dir: info.worker.dir.clone(),
             info: admin_worker_info(&info),
             changes,
-            removes_default: !enabled
-                && state
-                    .default_versions
-                    .get(name)
-                    .is_some_and(|default| default == &info.worker.version),
+            removes_default,
         })
     }
 

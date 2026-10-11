@@ -153,19 +153,8 @@ fn run_clear_before_remove_for_test(index: &ManifestIndex) {
 }
 
 #[cfg(test)]
-thread_local! {
-    static PERSIST_WORKER_ENABLED_BEFORE_APPLY: std::cell::Cell<Option<fn(&ManifestIndex)>> =
-        std::cell::Cell::new(None);
-}
-
-#[cfg(test)]
-pub(crate) fn set_persist_worker_enabled_before_apply_for_test(hook: fn(&ManifestIndex)) {
-    PERSIST_WORKER_ENABLED_BEFORE_APPLY.with(|cell| cell.set(Some(hook)));
-}
-
-#[cfg(test)]
 fn run_persist_worker_enabled_before_apply_for_test(index: &ManifestIndex) {
-    if let Some(hook) = PERSIST_WORKER_ENABLED_BEFORE_APPLY.with(|cell| cell.take()) {
+    if let Some(hook) = index.take_persist_worker_enabled_before_apply_hook() {
         hook(index);
     }
 }
@@ -261,20 +250,30 @@ pub(crate) fn persist_default_version(
     index.promote_worker(name, version)
 }
 
-/// EDG-21: shared persistence for the enable/disable mutation (Admin API and
-/// MCP both reach it through the admin route; the install path calls it with
-/// the slot the transaction already holds). The operator's explicit choice is
-/// written inside each affected version dir (next to the revision marker)
-/// under the version's mutation slot with the same durable pattern as the
-/// default-version pointer, and only then applied in memory through
-/// `set_worker_enabled`. A failure at any disk step rolls the markers back
-/// and leaves memory unchanged, so memory and disk never disagree. Disabling
-/// the version the default pointer names also clears the persisted pointer;
-/// without it the boot restore would re-enable the version the operator just
-/// switched off.
+/// EDG-21: shared persistence for the enable/disable mutation (Admin API
+/// and MCP both reach it through the admin route; the install path calls it
+/// with the slot the transaction already holds). The operator's explicit
+/// choice is written inside each affected version dir (next to the revision
+/// marker) with the same durable pattern as the default-version pointer, and
+/// the in-memory flag moves only after the disk half succeeded, so a
+/// failure at ANY step — a later marker write, the pointer read or clear,
+/// a raced re-plan, a failed apply — rolls the disk half back and leaves
+/// memory unchanged; memory and disk never disagree. Disabling the version
+/// the default pointer names (directly, or through the cPanel mutual
+/// disable) also clears the persisted pointer; without it the boot restore
+/// would re-enable the version the operator just switched off.
+///
+/// The mutation slot of EVERY indexed version of the worker is claimed
+/// before the plan is taken (sorted order, skipping the slot the caller
+/// already holds — the install transaction — and keeping the fail-fast
+/// `DEPLOY_IN_PROGRESS`): a stale snapshot must never decide the claim set,
+/// because a version the snapshot omitted is exactly the version a
+/// concurrent operation can move between the snapshot and the writes. The
+/// apply re-plans under the write lock and proceeds only when the fresh
+/// plan still matches the one written to disk.
 ///
 /// `held_slot` is the mutation slot the caller already holds for one of the
-/// affected versions (the install transaction); its claim is skipped so the
+/// indexed versions (the install transaction); its claim is skipped so the
 /// operation does not fail on a slot it already owns. A version dir that is
 /// gone from disk (a fixture without a real dir, or a removal finishing in
 /// parallel) cannot carry a marker: the toggle stays in memory only and is
@@ -287,71 +286,95 @@ pub(crate) fn persist_worker_enabled(
     enabled: bool,
     held_slot: Option<&crate::deploy::WorkerMutationSlot>,
 ) -> Result<AdminWorkerInfo, CoreError> {
-    let plan = index.plan_worker_enabled(name, version, enabled)?;
-    if plan.changes.is_empty() {
-        // No flag moves: nothing to persist; the in-memory call still runs
-        // the validation and the default-pointer rule.
-        return index.set_worker_enabled(name, version, enabled);
-    }
-    let mut ordered = plan.changes.clone();
-    ordered.sort_by(|left, right| left.version.cmp(&right.version));
-    // One slot per affected version, in stable order: the state export must
-    // not capture a marker mid-write and an install/delete of the same
-    // version must not interleave with the marker swap.
-    let mut slots: Vec<crate::deploy::WorkerMutationSlot> = Vec::with_capacity(ordered.len());
-    for change in &ordered {
-        let root = change
-            .dir
+    // One slot per indexed version, in stable order, BEFORE the plan: a
+    // stale snapshot must never decide the claim set, the state export must
+    // not capture a marker mid-write, and an install or delete of any
+    // version of this worker must not interleave with the marker swap.
+    let versions = index.worker_version_dirs(name)?;
+    let mut slots: Vec<crate::deploy::WorkerMutationSlot> = Vec::with_capacity(versions.len());
+    for (version, dir) in &versions {
+        let root = dir
             .parent()
             .ok_or_else(|| CoreError::new("DEPLOY_INTERNAL", "worker directory has no parent"))?;
-        if held_slot.is_some_and(|held| held.covers(root, name, &change.version)) {
+        if held_slot.is_some_and(|held| held.covers(root, name, version)) {
             continue;
         }
-        slots.push(claim_worker_mutation_slot(root, name, &change.version)?);
+        slots.push(claim_worker_mutation_slot(root, name, version)?);
     }
+    // Snapshot for the disk half (read lock, released before the writes).
+    let plan = index.plan_worker_enabled(name, version, enabled)?;
+    let mut ordered = plan.changes.clone();
+    ordered.sort_by(|left, right| left.version.cmp(&right.version));
     let mut written: Vec<&crate::manifest_index_stub::WorkerEnabledChange> = Vec::new();
-    for change in &ordered {
-        if !change.dir.exists() {
-            tracing::warn!(
-                worker = %name,
-                version = %change.version,
-                "skipping enabled toggle persistence: the version directory is missing"
-            );
-            continue;
-        }
-        crate::deploy::write_enabled_marker(&change.dir, change.enabled)?;
-        written.push(change);
-    }
-    // Disabling the version the default pointer names clears the persisted
-    // pointer too, so the boot restore cannot re-enable the version. The
-    // content is captured for the rollback if the in-memory apply fails.
+    // Disk half from that snapshot: the markers in sorted order, then the
+    // persisted default pointer when the plan turns off the version it
+    // names. Any failure rolls back what was already published; memory has
+    // not moved yet.
     let mut cleared_pointer: Option<(PathBuf, Vec<u8>)> = None;
-    if plan.removes_default {
-        let path = default_version_path(index, &plan.name, &plan.target_dir)?;
-        let previous = match fs::read(&path) {
-            Ok(previous) => previous,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => {
-                return Err(CoreError::new(
-                    "DEPLOY_IO",
-                    format!(
-                        "failed to read default version pointer {}: {error}",
-                        path.display()
-                    ),
-                ));
+    let disk_result: Result<(), CoreError> = (|| {
+        for change in &ordered {
+            if !change.dir.exists() {
+                tracing::warn!(
+                    worker = %name,
+                    version = %change.version,
+                    "skipping enabled toggle persistence: the version directory is missing"
+                );
+                continue;
             }
-        };
-        clear_persisted_default_version(index, &plan.name, &plan.target_dir)?;
-        if !previous.is_empty() {
-            cleared_pointer = Some((path, previous));
+            crate::deploy::write_enabled_marker(&change.dir, change.enabled)?;
+            written.push(change);
         }
-    }
+        if plan.removes_default {
+            let path = default_version_path(index, &plan.name, &plan.target_dir)?;
+            let previous = match fs::read(&path) {
+                Ok(previous) => previous,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(error) => {
+                    return Err(CoreError::new(
+                        "DEPLOY_IO",
+                        format!(
+                            "failed to read default version pointer {}: {error}",
+                            path.display()
+                        ),
+                    ));
+                }
+            };
+            // The pointer is deleted only when it still names a version
+            // THIS operation turns off: a pointer a concurrent promote
+            // published at a version the operation does not touch is left
+            // alone (the re-read runs under the held slots, so a promote of
+            // one of these versions could not have claimed between the
+            // snapshot and the read).
+            let still_targeted = serde_json::from_slice::<PersistedDefaultVersion>(&previous)
+                .ok()
+                .is_some_and(|pointer| {
+                    pointer.name == plan.name
+                        && plan
+                            .changes
+                            .iter()
+                            .any(|change| !change.enabled && change.version == pointer.version)
+                });
+            if still_targeted {
+                clear_persisted_default_version(index, &plan.name, &plan.target_dir)?;
+                if !previous.is_empty() {
+                    cleared_pointer = Some((path, previous));
+                }
+            }
+        }
+        Ok(())
+    })();
     #[cfg(test)]
     run_persist_worker_enabled_before_apply_for_test(index);
-    let result = index.set_worker_enabled(name, version, enabled);
-    if let Err(error) = result {
+    // In-memory half: the apply re-plans under the write lock and proceeds
+    // only when the fresh plan still matches the one written to disk.
+    let result: Result<AdminWorkerInfo, CoreError> = match disk_result {
+        Ok(()) => index.apply_persisted_worker_enabled(name, version, enabled, &plan),
+        Err(error) => Err(error),
+    };
+    if let Err(error) = &result {
         // Roll the markers back to exactly what was on disk before the
-        // operation; memory was not touched, so this restores full parity.
+        // operation (reverse order) and restore a cleared pointer; memory
+        // was not touched, so this restores full parity.
         for change in written.iter().rev() {
             let rollback = match change.prior {
                 Some(prior) => crate::deploy::write_enabled_marker(&change.dir, prior),
@@ -375,7 +398,6 @@ pub(crate) fn persist_worker_enabled(
             error = %error,
             "enable/disable rolled back: the persisted toggle was not applied"
         );
-        return Err(error);
     }
     result
 }
@@ -1121,7 +1143,17 @@ pub fn scan_worker_manifests(
     for worker_dir in discover_worker_dirs(paths)? {
         let manifest = load_worker_manifest(&worker_dir)?;
         if manifest.enabled == Some(false) {
-            continue;
+            // EDG-21: a persisted `enabled=true` beats the manifest's
+            // `enabled: false` — keep the dir and let `insert_with_origin`
+            // apply the marker; only a dir without such a marker (or with
+            // one that says false) is skipped.
+            if crate::deploy::read_enabled_override(&worker_dir)
+                .ok()
+                .flatten()
+                != Some(true)
+            {
+                continue;
+            }
         }
         manifests.push((worker_dir, manifest));
     }
@@ -1673,7 +1705,9 @@ mod tests {
         let dir = user.path().join("hello@1.0.0");
         let marker = dir.join(crate::deploy::ENABLED_FILE);
 
-        set_persist_worker_enabled_before_apply_for_test(|index| index.poison_lock_for_test());
+        index.set_persist_worker_enabled_before_apply_for_test(Some(Box::new(
+            |index: &ManifestIndex| index.poison_lock_for_test(),
+        )));
 
         let err = persist_worker_enabled(&index, "hello", Some("1.0.0"), false, None).unwrap_err();
         assert_eq!(err.code, "LOCK_ERROR", "{err}");
@@ -1693,6 +1727,248 @@ mod tests {
             reloaded.resolve_worker("hello", None).unwrap().version,
             "1.0.0"
         );
+    }
+
+    // EDG-21 (amendment 1, finding 1): a cPanel toggle that must write TWO
+    // markers rolls back the FIRST one when the SECOND write fails — memory
+    // plus both markers stay exactly as before.
+    #[test]
+    #[cfg(unix)]
+    fn persist_worker_enabled_rolls_back_all_markers_when_a_later_write_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let bundled = tempfile::tempdir().unwrap();
+        let overlay = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        static_worker(overlay.path(), "cpanel@1.0.0", "cpanel", "1.0.0");
+        static_worker(overlay.path(), "cpanel@2.0.0", "cpanel", "2.0.0");
+        let index = load_manifests_from_roots(
+            &[bundled.path().to_path_buf()],
+            Some(&overlay.path().to_path_buf()),
+            &[user.path().to_path_buf()],
+        )
+        .unwrap();
+        // boot rule: 1.0.0 disabled, 2.0.0 enabled — the enable of 1.0.0
+        // writes 1.0.0=true first and 2.0.0=false second (sorted order).
+        let first_dir = overlay.path().join("cpanel@1.0.0");
+        let second_dir = overlay.path().join("cpanel@2.0.0");
+        let first_marker = first_dir.join(crate::deploy::ENABLED_FILE);
+        let second_marker = second_dir.join(crate::deploy::ENABLED_FILE);
+
+        std::fs::set_permissions(&second_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // A real non-writable check (root would still be able to write).
+        let probe = second_dir.join(".write-probe");
+        if std::fs::write(&probe, b"x").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            std::fs::set_permissions(&second_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            eprintln!(
+                "skipping persist_worker_enabled_rolls_back_all_markers_when_a_later_write_fails: running with write-through permissions (root)"
+            );
+            return;
+        }
+
+        let result = persist_worker_enabled(&index, "cpanel", Some("1.0.0"), true, None);
+        std::fs::set_permissions(&second_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "DEPLOY_IO", "{err}");
+        // the first marker was published and had to be rolled back; the
+        // second was never written; no temp file leaks in either dir.
+        assert!(!first_marker.exists());
+        assert!(!second_marker.exists());
+        for dir in [&first_dir, &second_dir] {
+            let leftovers: Vec<_> = fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name.ends_with(".tmp"))
+                .collect();
+            assert!(leftovers.is_empty(), "{leftovers:?}");
+        }
+        // memory is untouched: the boot rule's state still holds.
+        assert_eq!(
+            index.resolve_worker("cpanel", None).unwrap().version,
+            "2.0.0"
+        );
+        // a fresh load confirms no disk trace of the failed operation.
+        let reloaded = load_manifests_from_roots(
+            &[bundled.path().to_path_buf()],
+            Some(&overlay.path().to_path_buf()),
+            &[user.path().to_path_buf()],
+        )
+        .unwrap();
+        assert_eq!(
+            reloaded.resolve_worker("cpanel", None).unwrap().version,
+            "2.0.0"
+        );
+    }
+
+    // EDG-21 (amendment 1, finding 2): a cPanel enable that turns off the
+    // version the persisted default pointer names clears that pointer —
+    // otherwise the boot restore would re-enable the version the operator
+    // just switched off.
+    #[test]
+    fn persist_worker_enabled_cpanel_enable_clears_the_pointer_of_the_disabled_default() {
+        let bundled = tempfile::tempdir().unwrap();
+        let overlay = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        static_worker(overlay.path(), "cpanel@1.0.0", "cpanel", "1.0.0");
+        static_worker(overlay.path(), "cpanel@2.0.0", "cpanel", "2.0.0");
+        let index = load_manifests_from_roots(
+            &[bundled.path().to_path_buf()],
+            Some(&overlay.path().to_path_buf()),
+            &[user.path().to_path_buf()],
+        )
+        .unwrap();
+        let pointer = overlay
+            .path()
+            .join(DEFAULT_VERSIONS_DIR)
+            .join(pointer_file_name("cpanel"));
+
+        // pointer at 2.0.0 (the active version), as a promote would leave it.
+        persist_default_version(&index, "cpanel", "2.0.0").unwrap();
+        assert!(pointer.is_file());
+
+        persist_worker_enabled(&index, "cpanel", Some("1.0.0"), true, None).unwrap();
+        // both markers persisted and the pointer that named the version the
+        // operation switched off is gone.
+        assert_eq!(
+            fs::read_to_string(
+                overlay
+                    .path()
+                    .join("cpanel@1.0.0")
+                    .join(crate::deploy::ENABLED_FILE)
+            )
+            .unwrap(),
+            "enabled=true\n"
+        );
+        assert_eq!(
+            fs::read_to_string(
+                overlay
+                    .path()
+                    .join("cpanel@2.0.0")
+                    .join(crate::deploy::ENABLED_FILE)
+            )
+            .unwrap(),
+            "enabled=false\n"
+        );
+        assert!(!pointer.exists(), "the pointer must be cleared");
+        assert_eq!(
+            index.resolve_worker("cpanel", None).unwrap().version,
+            "1.0.0"
+        );
+
+        // reload as boot: 1.0.0 enabled, 2.0.0 disabled — the mutual disable
+        // survives the restart instead of being inverted by the pointer.
+        let reloaded = load_manifests_from_roots(
+            &[bundled.path().to_path_buf()],
+            Some(&overlay.path().to_path_buf()),
+            &[user.path().to_path_buf()],
+        )
+        .unwrap();
+        assert_eq!(
+            reloaded.resolve_worker("cpanel", None).unwrap().version,
+            "1.0.0"
+        );
+        assert_eq!(
+            reloaded
+                .admin_workers()
+                .into_iter()
+                .find(|worker| worker.version == "2.0.0")
+                .unwrap()
+                .status,
+            "disabled"
+        );
+        assert!(reloaded.default_version("cpanel").is_none());
+    }
+
+    // EDG-21 (amendment 1, finding 3): the persist claims the slot of EVERY
+    // indexed version of the worker before planning — a slot held on a
+    // version the plan does not touch still fails the operation fast, so a
+    // concurrent operation cannot land in memory only while the persist
+    // works.
+    #[test]
+    fn persist_worker_enabled_claims_the_slot_of_every_indexed_version() {
+        let user = tempfile::tempdir().unwrap();
+        static_worker(user.path(), "hello@1.0.0", "hello", "1.0.0");
+        static_worker(user.path(), "hello@2.0.0", "hello", "2.0.0");
+        let index = load_manifests_from_roots(&[], None, &[user.path().to_path_buf()]).unwrap();
+        let marker = user
+            .path()
+            .join("hello@1.0.0")
+            .join(crate::deploy::ENABLED_FILE);
+
+        // the operation only touches 1.0.0, but 2.0.0's slot is held: the
+        // claim set is every indexed version, not the plan's versions.
+        let slot = claim_worker_mutation_slot(user.path(), "hello", "2.0.0").unwrap();
+        let busy = persist_worker_enabled(&index, "hello", Some("1.0.0"), false, None).unwrap_err();
+        assert_eq!(busy.code, "DEPLOY_IN_PROGRESS", "{busy}");
+        assert!(!marker.exists());
+        assert_eq!(
+            index.resolve_worker("hello", None).unwrap().version,
+            "2.0.0"
+        );
+        drop(slot);
+
+        // with the slot free the same operation completes.
+        let info = persist_worker_enabled(&index, "hello", Some("1.0.0"), false, None).unwrap();
+        assert_eq!(info.status, "disabled");
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "enabled=false\n");
+    }
+
+    // EDG-21 (amendment 1, finding 3): the review's interleaving — A toggles
+    // a version with a plan that omits v2, B toggles v2 while A is between
+    // the disk half and the apply: B must fail (A holds every slot), and A's
+    // end state keeps memory and disk in agreement.
+    #[test]
+    fn persist_worker_enabled_serializes_a_concurrent_toggle_of_an_omitted_version() {
+        let user = tempfile::tempdir().unwrap();
+        static_worker(user.path(), "hello@1.0.0", "hello", "1.0.0");
+        static_worker(user.path(), "hello@2.0.0", "hello", "2.0.0");
+        let index = load_manifests_from_roots(&[], None, &[user.path().to_path_buf()]).unwrap();
+        let marker_1 = user
+            .path()
+            .join("hello@1.0.0")
+            .join(crate::deploy::ENABLED_FILE);
+        let marker_2 = user
+            .path()
+            .join("hello@2.0.0")
+            .join(crate::deploy::ENABLED_FILE);
+
+        let (tx_parked, rx_parked) = std::sync::mpsc::channel();
+        let (tx_resume, rx_resume) = std::sync::mpsc::channel();
+        let a_index = index.clone();
+        // the hook rides with the index A operates on (per-instance, so no
+        // other test's hook can fire here).
+        a_index.set_persist_worker_enabled_before_apply_for_test(Some(Box::new(
+            move |_index: &ManifestIndex| {
+                let _ = tx_parked.send(());
+                // a hook that never got to run (A failed earlier) must not
+                // wedge the test: bound the wait and return.
+                let _ = rx_resume.recv_timeout(std::time::Duration::from_secs(15));
+            },
+        )));
+        let a = std::thread::spawn(move || {
+            persist_worker_enabled(&a_index, "hello", Some("1.0.0"), false, None)
+        });
+        let _ = rx_parked
+            .recv_timeout(std::time::Duration::from_secs(15))
+            .expect("A parked between the disk half and the apply");
+        // B targets the version A's plan omitted: with every slot held by A
+        // this must fail fast instead of landing in memory only.
+        let b = persist_worker_enabled(&index, "hello", Some("2.0.0"), false, None).unwrap_err();
+        assert_eq!(b.code, "DEPLOY_IN_PROGRESS", "{b}");
+        let _ = tx_resume.send(());
+        a.join()
+            .expect("A panicked")
+            .expect("A completes after B is rejected");
+
+        // A's end state: memory and disk agree for BOTH versions — B never
+        // landed in memory, so 2.0.0 stays enabled and carries no marker.
+        assert_eq!(
+            index.resolve_worker("hello", None).unwrap().version,
+            "2.0.0"
+        );
+        assert_eq!(fs::read_to_string(&marker_1).unwrap(), "enabled=false\n");
+        assert!(!marker_2.exists());
     }
 }
 
