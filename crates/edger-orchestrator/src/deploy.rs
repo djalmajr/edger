@@ -310,6 +310,17 @@ struct MutationPlane {
 static MUTATION_PLANE: LazyLock<Mutex<MutationPlane>> =
     LazyLock::new(|| Mutex::new(MutationPlane::default()));
 
+/// Test-binary lock (D36): the plane above is process-global, so every unit
+/// test that claims a slot or holds the export flag must serialize with
+/// every other such test in the same binary; in parallel they would turn
+/// each other's claims into `STATE_EXPORT_IN_PROGRESS` / `STATE_BUSY`.
+/// Async tests take `lock().await`; sync tests take `blocking_lock()` as
+/// the first statement of the body, outside any runtime (the same pattern
+/// as `state_export::tests::TEST_BUILD_LOCK`).
+#[cfg(test)]
+pub(crate) static TEST_MUTATION_PLANE_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
+
 pub(crate) fn claim_worker_mutation_slot(
     root: &Path,
     name: &str,
@@ -1693,6 +1704,7 @@ mod release_tests {
 
     #[tokio::test]
     async fn state_export_gate_serializes_export_with_mutations() {
+        let _plane_lock = TEST_MUTATION_PLANE_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
 
         // 1. Slot preso: o início do export com limite curto dá STATE_BUSY.

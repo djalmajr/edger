@@ -21,6 +21,19 @@ use tower::ServiceExt;
 
 const ROOT_KEY: &str = "test-root";
 
+/// File-level lock for the tests below that mutate workers or run a state
+/// export: the mutation plane (`MUTATION_PLANE` in `deploy.rs`, D36) is a
+/// process-global static, and these tests run in parallel in one test
+/// binary. The slot keys include each test's own temp root, but the export
+/// flag is shared by ALL of them: a test holding `exporting` makes every
+/// other test's mutation fail with `STATE_EXPORT_IN_PROGRESS`, and an
+/// in-flight slot from ANY root blocks `begin_state_export` with
+/// `STATE_BUSY`. Serializing the mutating/exporting tests for their whole
+/// body removes the timing flake (PR #98 CI). Read-only tests (index
+/// loads, marker file writes into their own temp dirs) never claim the
+/// plane and stay unlocked.
+static MUTATION_PLANE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 struct StubFactory;
 
 impl IsolateFactory for StubFactory {
@@ -131,6 +144,7 @@ async fn send(app: &axum::Router, method: &str, uri: &str) -> (StatusCode, Value
 // version. Re-enabling persists too and reloads enabled.
 #[tokio::test]
 async fn disabled_version_survives_a_restart_and_reenabling_persists() {
+    let _guard = MUTATION_PLANE_LOCK.lock().await;
     let root = tempfile::tempdir().unwrap();
     write_worker(
         root.path(),
@@ -265,6 +279,7 @@ fn persisted_toggle_beats_the_manifest_in_both_directions() {
 async fn failed_persist_leaves_memory_unchanged() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _guard = MUTATION_PLANE_LOCK.lock().await;
     let root = tempfile::tempdir().unwrap();
     write_worker(
         root.path(),
@@ -321,6 +336,7 @@ async fn failed_persist_leaves_memory_unchanged() {
 // toggle applied.
 #[tokio::test]
 async fn state_export_carries_the_persisted_toggle_and_import_applies_it() {
+    let _guard = MUTATION_PLANE_LOCK.lock().await;
     let root = tempfile::tempdir().unwrap();
     write_worker(
         root.path(),
@@ -450,6 +466,7 @@ fn no_toggle_keeps_the_manifest_behavior() {
 // cPanel mutual disable at load and the marker must not remain on disk.
 #[tokio::test]
 async fn install_drops_a_shipped_enabled_marker_on_the_older_cpanel_branch() {
+    let _guard = MUTATION_PLANE_LOCK.lock().await;
     let bundled = tempfile::tempdir().unwrap();
     let overlay = tempfile::tempdir().unwrap();
     let user = tempfile::tempdir().unwrap();
@@ -490,7 +507,7 @@ async fn install_drops_a_shipped_enabled_marker_on_the_older_cpanel_branch() {
     // the install lands in the core-overlay root; the shipped marker must
     // not survive there while the manifest itself is untouched by the purge.
     let installed_dir = std::path::PathBuf::from(json.get("source").unwrap().as_str().unwrap());
-    let canonical_overlay = std::fs::canonicalize(&overlay_root).unwrap();
+    let canonical_overlay = std::fs::canonicalize(overlay_root).unwrap();
     assert!(
         installed_dir
             .parent()
@@ -537,6 +554,7 @@ async fn install_drops_a_shipped_enabled_marker_on_the_older_cpanel_branch() {
 // without touching the file.
 #[tokio::test]
 async fn files_delete_rejects_the_reserved_marker() {
+    let _guard = MUTATION_PLANE_LOCK.lock().await;
     let root = tempfile::tempdir().unwrap();
     write_worker(
         root.path(),
@@ -586,6 +604,7 @@ async fn files_delete_rejects_the_reserved_marker() {
 // keeps its operator-set value.
 #[tokio::test]
 async fn files_upload_cannot_replace_the_marker() {
+    let _guard = MUTATION_PLANE_LOCK.lock().await;
     let root = tempfile::tempdir().unwrap();
     write_worker(
         root.path(),
