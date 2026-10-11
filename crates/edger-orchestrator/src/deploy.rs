@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{LazyLock, Mutex};
@@ -113,6 +113,104 @@ pub(crate) fn clear_worker_staged(dir: &Path) -> Result<(), CoreError> {
     publish_revision_marker(dir, &marker.revision, false)
 }
 
+/// EDG-21: the persisted enable/disable toggle for a worker version. It lives
+/// inside the version dir next to `.edger-revision`, so it travels with the
+/// atomic swap, survives restart/rescan on the PVC, goes with the version in
+/// the state export and disappears with the version on delete. A separate
+/// file (not a line in `.edger-revision`) because versions without a revision
+/// marker (dev dirs from `RUNTIME_WORKER_DIRS`, legacy installs) must be able
+/// to carry a toggle without inventing a CAS revision.
+pub(crate) const ENABLED_FILE: &str = ".edger-enabled";
+const ENABLED_TRUE_LINE: &str = "enabled=true";
+const ENABLED_FALSE_LINE: &str = "enabled=false";
+
+/// The operator's last explicit enable/disable choice for a version, if the
+/// version dir carries a marker. `None` = no persisted toggle (the manifest
+/// value applies); a malformed marker is ignored with a warning so a bad file
+/// cannot take the version down.
+pub(crate) fn read_enabled_override(dir: &Path) -> Result<Option<bool>, CoreError> {
+    let path = dir.join(ENABLED_FILE);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(deploy_io(format!(
+                "failed to read enabled marker {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    Ok(match raw.trim() {
+        ENABLED_TRUE_LINE => Some(true),
+        ENABLED_FALSE_LINE => Some(false),
+        "" => None,
+        _ => {
+            tracing::warn!(
+                path = %path.display(),
+                "ignoring malformed enabled marker; the manifest value applies"
+            );
+            None
+        }
+    })
+}
+
+/// Writes the toggle for one version. The caller holds the version's mutation
+/// slot; the write uses the same durable pattern as the default-version
+/// pointer: temp file, fsync, atomic rename, directory sync.
+pub(crate) fn write_enabled_marker(dir: &Path, enabled: bool) -> Result<(), CoreError> {
+    let path = dir.join(ENABLED_FILE);
+    let temporary = dir.join(format!(".edger-enabled-{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = fs::File::create(&temporary).map_err(|error| {
+        deploy_io(format!(
+            "failed to create enabled marker temp file {}: {error}",
+            temporary.display()
+        ))
+    })?;
+    let line = if enabled {
+        ENABLED_TRUE_LINE
+    } else {
+        ENABLED_FALSE_LINE
+    };
+    file.write_all(format!("{line}\n").as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|error| {
+            deploy_io(format!(
+                "failed to persist enabled marker temp file {}: {error}",
+                temporary.display()
+            ))
+        })?;
+    fs::rename(&temporary, &path).map_err(|error| {
+        let _ = fs::remove_file(&temporary);
+        deploy_io(format!(
+            "failed to publish enabled marker {}: {error}",
+            path.display()
+        ))
+    })?;
+    if let Ok(directory) = fs::File::open(dir) {
+        let _ = directory.sync_all();
+    }
+    Ok(())
+}
+
+/// Removes a persisted toggle (the rollback of a write the operation had to
+/// undo). A missing marker is already the desired state.
+pub(crate) fn remove_enabled_marker(dir: &Path) -> Result<(), CoreError> {
+    let path = dir.join(ENABLED_FILE);
+    match fs::remove_file(&path) {
+        Ok(()) => {
+            if let Ok(directory) = fs::File::open(dir) {
+                let _ = directory.sync_all();
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(deploy_io(format!(
+            "failed to remove enabled marker {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
 /// Marca `name@version` como "mutação em andamento" durante a TRANSAÇÃO
 /// inteira da operação que mexe no diretório do worker — install
 /// (check→swap→release→health→commit/rollback), delete e upload de files.
@@ -124,6 +222,17 @@ pub(crate) fn clear_worker_staged(dir: &Path) -> Result<(), CoreError> {
 #[derive(Debug)]
 pub(crate) struct WorkerMutationSlot {
     key: String,
+}
+
+impl WorkerMutationSlot {
+    /// `true` when this slot is the one `claim_worker_mutation_slot(root,
+    /// name, version)` would return for the same version. Callers that already
+    /// hold the slot (the install transaction) hand it to
+    /// `persist_worker_enabled`, which must not re-claim a slot it owns.
+    pub(crate) fn covers(&self, root: &Path, name: &str, version: &str) -> bool {
+        let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        self.key == format!("{}|{name}@{version}", root.display())
+    }
 }
 
 /// Plano de mutações (D36): slots por versão + a flag de export de estado.
@@ -269,6 +378,13 @@ struct ReplacementBackup {
 }
 
 impl InstallTransaction {
+    /// The mutation slot the transaction holds for its version (RAII until
+    /// commit/rollback); `persist_worker_enabled` uses it to skip re-claiming
+    /// the slot of the version just installed.
+    pub(crate) fn mutation_slot(&self) -> &WorkerMutationSlot {
+        &self._slot
+    }
+
     pub fn replaced_existing(&self) -> bool {
         self.replacement.is_some()
     }

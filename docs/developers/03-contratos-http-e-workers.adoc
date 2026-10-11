@@ -238,6 +238,14 @@ default exige `workers:promote`.
   `404` com `NOT_FOUND`. Permission `workers:toggle`.
 |===
 
+O enable/disable é persistido por versão (EDG-21): a escolha fica registrada
+no arquivo `.edger-enabled` dentro do diretório da versão, escrito sob o
+slot de mutação da versão, e é reaplicado em todo carregamento do índice
+(boot, rescan e readmissão) vencendo o `enabled` do manifesto, antes do
+prewarm de `minProcesses`; se a persistência falhar, a API responde erro e o
+estado em memória fica como estava, e o arquivo acompanha a versão no
+export/import de estado.
+
 Reciclar remove e encerra os processos daquela versão, sem apagar seus arquivos
 nem alterar `enabled`, a versão default ou a ativação. Use a rota para liberar
 os processos de uma versão presa sem remover a versão. Se ela estiver

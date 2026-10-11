@@ -28,6 +28,38 @@ pub struct ManifestEntry {
     pub hosts: Vec<String>,
 }
 
+/// One flag assignment of an enable/disable operation: the version, the
+/// directory that carries its persisted toggle and the value the operation
+/// assigns. `prior` is the toggle the version carried before the operation
+/// (`None` = no persisted toggle), recorded so a failed apply can restore
+/// exactly what was on disk.
+#[derive(Clone, Debug)]
+pub struct WorkerEnabledChange {
+    pub version: String,
+    pub dir: PathBuf,
+    pub enabled: bool,
+    pub prior: Option<bool>,
+}
+
+/// The full effect of an enable/disable operation, computed without
+/// mutating: the target version, the versions whose flag the operation
+/// assigns (the cPanel special case lists every version, not only the
+/// target) and whether the default-version pointer is dropped.
+#[derive(Clone, Debug)]
+pub struct WorkerEnabledPlan {
+    pub name: String,
+    pub target_version: String,
+    /// Directory of the target version (its persisted toggle and the
+    /// default-version pointer that may be dropped).
+    pub target_dir: PathBuf,
+    /// The `AdminWorkerInfo` the operation reports (the target, with the
+    /// flag the operation assigns).
+    pub info: AdminWorkerInfo,
+    pub changes: Vec<WorkerEnabledChange>,
+    /// The default-version pointer of `name` is dropped by the operation.
+    pub removes_default: bool,
+}
+
 /// Minimal manifest index used by `resolve_route`.
 #[derive(Clone, Debug, Default)]
 pub struct ManifestIndex {
@@ -75,6 +107,12 @@ impl ManifestIndex {
     ) -> Result<(), CoreError> {
         let mut worker = create_worker_ref(dir, manifest.clone())?;
         let staged = crate::deploy::worker_is_staged(&worker.dir)?;
+        // EDG-21: a persisted operator toggle wins over the manifest value
+        // (boot, rescan and readmission all load through here, before any
+        // minProcesses prewarm runs).
+        if let Some(enabled) = crate::deploy::read_enabled_override(&worker.dir)? {
+            worker.config.enabled = enabled;
+        }
         validate_origin_identity(&worker.name, manifest.base.as_deref(), origin)?;
         let key = worker.name.clone();
         let mut state = self.inner.write().map_err(|_| lock_err())?;
@@ -180,8 +218,14 @@ impl ManifestIndex {
         manifest: WorkerManifest,
         origin: WorkerOrigin,
     ) -> Result<ManifestEntry, CoreError> {
-        let worker = create_worker_ref(dir, manifest.clone())?;
+        let mut worker = create_worker_ref(dir, manifest.clone())?;
         let staged = crate::deploy::worker_is_staged(&worker.dir)?;
+        // EDG-21: a persisted operator toggle wins over the manifest value
+        // (a force reinstall lands a fresh dir without the marker; a delete
+        // rollback restores the old dir WITH it).
+        if let Some(enabled) = crate::deploy::read_enabled_override(&worker.dir)? {
+            worker.config.enabled = enabled;
+        }
         validate_origin_identity(&worker.name, manifest.base.as_deref(), origin)?;
         let key = worker.name.clone();
         let host_aliases = normalize_host_aliases(&manifest.hosts)?;
@@ -648,7 +692,9 @@ impl ManifestIndex {
     /// Toggle a worker's enabled flag. With `version = None` the latest version
     /// in the bucket is targeted; with `Some(v)` that exact version is toggled,
     /// which is how rollback disables a bad release while an older one keeps
-    /// serving `latest`.
+    /// serving `latest`. The in-memory effect is computed by
+    /// `worker_enabled_plan_locked` and applied only after every validation
+    /// passed, so an error never leaves the bucket half-mutated.
     pub fn set_worker_enabled(
         &self,
         name: &str,
@@ -656,9 +702,51 @@ impl ManifestIndex {
         enabled: bool,
     ) -> Result<AdminWorkerInfo, CoreError> {
         let mut state = self.inner.write().map_err(|_| lock_err())?;
+        let plan = self.worker_enabled_plan_locked(&state, name, version, enabled)?;
+        for change in &plan.changes {
+            if let Some(entry) = state.entries.get_mut(&plan.name).and_then(|bucket| {
+                bucket
+                    .iter_mut()
+                    .find(|entry| entry.worker.version == change.version)
+            }) {
+                entry.worker.config.enabled = change.enabled;
+            }
+        }
+        if plan.removes_default {
+            state.default_versions.remove(&plan.name);
+        }
+        Ok(plan.info)
+    }
+
+    /// Read-only snapshot of the enable/disable operation for `name`: the
+    /// same validation and rules as `set_worker_enabled` (NOT_FOUND for the
+    /// worker or the resolved version, the core-worker floor, the cPanel
+    /// mutual disable when the target is not staged), plus the versions whose
+    /// flag the operation assigns and the toggle each one carries on disk
+    /// right now. `persist_worker_enabled` plans under this snapshot, writes
+    /// the markers and only then applies through `set_worker_enabled`, so a
+    /// failed disk write or a failed apply never leaves memory and disk
+    /// apart.
+    pub fn plan_worker_enabled(
+        &self,
+        name: &str,
+        version: Option<&str>,
+        enabled: bool,
+    ) -> Result<WorkerEnabledPlan, CoreError> {
+        let state = self.inner.read().map_err(|_| lock_err())?;
+        self.worker_enabled_plan_locked(&state, name, version, enabled)
+    }
+
+    fn worker_enabled_plan_locked(
+        &self,
+        state: &ManifestIndexState,
+        name: &str,
+        version: Option<&str>,
+        enabled: bool,
+    ) -> Result<WorkerEnabledPlan, CoreError> {
         let bucket = state
             .entries
-            .get_mut(name)
+            .get(name)
             .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
         let target_version = match version {
             Some(version) => version.to_string(),
@@ -667,9 +755,15 @@ impl ManifestIndex {
                 None,
             )?,
         };
-        let target_is_enabled = bucket
+        let target = bucket
             .iter()
-            .any(|entry| entry.worker.version == target_version && entry.worker.config.enabled);
+            .find(|entry| entry.worker.version == target_version)
+            .ok_or_else(|| {
+                CoreError::new(
+                    "NOT_FOUND",
+                    format!("worker {name}@{target_version} not found"),
+                )
+            })?;
         let enabled_count = bucket
             .iter()
             .filter(|entry| entry.worker.config.enabled)
@@ -677,7 +771,7 @@ impl ManifestIndex {
         let is_core = bucket
             .iter()
             .any(|entry| entry.origin != WorkerOrigin::User);
-        if is_core && !enabled && target_is_enabled && enabled_count <= 1 {
+        if is_core && !enabled && target.worker.config.enabled && enabled_count <= 1 {
             return Err(CoreError::new(
                 "CORE_DEFAULT_REQUIRED",
                 format!("core worker {name} must keep at least one enabled default version"),
@@ -686,37 +780,46 @@ impl ManifestIndex {
         // D23: a versão alvo staged não é servida; habilitá-la muda só o
         // flag dela — derrubar as demais versões do cPanel é papel do
         // promote (`set_default_version`).
-        let target_is_staged = bucket
-            .iter()
-            .find(|entry| entry.worker.version == target_version)
-            .is_some_and(|entry| entry.staged);
-        if name == "cpanel" && enabled && !target_is_staged {
-            for entry in bucket.iter_mut() {
-                entry.worker.config.enabled = entry.worker.version == target_version;
+        let mut changes = Vec::new();
+        if name == "cpanel" && enabled && !target.staged {
+            // O alvo é tratado no push final; aqui entram as demais versões,
+            // que passam a desabilitadas.
+            for entry in bucket {
+                if entry.worker.version == target_version {
+                    continue;
+                }
+                if entry.worker.config.enabled {
+                    changes.push(WorkerEnabledChange {
+                        version: entry.worker.version.clone(),
+                        dir: entry.worker.dir.clone(),
+                        enabled: false,
+                        prior: crate::deploy::read_enabled_override(&entry.worker.dir)?,
+                    });
+                }
             }
         }
-        let info = {
-            let entry = bucket
-                .iter_mut()
-                .find(|entry| entry.worker.version == target_version)
-                .ok_or_else(|| {
-                    CoreError::new(
-                        "NOT_FOUND",
-                        format!("worker {name}@{target_version} not found"),
-                    )
-                })?;
-            entry.worker.config.enabled = enabled;
-            admin_worker_info(entry)
-        };
-        if !enabled
-            && state
-                .default_versions
-                .get(name)
-                .is_some_and(|default| default == &target_version)
-        {
-            state.default_versions.remove(name);
+        if target.worker.config.enabled != enabled {
+            changes.push(WorkerEnabledChange {
+                version: target_version.clone(),
+                dir: target.worker.dir.clone(),
+                enabled,
+                prior: crate::deploy::read_enabled_override(&target.worker.dir)?,
+            });
         }
-        Ok(info)
+        let mut info = target.clone();
+        info.worker.config.enabled = enabled;
+        Ok(WorkerEnabledPlan {
+            name: name.to_string(),
+            target_version,
+            target_dir: info.worker.dir.clone(),
+            info: admin_worker_info(&info),
+            changes,
+            removes_default: !enabled
+                && state
+                    .default_versions
+                    .get(name)
+                    .is_some_and(|default| default == &info.worker.version),
+        })
     }
 
     pub fn validate_promotion(
@@ -805,6 +908,18 @@ impl ManifestIndex {
         if let Ok(mut state) = self.inner.write() {
             state.default_versions.clear();
         }
+    }
+
+    /// Test helper: poison the index lock so the next read or write fails
+    /// with `LOCK_ERROR` (the rollback paths of `persist_worker_enabled` need
+    /// an apply failure after the disk writes succeeded).
+    #[cfg(test)]
+    pub(crate) fn poison_lock_for_test(&self) {
+        let index = self.clone();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = index.inner.write().expect("manifest index lock");
+            panic!("poison manifest index lock");
+        }));
     }
 
     /// Snapshot atual do nome. `Ok(None)` é ausência de política (comportamento
@@ -1248,11 +1363,7 @@ fn routing_unavailable() -> CoreError {
 
 #[cfg(test)]
 fn poison_manifest_index_lock(index: &ManifestIndex) {
-    let index = index.clone();
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _guard = index.inner.write().expect("manifest index lock");
-        panic!("poison manifest index lock");
-    }));
+    index.poison_lock_for_test();
 }
 
 const RESERVED_ROUTING_NAMES: [&str; 2] = ["cpanel", "webide"];
@@ -1853,5 +1964,172 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.code, "DEPLOY_IO");
+    }
+
+    // EDG-21: the persisted toggle inside the version dir wins over the
+    // manifest value at load, in both directions; an absent marker keeps the
+    // manifest value (default true).
+    #[test]
+    fn persisted_enabled_marker_wins_over_the_manifest_at_load() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("hello@1.0.0");
+        std::fs::create_dir_all(&dir).unwrap();
+        // manifest says enabled; the marker records an explicit operator
+        // disable.
+        std::fs::write(
+            dir.join("manifest.yaml"),
+            "name: hello\nversion: \"1.0.0\"\nenabled: true\nentrypoint: index.html\nkind: static\n",
+        )
+        .unwrap();
+        std::fs::write(&dir.join("index.html"), "hello").unwrap();
+        std::fs::write(dir.join(crate::deploy::ENABLED_FILE), "enabled=false\n").unwrap();
+
+        let mut index = ManifestIndex::new();
+        index
+            .insert_with_origin(dir.clone(), manifest("hello", "1.0.0"), WorkerOrigin::User)
+            .unwrap();
+        assert_eq!(
+            index.resolve_worker("hello", None).unwrap_err().code,
+            "NOT_FOUND"
+        );
+        let workers = index.admin_workers();
+        assert_eq!(workers[0].status, "disabled");
+
+        // the other direction: manifest disabled, marker records an explicit
+        // enable.
+        let dir2 = root.path().join("app@2.0.0");
+        std::fs::create_dir_all(&dir2).unwrap();
+        std::fs::write(
+            dir2.join("manifest.yaml"),
+            "name: app\nversion: \"2.0.0\"\nenabled: false\nentrypoint: index.html\nkind: static\n",
+        )
+        .unwrap();
+        std::fs::write(&dir2.join("index.html"), "app").unwrap();
+        std::fs::write(dir2.join(crate::deploy::ENABLED_FILE), "enabled=true\n").unwrap();
+
+        let mut index = ManifestIndex::new();
+        index
+            .insert_with_origin(dir2.clone(), manifest("app", "2.0.0"), WorkerOrigin::User)
+            .unwrap();
+        assert_eq!(index.resolve_worker("app", None).unwrap().version, "2.0.0");
+        let workers = index.admin_workers();
+        assert_eq!(workers[0].status, "loaded");
+
+        // and a malformed marker falls back to the manifest value.
+        let dir3 = root.path().join("bad@3.0.0");
+        std::fs::create_dir_all(&dir3).unwrap();
+        std::fs::write(
+            dir3.join("manifest.yaml"),
+            "name: bad\nversion: \"3.0.0\"\nentrypoint: index.html\nkind: static\n",
+        )
+        .unwrap();
+        std::fs::write(&dir3.join("index.html"), "bad").unwrap();
+        std::fs::write(dir3.join(crate::deploy::ENABLED_FILE), "not-a-toggle\n").unwrap();
+
+        let mut index = ManifestIndex::new();
+        index
+            .insert_with_origin(dir3.clone(), manifest("bad", "3.0.0"), WorkerOrigin::User)
+            .unwrap();
+        assert_eq!(index.resolve_worker("bad", None).unwrap().version, "3.0.0");
+    }
+
+    // EDG-21: enabling a cPanel version that does not exist must fail WITHOUT
+    // mutating the bucket (the cPanel mutual-disable rule must not run for a
+    // target that will be rejected).
+    #[test]
+    fn enabling_a_missing_cpanel_version_fails_without_mutating() {
+        let mut index = ManifestIndex::new();
+        index
+            .insert_with_origin(
+                PathBuf::from("/w/cpanel-v1"),
+                manifest("cpanel", "1.0.0"),
+                WorkerOrigin::CoreBundled,
+            )
+            .unwrap();
+        index
+            .insert_with_origin(
+                PathBuf::from("/w/cpanel-v2"),
+                manifest("cpanel", "2.0.0"),
+                WorkerOrigin::CoreOverlay,
+            )
+            .unwrap();
+
+        let err = index
+            .set_worker_enabled("cpanel", Some("9.9.9"), true)
+            .unwrap_err();
+        assert_eq!(err.code, "NOT_FOUND");
+        // the active version is untouched.
+        assert_eq!(
+            index.resolve_worker("cpanel", None).unwrap().version,
+            "2.0.0"
+        );
+        let workers = index.admin_workers();
+        assert_eq!(
+            workers
+                .iter()
+                .find(|worker| worker.version == "2.0.0")
+                .unwrap()
+                .status,
+            "loaded"
+        );
+    }
+
+    // EDG-21: the plan reports every version whose flag the cPanel
+    // enable/disable operation assigns, in insertion order with the target
+    // last, and `removes_default` mirrors the pointer rule of
+    // `set_worker_enabled`.
+    #[test]
+    fn plan_worker_enabled_reports_the_cpanel_change_set() {
+        let mut index = ManifestIndex::new();
+        index
+            .insert_with_origin(
+                PathBuf::from("/w/cpanel-v1"),
+                manifest("cpanel", "1.0.0"),
+                WorkerOrigin::CoreBundled,
+            )
+            .unwrap();
+        index
+            .insert_with_origin(
+                PathBuf::from("/w/cpanel-v2"),
+                manifest("cpanel", "2.0.0"),
+                WorkerOrigin::CoreOverlay,
+            )
+            .unwrap();
+
+        let plan = index
+            .plan_worker_enabled("cpanel", Some("1.0.0"), true)
+            .unwrap();
+        assert_eq!(plan.target_version, "1.0.0");
+        assert_eq!(plan.changes.len(), 2);
+        assert_eq!(plan.changes[0].version, "2.0.0");
+        assert!(!plan.changes[0].enabled);
+        assert_eq!(plan.changes[1].version, "1.0.0");
+        assert!(plan.changes[1].enabled);
+        assert!(!plan.removes_default);
+        assert_eq!(plan.info.status, "loaded");
+
+        // a user worker: disabling the version the pointer names is flagged
+        // as a default removal; after the apply the pointer is gone and the
+        // plan is a no-op.
+        index
+            .insert(PathBuf::from("/w/hello-1"), manifest("hello", "1.0.0"))
+            .unwrap();
+        index
+            .insert(PathBuf::from("/w/hello-2"), manifest("hello", "2.0.0"))
+            .unwrap();
+        index.promote_worker("hello", "1.0.0").unwrap();
+        let plan = index
+            .plan_worker_enabled("hello", Some("1.0.0"), false)
+            .unwrap();
+        assert!(plan.removes_default);
+        assert_eq!(plan.changes.len(), 1);
+        index
+            .set_worker_enabled("hello", Some("1.0.0"), false)
+            .unwrap();
+        let plan = index
+            .plan_worker_enabled("hello", Some("1.0.0"), false)
+            .unwrap();
+        assert!(plan.changes.is_empty());
+        assert!(!plan.removes_default);
     }
 }
