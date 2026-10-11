@@ -79,6 +79,31 @@ do worker (`lowMemory`, heap cap, `ttl`, `idleTimeout`, `maxRequests`) e aparece
 nas métricas do pool. O operador deve subir `maxProcesses` apenas para workers
 que realmente têm concorrência ou streams longos.
 
+### Custo de um processo novo (cold start)
+
+Um processo persistente novo custa o spawn do `deno` + a importação do
+módulo. Para workers que precisam de bundling (import relativo ou arquivos de
+fonte extras), o spawn roda `deno info --json` + `deno bundle` **uma vez por
+versão do worker** (EDG-20): o bundle é publicado atomicamente em
+`<worker_dir>/.edger-bundle-cache/<key>/` (a chave é o sha256 do fingerprint
+dos arquivos do worker — relpath+size+mtime — mais a versão do `deno`, os
+argumentos do bundler e o caminho absoluto canônico do diretório do worker —
+copiar a versão para outro caminho é um `miss` —) e todo processo posterior da mesma versão reaproveita
+esse bundle (`hit`), sem re-bundlar. Spawns concorrentes da mesma versão
+single-flight num único build (os outros esperam, limitado pelo `timeout` do
+worker), uma falha de bundle nunca é cacheada (o próximo spawn tenta de novo)
+e editar um arquivo no lugar invalida a chave (o próximo spawn é `miss`). O
+fingerprint e o bundler rodam em `tokio::task::spawn_blocking` — nenhum
+`std::process` bloqueia a thread do runtime async no caminho de spawn. Se o
+diretório do worker não for gravável, o comportamento legacy de bundle por
+processo é mantido (logado uma vez em `warn`). Em uma Mac local (M-series),
+um worker multi-arquivo (~24 módulos) mede ~117–148 ms spawn-to-ready no
+primeiro processo de uma versão nova (com bundle) e ~39–51 ms no segundo
+processo da mesma versão (cache hit); workers maiores economizam proporcionalmente
+mais (o spike EDG-15 mediu 0.63–0.90 s de bundle por processo localmente num
+worker de 6.3 MB / 153 módulos). `/metrics` expõe, apenas para o backend
+multiproc, `edger_worker_bundle_total{outcome="hit|miss|error|uncached"}`.
+
 ## L2: HPA do chart
 
 L2 é escala de réplicas do EdgeR via Kubernetes HPA. O chart em `charts/edger`
