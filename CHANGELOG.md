@@ -4,7 +4,9 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.12` (minProcesses prewarmed on
+Toward 0.3.2. Release candidates: `v0.3.2-rc.13` (opt-in warmup of fresh
+processes, total stream duration cap, active requests in `/metrics/stats`,
+per-version recycle); `v0.3.2-rc.12` (minProcesses prewarmed on
 install/promote/enable and refilled when a removal empties the group);
 `v0.3.2-rc.11` (abandoned streams cancelled
 in the worker, precompressed assets, configurable compression, per-worker
@@ -234,6 +236,23 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.13]
+
+- Opt-in `warmup: { path, timeout }` in the worker manifest: right after a
+  `minProcesses` prewarm or floor-replenishment spawn, the pool sends one
+  synthetic `GET` to the fresh process, so the first user request no longer
+  pays the first-execution cost (tanstack-demo: 24-27 ms down to 9-10 ms).
+  It never counts toward `maxRequests`, request metrics, the TTL or the
+  circuit breaker.
+- Streamed responses have a total duration limit: `streamTimeout` in the
+  manifest or `EDGER_STREAM_MAX_DURATION_MS` (default 5 min; `0` disables).
+  On expiry the process is cancelled and drained like an abandoned stream
+  and reused after a clean end. Before, an SSE response with a heartbeat
+  could hold a process forever.
+- `/metrics/stats` shows each process's own `id` and its `activeRequest`.
+- `POST /api/admin/workers/{name}/recycle?version=<v>` recycles the
+  processes of one version without deleting it.
 
 ## [0.3.2-rc.12]
 
