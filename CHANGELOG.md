@@ -221,6 +221,7 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 - `tokio` 1.53.1, `bytes` 1.12.1, `thiserror` 2.0.21 and `futures-core`
   0.3.34.
+- `hyper` 1.12.0, `uuid` 1.27.0 and `serde_json` 1.0.151.
 - `docker/login-action` v4 and `docker/metadata-action` v6 in the release
   workflow.
 - `rusqlite` 0.40.2 with the `fallible_uint` feature: the 0.40 line drops
@@ -231,7 +232,7 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   `api-keys.db` created by the 3.46.0 amalgamation: it opens, keeps
   `journal_mode delete`, preserves the row and `created_at`, and accepts
   the `user_version` migration.
-- Rust 1.98 toolchain in the workspace `rust-version`, the `Dockerfile`
+- Rust 1.99 toolchain in the workspace `rust-version`, the `Dockerfile`
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
