@@ -480,8 +480,9 @@ fn record_lifecycle_event(events: &OperationalStore, record: WorkerLifecycleEven
     // longer depends solely on `drained_count` (which is `None` for
     // stream-abandon drains).
     // (EDG-17) A frame-timeout cut carries its per-frame read timeout in
-    // the message slot (the event schema has no dedicated field; the
-    // `duration_ms` field already holds the stream age at the cut).
+    // the structured `timeout_ms` field; the message keeps the
+    // human-readable form (the `duration_ms` field already holds the
+    // stream age at the cut).
     let message = if let Some(timeout_ms) = record.timeout_ms {
         Some(format!("per-frame timeout {timeout_ms} ms"))
     } else if matches!(record.kind, WorkerLifecycleEventKind::DrainCompleted) {
@@ -508,6 +509,7 @@ fn record_lifecycle_event(events: &OperationalStore, record: WorkerLifecycleEven
         outcome: Some(outcome.into()),
         status: None,
         duration_ms: record.duration_ms,
+        timeout_ms: record.timeout_ms,
         code,
         message,
         truncated: None,
@@ -535,6 +537,7 @@ fn record_console_event(events: &OperationalStore, record: edger_isolation::Cons
         outcome: None,
         status: None,
         duration_ms: None,
+        timeout_ms: None,
         code: None,
         message: Some(record.message),
         truncated: record.truncated.then_some(true),
@@ -1078,6 +1081,11 @@ mod tests {
         assert_eq!(event.process_id.as_deref(), Some("instance-43"));
         assert_eq!(event.request_id.as_deref(), Some("request-8"));
         assert_eq!(event.duration_ms, Some(2_001));
+        assert_eq!(
+            event.timeout_ms,
+            Some(2_000),
+            "the per-frame timeout is a structured event field"
+        );
         assert_eq!(event.outcome.as_deref(), Some("cancelled"));
         assert_eq!(
             event.message.as_deref(),

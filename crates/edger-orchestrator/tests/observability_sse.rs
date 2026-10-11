@@ -66,6 +66,7 @@ fn record(state: &OrchestratorState, request_id: &str) {
             outcome: Some("ok".into()),
             status: Some(200),
             duration_ms: Some(1),
+            timeout_ms: None,
             code: None,
             message: None,
             truncated: None,

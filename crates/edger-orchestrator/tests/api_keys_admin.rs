@@ -624,6 +624,7 @@ async fn observability_events_stay_inside_the_key_scope() {
         outcome: Some("ok".into()),
         status: Some(200),
         duration_ms: Some(1),
+        timeout_ms: None,
         code: None,
         message: None,
         truncated: None,

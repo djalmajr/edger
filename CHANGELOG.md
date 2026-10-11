@@ -123,8 +123,9 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   cut never moves `edger_stream_abandoned_total` or
   `edger_stream_max_duration_total`), and the cut emits a
   `stream.frame_timeout` operational event with the worker, process,
-  request, stream age at the cut, per-frame timeout and drain outcome.
-  A disabled drain (a `0` abandon-drain limit) or a failed cancel write
+  request, stream age at the cut, the per-frame timeout (structured field
+  `timeoutMs`) and drain outcome. A disabled drain (a `0` abandon-drain
+  limit) or a failed cancel write
   recycles with the `socket_poisoned` sub-cause, as before.
 - `hosts:` belongs to the worker **name**, not to a version: the host is
   answered by the version the name serves at the moment (the promoted

@@ -40,6 +40,7 @@ fn input(worker: &str, version: &str, request_id: &str) -> OperationalEventInput
         outcome: Some("ok".into()),
         status: Some(200),
         duration_ms: Some(3),
+        timeout_ms: None,
         code: None,
         message: None,
         truncated: None,

@@ -1078,6 +1078,7 @@ fn record_release_event(
         outcome: outcome.map(str::to_string),
         status: None,
         duration_ms,
+        timeout_ms: None,
         code,
         message: None,
         truncated: None,
