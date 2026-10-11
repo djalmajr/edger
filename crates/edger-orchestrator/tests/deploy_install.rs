@@ -1093,7 +1093,7 @@ async fn worker_files_listing_and_zip_hide_edge_r_bundle_artifacts() {
     assert!(!names.contains(&".edger-bundle-deep"), "{text}");
 
     let (status, _, body) = download(
-        app,
+        app.clone(),
         "/api/admin/workers/hide-app/files/download?version=1.0.0&path=",
     )
     .await;
@@ -1119,6 +1119,41 @@ async fn worker_files_listing_and_zip_hide_edge_r_bundle_artifacts() {
     std::io::Read::read_to_string(&mut archive.by_name(".well-known/a.txt").unwrap(), &mut dot)
         .unwrap();
     assert_eq!(dot, "dot-file");
+
+    // A DIRECT path into a bundle artifact is 404, as if it did not exist
+    // (listing and download, at the root and one level down).
+    let (status, _, _) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/hide-app/files?version=1.0.0&path=.edger-bundle-cache",
+        Some("test-root"),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = send(
+        app.clone(),
+        "GET",
+        "/api/admin/workers/hide-app/files?version=1.0.0&path=.edger-bundle-cache%2Fv1-abc123",
+        Some("test-root"),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = download(
+        app.clone(),
+        "/api/admin/workers/hide-app/files/download?version=1.0.0&path=.edger-bundle-cache",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = download(
+        app,
+        "/api/admin/workers/hide-app/files/download?version=1.0.0&path=.edger-bundle-cache%2Fv1-abc123",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

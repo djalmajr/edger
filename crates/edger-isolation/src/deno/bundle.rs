@@ -834,14 +834,37 @@ async fn wait_for_bundle_job(
     }
 }
 
-fn existing_bundle_file(path: &Path) -> Option<String> {
-    let path = path.canonicalize().ok()?;
-    if !path.is_file() {
+/// A reusable bundle file: a regular file as it is (never a symlink), whose
+/// canonical path is INSIDE the canonical worker dir's cache dir
+/// (`worker_dir` must be canonical). A planted or swapped symlink — or any
+/// path that resolves outside the worker dir — is rejected: the caller
+/// treats it as a miss and never executes it.
+fn validated_bundle_file(worker_dir: &Path, path: &Path) -> Option<String> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() {
         return None;
     }
-    Some(path.to_string_lossy().into_owned())
+    let canonical = path.canonicalize().ok()?;
+    let cache_root = worker_dir.join(BUNDLE_CACHE_DIR);
+    if !canonical.starts_with(cache_root) {
+        return None;
+    }
+    Some(canonical.to_string_lossy().into_owned())
 }
 
+/// `remove_dir_all` guarded by a symlink check: never removes through a path
+/// whose `symlink_metadata` is a symlink (a swapped entry must not be
+/// followed, its target left alone).
+fn remove_real_dir(path: &Path) {
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| !meta.is_symlink()) {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+/// Bundle and publish into the verified cache root (EDG-20). `worker_dir`
+/// must be canonical and the cache root a verified real directory (the
+/// caller probed it): the published path is validated to stay inside it and
+/// is never executed otherwise.
 fn build_and_publish(
     bundler: &DenoCliBundler,
     worker_dir: &Path,
@@ -862,43 +885,88 @@ fn build_and_publish(
     bundler
         .bundle_entrypoint(worker_dir, entrypoint, staging.path())
         .inspect_err(|_err| {
-            let _ = std::fs::remove_dir_all(staging.path());
+            remove_real_dir(staging.path());
         })?;
     let final_dir = cache_root.join(key);
     match std::fs::rename(staging.path(), &final_dir) {
-        Ok(()) => {
-            prune_old_bundle_keys(cache_root, key);
-            // The bundler's result path points at the staging file; report
-            // the PUBLISHED location instead.
-            let published = final_dir.join(bundle_file_name(entrypoint));
-            Ok(ModuleBundle {
-                path: existing_bundle_file(&published)
-                    .unwrap_or_else(|| published.to_string_lossy().into_owned()),
-                format: BundleFormat::JavaScript,
-            })
-        }
-        Err(err) => {
+        Ok(()) => publish_from_staging(worker_dir, entrypoint, cache_root, key),
+        Err(first_err) => {
+            // A concurrent publish already owns this key with a VALID
+            // bundle: adopt it.
             let expected = final_dir.join(bundle_file_name(entrypoint));
-            if let Some(path) = existing_bundle_file(&expected) {
-                // A concurrent publish already owns this key: use it.
-                let _ = std::fs::remove_dir_all(staging.path());
+            if let Some(path) = validated_bundle_file(worker_dir, &expected) {
+                remove_real_dir(staging.path());
                 return Ok(ModuleBundle {
                     path,
                     format: BundleFormat::JavaScript,
                 });
             }
-            let _ = std::fs::remove_dir_all(staging.path());
+            // An invalid entry (a planted symlink, a crashed publish)
+            // occupies the key dir: clear it — only a REAL, non-symlink
+            // directory at the exact key we are about to publish — and retry
+            // the rename once. A symlinked entry is never removed through.
+            let occupied = std::fs::symlink_metadata(&final_dir)
+                .ok()
+                .is_some_and(|meta| !meta.is_symlink() && meta.is_dir());
+            if occupied {
+                remove_real_dir(&final_dir);
+                match std::fs::rename(staging.path(), &final_dir) {
+                    Ok(()) => {
+                        return publish_from_staging(worker_dir, entrypoint, cache_root, key);
+                    }
+                    Err(second_err) => {
+                        remove_real_dir(staging.path());
+                        return Err(IsolationError::new(
+                            "DENO_BUNDLE_PUBLISH",
+                            format!("failed to publish the bundle cache: {second_err}"),
+                        ));
+                    }
+                }
+            }
+            remove_real_dir(staging.path());
             Err(IsolationError::new(
                 "DENO_BUNDLE_PUBLISH",
-                format!("failed to publish the bundle cache: {err}"),
+                format!("failed to publish the bundle cache: {first_err}"),
             ))
         }
     }
 }
 
+/// After a successful rename: validate the published path (it must be a
+/// regular file inside the verified cache root — a path that escaped is
+/// never executed) and prune the older keys of this version.
+fn publish_from_staging(
+    worker_dir: &Path,
+    entrypoint: &Path,
+    cache_root: &Path,
+    key: &str,
+) -> Result<ModuleBundle, IsolationError> {
+    let final_dir = cache_root.join(key);
+    let published = final_dir.join(bundle_file_name(entrypoint));
+    let Some(path) = validated_bundle_file(worker_dir, &published) else {
+        return Err(IsolationError::new(
+            "DENO_BUNDLE_PUBLISH",
+            "the published bundle path did not validate inside the worker dir",
+        ));
+    };
+    prune_old_bundle_keys(cache_root, key);
+    Ok(ModuleBundle {
+        path,
+        format: BundleFormat::JavaScript,
+    })
+}
+
 /// Remove the older keys of this version (a version keeps only its current
-/// key). Staging dirs are left for their builders.
+/// key). Staging dirs are left for their builders. Only REAL directories
+/// whose name matches the key format are removed — never through a symlink
+/// (the cache root itself or any entry), never any other name.
 fn prune_old_bundle_keys(cache_root: &Path, keep: &str) {
+    let Ok(root_meta) = std::fs::symlink_metadata(cache_root) else {
+        return;
+    };
+    if root_meta.is_symlink() || !root_meta.is_dir() {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(cache_root) else {
         return;
     };
@@ -907,19 +975,39 @@ fn prune_old_bundle_keys(cache_root: &Path, keep: &str) {
         if name == keep || name.starts_with(BUNDLE_STAGING_PREFIX) {
             continue;
         }
+        if !is_bundle_key_name(&name) {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if meta.is_symlink() || !meta.is_dir() {
+            continue;
+        }
         let _ = std::fs::remove_dir_all(entry.path());
     }
 }
 
-static UNWRITABLE_WARNED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+/// True when `name` is a per-version cache key (`v1-` + sha256 hex).
+fn is_bundle_key_name(name: &str) -> bool {
+    let Some(hex) = name.strip_prefix(BUNDLE_KEY_PREFIX) else {
+        return false;
+    };
+    hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
 
-fn warn_unwritable_worker_dir(worker_dir: &Path) {
-    let warned = UNWRITABLE_WARNED.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut warned = warned.lock().expect("unwritable warn lock");
+static CACHE_DISABLED_WARNED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+/// One `warn` per worker dir explaining why the per-version bundle cache is
+/// disabled for it (the per-process bundle behavior is kept instead).
+fn warn_bundle_cache_disabled(worker_dir: &Path, reason: &str) {
+    let warned = CACHE_DISABLED_WARNED.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut warned = warned.lock().expect("bundle cache warn lock");
     if warned.insert(worker_dir.to_path_buf()) {
         tracing::warn!(
             worker_dir = %worker_dir.display(),
-            "edger: worker dir is not writable; the per-version bundle cache is disabled for this worker (per-process bundle behavior kept)"
+            reason,
+            "edger: the per-version bundle cache is disabled for this worker (per-process bundle behavior kept)"
         );
     }
 }
@@ -945,6 +1033,54 @@ fn create_bundle_tempdir(
         })
 }
 
+/// State of `<worker>/.edger-bundle-cache` before the cache is created,
+/// used, published into or pruned (EDG-20). A symlink (or anything but a
+/// real directory) is never followed or modified; a missing dir is created
+/// with `create_dir` (not `create_dir_all`) and re-checked after creation,
+/// so a race that swaps in a symlink is not followed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CacheRootProbe {
+    /// A real directory the cache may use (pre-existing or just created).
+    Usable,
+    /// Missing and not creatable (e.g. the worker dir is not writable).
+    Uncreatable,
+    /// Exists but is a symlink or not a directory: never follow or modify it.
+    Ineligible,
+}
+
+fn probe_cache_root(worker_dir: &Path) -> Result<(PathBuf, CacheRootProbe), IsolationError> {
+    let worker_dir = worker_dir.canonicalize().map_err(|err| {
+        IsolationError::new(
+            "DENO_BUNDLE_CACHE_DIR",
+            format!("cannot canonicalize the worker dir: {err}"),
+        )
+    })?;
+    let root = worker_dir.join(BUNDLE_CACHE_DIR);
+    let meta = match std::fs::symlink_metadata(&root) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            // Create with `create_dir` (one level, after the check)...
+            match std::fs::create_dir(&root) {
+                Ok(()) => {}
+                Err(create_err) if create_err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return Ok((worker_dir, CacheRootProbe::Uncreatable)),
+            }
+            // ...and re-check AFTER creation.
+            match std::fs::symlink_metadata(&root) {
+                Ok(meta) => meta,
+                Err(_) => return Ok((worker_dir, CacheRootProbe::Uncreatable)),
+            }
+        }
+        Err(_) => return Ok((worker_dir, CacheRootProbe::Uncreatable)),
+    };
+    let probe = if meta.is_symlink() || !meta.is_dir() {
+        CacheRootProbe::Ineligible
+    } else {
+        CacheRootProbe::Usable
+    };
+    Ok((worker_dir, probe))
+}
+
 impl DenoCliBundler {
     /// Resolve the worker entry for a multiproc spawn through the per-version
     /// bundle cache (EDG-20). Everything that touches the filesystem or the
@@ -954,8 +1090,10 @@ impl DenoCliBundler {
     /// worker's spawn timeout, as for every other spawn phase). A hit reuses
     /// the published bundle; a miss builds and publishes atomically; a failed
     /// build is never cached and surfaces the same error as before. When the
-    /// worker dir is not writable the legacy per-process tempdir behavior is
-    /// kept (logged once at `warn` per worker dir).
+    /// cache root is not usable — the worker dir is not writable, or
+    /// `.edger-bundle-cache` is a symlink / non-directory (never followed) —
+    /// the legacy per-process tempdir behavior is kept (logged once at `warn`
+    /// per worker dir).
     pub async fn resolve_bundle_entry(
         &self,
         worker_dir: &Path,
@@ -984,11 +1122,38 @@ impl DenoCliBundler {
             )
         })??;
 
-        // 2. Already published? (a cheap stat: the hot path after the first
-        // process of the version).
-        let cache_root = worker_dir.join(BUNDLE_CACHE_DIR);
+        // 2. Probe the cache root, off the runtime: canonical worker dir +
+        // a symlink check on `.edger-bundle-cache` + `create_dir` when
+        // missing (re-checked after creation). A symlinked or non-directory
+        // cache root is never followed: the per-process fallback is used.
+        let probe_worker_dir = worker_dir.clone();
+        let (canonical_worker_dir, root_probe) =
+            tokio::task::spawn_blocking(move || probe_cache_root(&probe_worker_dir))
+                .await
+                .map_err(|err| {
+                    IsolationError::new(
+                        "DENO_BUNDLE_BLOCKING",
+                        format!("bundle cache root probe failed: {err}"),
+                    )
+                })??;
+        if root_probe != CacheRootProbe::Usable {
+            let reason = if root_probe == CacheRootProbe::Ineligible {
+                "the .edger-bundle-cache path is a symlink or not a directory; it is never followed"
+            } else {
+                "the .edger-bundle-cache path cannot be created (the worker dir is probably not writable)"
+            };
+            return self
+                .fallback_bundle(&canonical_worker_dir, &entrypoint, &fallback_dir, reason)
+                .await;
+        }
+
+        let cache_root = canonical_worker_dir.join(BUNDLE_CACHE_DIR);
+
+        // 3. Already published? (a cheap stat: the hot path after the first
+        // process of the version). A reusable entry must be a regular file
+        // inside the verified cache root — never a symlink, never outside.
         let entry_file = cache_root.join(&key).join(bundle_file_name(&entrypoint));
-        if let Some(path) = existing_bundle_file(&entry_file) {
+        if let Some(path) = validated_bundle_file(&canonical_worker_dir, &entry_file) {
             record_bundle_outcome(BundleOutcome::Hit);
             return Ok(BundleEntry {
                 bundle: ModuleBundle {
@@ -999,55 +1164,7 @@ impl DenoCliBundler {
             });
         }
 
-        // 3. Cache dir available? (blocking: one `create_dir_all`).
-        let probe_root = cache_root.clone();
-        let cache_available =
-            tokio::task::spawn_blocking(move || std::fs::create_dir_all(&probe_root).is_ok())
-                .await
-                .map_err(|err| {
-                    IsolationError::new(
-                        "DENO_BUNDLE_BLOCKING",
-                        format!("bundle cache dir check failed: {err}"),
-                    )
-                })?;
-        if !cache_available {
-            // 4. Legacy per-process fallback (today's behavior, off the
-            // runtime). Single-flight is NOT applied here: the bundle file
-            // lives in a per-process tempdir that no other spawn may read.
-            warn_unwritable_worker_dir(&worker_dir);
-            let fb_bundler = self.clone();
-            let fb_worker_dir = worker_dir.clone();
-            let fb_entrypoint = entrypoint.clone();
-            let fb_fallback_dir = fallback_dir.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                let dir = create_bundle_tempdir(&fb_worker_dir, &fb_fallback_dir)?;
-                let bundle =
-                    fb_bundler.bundle_entrypoint(&fb_worker_dir, &fb_entrypoint, dir.path())?;
-                Ok(BundleEntry {
-                    bundle,
-                    dir: Some(dir),
-                })
-            })
-            .await
-            .map_err(|err| {
-                IsolationError::new(
-                    "DENO_BUNDLE_BLOCKING",
-                    format!("bundle fallback failed: {err}"),
-                )
-            })?;
-            return match result {
-                Ok(entry) => {
-                    record_bundle_outcome(BundleOutcome::Uncached);
-                    Ok(entry)
-                }
-                Err(err) => {
-                    record_bundle_outcome(BundleOutcome::Error);
-                    Err(err)
-                }
-            };
-        }
-
-        // 5. Single flight: one build per key, the others wait (bounded by
+        // 4. Single flight: one build per key, the others wait (bounded by
         // the worker's spawn timeout).
         let (job, is_builder) = register_bundle_job(&key);
         if !is_builder {
@@ -1056,9 +1173,9 @@ impl DenoCliBundler {
             return Ok(BundleEntry { bundle, dir: None });
         }
 
-        // 6. The build, off the runtime.
+        // 5. The build, off the runtime.
         let build_bundler = self.clone();
-        let build_worker_dir = worker_dir.clone();
+        let build_worker_dir = canonical_worker_dir.clone();
         let build_entrypoint = entrypoint.clone();
         let build_key = key.clone();
         let build_cache_root = cache_root.clone();
@@ -1067,9 +1184,10 @@ impl DenoCliBundler {
             move || -> Result<(ModuleBundle, bool, u64), IsolationError> {
                 let started = Instant::now();
                 // Re-check: the entry may have been published between the
-                // step-2 lookup and this point (leftover from a previous
-                // process).
-                if let Some(path) = existing_bundle_file(&build_entry_file) {
+                // step-3 lookup and this point (leftover from a previous
+                // process). Same validation: regular file inside the
+                // verified cache root, never a symlink.
+                if let Some(path) = validated_bundle_file(&build_worker_dir, &build_entry_file) {
                     return Ok((
                         ModuleBundle {
                             path,
@@ -1137,6 +1255,51 @@ impl DenoCliBundler {
         }
         remove_bundle_job(&key, &job);
         Ok(BundleEntry { bundle, dir: None })
+    }
+
+    /// The legacy per-process fallback bundle (EDG-20): today's behavior,
+    /// off the runtime. Used when the cache root is not usable (not
+    /// writable, or a symlink / non-directory that is never followed).
+    /// Single-flight is NOT applied: the bundle file lives in a per-process
+    /// tempdir that no other spawn may read. Counted as `uncached`.
+    async fn fallback_bundle(
+        &self,
+        worker_dir: &Path,
+        entrypoint: &Path,
+        fallback_dir: &Path,
+        warn_reason: &str,
+    ) -> Result<BundleEntry, IsolationError> {
+        warn_bundle_cache_disabled(worker_dir, warn_reason);
+        let fb_bundler = self.clone();
+        let fb_worker_dir = worker_dir.to_path_buf();
+        let fb_entrypoint = entrypoint.to_path_buf();
+        let fb_fallback_dir = fallback_dir.to_path_buf();
+        let result = tokio::task::spawn_blocking(move || {
+            let dir = create_bundle_tempdir(&fb_worker_dir, &fb_fallback_dir)?;
+            let bundle =
+                fb_bundler.bundle_entrypoint(&fb_worker_dir, &fb_entrypoint, dir.path())?;
+            Ok(BundleEntry {
+                bundle,
+                dir: Some(dir),
+            })
+        })
+        .await
+        .map_err(|err| {
+            IsolationError::new(
+                "DENO_BUNDLE_BLOCKING",
+                format!("bundle fallback failed: {err}"),
+            )
+        })?;
+        match result {
+            Ok(entry) => {
+                record_bundle_outcome(BundleOutcome::Uncached);
+                Ok(entry)
+            }
+            Err(err) => {
+                record_bundle_outcome(BundleOutcome::Error);
+                Err(err)
+            }
+        }
     }
 }
 

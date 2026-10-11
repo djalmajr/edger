@@ -122,8 +122,9 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   dir, so it stays under that worker's read permission and disappears with
   the version) and every subsequent spawn reuses it. The cache key is the
   sha256 of the worker files' relpath+size+mtime fingerprint plus the
-  `deno --version` output (memoized per process) and the bundler arguments,
-  so editing a source file in place invalidates it; concurrent spawns of the
+  `deno --version` output (memoized per process), the bundler arguments and
+  the canonical absolute worker path, so editing a source file in place (or
+  copying the version dir to a different location) invalidates it; concurrent spawns of the
   same version single-flight on one build (the others wait, bounded by the
   worker `timeout`), a failed build is never cached, and a non-writable
   worker dir keeps the legacy per-process tempdir behavior (logged once at
@@ -132,9 +133,10 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   thread in the multiproc spawn path. `/metrics` exposes, for the multiproc
   backend, `edger_worker_bundle_total{outcome="hit|miss|error|uncached"}`
   and each miss logs an `info` line with the worker dir name, key prefix and
-  `duration_ms`). The cache dir and the legacy `.edger-bundle-*` / `.edger-bridge-*` tempdirs
-  are hidden from the worker file listing and the zip download/export (other dot files,
-  such as `.well-known/`, stay visible).
+  `duration_ms`. The cache dir and the legacy `.edger-bundle-*` / `.edger-bridge-*` tempdirs
+  are hidden from the worker file listing and the zip download/export (direct
+  paths into them answer 404; other dot files, such as `.well-known/`, stay
+  visible).
 - A per-frame read timeout on a multiprocess streamed body now cancels and
   drains instead of recycling: when a streamed response stalls past the
   worker `timeout` (the per-frame read timeout), EdgeR sends the existing

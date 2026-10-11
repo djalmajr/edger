@@ -86,8 +86,9 @@ módulo. Para workers que precisam de bundling (import relativo ou arquivos de
 fonte extras), o spawn roda `deno info --json` + `deno bundle` **uma vez por
 versão do worker** (EDG-20): o bundle é publicado atomicamente em
 `<worker_dir>/.edger-bundle-cache/<key>/` (a chave é o sha256 do fingerprint
-dos arquivos do worker — relpath+size+mtime — mais a versão do `deno` e os
-argumentos do bundler) e todo processo posterior da mesma versão reaproveita
+dos arquivos do worker — relpath+size+mtime — mais a versão do `deno`, os
+argumentos do bundler e o caminho absoluto canônico do diretório do worker —
+copiar a versão para outro caminho é um `miss` —) e todo processo posterior da mesma versão reaproveita
 esse bundle (`hit`), sem re-bundlar. Spawns concorrentes da mesma versão
 single-flight num único build (os outros esperam, limitado pelo `timeout` do
 worker), uma falha de bundle nunca é cacheada (o próximo spawn tenta de novo)

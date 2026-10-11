@@ -13,7 +13,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use edger_isolation::{bundle_cache_stats, BundleCacheStats, DenoCliBundler};
+use edger_isolation::{
+    bundle_cache_stats, deno_version_for_candidates, worker_bundle_key, BundleCacheStats,
+    DenoCliBundler,
+};
 
 /// The tests of this binary share the process-wide bundle counters: serialize
 /// every test that asserts on a counter delta.
@@ -412,4 +415,220 @@ fn bundle_cache_stats_snapshot_is_stable() {
     let b = bundle_cache_stats();
     assert_eq!(a, b);
     let _ = BundleCacheStats::default();
+}
+
+/// A recursive snapshot of a tree: every regular file as (relative path,
+/// contents), sorted — used to prove a tree is byte-for-byte unchanged.
+fn snapshot_tree(root: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut out: Vec<(String, Vec<u8>)> = Vec::new();
+    fn walk(dir: &Path, root: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let meta = match std::fs::symlink_metadata(&path) {
+                Ok(meta) => meta,
+                Err(_) => continue,
+            };
+            if meta.is_dir() {
+                walk(&path, root, out);
+            } else if meta.is_file() {
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                out.push((rel, std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    walk(root, root, &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// A `.edger-bundle-cache` that is a SYMLINK to a sibling directory is never
+/// followed or modified: the resolution takes the per-process fallback
+/// (counted `uncached`), the victim tree is byte-for-byte unchanged, no
+/// `v1-*` key appears in it, and the symlink itself survives.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn symlinked_cache_dir_is_never_followed_and_falls_back() {
+    let _guard = counter_guard();
+    let root = tempfile::tempdir().unwrap();
+    // The victim: a sibling dir with a subdirectory and a file.
+    let victim = root.path().join("victim");
+    fs::create_dir_all(victim.join("inner")).unwrap();
+    fs::write(victim.join("KEEP_ME.txt"), b"keep-me").unwrap();
+    fs::write(victim.join("inner").join("nested.txt"), b"nested").unwrap();
+    // A real worker that needs bundling, whose cache root is a symlink
+    // OUTSIDE it (a RUNTIME_WORKER_DIRS checkout or out-of-band copy can
+    // hold this).
+    let worker = write_worker(root.path(), "link-worker");
+    std::os::unix::fs::symlink(&victim, worker.join(".edger-bundle-cache")).unwrap();
+
+    let before = snapshot_tree(&victim);
+    let stats_before = bundle_cache_stats();
+    let bundler = DenoCliBundler::default();
+    let entry = entrypoint(&worker);
+    let fallback = tempfile::tempdir().unwrap();
+    let res = bundler
+        .resolve_bundle_entry(&worker, &entry, fallback.path(), SPAWN_TIMEOUT)
+        .await
+        .expect("a symlinked cache dir falls back to the per-process bundle");
+    let stats_after = bundle_cache_stats();
+
+    assert!(
+        res.dir.is_some(),
+        "the fallback keeps a per-process tempdir: {}",
+        res.bundle.path
+    );
+    assert!(
+        !res.bundle.path.contains(".edger-bundle-cache"),
+        "the fallback bundle does not go through the cache dir: {}",
+        res.bundle.path
+    );
+    assert_eq!(
+        stats_after.uncached_total - stats_before.uncached_total,
+        1,
+        "the fallback counts as uncached"
+    );
+    assert_eq!(
+        stats_after.miss_total - stats_before.miss_total,
+        0,
+        "nothing was published into the cache"
+    );
+    // The victim tree is byte-for-byte unchanged; no v1-* appeared in it.
+    let after = snapshot_tree(&victim);
+    assert_eq!(
+        before, after,
+        "the symlink target is byte-for-byte unchanged"
+    );
+    for (rel, _bytes) in &after {
+        assert!(
+            !rel.starts_with("v1-"),
+            "a cache key appeared in the victim: {rel}"
+        );
+    }
+    assert!(
+        std::fs::symlink_metadata(worker.join(".edger-bundle-cache"))
+            .unwrap()
+            .is_symlink(),
+        "the symlink itself was not replaced or deleted"
+    );
+}
+
+/// A SELF symlink (`.edger-bundle-cache -> .`) would let a prune delete the
+/// worker's own directory children: the probe refuses it, the worker dir is
+/// left intact, and the per-process fallback is used.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn self_symlinked_cache_dir_keeps_the_worker_dir() {
+    let _guard = counter_guard();
+    let root = tempfile::tempdir().unwrap();
+    let worker = write_worker(root.path(), "self-link-worker");
+    // A real subdirectory that a self-linked prune would delete.
+    fs::create_dir_all(worker.join("src")).unwrap();
+    fs::write(worker.join("src").join("lib.ts"), "export const lib = 1;\n").unwrap();
+    std::os::unix::fs::symlink(".", worker.join(".edger-bundle-cache")).unwrap();
+
+    let stats_before = bundle_cache_stats();
+    let bundler = DenoCliBundler::default();
+    let entry = entrypoint(&worker);
+    let fallback = tempfile::tempdir().unwrap();
+    let res = bundler
+        .resolve_bundle_entry(&worker, &entry, fallback.path(), SPAWN_TIMEOUT)
+        .await
+        .expect("a self-linked cache dir falls back to the per-process bundle");
+    let stats_after = bundle_cache_stats();
+
+    assert!(
+        res.dir.is_some(),
+        "the fallback keeps a per-process tempdir: {}",
+        res.bundle.path
+    );
+    assert_eq!(
+        stats_after.uncached_total - stats_before.uncached_total,
+        1,
+        "the fallback counts as uncached"
+    );
+    // The worker's own tree survives the self-link.
+    assert!(
+        worker.join("src").is_dir(),
+        "the worker's own subdirectory survives"
+    );
+    assert_eq!(
+        fs::read_to_string(worker.join("src").join("lib.ts")).unwrap(),
+        "export const lib = 1;\n"
+    );
+    assert!(worker.join("index.ts").exists());
+    assert!(worker.join("greeting.ts").exists());
+}
+
+/// A planted SYMLINK at the exact published bundle path (pointing outside
+/// the worker dir) is never adopted or executed: the build replaces it with
+/// the real published file, and the outside target is left alone.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn planted_symlink_bundle_file_is_not_used() {
+    let _guard = counter_guard();
+    let root = tempfile::tempdir().unwrap();
+    let worker = write_worker(root.path(), "planted-worker");
+    // The exact key the spawn path computes for this worker dir.
+    let bundler = DenoCliBundler::default();
+    let deno_version = deno_version_for_candidates(&bundler.executable_candidates());
+    let key = worker_bundle_key(&worker, &deno_version).unwrap();
+    // A file OUTSIDE the worker dir, planted as the published bundle.
+    let outside = root.path().join("outside-worker.mjs");
+    fs::write(&outside, b"/* evil */").unwrap();
+    let key_dir = worker.join(".edger-bundle-cache").join(&key);
+    fs::create_dir_all(&key_dir).unwrap();
+    std::os::unix::fs::symlink(&outside, key_dir.join("index.bundle.mjs")).unwrap();
+
+    let stats_before = bundle_cache_stats();
+    let entry = entrypoint(&worker);
+    let fallback = tempfile::tempdir().unwrap();
+    let res = bundler
+        .resolve_bundle_entry(&worker, &entry, fallback.path(), SPAWN_TIMEOUT)
+        .await
+        .expect("a planted symlink is not a usable bundle, but the spawn succeeds");
+    let stats_after = bundle_cache_stats();
+
+    assert_eq!(
+        fs::read(&outside).unwrap(),
+        b"/* evil */".to_vec(),
+        "the outside target was not modified"
+    );
+    assert!(
+        res.bundle.path != outside.to_string_lossy(),
+        "the resolved bundle is not the planted symlink target"
+    );
+    // The resolved bundle is the REAL published file: a regular file (not a
+    // symlink) inside the worker's own cache dir.
+    let bundle_meta = std::fs::symlink_metadata(Path::new(&res.bundle.path)).unwrap();
+    assert!(
+        bundle_meta.is_file() && !bundle_meta.is_symlink(),
+        "the resolved bundle is a regular file: {}",
+        res.bundle.path
+    );
+    assert!(
+        res.bundle.path.contains(".edger-bundle-cache"),
+        "the bundle is the cache build: {}",
+        res.bundle.path
+    );
+    assert!(
+        res.dir.is_none(),
+        "the cache is usable: no per-process tempdir"
+    );
+    assert_eq!(
+        stats_after.miss_total - stats_before.miss_total,
+        1,
+        "the build ran (the planted entry was not adopted)"
+    );
+    assert_eq!(
+        stats_after.hit_total - stats_before.hit_total,
+        0,
+        "the planted symlink was never adopted as a hit"
+    );
 }

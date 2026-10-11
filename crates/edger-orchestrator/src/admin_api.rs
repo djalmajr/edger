@@ -1897,6 +1897,9 @@ async fn worker_files(
 ) -> Response {
     match authenticate(&state, &headers).await.and_then(|principal| {
         require_permission(&principal, "files:read")?;
+        if bundle_artifact_in_sub_path(query.path.as_deref()) {
+            return Err(CoreError::new("NOT_FOUND", "path not found"));
+        }
         list_worker_files(
             &state,
             &principal,
@@ -1926,6 +1929,9 @@ async fn download_worker_files(
 ) -> Response {
     match authenticate(&state, &headers).await.and_then(|principal| {
         require_permission(&principal, "files:read")?;
+        if bundle_artifact_in_sub_path(query.path.as_deref()) {
+            return Err(CoreError::new("NOT_FOUND", "path not found"));
+        }
         build_worker_file_download(
             &state,
             &principal,
@@ -2266,6 +2272,17 @@ fn is_edger_bundle_artifact(name: &std::ffi::OsStr) -> bool {
     name == edger_isolation::BUNDLE_CACHE_DIR
         || name.starts_with(LEGACY_BUNDLE_TMP_PREFIX)
         || name.starts_with(LEGACY_BRIDGE_TMP_PREFIX)
+}
+
+/// True when ANY segment of the requested sub-path names an EdgeR bundle
+/// artifact (EDG-20): the files listing and download answer 404 (as if the
+/// path did not exist), at any depth.
+fn bundle_artifact_in_sub_path(sub_path: Option<&str>) -> bool {
+    sub_path.is_some_and(|path| {
+        path.split('/').any(|segment| {
+            !segment.is_empty() && is_edger_bundle_artifact(std::ffi::OsStr::new(segment))
+        })
+    })
 }
 
 // Read-only browse of a deployed version's directory. The dir comes from the
