@@ -15,6 +15,12 @@ use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+/// Tests below that toggle, promote, recycle or delete workers share the
+/// process-global mutation plane (`MUTATION_PLANE`, D36) and these fixtures
+/// use FIXED worker dirs, so two of them running in parallel claim the same
+/// version slot and one gets `DEPLOY_IN_PROGRESS`. Serialize them.
+static MUTATION_PLANE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 const ROOT_KEY: &str = "test-root";
 
 struct StubFactory;
@@ -190,6 +196,7 @@ async fn permissions_patch_updates_only_permissions_and_invalidates_auth_cache()
 
 #[tokio::test]
 async fn permissions_patch_validates_grants_payload_existence_and_revocation() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let app = build_pipeline(keyed_state());
     let (_, manager, _) = create_key(
         app.clone(),
@@ -271,6 +278,7 @@ async fn permissions_patch_validates_grants_payload_existence_and_revocation() {
 
 #[tokio::test]
 async fn key_lifecycle_create_use_revoke_delete() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let state = keyed_state();
     let app = build_pipeline(state);
 
@@ -445,6 +453,7 @@ async fn anti_escalation_blocks_grants_beyond_creator() {
 
 #[tokio::test]
 async fn worker_scope_filters_inventory_and_gates_mutations() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let state = keyed_state();
     // Um erro de cada worker, para o resumo agregado ter o que esconder.
     state

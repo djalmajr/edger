@@ -25,6 +25,12 @@ use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use serde_json::{json, Value};
 use tower::{Service, ServiceExt};
 
+/// Tests below that toggle, promote, recycle or delete workers share the
+/// process-global mutation plane (`MUTATION_PLANE`, D36) and these fixtures
+/// use FIXED worker dirs, so two of them running in parallel claim the same
+/// version slot and one gets `DEPLOY_IN_PROGRESS`. Serialize them.
+static MUTATION_PLANE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 const ROOT_KEY: &str = "test-root";
 const STRONG: &str = "Str0ng!Passw0rd";
 const STRONG_2: &str = "An0ther!Passw0rd";
@@ -190,6 +196,7 @@ fn assert_admin_user_shape(value: &Value) {
 
 #[tokio::test]
 async fn user_lifecycle_over_http_with_exact_cpanel_shape() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let service = seeded_console();
     let app = build_pipeline(state_with_console(service.clone()));
 
@@ -620,6 +627,7 @@ async fn user_lifecycle_over_http_with_exact_cpanel_shape() {
 
 #[tokio::test]
 async fn root_user_is_immutable_and_reserved_over_http() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let service = seeded_console();
     let app = build_pipeline(state_with_console(service));
     let (status, _h, json, _t) = send(
@@ -1069,6 +1077,7 @@ async fn login_errors_remain_generic_and_db_stays_intact() {
 
 #[tokio::test]
 async fn scoped_operator_cannot_touch_out_of_scope_workers_over_http() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let service = seeded_console();
     let app = build_pipeline(state_with_console(service));
     // Carol: pode TOGGLE workers, mas o escopo de workers é ["missing"].

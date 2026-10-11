@@ -16,6 +16,12 @@ use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use serde_json::Value;
 use tower::ServiceExt;
 
+/// Tests below that toggle, promote, recycle or delete workers share the
+/// process-global mutation plane (`MUTATION_PLANE`, D36) and these fixtures
+/// use FIXED worker dirs, so two of them running in parallel claim the same
+/// version slot and one gets `DEPLOY_IN_PROGRESS`. Serialize them.
+static MUTATION_PLANE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 const ROOT_KEY: &str = "test-root";
 
 struct StubFactory;
@@ -162,6 +168,7 @@ async fn send_with_origin(
 // 200 cases.
 #[tokio::test]
 async fn admin_auth_matrix_covers_read_and_mutation_routes() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     for (method, uri) in [
         ("GET", "/api/admin/workers"),
         ("POST", "/api/admin/workers/hello/disable"),
@@ -188,6 +195,7 @@ async fn admin_auth_matrix_covers_read_and_mutation_routes() {
 
 #[tokio::test]
 async fn delete_promote_and_invoke_authenticate_before_worker_lookup() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     for (method, uri) in [
         ("DELETE", "/api/admin/workers/missing"),
         ("POST", "/api/admin/workers/missing/promote?version=1.0.0"),
@@ -297,6 +305,7 @@ async fn admin_catalog_returns_worker_entries() {
 // goes red.
 #[tokio::test]
 async fn worker_disable_and_enable_controls_data_plane_route() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let app = build_pipeline(root_state());
 
     let (status, _json, text) = send(app.clone(), "GET", "/hello", None, Body::empty()).await;
@@ -335,6 +344,7 @@ async fn worker_disable_and_enable_controls_data_plane_route() {
 
 #[tokio::test]
 async fn worker_recycle_targets_one_version_and_requires_an_existing_version() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let mut index = ManifestIndex::new();
     for version in ["1.0.0", "2.0.0"] {
         index
@@ -436,6 +446,7 @@ async fn worker_recycle_targets_one_version_and_requires_an_existing_version() {
 
 #[tokio::test]
 async fn worker_recycle_requires_workers_toggle_permission() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let keys = Arc::new(ApiKeyService::in_memory().unwrap());
     let state =
         state_with_auth(ControlAuth::with_static_key(ROOT_KEY).with_key_service(Arc::clone(&keys)));
@@ -467,6 +478,7 @@ async fn worker_recycle_requires_workers_toggle_permission() {
 
 #[tokio::test]
 async fn worker_recycle_rewarms_an_enabled_min_process_floor() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let mut state = root_state();
     state
         .index
@@ -583,6 +595,7 @@ async fn worker_error_endpoints_return_basic_shapes() {
 // cross-site Origin mutation through as 200 instead of 403.
 #[tokio::test]
 async fn admin_mutation_rejects_cross_site_origin() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let app = build_pipeline(root_state());
     let (status, json, _text) = send_with_origin(
         app,

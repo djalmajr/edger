@@ -16,6 +16,12 @@ use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
 use tracing_subscriber::fmt::MakeWriter;
 
+/// Tests below that toggle, promote, recycle or delete workers share the
+/// process-global mutation plane (`MUTATION_PLANE`, D36) and these fixtures
+/// use FIXED worker dirs, so two of them running in parallel claim the same
+/// version slot and one gets `DEPLOY_IN_PROGRESS`. Serialize them.
+static MUTATION_PLANE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[derive(Clone, Default)]
 struct CapturedLogs {
     buffer: Arc<Mutex<Vec<u8>>>,
@@ -147,6 +153,7 @@ async fn worker_inventory_rejects_invalid_root_key() {
 
 #[tokio::test]
 async fn missing_root_key_cannot_mutate_worker_state() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let res = request(
         Request::builder()
             .method("POST")
@@ -162,6 +169,7 @@ async fn missing_root_key_cannot_mutate_worker_state() {
 
 #[tokio::test]
 async fn admin_mutation_rejects_browser_request_without_same_origin() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let missing_origin = request(
         Request::builder()
             .method("POST")
@@ -193,6 +201,7 @@ async fn admin_mutation_rejects_browser_request_without_same_origin() {
 
 #[tokio::test]
 async fn admin_mutation_allows_same_origin_and_authenticated_internal_bypass() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let same_origin = request(
         Request::builder()
             .method("POST")
@@ -226,6 +235,7 @@ async fn admin_mutation_allows_same_origin_and_authenticated_internal_bypass() {
 
 #[tokio::test]
 async fn internal_header_does_not_authenticate_public_requests() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let res = request(
         Request::builder()
             .method("POST")
@@ -243,6 +253,7 @@ async fn internal_header_does_not_authenticate_public_requests() {
 
 #[tokio::test]
 async fn internal_header_does_not_elevate_invalid_keys() {
+    let _plane_lock = MUTATION_PLANE_LOCK.lock().await;
     let res = request(
         Request::builder()
             .method("POST")
