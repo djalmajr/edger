@@ -67,6 +67,9 @@ pub struct OperationalEventInput {
     pub outcome: Option<String>,
     pub status: Option<u16>,
     pub duration_ms: Option<u64>,
+    /// Per-frame read timeout in ms (EDG-17): set only on
+    /// `stream.frame_timeout` events.
+    pub timeout_ms: Option<u64>,
     /// Dispatch telemetry (EDG-9): the HTTP method, the worker-relative path
     /// WITHOUT its query string, and the response `content-type`. Set only on
     /// `dispatch` events; no sensitive header values (cookies, auth) are
@@ -106,6 +109,10 @@ pub struct OperationalEvent {
     pub status: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Per-frame read timeout in ms (EDG-17): set only on
+    /// `stream.frame_timeout` events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
     /// Dispatch telemetry (EDG-9): method, query-less path, response
     /// content-type (see `OperationalEventInput`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -294,6 +301,7 @@ impl OperationalStore {
             outcome: input.outcome.map(|value| sanitize_token(&value)),
             status: input.status,
             duration_ms: input.duration_ms,
+            timeout_ms: input.timeout_ms,
             method: input.method.map(|value| sanitize_token(&value)),
             path: input.path.map(|value| sanitize_token(&value)),
             content_type: input.content_type.map(|value| sanitize_token(&value)),

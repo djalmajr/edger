@@ -975,6 +975,33 @@ pub fn stream_detach_metrics_prometheus(stats: &StreamDetachStats) -> String {
         );
     }
     out.push('\n');
+    // (EDG-17) Per-frame-timeout cuts: NEVER counted in
+    // `edger_stream_abandoned_total` (client went away) or
+    // `edger_stream_max_duration_total` (configured duration limit) —
+    // this family means the per-frame read timeout fired.
+    let frame_timeout_outcomes: [(&str, u64); 6] = [
+        ("drained", stats.frame_timeout_drained_total),
+        ("bytes_limit", stats.frame_timeout_drain_bytes_limit_total),
+        ("time_limit", stats.frame_timeout_drain_time_limit_total),
+        ("stream_error", stats.frame_timeout_drain_stream_error_total),
+        ("socket_poisoned", stats.frame_timeout_socket_poisoned_total),
+        ("cancelled", stats.frame_timeout_cancelled_total),
+    ];
+    push_metric_header(
+        &mut out,
+        "edger_stream_frame_timeout_total",
+        "counter",
+        "Streams cut by the per-frame read timeout, by drain outcome",
+    );
+    for (outcome, count) in frame_timeout_outcomes {
+        push_labeled_sample(
+            &mut out,
+            "edger_stream_frame_timeout_total",
+            &[("outcome", outcome)],
+            count,
+        );
+    }
+    out.push('\n');
     out
 }
 
@@ -1160,6 +1187,12 @@ mod tests {
             max_duration_drain_stream_error_total: 10,
             max_duration_socket_poisoned_total: 11,
             max_duration_cancelled_total: 12,
+            frame_timeout_drained_total: 13,
+            frame_timeout_drain_bytes_limit_total: 14,
+            frame_timeout_drain_time_limit_total: 15,
+            frame_timeout_drain_stream_error_total: 16,
+            frame_timeout_socket_poisoned_total: 17,
+            frame_timeout_cancelled_total: 18,
         });
 
         assert!(output.contains("# TYPE edger_stream_detached_total counter"));
@@ -1182,6 +1215,14 @@ mod tests {
         assert!(output.contains("edger_stream_max_duration_total{outcome=\"stream_error\"} 10"));
         assert!(output.contains("edger_stream_max_duration_total{outcome=\"socket_poisoned\"} 11"));
         assert!(output.contains("edger_stream_max_duration_total{outcome=\"cancelled\"} 12"));
+        assert!(output.contains("# HELP edger_stream_frame_timeout_total"));
+        assert!(output.contains("# TYPE edger_stream_frame_timeout_total counter"));
+        assert!(output.contains("edger_stream_frame_timeout_total{outcome=\"drained\"} 13"));
+        assert!(output.contains("edger_stream_frame_timeout_total{outcome=\"bytes_limit\"} 14"));
+        assert!(output.contains("edger_stream_frame_timeout_total{outcome=\"time_limit\"} 15"));
+        assert!(output.contains("edger_stream_frame_timeout_total{outcome=\"stream_error\"} 16"));
+        assert!(output.contains("edger_stream_frame_timeout_total{outcome=\"socket_poisoned\"} 17"));
+        assert!(output.contains("edger_stream_frame_timeout_total{outcome=\"cancelled\"} 18"));
         // Process-global counters: no worker label of any kind.
         assert!(!output.contains("worker="));
     }

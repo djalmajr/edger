@@ -113,6 +113,20 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Changed
 
+- A per-frame read timeout on a multiprocess streamed body now cancels and
+  drains instead of recycling: when a streamed response stalls past the
+  worker `timeout` (the per-frame read timeout), EdgeR sends the existing
+  cancel frame, drains within the configured abandon-drain limits, and
+  reuses the process after a clean end or recycles it when draining fails —
+  the same path as the `streamTimeout` total-duration cut. `/metrics`
+  exposes `edger_stream_frame_timeout_total{outcome=...}` (a frame-timeout
+  cut never moves `edger_stream_abandoned_total` or
+  `edger_stream_max_duration_total`), and the cut emits a
+  `stream.frame_timeout` operational event with the worker, process,
+  request, stream age at the cut, the per-frame timeout (structured field
+  `timeoutMs`) and drain outcome. A disabled drain (a `0` abandon-drain
+  limit) or a failed cancel write
+  recycles with the `socket_poisoned` sub-cause, as before.
 - `hosts:` belongs to the worker **name**, not to a version: the host is
   answered by the version the name serves at the moment (the promoted
   default, or the highest enabled non-staged version when there is none), as

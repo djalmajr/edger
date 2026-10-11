@@ -260,6 +260,10 @@ impl AbandonDrain {
 enum DrainOrigin {
     ClientGone,
     MaxDuration,
+    /// A per-frame read timeout fired on the streamed body (EDG-17): the
+    /// SAME cancel + abandon drain as the max-duration cut, but the cut
+    /// cause is the per-frame stall, not the configured total duration.
+    FrameTimeout,
 }
 
 /// Snapshot of the stream-detach counters (byte-semaphore budget accounting).
@@ -299,6 +303,15 @@ pub struct StreamDetachStats {
     pub max_duration_drain_stream_error_total: u64,
     pub max_duration_socket_poisoned_total: u64,
     pub max_duration_cancelled_total: u64,
+    /// Per-frame-timeout cuts by EDG-9 drain outcome (EDG-17). Kept
+    /// separate from client abandonment and max-duration so this family
+    /// means the per-frame read timeout fired, not a configured limit.
+    pub frame_timeout_drained_total: u64,
+    pub frame_timeout_drain_bytes_limit_total: u64,
+    pub frame_timeout_drain_time_limit_total: u64,
+    pub frame_timeout_drain_stream_error_total: u64,
+    pub frame_timeout_socket_poisoned_total: u64,
+    pub frame_timeout_cancelled_total: u64,
 }
 
 /// Process-wide budget for the stream-detach pipelines, shared by every
@@ -331,6 +344,12 @@ struct StreamDetachStatsInner {
     max_duration_drain_stream_error_total: AtomicU64,
     max_duration_socket_poisoned_total: AtomicU64,
     max_duration_cancelled_total: AtomicU64,
+    frame_timeout_drained_total: AtomicU64,
+    frame_timeout_drain_bytes_limit_total: AtomicU64,
+    frame_timeout_drain_time_limit_total: AtomicU64,
+    frame_timeout_drain_stream_error_total: AtomicU64,
+    frame_timeout_socket_poisoned_total: AtomicU64,
+    frame_timeout_cancelled_total: AtomicU64,
 }
 
 impl StreamDetachBudget {
@@ -398,6 +417,30 @@ impl StreamDetachBudget {
             max_duration_cancelled_total: self
                 .stats
                 .max_duration_cancelled_total
+                .load(Ordering::Acquire),
+            frame_timeout_drained_total: self
+                .stats
+                .frame_timeout_drained_total
+                .load(Ordering::Acquire),
+            frame_timeout_drain_bytes_limit_total: self
+                .stats
+                .frame_timeout_drain_bytes_limit_total
+                .load(Ordering::Acquire),
+            frame_timeout_drain_time_limit_total: self
+                .stats
+                .frame_timeout_drain_time_limit_total
+                .load(Ordering::Acquire),
+            frame_timeout_drain_stream_error_total: self
+                .stats
+                .frame_timeout_drain_stream_error_total
+                .load(Ordering::Acquire),
+            frame_timeout_socket_poisoned_total: self
+                .stats
+                .frame_timeout_socket_poisoned_total
+                .load(Ordering::Acquire),
+            frame_timeout_cancelled_total: self
+                .stats
+                .frame_timeout_cancelled_total
                 .load(Ordering::Acquire),
         }
     }
@@ -479,6 +522,22 @@ impl StreamDetachBudget {
         counter.fetch_add(1, Ordering::AcqRel);
     }
 
+    /// Per-frame-timeout outcome counters (EDG-17): the reader records
+    /// WHICH outcome a frame-timeout cut ended in; a frame-timeout cut
+    /// NEVER moves the client-abandonment or max-duration families.
+    fn record_frame_timeout(&self, outcome: AbandonedStream) {
+        let counter = match outcome {
+            AbandonedStream::Drained => &self.stats.frame_timeout_drained_total,
+            AbandonedStream::BytesLimit => &self.stats.frame_timeout_drain_bytes_limit_total,
+            AbandonedStream::TimeLimit => &self.stats.frame_timeout_drain_time_limit_total,
+            AbandonedStream::StreamError => &self.stats.frame_timeout_drain_stream_error_total,
+            AbandonedStream::SocketPoisoned => &self.stats.frame_timeout_socket_poisoned_total,
+            AbandonedStream::Cancelled => &self.stats.frame_timeout_cancelled_total,
+            AbandonedStream::RelayTimeout => return,
+        };
+        counter.fetch_add(1, Ordering::AcqRel);
+    }
+
     fn record_drain_outcome(&self, origin: DrainOrigin, outcome: AbandonedStream) {
         match origin {
             DrainOrigin::ClientGone => match outcome {
@@ -491,6 +550,7 @@ impl StreamDetachBudget {
                 AbandonedStream::RelayTimeout => {}
             },
             DrainOrigin::MaxDuration => self.record_max_duration(outcome),
+            DrainOrigin::FrameTimeout => self.record_frame_timeout(outcome),
         }
     }
 }
@@ -650,8 +710,11 @@ fn permits_for(len: usize, cap: usize) -> u32 {
 /// forwarder tasks: the per-response semaphore (and its capacity), the
 /// shared process-wide budget, the consumer-gone cancellation that the
 /// reader's reservation waits select on (so a lost consumer can never leave
-/// the reader parked on a semaphore), and the abandon-drain policy (EDG-9)
-/// that decides what the reader does once the consumer is gone.
+/// the reader parked on a semaphore), the abandon-drain policy (EDG-9) that
+/// decides what the reader does once the consumer is gone, and the
+/// stream-start instant plus the per-frame-timeout elapsed-time recorder
+/// (EDG-17) so the reader can capture the stream age at a frame-timeout
+/// cutoff.
 #[derive(Clone)]
 struct DetachPipeline {
     per_response: Arc<tokio::sync::Semaphore>,
@@ -660,6 +723,11 @@ struct DetachPipeline {
     cancel: watch::Receiver<bool>,
     abandon_drain: AbandonDrain,
     max_duration: Option<StreamDuration>,
+    /// Response-header arrival (the stream clock origin, EDG-16/EDG-17).
+    stream_started: TokioInstant,
+    /// Milliseconds from `stream_started` to a per-frame-timeout cutoff;
+    /// the reader stores it before starting the bounded drain (EDG-17).
+    frame_timeout_elapsed_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -703,6 +771,10 @@ pub struct ProcessStreamedResponse {
     /// nor max-duration tracking is configured.
     pub production_complete: Option<Arc<StreamProductionState>>,
     pub max_duration_elapsed_ms: Option<Arc<AtomicU64>>,
+    /// Milliseconds from response-header arrival to a per-frame-timeout
+    /// cutoff (EDG-17); stored by the reader when the per-frame read
+    /// timeout fires.
+    pub frame_timeout_elapsed_ms: Option<Arc<AtomicU64>>,
 }
 
 #[derive(Deserialize)]
@@ -1167,6 +1239,9 @@ impl DenoWorkerProcess {
         let max_duration =
             enabled_stream_max_duration(detach.and_then(|policy| policy.max_duration));
         let max_duration_elapsed_ms = max_duration.map(|_| Arc::new(AtomicU64::new(0)));
+        // (EDG-17) The per-frame timeout can cut ANY stream (detach and
+        // legacy alike), so the elapsed-time recorder always exists.
+        let frame_timeout_elapsed_ms = Arc::new(AtomicU64::new(0));
         let duration_context = max_duration.map(|limit| StreamDuration {
             started: stream_started,
             limit,
@@ -1205,6 +1280,8 @@ impl DenoWorkerProcess {
                     cancel: cancel_rx,
                     abandon_drain: policy.drain,
                     max_duration: duration_context.clone(),
+                    stream_started,
+                    frame_timeout_elapsed_ms: Arc::clone(&frame_timeout_elapsed_ms),
                 };
                 let production_complete = Arc::new(StreamProductionState::default());
                 let (done_tx, done_rx) = oneshot::channel::<StreamCompletion>();
@@ -1213,7 +1290,9 @@ impl DenoWorkerProcess {
                 // when no permits are free — the slot stays held), and
                 // enqueues it on the single FIFO queue. On a consumer loss
                 // it runs the abandon drain, which shares this writer (the
-                // EDG-9 slice 2 cancel control frame).
+                // EDG-9 slice 2 cancel control frame); on a per-frame
+                // stall it runs the SAME drain with origin FrameTimeout
+                // (EDG-17).
                 tokio::spawn(Self::detach_reader(
                     read_half,
                     Arc::clone(&self.write_half),
@@ -1261,6 +1340,7 @@ impl DenoWorkerProcess {
                     duration_context,
                     production_complete.clone(),
                     done_tx,
+                    Some(Arc::clone(&frame_timeout_elapsed_ms)),
                     Arc::clone(&self.write_half),
                 ));
                 let completed = done_rx.map(|done_rx| {
@@ -1278,6 +1358,7 @@ impl DenoWorkerProcess {
             completed,
             production_complete,
             max_duration_elapsed_ms,
+            frame_timeout_elapsed_ms: Some(frame_timeout_elapsed_ms),
         })
     }
 
@@ -1370,6 +1451,7 @@ impl DenoWorkerProcess {
             }
             DrainOrigin::ClientGone => StreamCompletion::Abandoned(outcome),
             DrainOrigin::MaxDuration => StreamCompletion::MaxDuration(outcome),
+            DrainOrigin::FrameTimeout => StreamCompletion::FrameTimeout(outcome),
         };
         let _ = done_tx.send(completion);
     }
@@ -1571,11 +1653,81 @@ impl DenoWorkerProcess {
                     return;
                 }
                 StreamFrameRead::Frame(Err(StreamFrameReadError::Timeout)) => {
-                    let _ = q_tx.send(QueueItem::End(Err(IsolationError::new(
-                        "UDS_TIMEOUT",
-                        "stream stalled past the frame timeout",
-                    ))));
-                    return; // abnormal
+                    // (EDG-17) A per-frame stall: run the SAME cancel +
+                    // abandon drain as the max-duration cut, with origin
+                    // FrameTimeout. A clean end (natural or cancel-acknowledged)
+                    // restores the socket and reuses the process; the client
+                    // body ends cleanly after the chunks already queued.
+                    if !pipeline.abandon_drain.enabled() {
+                        // Drain disabled: no cancel frame is written, the
+                        // socket is abandoned mid-response and recycled —
+                        // the max-duration path's disabled-drain behavior.
+                        // (EDG-17 amendment 2) Record the recycle outcome
+                        // BEFORE the completion report: the pool's
+                        // body-drop path reads it synchronously (the relay
+                        // is only the multi-thread backup).
+                        production_complete
+                            .mark_frame_timeout_recycle(AbandonedStream::SocketPoisoned);
+                        Self::report_drain_outcome(
+                            &pipeline.budget,
+                            DrainOrigin::FrameTimeout,
+                            AbandonedStream::SocketPoisoned,
+                            done_tx,
+                        );
+                        return;
+                    }
+                    // Stream age at the cut, for the pool's lifecycle event
+                    // (EDG-16 ordering: captured before the drain starts).
+                    let started = TokioInstant::now();
+                    pipeline.frame_timeout_elapsed_ms.store(
+                        started.duration_since(pipeline.stream_started).as_millis() as u64,
+                        Ordering::Release,
+                    );
+                    // Bounded cancel write (remaining drain time budget, as
+                    // the max-duration path writes it): a stalled socket
+                    // cannot hold the writer open past the budget.
+                    let write_budget =
+                        Duration::from_millis(pipeline.abandon_drain.max_ms).min(frame_timeout);
+                    let cancel_payload = serde_json::to_vec(&WireCancel { control: "cancel" })
+                        .expect("static cancel frame serializes");
+                    let cancel_written = matches!(
+                        tokio::time::timeout(write_budget, async {
+                            let mut writer = write_half.lock().await;
+                            write_frame(&mut *writer, &cancel_payload).await
+                        })
+                        .await,
+                        Ok(Ok(()))
+                    );
+                    if !cancel_written {
+                        // (EDG-17 amendment 2) Record the recycle outcome
+                        // before the completion report (synchronous read
+                        // by the pool's body-drop path).
+                        production_complete
+                            .mark_frame_timeout_recycle(AbandonedStream::SocketPoisoned);
+                        Self::report_drain_outcome(
+                            &pipeline.budget,
+                            DrainOrigin::FrameTimeout,
+                            AbandonedStream::SocketPoisoned,
+                            done_tx,
+                        );
+                        return;
+                    }
+                    return Self::drain_on_abandon(
+                        read_half,
+                        write_half,
+                        Arc::clone(&pipeline.budget),
+                        pipeline.abandon_drain,
+                        restore_tx,
+                        production_complete,
+                        done_tx,
+                        frame_timeout,
+                        0,
+                        DrainOrigin::FrameTimeout,
+                        started,
+                        true,
+                        true,
+                    )
+                    .await;
                 }
                 StreamFrameRead::Frame(Ok(frame)) => frame,
             };
@@ -1752,6 +1904,12 @@ impl DenoWorkerProcess {
                 max_ms = drain.max_ms,
                 "stream drain disabled; socket poisoned, process will be recycled"
             );
+            // (EDG-17 amendment 2) Record the frame-timeout recycle outcome
+            // before the completion report (synchronous read by the pool's
+            // body-drop path).
+            if origin == DrainOrigin::FrameTimeout {
+                production_complete.mark_frame_timeout_recycle(AbandonedStream::SocketPoisoned);
+            }
             Self::report_drain_outcome(&budget, origin, AbandonedStream::SocketPoisoned, done_tx);
             return;
         }
@@ -1777,6 +1935,12 @@ impl DenoWorkerProcess {
             {
                 Ok(Ok(())) => {}
                 Ok(Err(_)) | Err(_) => {
+                    // (EDG-17 amendment 2) Record the frame-timeout recycle
+                    // outcome before the completion report.
+                    if origin == DrainOrigin::FrameTimeout {
+                        production_complete
+                            .mark_frame_timeout_recycle(AbandonedStream::SocketPoisoned);
+                    }
                     Self::report_drain_outcome(
                         &budget,
                         origin,
@@ -1801,6 +1965,11 @@ impl DenoWorkerProcess {
                     elapsed_ms = elapsed.as_millis() as u64,
                     "abandon drain stopped at the time limit; socket poisoned, process will be recycled"
                 );
+                // (EDG-17 amendment 2) Record the frame-timeout recycle
+                // outcome before the completion report.
+                if origin == DrainOrigin::FrameTimeout {
+                    production_complete.mark_frame_timeout_recycle(AbandonedStream::TimeLimit);
+                }
                 Self::report_drain_outcome(&budget, origin, AbandonedStream::TimeLimit, done_tx);
                 return;
             }
@@ -1813,6 +1982,11 @@ impl DenoWorkerProcess {
                     max_bytes = drain.max_bytes,
                     "abandon drain stopped at the byte limit; socket poisoned, process will be recycled"
                 );
+                // (EDG-17 amendment 2) Record the frame-timeout recycle
+                // outcome before the completion report.
+                if origin == DrainOrigin::FrameTimeout {
+                    production_complete.mark_frame_timeout_recycle(AbandonedStream::BytesLimit);
+                }
                 Self::report_drain_outcome(&budget, origin, AbandonedStream::BytesLimit, done_tx);
                 return;
             }
@@ -1830,6 +2004,12 @@ impl DenoWorkerProcess {
                         discarded_bytes = discarded,
                         "abandon drain stopped on a stream read error; socket poisoned, process will be recycled"
                     );
+                    // (EDG-17 amendment 2) Record the frame-timeout recycle
+                    // outcome before the completion report.
+                    if origin == DrainOrigin::FrameTimeout {
+                        production_complete
+                            .mark_frame_timeout_recycle(AbandonedStream::StreamError);
+                    }
                     Self::report_drain_outcome(
                         &budget,
                         origin,
@@ -1848,6 +2028,11 @@ impl DenoWorkerProcess {
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         "abandon drain stopped at the time limit; socket poisoned, process will be recycled"
                     );
+                    // (EDG-17 amendment 2) Record the frame-timeout recycle
+                    // outcome before the completion report.
+                    if origin == DrainOrigin::FrameTimeout {
+                        production_complete.mark_frame_timeout_recycle(AbandonedStream::TimeLimit);
+                    }
                     Self::report_drain_outcome(
                         &budget,
                         origin,
@@ -1859,6 +2044,11 @@ impl DenoWorkerProcess {
             };
             let Ok((tag, body)) = split_tag(&frame) else {
                 // Protocol error (empty frame): the socket is desynced.
+                // (EDG-17 amendment 2) Record the frame-timeout recycle
+                // outcome before the completion report.
+                if origin == DrainOrigin::FrameTimeout {
+                    production_complete.mark_frame_timeout_recycle(AbandonedStream::StreamError);
+                }
                 Self::report_drain_outcome(&budget, origin, AbandonedStream::StreamError, done_tx);
                 return;
             };
@@ -1870,6 +2060,12 @@ impl DenoWorkerProcess {
                     let end: WireEndFrame = serde_json::from_slice(body).unwrap_or_default();
                     if end.error.is_some() {
                         // The response itself ended in error: recycle.
+                        // (EDG-17 amendment 2) Record the frame-timeout
+                        // recycle outcome before the completion report.
+                        if origin == DrainOrigin::FrameTimeout {
+                            production_complete
+                                .mark_frame_timeout_recycle(AbandonedStream::StreamError);
+                        }
                         Self::report_drain_outcome(
                             &budget,
                             origin,
@@ -1888,11 +2084,12 @@ impl DenoWorkerProcess {
                         // completes with the `stream_abandoned_drained` reason
                         // and the `cancelled` sub-cause).
                         let _ = restore_tx.send(read_half);
-                        if origin == DrainOrigin::MaxDuration {
-                            production_complete
-                                .mark_max_duration_complete(AbandonedStream::Cancelled);
-                        } else {
-                            production_complete.mark_complete();
+                        match origin {
+                            DrainOrigin::MaxDuration => production_complete
+                                .mark_max_duration_complete(AbandonedStream::Cancelled),
+                            DrainOrigin::FrameTimeout => production_complete
+                                .mark_frame_timeout_complete(AbandonedStream::Cancelled),
+                            DrainOrigin::ClientGone => production_complete.mark_complete(),
                         }
                         if detach_active {
                             budget.record_detached();
@@ -1914,10 +2111,13 @@ impl DenoWorkerProcess {
                     // Clean end WITHIN the limits: the socket is in sync —
                     // reuse the process exactly as on a normal clean end.
                     let _ = restore_tx.send(read_half);
-                    if origin == DrainOrigin::MaxDuration {
-                        production_complete.mark_max_duration_complete(AbandonedStream::Drained);
-                    } else {
-                        production_complete.mark_complete();
+                    match origin {
+                        DrainOrigin::MaxDuration => {
+                            production_complete.mark_max_duration_complete(AbandonedStream::Drained)
+                        }
+                        DrainOrigin::FrameTimeout => production_complete
+                            .mark_frame_timeout_complete(AbandonedStream::Drained),
+                        DrainOrigin::ClientGone => production_complete.mark_complete(),
                     }
                     if detach_active {
                         budget.record_detached();
@@ -1933,6 +2133,12 @@ impl DenoWorkerProcess {
                 }
                 _ => {
                     // Protocol error (unknown tag): the socket is desynced.
+                    // (EDG-17 amendment 2) Record the frame-timeout recycle
+                    // outcome before the completion report.
+                    if origin == DrainOrigin::FrameTimeout {
+                        production_complete
+                            .mark_frame_timeout_recycle(AbandonedStream::StreamError);
+                    }
                     Self::report_drain_outcome(
                         &budget,
                         origin,
@@ -2015,6 +2221,7 @@ impl DenoWorkerProcess {
         max_duration: Option<StreamDuration>,
         production_complete: Option<Arc<StreamProductionState>>,
         done_tx: Option<oneshot::Sender<StreamCompletion>>,
+        frame_timeout_elapsed_ms: Option<Arc<AtomicU64>>,
         write_half: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
     ) {
         loop {
@@ -2092,13 +2299,103 @@ impl DenoWorkerProcess {
                     return; // abnormal: read half dropped, process poisoned
                 }
                 StreamFrameRead::Frame(Err(StreamFrameReadError::Timeout)) => {
-                    let _ = tx
-                        .send(Err(IsolationError::new(
-                            "UDS_TIMEOUT",
-                            "stream stalled past the frame timeout",
-                        )))
-                        .await;
-                    return; // abnormal
+                    // (EDG-17) Mirror the max-duration cut when the existing
+                    // completion channel exists (a max-duration policy
+                    // always brings one): write the bounded cancel frame and
+                    // run the same abandon drain with origin FrameTimeout.
+                    // Without a completion channel there is nothing to
+                    // report the outcome through, so the pre-EDG-17
+                    // behavior (UDS_TIMEOUT error into the body, recycle)
+                    // is kept.
+                    let Some(max_duration) = max_duration.as_ref() else {
+                        let _ = tx
+                            .send(Err(IsolationError::new(
+                                "UDS_TIMEOUT",
+                                "stream stalled past the frame timeout",
+                            )))
+                            .await;
+                        return; // abnormal
+                    };
+                    let Some(done_tx) = done_tx else {
+                        let _ = tx
+                            .send(Err(IsolationError::new(
+                                "UDS_TIMEOUT",
+                                "stream stalled past the frame timeout",
+                            )))
+                            .await;
+                        return; // abnormal
+                    };
+                    if !max_duration.drain.enabled() {
+                        // (EDG-17 amendment 2) Record the recycle outcome
+                        // before the completion report (synchronous read
+                        // by the pool's body-drop path).
+                        production_complete
+                            .as_ref()
+                            .expect("max duration has a production-complete flag")
+                            .mark_frame_timeout_recycle(AbandonedStream::SocketPoisoned);
+                        Self::report_drain_outcome(
+                            &max_duration.budget,
+                            DrainOrigin::FrameTimeout,
+                            AbandonedStream::SocketPoisoned,
+                            done_tx,
+                        );
+                        return;
+                    }
+                    let started = TokioInstant::now();
+                    if let Some(elapsed_ms) = frame_timeout_elapsed_ms.as_ref() {
+                        elapsed_ms.store(
+                            started.duration_since(max_duration.started).as_millis() as u64,
+                            Ordering::Release,
+                        );
+                    }
+                    let write_budget =
+                        Duration::from_millis(max_duration.drain.max_ms).min(frame_timeout);
+                    let cancel_payload = serde_json::to_vec(&WireCancel { control: "cancel" })
+                        .expect("static cancel frame serializes");
+                    let cancel_written = matches!(
+                        tokio::time::timeout(write_budget, async {
+                            let mut writer = write_half.lock().await;
+                            write_frame(&mut *writer, &cancel_payload).await
+                        })
+                        .await,
+                        Ok(Ok(()))
+                    );
+                    if !cancel_written {
+                        // (EDG-17 amendment 2) Record the recycle outcome
+                        // before the completion report (synchronous read
+                        // by the pool's body-drop path).
+                        production_complete
+                            .as_ref()
+                            .expect("max duration has a production-complete flag")
+                            .mark_frame_timeout_recycle(AbandonedStream::SocketPoisoned);
+                        Self::report_drain_outcome(
+                            &max_duration.budget,
+                            DrainOrigin::FrameTimeout,
+                            AbandonedStream::SocketPoisoned,
+                            done_tx,
+                        );
+                        return;
+                    }
+                    Self::drain_on_abandon(
+                        read_half,
+                        write_half,
+                        Arc::clone(&max_duration.budget),
+                        max_duration.drain,
+                        restore_tx,
+                        production_complete
+                            .as_ref()
+                            .expect("max duration has a production-complete flag")
+                            .clone(),
+                        done_tx,
+                        frame_timeout,
+                        0,
+                        DrainOrigin::FrameTimeout,
+                        started,
+                        true,
+                        false,
+                    )
+                    .await;
+                    return;
                 }
                 StreamFrameRead::Frame(Ok(frame)) => frame,
             };
@@ -2711,6 +3008,7 @@ impl DenoProcessIsolate {
                 completed: streamed.completed,
                 production_complete: streamed.production_complete,
                 max_duration_elapsed_ms: streamed.max_duration_elapsed_ms,
+                frame_timeout_elapsed_ms: streamed.frame_timeout_elapsed_ms,
             })),
             Err(err) => {
                 // Drop the (possibly dead/poisoned) process so the next request
@@ -2892,6 +3190,7 @@ mod stream_detach_tests {
         queued: tokio::sync::mpsc::UnboundedReceiver<QueueItem>,
         budget: Arc<StreamDetachBudget>,
         elapsed_ms: Option<Arc<std::sync::atomic::AtomicU64>>,
+        frame_timeout_elapsed_ms: Arc<std::sync::atomic::AtomicU64>,
     }
 
     #[cfg(unix)]
@@ -2899,6 +3198,7 @@ mod stream_detach_tests {
         read_end: tokio::net::UnixStream,
         limit: Option<Duration>,
         drain: AbandonDrain,
+        frame_timeout: Duration,
     ) -> TestReader {
         let (read_half, write_half_a) = read_end.into_split();
         let write_half = Arc::new(tokio::sync::Mutex::new(write_half_a));
@@ -2908,6 +3208,7 @@ mod stream_detach_tests {
         let elapsed_ms = enabled_stream_max_duration(limit)
             .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0)));
         let stream_started = TokioInstant::now();
+        let frame_timeout_elapsed_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let max_duration = enabled_stream_max_duration(limit).map(|limit| StreamDuration {
             started: stream_started,
             limit,
@@ -2922,6 +3223,8 @@ mod stream_detach_tests {
             cancel: cancel_rx,
             abandon_drain: drain,
             max_duration,
+            stream_started,
+            frame_timeout_elapsed_ms: Arc::clone(&frame_timeout_elapsed_ms),
         };
         let (q_tx, queued) = tokio::sync::mpsc::unbounded_channel();
         let (restore_tx, restored) = tokio::sync::oneshot::channel();
@@ -2935,7 +3238,7 @@ mod stream_detach_tests {
             restore_tx,
             production_complete,
             done_tx,
-            Duration::from_secs(2),
+            frame_timeout,
         ));
         TestReader {
             task,
@@ -2944,6 +3247,7 @@ mod stream_detach_tests {
             queued,
             budget,
             elapsed_ms,
+            frame_timeout_elapsed_ms,
         }
     }
 
@@ -3001,6 +3305,55 @@ mod stream_detach_tests {
         (control_reader, worker_writer_task, stop_tx, cancel_received)
     }
 
+    /// EDG-17 fixture: sends two chunks and then STOPS producing — the stall
+    /// that trips the per-frame read timeout. Once it reads the cancel
+    /// control frame it answers with the `cancelled` end frame, the same
+    /// way the harness does.
+    #[cfg(unix)]
+    fn start_stall_worker(
+        peer: tokio::net::UnixStream,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        tokio::sync::oneshot::Sender<()>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let (mut worker_reader, mut worker_writer) = peer.into_split();
+        let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel();
+        let cancel_received = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_cancel_received = Arc::clone(&cancel_received);
+        let task = tokio::spawn(async move {
+            // Two chunks, then silence: the per-frame timeout fires on the
+            // next frame read.
+            for i in 0..2u8 {
+                let _ = write_frame(&mut worker_writer, &[TAG_CHUNK, b'h' + i]).await;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let mut end = vec![TAG_END];
+            tokio::select! {
+                result = read_frame(&mut worker_reader) => {
+                    match result {
+                        Ok(frame) => {
+                            let is_cancel = frame
+                                .windows(b"__control".len())
+                                .any(|part| part == b"__control");
+                            task_cancel_received
+                                .store(is_cancel, std::sync::atomic::Ordering::Release);
+                            if is_cancel {
+                                end.extend_from_slice(br#"{"cancelled":true}"#);
+                            } else {
+                                end.extend_from_slice(b"{}");
+                            }
+                        }
+                        Err(_) => end.extend_from_slice(b"{}"),
+                    }
+                }
+                _ = &mut stop_rx => end.extend_from_slice(b"{}"),
+            }
+            let _ = write_frame(&mut worker_writer, &end).await;
+        });
+        (task, stop_tx, cancel_received)
+    }
+
     fn pipeline(per_response_cap: usize, budget: Arc<StreamDetachBudget>) -> DetachPipeline {
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         // Keep the sender alive for the whole test so `cancelled()` only
@@ -3017,6 +3370,8 @@ mod stream_detach_tests {
                 max_bytes: 0,
                 max_ms: 0,
             },
+            stream_started: TokioInstant::now(),
+            frame_timeout_elapsed_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             max_duration: None,
         }
     }
@@ -3057,6 +3412,7 @@ mod stream_detach_tests {
                 max_bytes: 1_000_000,
                 max_ms: 2_000,
             },
+            Duration::from_secs(2),
         );
 
         tokio::time::timeout(Duration::from_secs(3), &mut reader.task)
@@ -3107,6 +3463,7 @@ mod stream_detach_tests {
                 max_bytes: 1_000_000,
                 max_ms: 2_000,
             },
+            Duration::from_secs(2),
         );
 
         tokio::time::sleep(Duration::from_millis(450)).await;
@@ -3150,6 +3507,7 @@ mod stream_detach_tests {
                 max_bytes: 0,
                 max_ms: 2_000,
             },
+            Duration::from_secs(2),
         );
 
         tokio::time::timeout(Duration::from_secs(3), &mut reader.task)
@@ -3180,6 +3538,174 @@ mod stream_detach_tests {
         control_reader.abort();
         let _ = worker.await;
         drop(reader.queued);
+    }
+
+    // (EDG-17) A per-frame stall runs the SAME cancel + abandon drain as
+    // the max-duration cut: the harness answers the cancel with the
+    // cancelled end frame, the socket is restored and the process is
+    // REUSED. The cut counts ONLY in the frame-timeout counter family.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn frame_timeout_cancels_and_reuses_after_the_clean_end() {
+        use tokio::net::UnixStream;
+
+        let (read_end, peer) = UnixStream::pair().unwrap();
+        let (worker, _stop, cancel_received) = start_stall_worker(peer);
+        let mut reader = start_test_reader(
+            read_end,
+            None,
+            AbandonDrain {
+                max_bytes: 1_000_000,
+                max_ms: 2_000,
+            },
+            Duration::from_millis(200),
+        );
+
+        tokio::time::timeout(Duration::from_secs(3), &mut reader.task)
+            .await
+            .expect("the per-frame timeout cuts the stalled stream")
+            .unwrap();
+        assert!(
+            cancel_received.load(std::sync::atomic::Ordering::Acquire),
+            "the frame-timeout cut writes the cancel frame"
+        );
+        assert!(
+            reader.restored.await.is_ok(),
+            "clean cancel restores the socket"
+        );
+        assert_eq!(
+            reader.done.await.unwrap(),
+            edger_core::StreamCompletion::FrameTimeout(edger_core::AbandonedStream::Cancelled)
+        );
+        let stats = reader.budget.stats();
+        assert_eq!(stats.frame_timeout_cancelled_total, 1);
+        assert_eq!(stats.frame_timeout_drained_total, 0);
+        assert_eq!(stats.frame_timeout_socket_poisoned_total, 0);
+        // The origin decides which counter family moves: the max-duration
+        // and client-abandonment families stay untouched.
+        assert_eq!(stats.max_duration_cancelled_total, 0);
+        assert_eq!(stats.max_duration_drained_total, 0);
+        assert_eq!(stats.abandoned_cancelled_total, 0);
+        assert_eq!(stats.abandoned_drained_total, 0);
+        assert_eq!(stats.abandoned_socket_poisoned_total, 0);
+        assert_eq!(stats.detached_total, 1);
+        assert!(
+            reader
+                .frame_timeout_elapsed_ms
+                .load(std::sync::atomic::Ordering::Acquire)
+                >= 200,
+            "the elapsed recorder captures the stream age at the cut"
+        );
+
+        worker.await.unwrap();
+        drop(reader.queued);
+    }
+
+    // (EDG-17) A disabled drain (a `0` limit) writes NO cancel frame and
+    // reports the frame-timeout cut as `SocketPoisoned` (recycle), the same
+    // way the max-duration path does: no terminal error item is enqueued,
+    // the body ends after the chunks already queued.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn frame_timeout_with_disabled_drain_reports_socket_poisoned() {
+        use tokio::net::UnixStream;
+
+        let (read_end, peer) = UnixStream::pair().unwrap();
+        let (worker, stop, cancel_received) = start_stall_worker(peer);
+        let mut reader = start_test_reader(
+            read_end,
+            None,
+            AbandonDrain {
+                max_bytes: 0,
+                max_ms: 2_000,
+            },
+            Duration::from_millis(200),
+        );
+
+        tokio::time::timeout(Duration::from_secs(3), &mut reader.task)
+            .await
+            .expect("the disabled drain returns promptly at the frame timeout")
+            .unwrap();
+        assert!(
+            reader.restored.await.is_err(),
+            "poisoned socket is not reused"
+        );
+        assert_eq!(
+            reader.done.await.unwrap(),
+            edger_core::StreamCompletion::FrameTimeout(edger_core::AbandonedStream::SocketPoisoned)
+        );
+        assert!(
+            !cancel_received.load(std::sync::atomic::Ordering::Acquire),
+            "a disabled drain writes no cancel frame"
+        );
+        let stats = reader.budget.stats();
+        assert_eq!(stats.frame_timeout_socket_poisoned_total, 1);
+        assert_eq!(stats.frame_timeout_cancelled_total, 0);
+        assert_eq!(stats.abandoned_socket_poisoned_total, 0);
+        // The two chunks read before the stall stay queued; the terminal
+        // marker is a CLEAN end (the forwarder closes the body), not the
+        // pre-EDG-17 UDS_TIMEOUT error item.
+        let mut enqueued = 0;
+        while let Some(item) = reader.queued.recv().await {
+            enqueued += 1;
+            assert!(
+                !matches!(item, QueueItem::End(Err(_))),
+                "a disabled frame-timeout drain must not error the body"
+            );
+        }
+        assert_eq!(enqueued, 2, "the stalled chunks stay queued in order");
+
+        stop.send(()).unwrap();
+        worker.await.unwrap();
+    }
+
+    // (EDG-17) A stall the cancel cannot fix (the harness never answers and
+    // never ends the response) stops the drain at the time limit: the socket
+    // is poisoned and the process is recycled, counted only in the
+    // frame-timeout family.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn frame_timeout_drain_park_reports_time_limit() {
+        use tokio::net::UnixStream;
+
+        let (read_end, peer) = UnixStream::pair().unwrap();
+        // One chunk, then a producer that stays silent forever (it neither
+        // answers the cancel nor produces the end frame).
+        let peer_task = tokio::spawn(async move {
+            let (_r, mut w) = peer.into_split();
+            let _ = write_frame(&mut w, &[TAG_CHUNK, b'h']).await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let mut reader = start_test_reader(
+            read_end,
+            None,
+            AbandonDrain {
+                max_bytes: 1_000_000,
+                max_ms: 150,
+            },
+            Duration::from_millis(100),
+        );
+
+        tokio::time::timeout(Duration::from_secs(3), &mut reader.task)
+            .await
+            .expect("the stalled drain stops at its time limit")
+            .unwrap();
+        assert!(
+            reader.restored.await.is_err(),
+            "poisoned socket is not reused"
+        );
+        assert_eq!(
+            reader.done.await.unwrap(),
+            edger_core::StreamCompletion::FrameTimeout(edger_core::AbandonedStream::TimeLimit)
+        );
+        let stats = reader.budget.stats();
+        assert_eq!(stats.frame_timeout_drain_time_limit_total, 1);
+        assert_eq!(stats.frame_timeout_cancelled_total, 0);
+        assert_eq!(stats.max_duration_drain_time_limit_total, 0);
+        assert_eq!(stats.abandoned_drain_time_limit_total, 0);
+
+        drop(reader.queued);
+        peer_task.abort();
     }
 
     // A `0` in EITHER abandon-drain limit disables the drain (the socket is
@@ -3361,6 +3887,8 @@ mod stream_detach_tests {
                 max_bytes: 0,
                 max_ms: 0,
             },
+            stream_started: TokioInstant::now(),
+            frame_timeout_elapsed_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             max_duration: None,
         };
         let (q_tx, q_rx) = tokio::sync::mpsc::unbounded_channel::<QueueItem>();
@@ -3450,6 +3978,8 @@ mod stream_detach_tests {
                 max_bytes: 0,
                 max_ms: 0,
             },
+            stream_started: TokioInstant::now(),
+            frame_timeout_elapsed_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             max_duration: None,
         };
         let (q_tx, q_rx) = tokio::sync::mpsc::unbounded_channel::<QueueItem>();
@@ -3559,6 +4089,8 @@ mod stream_detach_tests {
                 max_bytes: 100,
                 max_ms: 10_000,
             },
+            stream_started: TokioInstant::now(),
+            frame_timeout_elapsed_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             max_duration: None,
         };
         let (q_tx, _q_rx) = tokio::sync::mpsc::unbounded_channel::<QueueItem>();
@@ -3668,6 +4200,8 @@ mod stream_detach_tests {
                 max_bytes: 10_000,
                 max_ms: 10_000,
             },
+            stream_started: TokioInstant::now(),
+            frame_timeout_elapsed_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             max_duration: None,
         };
         let (restore_tx, restore_rx) = tokio::sync::oneshot::channel();
@@ -3773,6 +4307,8 @@ mod stream_detach_tests {
                 max_bytes: 10_000,
                 max_ms: 10_000,
             },
+            stream_started: TokioInstant::now(),
+            frame_timeout_elapsed_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             max_duration: None,
         };
         let (restore_tx, restore_rx) = tokio::sync::oneshot::channel();
@@ -3852,6 +4388,8 @@ mod stream_detach_tests {
                 max_bytes: 0,
                 max_ms: 0,
             },
+            stream_started: TokioInstant::now(),
+            frame_timeout_elapsed_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             max_duration: None,
         };
         let (restore_tx, restore_rx) = tokio::sync::oneshot::channel();

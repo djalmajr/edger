@@ -77,7 +77,7 @@ pub enum AbandonedStream {
     RelayTimeout,
 }
 
-/// The outcome of a streamed response's production (EDG-8/EDG-9/EDG-16),
+/// The outcome of a streamed response's production (EDG-8/EDG-9/EDG-16/EDG-17),
 /// delivered through the completion signal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StreamCompletion {
@@ -91,6 +91,11 @@ pub enum StreamCompletion {
     /// The total stream-duration limit fired; the outcome records whether the
     /// EDG-9 cancel/drain left the process reusable or required a recycle.
     MaxDuration(AbandonedStream),
+    /// A per-frame read timeout fired on the streamed body (EDG-17); the
+    /// outcome records whether the EDG-9 cancel/drain left the process
+    /// reusable or required a recycle (the SAME cancel + abandon drain the
+    /// max-duration cut runs, with origin `FrameTimeout`).
+    FrameTimeout(AbandonedStream),
     /// Production did not complete cleanly and no cause was reported: the
     /// producer went away before reporting one (error end or an abnormal
     /// task exit). The pool recycles with the body-level detail it has.
@@ -104,19 +109,33 @@ pub enum StreamCompletion {
 /// may release the worker slot before a slow client finishes downloading the
 /// buffered tail. Resolves to `Abandoned(cause)` when the consumer was lost
 /// and its drain fails, `MaxDuration(cause)` when the total duration limit
-/// fires, and `Incomplete` when production did not complete cleanly without a
-/// reported cause.
+/// fires, `FrameTimeout(cause)` when a per-frame read timeout cuts the body
+/// (EDG-17), and `Incomplete` when production did not complete cleanly
+/// without a reported cause.
 pub type CompletionSignal =
     std::pin::Pin<Box<dyn std::future::Future<Output = StreamCompletion> + Send>>;
 
 /// Shared production state for a streamed response. A clean max-duration
-/// cutoff records its outcome before marking production complete, allowing a
-/// body that reaches EOF before the completion observer to preserve the
-/// max-duration lifecycle event without waiting for the relay.
+/// cutoff or a clean frame-timeout cutoff records its outcome before
+/// marking production complete, allowing a body that reaches EOF before the
+/// completion observer to preserve the cut's lifecycle event without waiting
+/// for the relay. A NON-clean frame-timeout cutoff records its recycle
+/// outcome in a separate slot WITHOUT marking production complete (EDG-17
+/// amendment 2), so the body-drop path can read it synchronously and recycle
+/// with the cut's own lifecycle on any runtime.
 #[derive(Debug, Default)]
 pub struct StreamProductionState {
     production_complete: std::sync::atomic::AtomicBool,
     max_duration_outcome: std::sync::OnceLock<AbandonedStream>,
+    frame_timeout_outcome: std::sync::OnceLock<AbandonedStream>,
+    /// The NON-clean outcome of a per-frame-timeout cutoff (EDG-17
+    /// amendment 2): recorded WITHOUT marking production complete. Kept in
+    /// a separate lock because `frame_timeout_outcome` is the CLEAN
+    /// completion outcome — read gated on the production-complete flag and
+    /// driving REUSE — and a recycle outcome stored there would break the
+    /// "outcome present ⇒ production completed cleanly" invariant for any
+    /// reader that does not check the flag.
+    frame_timeout_recycle_outcome: std::sync::OnceLock<AbandonedStream>,
 }
 
 impl StreamProductionState {
@@ -136,6 +155,17 @@ impl StreamProductionState {
         self.mark_complete();
     }
 
+    /// Marks a clean per-frame-timeout cutoff (EDG-17) after recording its
+    /// reusable outcome.
+    pub fn mark_frame_timeout_complete(&self, outcome: AbandonedStream) {
+        debug_assert!(matches!(
+            outcome,
+            AbandonedStream::Drained | AbandonedStream::Cancelled
+        ));
+        let _ = self.frame_timeout_outcome.set(outcome);
+        self.mark_complete();
+    }
+
     /// Whether production ended with the socket in a reusable state.
     pub fn is_complete(&self) -> bool {
         self.production_complete
@@ -145,6 +175,32 @@ impl StreamProductionState {
     /// The clean outcome recorded by a max-duration cutoff, if any.
     pub fn max_duration_outcome(&self) -> Option<AbandonedStream> {
         self.max_duration_outcome.get().copied()
+    }
+
+    /// The clean outcome recorded by a per-frame-timeout cutoff (EDG-17),
+    /// if any.
+    pub fn frame_timeout_outcome(&self) -> Option<AbandonedStream> {
+        self.frame_timeout_outcome.get().copied()
+    }
+
+    /// Records the NON-clean outcome of a per-frame-timeout cutoff
+    /// (EDG-17 amendment 2) WITHOUT marking production complete: the
+    /// socket was not restored and the process must be recycled with the
+    /// cut's own lifecycle. Recorded before the completion report so the
+    /// pool's body-drop path can read it synchronously (the relay is only
+    /// the multi-thread backup).
+    pub fn mark_frame_timeout_recycle(&self, outcome: AbandonedStream) {
+        debug_assert!(!matches!(
+            outcome,
+            AbandonedStream::Drained | AbandonedStream::Cancelled
+        ));
+        let _ = self.frame_timeout_recycle_outcome.set(outcome);
+    }
+
+    /// The non-clean outcome recorded by a per-frame-timeout cutoff, if
+    /// any (EDG-17 amendment 2).
+    pub fn frame_timeout_recycle_outcome(&self) -> Option<AbandonedStream> {
+        self.frame_timeout_recycle_outcome.get().copied()
     }
 }
 
@@ -159,16 +215,21 @@ pub struct StreamedResponse {
     pub body: BodyStream,
     pub completed: Option<CompletionSignal>,
     /// Marked complete once production finished cleanly (end frame without
-    /// error — possibly after an abandon or max-duration drain), BEFORE `completed`
-    /// resolves. A clean max-duration outcome is stored in the same shared
-    /// state before completion is marked. A body that is dropped or errors
-    /// after this flag is set must COMPLETE the dispatch instead of
-    /// recycling: the producer socket is already in sync and the process is
-    /// reusable. Backends without the mechanism leave this `None`.
+    /// error — possibly after an abandon, max-duration or frame-timeout
+    /// drain), BEFORE `completed` resolves. A clean max-duration or
+    /// frame-timeout outcome is stored in the same shared state before
+    /// completion is marked. A body that is dropped or errors after this
+    /// flag is set must COMPLETE the dispatch instead of recycling: the
+    /// producer socket is already in sync and the process is reusable.
+    /// Backends without the mechanism leave this `None`.
     pub production_complete: Option<std::sync::Arc<StreamProductionState>>,
     /// Milliseconds from response-header arrival to the max-duration cutoff.
     /// Set by the multiprocess reader before it starts the bounded drain.
     pub max_duration_elapsed_ms: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    /// Milliseconds from response-header arrival to a per-frame-timeout
+    /// cutoff (EDG-17). Set by the multiprocess reader when the per-frame
+    /// read timeout fires, before the bounded drain starts.
+    pub frame_timeout_elapsed_ms: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl std::fmt::Debug for StreamedResponse {
@@ -182,6 +243,10 @@ impl std::fmt::Debug for StreamedResponse {
             .field(
                 "max_duration_elapsed_ms",
                 &self.max_duration_elapsed_ms.is_some(),
+            )
+            .field(
+                "frame_timeout_elapsed_ms",
+                &self.frame_timeout_elapsed_ms.is_some(),
             )
             .finish()
     }

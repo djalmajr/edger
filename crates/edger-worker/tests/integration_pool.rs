@@ -265,6 +265,7 @@ impl Isolate for NumberedStreamingIsolate {
                 completed: None,
                 production_complete: None,
                 max_duration_elapsed_ms: None,
+                frame_timeout_elapsed_ms: None,
             }));
         }
         self.execute_fetch(req, config)
