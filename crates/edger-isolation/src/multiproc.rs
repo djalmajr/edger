@@ -1662,6 +1662,12 @@ impl DenoWorkerProcess {
                         // Drain disabled: no cancel frame is written, the
                         // socket is abandoned mid-response and recycled —
                         // the max-duration path's disabled-drain behavior.
+                        // (EDG-17 amendment 2) Record the recycle outcome
+                        // BEFORE the completion report: the pool's
+                        // body-drop path reads it synchronously (the relay
+                        // is only the multi-thread backup).
+                        production_complete
+                            .mark_frame_timeout_recycle(AbandonedStream::SocketPoisoned);
                         Self::report_drain_outcome(
                             &pipeline.budget,
                             DrainOrigin::FrameTimeout,
@@ -1693,6 +1699,11 @@ impl DenoWorkerProcess {
                         Ok(Ok(()))
                     );
                     if !cancel_written {
+                        // (EDG-17 amendment 2) Record the recycle outcome
+                        // before the completion report (synchronous read
+                        // by the pool's body-drop path).
+                        production_complete
+                            .mark_frame_timeout_recycle(AbandonedStream::SocketPoisoned);
                         Self::report_drain_outcome(
                             &pipeline.budget,
                             DrainOrigin::FrameTimeout,
@@ -1893,6 +1904,12 @@ impl DenoWorkerProcess {
                 max_ms = drain.max_ms,
                 "stream drain disabled; socket poisoned, process will be recycled"
             );
+            // (EDG-17 amendment 2) Record the frame-timeout recycle outcome
+            // before the completion report (synchronous read by the pool's
+            // body-drop path).
+            if origin == DrainOrigin::FrameTimeout {
+                production_complete.mark_frame_timeout_recycle(AbandonedStream::SocketPoisoned);
+            }
             Self::report_drain_outcome(&budget, origin, AbandonedStream::SocketPoisoned, done_tx);
             return;
         }
@@ -1918,6 +1935,12 @@ impl DenoWorkerProcess {
             {
                 Ok(Ok(())) => {}
                 Ok(Err(_)) | Err(_) => {
+                    // (EDG-17 amendment 2) Record the frame-timeout recycle
+                    // outcome before the completion report.
+                    if origin == DrainOrigin::FrameTimeout {
+                        production_complete
+                            .mark_frame_timeout_recycle(AbandonedStream::SocketPoisoned);
+                    }
                     Self::report_drain_outcome(
                         &budget,
                         origin,
@@ -1942,6 +1965,11 @@ impl DenoWorkerProcess {
                     elapsed_ms = elapsed.as_millis() as u64,
                     "abandon drain stopped at the time limit; socket poisoned, process will be recycled"
                 );
+                // (EDG-17 amendment 2) Record the frame-timeout recycle
+                // outcome before the completion report.
+                if origin == DrainOrigin::FrameTimeout {
+                    production_complete.mark_frame_timeout_recycle(AbandonedStream::TimeLimit);
+                }
                 Self::report_drain_outcome(&budget, origin, AbandonedStream::TimeLimit, done_tx);
                 return;
             }
@@ -1954,6 +1982,11 @@ impl DenoWorkerProcess {
                     max_bytes = drain.max_bytes,
                     "abandon drain stopped at the byte limit; socket poisoned, process will be recycled"
                 );
+                // (EDG-17 amendment 2) Record the frame-timeout recycle
+                // outcome before the completion report.
+                if origin == DrainOrigin::FrameTimeout {
+                    production_complete.mark_frame_timeout_recycle(AbandonedStream::BytesLimit);
+                }
                 Self::report_drain_outcome(&budget, origin, AbandonedStream::BytesLimit, done_tx);
                 return;
             }
@@ -1971,6 +2004,12 @@ impl DenoWorkerProcess {
                         discarded_bytes = discarded,
                         "abandon drain stopped on a stream read error; socket poisoned, process will be recycled"
                     );
+                    // (EDG-17 amendment 2) Record the frame-timeout recycle
+                    // outcome before the completion report.
+                    if origin == DrainOrigin::FrameTimeout {
+                        production_complete
+                            .mark_frame_timeout_recycle(AbandonedStream::StreamError);
+                    }
                     Self::report_drain_outcome(
                         &budget,
                         origin,
@@ -1989,6 +2028,11 @@ impl DenoWorkerProcess {
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         "abandon drain stopped at the time limit; socket poisoned, process will be recycled"
                     );
+                    // (EDG-17 amendment 2) Record the frame-timeout recycle
+                    // outcome before the completion report.
+                    if origin == DrainOrigin::FrameTimeout {
+                        production_complete.mark_frame_timeout_recycle(AbandonedStream::TimeLimit);
+                    }
                     Self::report_drain_outcome(
                         &budget,
                         origin,
@@ -2000,6 +2044,11 @@ impl DenoWorkerProcess {
             };
             let Ok((tag, body)) = split_tag(&frame) else {
                 // Protocol error (empty frame): the socket is desynced.
+                // (EDG-17 amendment 2) Record the frame-timeout recycle
+                // outcome before the completion report.
+                if origin == DrainOrigin::FrameTimeout {
+                    production_complete.mark_frame_timeout_recycle(AbandonedStream::StreamError);
+                }
                 Self::report_drain_outcome(&budget, origin, AbandonedStream::StreamError, done_tx);
                 return;
             };
@@ -2011,6 +2060,12 @@ impl DenoWorkerProcess {
                     let end: WireEndFrame = serde_json::from_slice(body).unwrap_or_default();
                     if end.error.is_some() {
                         // The response itself ended in error: recycle.
+                        // (EDG-17 amendment 2) Record the frame-timeout
+                        // recycle outcome before the completion report.
+                        if origin == DrainOrigin::FrameTimeout {
+                            production_complete
+                                .mark_frame_timeout_recycle(AbandonedStream::StreamError);
+                        }
                         Self::report_drain_outcome(
                             &budget,
                             origin,
@@ -2078,6 +2133,12 @@ impl DenoWorkerProcess {
                 }
                 _ => {
                     // Protocol error (unknown tag): the socket is desynced.
+                    // (EDG-17 amendment 2) Record the frame-timeout recycle
+                    // outcome before the completion report.
+                    if origin == DrainOrigin::FrameTimeout {
+                        production_complete
+                            .mark_frame_timeout_recycle(AbandonedStream::StreamError);
+                    }
                     Self::report_drain_outcome(
                         &budget,
                         origin,
@@ -2265,6 +2326,13 @@ impl DenoWorkerProcess {
                         return; // abnormal
                     };
                     if !max_duration.drain.enabled() {
+                        // (EDG-17 amendment 2) Record the recycle outcome
+                        // before the completion report (synchronous read
+                        // by the pool's body-drop path).
+                        production_complete
+                            .as_ref()
+                            .expect("max duration has a production-complete flag")
+                            .mark_frame_timeout_recycle(AbandonedStream::SocketPoisoned);
                         Self::report_drain_outcome(
                             &max_duration.budget,
                             DrainOrigin::FrameTimeout,
@@ -2293,6 +2361,13 @@ impl DenoWorkerProcess {
                         Ok(Ok(()))
                     );
                     if !cancel_written {
+                        // (EDG-17 amendment 2) Record the recycle outcome
+                        // before the completion report (synchronous read
+                        // by the pool's body-drop path).
+                        production_complete
+                            .as_ref()
+                            .expect("max duration has a production-complete flag")
+                            .mark_frame_timeout_recycle(AbandonedStream::SocketPoisoned);
                         Self::report_drain_outcome(
                             &max_duration.budget,
                             DrainOrigin::FrameTimeout,

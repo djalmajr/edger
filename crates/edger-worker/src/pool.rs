@@ -2527,21 +2527,25 @@ async fn finish_frame_timeout_state(state: StreamDispatchState, outcome: StreamC
 /// production completed (mid-stream error or early drop). The decision is
 /// made with the state ALREADY taken (see `GuardedBody::finish_abandoned`):
 /// complete when production finished cleanly (socket in sync, process
-/// reusable); otherwise, if the completion relay exists and the drain wait
+/// reusable); a NON-clean frame-timeout cutoff that recorded its recycle
+/// outcome runs its own lifecycle synchronously from that in-memory value
+/// (EDG-17 amendment 2 — no relay dependency, deterministic on every
+/// runtime); otherwise, if the completion relay exists and the drain wait
 /// is positive, wait for the in-flight abandon drain for at most
 /// `drain_wait` — a `Completed` relay runs the normal completion (the
 /// process is reused), anything else recycles, CARRYING THE DRAIN CAUSE
 /// (EDG-9) into the recycle detail. When the drain wait is zero (drain
-/// disabled), the relay is `try_recv`ed: an ALREADY QUEUED frame-timeout or
-/// max-duration cut (EDG-17) runs its own lifecycle instead of being
-/// recycled as a client abandon; a receiver that is still empty or holds
-/// any other completion keeps the immediate recycle.
+/// disabled), the relay is `try_recv`ed ONCE and matched: an ALREADY
+/// QUEUED frame-timeout or max-duration cut (EDG-17) runs its own
+/// lifecycle; a receiver that is still empty or holds any other
+/// completion keeps the immediate recycle.
 #[allow(clippy::too_many_arguments)]
 fn finish_stream_state(
     state: StreamDispatchState,
     production_completed: bool,
     max_duration_outcome: Option<AbandonedStream>,
     frame_timeout_outcome: Option<AbandonedStream>,
+    frame_timeout_recycle_outcome: Option<AbandonedStream>,
     completion_wait: Option<tokio::sync::oneshot::Receiver<StreamCompletion>>,
     drain_wait: Duration,
     recycle_reason: &'static str,
@@ -2561,6 +2565,20 @@ fn finish_stream_state(
         } else {
             tokio::spawn(complete_stream_state(state));
         }
+        return;
+    }
+    // (EDG-17 amendment 2) A NON-clean frame-timeout cutoff recorded its
+    // recycle outcome in the shared state (without marking production
+    // complete): run the cut's own lifecycle from the in-memory value —
+    // synchronous, so the label is deterministic on every runtime. Exactly
+    // one lifecycle: the state was taken above, so the observer's cut
+    // branch (and the relay arms below) lose the state take and cannot
+    // double-emit; the relay receiver is dropped with this return.
+    if let Some(outcome) = frame_timeout_recycle_outcome {
+        tokio::spawn(finish_frame_timeout_state(
+            state,
+            StreamCompletion::FrameTimeout(outcome),
+        ));
         return;
     }
     match completion_wait {
@@ -2660,25 +2678,26 @@ fn finish_stream_state(
             // (EDG-17) Zero relay wait (the drain is disabled by a `0`
             // limit): the completion observer still RELAYS the reader's
             // outcome — and, in task order, runs before the decision
-            // spawned here — so an ALREADY QUEUED frame-timeout or
-            // max-duration cut is honored with its own lifecycle (event,
-            // reason, detail) instead of being recycled as a client
-            // abandon. This is the zero-wait twin of the wait arm above:
-            // the drain-disabled and failed-cancel cuts report
-            // `FrameTimeout(SocketPoisoned)` WITHOUT marking production
-            // complete, so only the relay carries them. A receiver that is
-            // still empty (no report yet) or holds any other completion
-            // keeps the immediate recycle, exactly as before.
+            // spawned here — so an ALREADY QUEUED cut is honored with its
+            // own lifecycle (event, reason, detail) instead of being
+            // recycled as a client abandon. One `match` over ONE
+            // `try_recv`: a queued value is matched, never consumed and
+            // dropped before the second arm could see it (a frame-timeout
+            // cut that got this far is the relay-only remnant — the
+            // recorded-outcome path above handles the deterministic case).
+            // A receiver that is still empty (no report yet) or holds any
+            // other completion keeps the immediate recycle, exactly as
+            // before.
             tokio::spawn(async move {
-                if let Ok(outcome @ StreamCompletion::FrameTimeout(_)) = rx.try_recv() {
-                    finish_frame_timeout_state(state, outcome).await;
-                    return;
+                match rx.try_recv() {
+                    Ok(outcome @ StreamCompletion::FrameTimeout(_)) => {
+                        finish_frame_timeout_state(state, outcome).await;
+                    }
+                    Ok(outcome @ StreamCompletion::MaxDuration(_)) => {
+                        finish_max_duration_state(state, outcome).await;
+                    }
+                    _ => recycle_stream_state(state, recycle_reason, detail).await,
                 }
-                if let Ok(outcome @ StreamCompletion::MaxDuration(_)) = rx.try_recv() {
-                    finish_max_duration_state(state, outcome).await;
-                    return;
-                }
-                recycle_stream_state(state, recycle_reason, detail).await;
             });
         }
         None => {
@@ -2778,6 +2797,14 @@ impl GuardedBody {
                     .and_then(|state| state.frame_timeout_outcome())
             })
             .flatten();
+        // (EDG-17 amendment 2) A NON-clean frame-timeout cutoff recorded
+        // its recycle outcome WITHOUT marking production complete: read it
+        // synchronously here (no relay dependency — the multi-thread
+        // runtime does not order the observer's relay against this drop).
+        let frame_timeout_recycle_outcome = self
+            .production_complete
+            .as_ref()
+            .and_then(|state| state.frame_timeout_recycle_outcome());
         // A completion relay exists only when the detach pipeline is
         // active: with no pipeline the behavior is the pre-EDG-9 immediate
         // recycle (`stream_recycle`), exactly as before.
@@ -2794,6 +2821,7 @@ impl GuardedBody {
             production_completed,
             max_duration_outcome,
             frame_timeout_outcome,
+            frame_timeout_recycle_outcome,
             self.completion_wait.take(),
             self.drain_wait,
             if has_pipeline {
@@ -4408,5 +4436,151 @@ mod stream_drop_flag_tests {
             frame_timeouts, 1,
             "exactly one StreamFrameTimeout event keeps the cut's lifecycle"
         );
+    }
+
+    // (EDG-17 amendment 2) The cut's label must be deterministic on the
+    // MULTI-THREAD runtime (`edger` is `#[tokio::main]`): the reader
+    // records the cut's recycle outcome on the production state BEFORE
+    // reporting it, so the body-drop path reads it synchronously — no
+    // race against the observer's relay. Every round: exactly one
+    // `StreamFrameTimeout` event, reason `stream_frame_timeout_recycled`,
+    // and no `stream_abandoned_recycled`. Mutation killed: a pool that
+    // does not read the recorded outcome (the relay-only path loses the
+    // race on 4 worker threads and mislabels the cut as a client abandon).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn multithread_drop_after_frame_timeout_report_keeps_the_cut_label() {
+        for round in 0..200 {
+            let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(16);
+            let fixture = Arc::new(DropAbandonFixture::default());
+            let (pool, worker_ref) = abandon_pool_limits(
+                &fixture,
+                &format!("edg17-mt-{round}"),
+                Some(lifecycle_tx),
+                AbandonDrainLimits {
+                    max_bytes: 8,
+                    max_ms: 0,
+                },
+            );
+
+            let _streamed = fetch_stream_body(&pool, &worker_ref).await;
+            // The reader's frame-timeout cut (drain disabled ⇒ the socket
+            // is poisoned; production did NOT complete): record the
+            // recycle outcome BEFORE reporting it, then drop the body
+            // immediately (the review probe's immediate drop).
+            let flag = fixture.flag.lock().unwrap().clone().unwrap();
+            flag.mark_frame_timeout_recycle(AbandonedStream::SocketPoisoned);
+            fixture
+                .fire
+                .lock()
+                .unwrap()
+                .take()
+                .expect("signal still pending")
+                .send(StreamCompletion::FrameTimeout(
+                    AbandonedStream::SocketPoisoned,
+                ))
+                .unwrap();
+            drop(_streamed.body);
+
+            // Wait for the recycle, then settle briefly and drain the
+            // lifecycle channel (every event of the cut is emitted within
+            // the driver task by then; a duplicate would have been emitted
+            // at the report, far earlier).
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while fixture.terminated.load(Ordering::SeqCst) == 0 {
+                assert!(
+                    Instant::now() < deadline,
+                    "round {round}: the cut must recycle the process"
+                );
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let grace = Instant::now() + Duration::from_millis(20);
+            let mut frame_timeouts = 0;
+            loop {
+                match lifecycle_rx.try_recv() {
+                    Ok(event) => {
+                        if event.kind == WorkerLifecycleEventKind::StreamFrameTimeout {
+                            frame_timeouts += 1;
+                            assert_eq!(event.reason, "stream_frame_timeout_recycled");
+                            assert_eq!(event.detail, Some("socket_poisoned"));
+                        }
+                        assert_ne!(
+                            event.reason, "stream_abandoned_recycled",
+                            "round {round}: the cut must not be labeled a client abandon: {event:?}"
+                        );
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                        if Instant::now() < grace =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                    }
+                    Err(_) => break,
+                }
+            }
+            assert_eq!(
+                frame_timeouts, 1,
+                "round {round}: exactly one StreamFrameTimeout event"
+            );
+        }
+    }
+
+    // (EDG-17 amendment 2, P3) A queued `MaxDuration` on the zero-wait
+    // path must be honored: the relay is matched ONCE (one `match` over
+    // one `try_recv`) — a sequential `if let` chain consumed and dropped
+    // the queued value before the second arm could match it. Mutation
+    // killed: the two-`try_recv` chain (the cut is recycled as
+    // `stream_abandoned_recycled` and the `StreamMaxDuration` event is
+    // lost).
+    #[tokio::test(flavor = "current_thread")]
+    async fn zero_wait_honors_a_queued_max_duration_cut() {
+        let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(16);
+        let fixture = Arc::new(DropAbandonFixture::default());
+        let (pool, worker_ref) = abandon_pool_limits(
+            &fixture,
+            "edg17-zero-wait-max",
+            Some(lifecycle_tx),
+            AbandonDrainLimits {
+                max_bytes: 8,
+                max_ms: 0,
+            },
+        );
+
+        let _streamed = fetch_stream_body(&pool, &worker_ref).await;
+        // The reader reports a max-duration cut with the drain disabled
+        // (zero relay wait) BEFORE the body is dropped — the completion
+        // observer relays it into the body's zero-wait relay.
+        fixture
+            .fire
+            .lock()
+            .unwrap()
+            .take()
+            .expect("signal still pending")
+            .send(StreamCompletion::MaxDuration(
+                AbandonedStream::SocketPoisoned,
+            ))
+            .unwrap();
+        drop(_streamed.body);
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            fixture.terminated.load(Ordering::SeqCst),
+            1,
+            "the max-duration cut recycles the process"
+        );
+        let cut = lifecycle_event_of(
+            &mut lifecycle_rx,
+            WorkerLifecycleEventKind::StreamMaxDuration,
+        )
+        .expect("the queued max-duration cut keeps its lifecycle event");
+        assert_eq!(cut.reason, "stream_max_duration_recycled");
+        assert_eq!(cut.detail, Some("socket_poisoned"));
+        // No client-abandon label anywhere in the cut's lifecycle.
+        while let Ok(event) = lifecycle_rx.try_recv() {
+            assert_ne!(
+                event.reason, "stream_abandoned_recycled",
+                "the cut must not be labeled a client abandon: {event:?}"
+            );
+        }
     }
 }

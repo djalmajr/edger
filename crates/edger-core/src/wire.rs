@@ -119,12 +119,23 @@ pub type CompletionSignal =
 /// cutoff or a clean frame-timeout cutoff records its outcome before
 /// marking production complete, allowing a body that reaches EOF before the
 /// completion observer to preserve the cut's lifecycle event without waiting
-/// for the relay.
+/// for the relay. A NON-clean frame-timeout cutoff records its recycle
+/// outcome in a separate slot WITHOUT marking production complete (EDG-17
+/// amendment 2), so the body-drop path can read it synchronously and recycle
+/// with the cut's own lifecycle on any runtime.
 #[derive(Debug, Default)]
 pub struct StreamProductionState {
     production_complete: std::sync::atomic::AtomicBool,
     max_duration_outcome: std::sync::OnceLock<AbandonedStream>,
     frame_timeout_outcome: std::sync::OnceLock<AbandonedStream>,
+    /// The NON-clean outcome of a per-frame-timeout cutoff (EDG-17
+    /// amendment 2): recorded WITHOUT marking production complete. Kept in
+    /// a separate lock because `frame_timeout_outcome` is the CLEAN
+    /// completion outcome — read gated on the production-complete flag and
+    /// driving REUSE — and a recycle outcome stored there would break the
+    /// "outcome present ⇒ production completed cleanly" invariant for any
+    /// reader that does not check the flag.
+    frame_timeout_recycle_outcome: std::sync::OnceLock<AbandonedStream>,
 }
 
 impl StreamProductionState {
@@ -170,6 +181,26 @@ impl StreamProductionState {
     /// if any.
     pub fn frame_timeout_outcome(&self) -> Option<AbandonedStream> {
         self.frame_timeout_outcome.get().copied()
+    }
+
+    /// Records the NON-clean outcome of a per-frame-timeout cutoff
+    /// (EDG-17 amendment 2) WITHOUT marking production complete: the
+    /// socket was not restored and the process must be recycled with the
+    /// cut's own lifecycle. Recorded before the completion report so the
+    /// pool's body-drop path can read it synchronously (the relay is only
+    /// the multi-thread backup).
+    pub fn mark_frame_timeout_recycle(&self, outcome: AbandonedStream) {
+        debug_assert!(!matches!(
+            outcome,
+            AbandonedStream::Drained | AbandonedStream::Cancelled
+        ));
+        let _ = self.frame_timeout_recycle_outcome.set(outcome);
+    }
+
+    /// The non-clean outcome recorded by a per-frame-timeout cutoff, if
+    /// any (EDG-17 amendment 2).
+    pub fn frame_timeout_recycle_outcome(&self) -> Option<AbandonedStream> {
+        self.frame_timeout_recycle_outcome.get().copied()
     }
 }
 
