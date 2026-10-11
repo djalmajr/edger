@@ -938,6 +938,24 @@ fn cleanup_staging(worker_dir: &Path, staging: &Path) {
     let _ = std::fs::remove_dir_all(staging);
 }
 
+/// Classify a failed publish rename (first publish or collision retry):
+/// when the cache root is no longer the real directory, the swap made the
+/// rename fail (`ENOENT`) — return the root-lost error so the caller takes
+/// the per-process fallback; otherwise keep the regular publish error.
+fn classify_publish_rename_error(
+    worker_dir: &Path,
+    cache_root: &Path,
+    rename_err: &std::io::Error,
+) -> IsolationError {
+    if !cache_root_still_real(worker_dir, cache_root) {
+        return root_lost_error("during the publish rename");
+    }
+    IsolationError::new(
+        "DENO_BUNDLE_PUBLISH",
+        format!("failed to publish the bundle cache: {rename_err}"),
+    )
+}
+
 /// Bundle and publish into the verified cache root (EDG-20). `worker_dir`
 /// must be canonical and the cache root a verified real directory (the
 /// caller probed it). The root is re-verified right before the staging
@@ -1014,17 +1032,17 @@ fn build_and_publish(
                     }
                     Err(second_err) => {
                         cleanup_staging(worker_dir, staging.path());
-                        return Err(IsolationError::new(
-                            "DENO_BUNDLE_PUBLISH",
-                            format!("failed to publish the bundle cache: {second_err}"),
+                        return Err(classify_publish_rename_error(
+                            worker_dir,
+                            cache_root,
+                            &second_err,
                         ));
                     }
                 }
             }
             cleanup_staging(worker_dir, staging.path());
-            Err(IsolationError::new(
-                "DENO_BUNDLE_PUBLISH",
-                format!("failed to publish the bundle cache: {first_err}"),
+            Err(classify_publish_rename_error(
+                worker_dir, cache_root, &first_err,
             ))
         }
     }
@@ -2256,6 +2274,40 @@ export default () => new Response(message);
         assert!(
             !staging_dir_verified(&worker, &cache_root, &staging),
             "a staging dir reached through a symlinked root is not verified"
+        );
+    }
+
+    /// A publish rename that fails while the cache root is no longer the
+    /// real directory is root-lost (the caller takes the per-process
+    /// fallback); with the real root it stays the regular publish error.
+    #[cfg(unix)]
+    #[test]
+    fn classify_publish_rename_error_sees_the_swapped_root() {
+        let not_found = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let root = tempfile::tempdir().unwrap();
+        let worker = write_worker_fixture(root.path());
+        let worker = worker.canonicalize().unwrap_or_else(|_| worker.clone());
+        let cache_root = worker.join(BUNDLE_CACHE_DIR);
+        std::fs::create_dir(&cache_root).unwrap();
+        // The swap: the verified real dir is replaced by a symlink to a
+        // victim outside the worker dir (a rename that fails in this state
+        // is the root being swapped, not a publish failure).
+        let victim = root.path().join("victim-rename-classify");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::remove_dir(&cache_root).unwrap();
+        std::os::unix::fs::symlink(&victim, &cache_root).unwrap();
+        let err = classify_publish_rename_error(&worker, &cache_root, &not_found);
+        assert_eq!(
+            err.code, BUNDLE_ROOT_LOST_CODE,
+            "swapped root: the rename failure is root-lost: {err}"
+        );
+        // The real root: the regular publish error.
+        std::fs::remove_file(&cache_root).unwrap();
+        std::fs::create_dir(&cache_root).unwrap();
+        let err = classify_publish_rename_error(&worker, &cache_root, &not_found);
+        assert_eq!(
+            err.code, "DENO_BUNDLE_PUBLISH",
+            "real root: the regular publish error: {err}"
         );
     }
 }
