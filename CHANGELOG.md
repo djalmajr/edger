@@ -4,7 +4,8 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.14` (per-frame stream
+Toward 0.3.2. Release candidates: `v0.3.2-rc.15` (each worker version
+bundled once, off the async runtime); `v0.3.2-rc.14` (per-frame stream
 timeout cancels and drains instead of recycling, wasmtime 49, Rust 1.99);
 `v0.3.2-rc.13` (opt-in warmup of fresh
 processes, total stream duration cap, active requests in `/metrics/stats`,
@@ -279,6 +280,17 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.15]
+
+- A worker version is bundled once and reused by every later process of
+  that version (`<worker_dir>/.edger-bundle-cache/<key>/`), and the bundler
+  no longer blocks an async runtime thread. Before, every new process ran
+  `deno info` and `deno bundle` again (0.6-0.9 s locally and about 3.7 s in
+  production for a 6 MB worker) on every prewarm, floor refill, on-demand
+  spawn and recycle. An edited file invalidates the cache, the cache never
+  follows a symlink, and a non-writable worker dir keeps the per-process
+  bundle. `/metrics` exposes `edger_worker_bundle_total{outcome}`.
 
 ## [0.3.2-rc.14]
 
