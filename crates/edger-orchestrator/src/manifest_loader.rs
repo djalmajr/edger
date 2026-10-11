@@ -1342,6 +1342,7 @@ mod tests {
 
     #[test]
     fn bundled_core_default_pointer_is_stored_in_the_overlay_root() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.blocking_lock();
         let bundled = tempfile::tempdir().unwrap();
         let overlay = tempfile::tempdir().unwrap();
         let user = tempfile::tempdir().unwrap();
@@ -1394,6 +1395,7 @@ mod tests {
 
     #[tokio::test]
     async fn routing_policy_persist_respects_the_mutation_plane() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.lock().await;
         let root = tempfile::tempdir().unwrap();
         static_worker(root.path(), "app@1.0.0", "app", "1.0.0");
         static_worker(root.path(), "app@2.0.0", "app", "2.0.0");
@@ -1421,6 +1423,7 @@ mod tests {
 
     #[test]
     fn rescan_reloads_a_persisted_policy_missing_from_memory() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.blocking_lock();
         let root = tempfile::tempdir().unwrap();
         static_worker(root.path(), "app@1.0.0", "app", "1.0.0");
         let index = load_manifests_from_roots(&[], None, &[root.path().to_path_buf()]).unwrap();
@@ -1436,6 +1439,7 @@ mod tests {
 
     #[test]
     fn rescan_keeps_a_put_that_lands_after_the_policy_read() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.blocking_lock();
         let root = tempfile::tempdir().unwrap();
         static_worker(root.path(), "app@1.0.0", "app", "1.0.0");
         let index = load_manifests_from_roots(&[], None, &[root.path().to_path_buf()]).unwrap();
@@ -1465,6 +1469,7 @@ mod tests {
 
     #[test]
     fn rescan_keeps_the_allowlist_when_reload_io_fails_after_the_read() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.blocking_lock();
         let root = tempfile::tempdir().unwrap();
         static_worker(root.path(), "app@1.0.0", "app", "1.0.0");
         let index = load_manifests_from_roots(&[], None, &[root.path().to_path_buf()]).unwrap();
@@ -1480,6 +1485,7 @@ mod tests {
 
     #[test]
     fn clear_rolls_back_when_a_later_root_becomes_symlink_mid_delete() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.blocking_lock();
         let base = tempfile::tempdir().unwrap();
         let user = base.path().join("a-user");
         let overlay = base.path().join("z-overlay");
@@ -1525,6 +1531,7 @@ mod tests {
     // marker back, in both directions.
     #[test]
     fn persist_worker_enabled_round_trips_through_a_reload() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.blocking_lock();
         let user = tempfile::tempdir().unwrap();
         static_worker(user.path(), "hello@1.0.0", "hello", "1.0.0");
         let index = load_manifests_from_roots(&[], None, &[user.path().to_path_buf()]).unwrap();
@@ -1561,6 +1568,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn persist_worker_enabled_failure_leaves_memory_and_disk_unchanged() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.blocking_lock();
         let user = tempfile::tempdir().unwrap();
         static_worker(user.path(), "hello@1.0.0", "hello", "1.0.0");
         let index = load_manifests_from_roots(&[], None, &[user.path().to_path_buf()]).unwrap();
@@ -1600,6 +1608,7 @@ mod tests {
     // with its own marker.
     #[test]
     fn persist_worker_enabled_cpanel_persists_every_changed_flag() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.blocking_lock();
         let bundled = tempfile::tempdir().unwrap();
         let overlay = tempfile::tempdir().unwrap();
         let user = tempfile::tempdir().unwrap();
@@ -1661,6 +1670,7 @@ mod tests {
     // clears the pointer, or the boot restore would re-enable the version.
     #[test]
     fn persist_worker_enabled_disabling_the_default_clears_the_pointer() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.blocking_lock();
         let user = tempfile::tempdir().unwrap();
         static_worker(user.path(), "hello@1.0.0", "hello", "1.0.0");
         static_worker(user.path(), "hello@2.0.0", "hello", "2.0.0");
@@ -1699,6 +1709,7 @@ mod tests {
     // disagree.
     #[test]
     fn persist_worker_enabled_rolls_back_the_marker_when_the_apply_fails() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.blocking_lock();
         let user = tempfile::tempdir().unwrap();
         static_worker(user.path(), "hello@1.0.0", "hello", "1.0.0");
         let index = load_manifests_from_roots(&[], None, &[user.path().to_path_buf()]).unwrap();
@@ -1735,6 +1746,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn persist_worker_enabled_rolls_back_all_markers_when_a_later_write_fails() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.blocking_lock();
         use std::os::unix::fs::PermissionsExt;
         let bundled = tempfile::tempdir().unwrap();
         let overlay = tempfile::tempdir().unwrap();
@@ -1807,6 +1819,7 @@ mod tests {
     // just switched off.
     #[test]
     fn persist_worker_enabled_cpanel_enable_clears_the_pointer_of_the_disabled_default() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.blocking_lock();
         let bundled = tempfile::tempdir().unwrap();
         let overlay = tempfile::tempdir().unwrap();
         let user = tempfile::tempdir().unwrap();
@@ -1887,6 +1900,7 @@ mod tests {
     // works.
     #[test]
     fn persist_worker_enabled_claims_the_slot_of_every_indexed_version() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.blocking_lock();
         let user = tempfile::tempdir().unwrap();
         static_worker(user.path(), "hello@1.0.0", "hello", "1.0.0");
         static_worker(user.path(), "hello@2.0.0", "hello", "2.0.0");
@@ -1920,6 +1934,7 @@ mod tests {
     // end state keeps memory and disk in agreement.
     #[test]
     fn persist_worker_enabled_serializes_a_concurrent_toggle_of_an_omitted_version() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.blocking_lock();
         let user = tempfile::tempdir().unwrap();
         static_worker(user.path(), "hello@1.0.0", "hello", "1.0.0");
         static_worker(user.path(), "hello@2.0.0", "hello", "2.0.0");

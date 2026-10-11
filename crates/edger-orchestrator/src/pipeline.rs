@@ -1393,6 +1393,7 @@ mod tests {
 
     #[tokio::test]
     async fn weighted_homepage_dispatch_uses_the_cohort_version() {
+        let _plane_lock = crate::deploy::TEST_MUTATION_PLANE_LOCK.lock().await;
         let root = tempfile::tempdir().unwrap();
         for (directory, version) in [("v1", "1.0.0"), ("v2", "2.0.0")] {
             let dir = root.path().join(directory);
