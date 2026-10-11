@@ -861,10 +861,90 @@ fn remove_real_dir(path: &Path) {
     }
 }
 
+/// Error code for "the cache root stopped being the real worker dir while
+/// building": the caller takes the per-process fallback (counted
+/// `uncached`) instead of failing the spawn.
+const BUNDLE_ROOT_LOST_CODE: &str = "DENO_BUNDLE_ROOT_LOST";
+
+/// The once-per-worker-dir `warn` reason when the cache root is lost mid-
+/// build and the per-process fallback is taken.
+const ROOT_LOST_FALLBACK_REASON: &str =
+    "the bundle cache dir stopped being a real directory while building; the per-process bundle is used instead";
+
+fn root_lost_error(stage: &str) -> IsolationError {
+    IsolationError::new(
+        BUNDLE_ROOT_LOST_CODE,
+        format!(
+            "the bundle cache dir is no longer the real worker dir (observed {stage}); the per-process bundle is used instead"
+        ),
+    )
+}
+
+/// The cache root is STILL the verified real directory: `symlink_metadata`
+/// says a real dir (not a symlink) AND `canonicalize()` equals the expected
+/// `<canonical worker dir>/.edger-bundle-cache` (`worker_dir` must be
+/// canonical). Called right before every operation that would follow the
+/// root (staging mkdir, publish rename, prune) so a root swapped for a
+/// symlink after the probe is never written into, renamed through or
+/// pruned.
+fn cache_root_still_real(worker_dir: &Path, cache_root: &Path) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(cache_root) else {
+        return false;
+    };
+    if meta.is_symlink() || !meta.is_dir() {
+        return false;
+    }
+    cache_root
+        .canonicalize()
+        .is_ok_and(|canon| canon == worker_dir.join(BUNDLE_CACHE_DIR))
+}
+
+/// The staging dir returned by `tempdir_in` is a real directory (not a
+/// symlink) whose canonical parent is the verified cache root (which must
+/// itself still be the expected `<canonical worker dir>/.edger-bundle-cache`).
+fn staging_dir_verified(worker_dir: &Path, cache_root: &Path, staging: &Path) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(staging) else {
+        return false;
+    };
+    if meta.is_symlink() || !meta.is_dir() {
+        return false;
+    }
+    let Ok(staging_canon) = staging.canonicalize() else {
+        return false;
+    };
+    let Ok(cache_canon) = cache_root.canonicalize() else {
+        return false;
+    };
+    staging_canon.parent() == Some(&cache_canon) && cache_canon == worker_dir.join(BUNDLE_CACHE_DIR)
+}
+
+/// Remove a staging dir only when it can be verified (by
+/// `symlink_metadata`) to be a real directory inside the real worker dir;
+/// a swapped staging path is left alone (its target is unknown — the
+/// `TempDir` handle's drop then unlinks the symlink without following it).
+fn cleanup_staging(worker_dir: &Path, staging: &Path) {
+    let Ok(meta) = std::fs::symlink_metadata(staging) else {
+        return;
+    };
+    if meta.is_symlink() || !meta.is_dir() {
+        return;
+    }
+    let Ok(canon) = staging.canonicalize() else {
+        return;
+    };
+    if !canon.starts_with(worker_dir) {
+        return;
+    }
+    let _ = std::fs::remove_dir_all(staging);
+}
+
 /// Bundle and publish into the verified cache root (EDG-20). `worker_dir`
 /// must be canonical and the cache root a verified real directory (the
-/// caller probed it): the published path is validated to stay inside it and
-/// is never executed otherwise.
+/// caller probed it). The root is re-verified right before the staging
+/// mkdir, before the publish rename, before the collision retry and before
+/// the prune: a root swapped for a symlink after the probe is never written
+/// into, renamed through or pruned — the `DENO_BUNDLE_ROOT_LOST` error then
+/// makes the caller take the per-process fallback.
 fn build_and_publish(
     bundler: &DenoCliBundler,
     worker_dir: &Path,
@@ -872,6 +952,11 @@ fn build_and_publish(
     key: &str,
     cache_root: &Path,
 ) -> Result<ModuleBundle, IsolationError> {
+    // Fresh check right before the staging mkdir: the probe ran earlier and
+    // the root may have been swapped since.
+    if !cache_root_still_real(worker_dir, cache_root) {
+        return Err(root_lost_error("before the staging dir"));
+    }
     let mut staging_builder = tempfile::Builder::new();
     staging_builder.prefix(BUNDLE_STAGING_PREFIX);
     let staging = staging_builder.tempdir_in(cache_root).map_err(|err| {
@@ -880,14 +965,25 @@ fn build_and_publish(
             format!("failed to create bundle staging dir: {err}"),
         )
     })?;
+    // Before anything is written into it: the staging dir must be a real
+    // directory whose canonical parent is the verified cache root.
+    if !staging_dir_verified(worker_dir, cache_root, staging.path()) {
+        cleanup_staging(worker_dir, staging.path());
+        return Err(root_lost_error("after the staging mkdir"));
+    }
     // A failed bundle is never cached: drop the staging dir and surface the
     // same error as before.
     bundler
         .bundle_entrypoint(worker_dir, entrypoint, staging.path())
         .inspect_err(|_err| {
-            remove_real_dir(staging.path());
+            cleanup_staging(worker_dir, staging.path());
         })?;
     let final_dir = cache_root.join(key);
+    // Fresh check right before the publish rename.
+    if !cache_root_still_real(worker_dir, cache_root) {
+        cleanup_staging(worker_dir, staging.path());
+        return Err(root_lost_error("before the publish rename"));
+    }
     match std::fs::rename(staging.path(), &final_dir) {
         Ok(()) => publish_from_staging(worker_dir, entrypoint, cache_root, key),
         Err(first_err) => {
@@ -905,17 +1001,19 @@ fn build_and_publish(
             // occupies the key dir: clear it — only a REAL, non-symlink
             // directory at the exact key we are about to publish — and retry
             // the rename once. A symlinked entry is never removed through.
+            // The collision path runs later than the pre-rename check, so
+            // re-verify the root before clearing or retrying.
             let occupied = std::fs::symlink_metadata(&final_dir)
                 .ok()
                 .is_some_and(|meta| !meta.is_symlink() && meta.is_dir());
-            if occupied {
+            if occupied && cache_root_still_real(worker_dir, cache_root) {
                 remove_real_dir(&final_dir);
                 match std::fs::rename(staging.path(), &final_dir) {
                     Ok(()) => {
                         return publish_from_staging(worker_dir, entrypoint, cache_root, key);
                     }
                     Err(second_err) => {
-                        remove_real_dir(staging.path());
+                        cleanup_staging(worker_dir, staging.path());
                         return Err(IsolationError::new(
                             "DENO_BUNDLE_PUBLISH",
                             format!("failed to publish the bundle cache: {second_err}"),
@@ -923,7 +1021,7 @@ fn build_and_publish(
                     }
                 }
             }
-            remove_real_dir(staging.path());
+            cleanup_staging(worker_dir, staging.path());
             Err(IsolationError::new(
                 "DENO_BUNDLE_PUBLISH",
                 format!("failed to publish the bundle cache: {first_err}"),
@@ -934,7 +1032,8 @@ fn build_and_publish(
 
 /// After a successful rename: validate the published path (it must be a
 /// regular file inside the verified cache root — a path that escaped is
-/// never executed) and prune the older keys of this version.
+/// never executed) and prune the older keys of this version (never through
+/// a root that is no longer the real directory).
 fn publish_from_staging(
     worker_dir: &Path,
     entrypoint: &Path,
@@ -944,11 +1043,18 @@ fn publish_from_staging(
     let final_dir = cache_root.join(key);
     let published = final_dir.join(bundle_file_name(entrypoint));
     let Some(path) = validated_bundle_file(worker_dir, &published) else {
+        // The rename landed but the path does not validate inside the
+        // worker dir: the root was swapped between the rename and now. No
+        // prune, no removal through it; the caller takes the fallback.
         return Err(IsolationError::new(
-            "DENO_BUNDLE_PUBLISH",
+            BUNDLE_ROOT_LOST_CODE,
             "the published bundle path did not validate inside the worker dir",
         ));
     };
+    // Fresh check before the prune (the rename ran earlier).
+    if !cache_root_still_real(worker_dir, cache_root) {
+        return Err(root_lost_error("before the prune"));
+    }
     prune_old_bundle_keys(cache_root, key);
     Ok(ModuleBundle {
         path,
@@ -1168,7 +1274,23 @@ impl DenoCliBundler {
         // the worker's spawn timeout).
         let (job, is_builder) = register_bundle_job(&key);
         if !is_builder {
-            let bundle = wait_for_bundle_job(&job, timeout).await?;
+            let bundle = match wait_for_bundle_job(&job, timeout).await {
+                Ok(bundle) => bundle,
+                // The builder found the cache root replaced while building:
+                // take the same per-process fallback (counted `uncached`)
+                // instead of failing the spawn.
+                Err(err) if err.code == BUNDLE_ROOT_LOST_CODE => {
+                    return self
+                        .fallback_bundle(
+                            &canonical_worker_dir,
+                            &entrypoint,
+                            &fallback_dir,
+                            ROOT_LOST_FALLBACK_REASON,
+                        )
+                        .await;
+                }
+                Err(err) => return Err(err),
+            };
             record_bundle_outcome(BundleOutcome::Hit);
             return Ok(BundleEntry { bundle, dir: None });
         }
@@ -1231,6 +1353,22 @@ impl DenoCliBundler {
             Ok((bundle, rebuilt, elapsed_ms)) => {
                 job.finish(Ok(bundle.clone()));
                 (bundle, rebuilt, elapsed_ms)
+            }
+            // The cache root stopped being the real directory while building:
+            // nothing was published through it. Finish the job (a waiter
+            // takes the same path) and take the per-process fallback —
+            // counted `uncached` — so the spawn still succeeds.
+            Err(err) if err.code == BUNDLE_ROOT_LOST_CODE => {
+                job.finish(Err(err.clone()));
+                remove_bundle_job(&key, &job);
+                return self
+                    .fallback_bundle(
+                        &canonical_worker_dir,
+                        &entrypoint,
+                        &fallback_dir,
+                        ROOT_LOST_FALLBACK_REASON,
+                    )
+                    .await;
             }
             Err(err) => {
                 record_bundle_outcome(BundleOutcome::Error);
@@ -1956,5 +2094,168 @@ export default () => new Response(message);
         let error =
             validate_dependency_graph_json(&worker, graph.to_string().as_bytes()).unwrap_err();
         assert!(error.contains("escapes worker_dir"), "{error}");
+    }
+
+    /// A recursive snapshot of a tree (regular files as (relpath, bytes)) —
+    /// proves a tree is byte-for-byte unchanged.
+    fn tree_snapshot(root: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut out: Vec<(String, Vec<u8>)> = Vec::new();
+        fn walk(dir: &Path, root: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                    continue;
+                };
+                if meta.is_dir() {
+                    walk(&path, root, out);
+                } else if meta.is_file() {
+                    let rel = path
+                        .strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned();
+                    out.push((rel, std::fs::read(&path).unwrap()));
+                }
+            }
+        }
+        walk(root, root, &mut out);
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// A cache root swapped for a symlink AFTER the probe (the state
+    /// `build_and_publish` sees) is refused before any write: the publish
+    /// step returns `DENO_BUNDLE_ROOT_LOST` (no rename, no prune, no
+    /// staging), the victim tree is byte-for-byte unchanged, and the
+    /// per-process fallback that the caller takes on this error resolves
+    /// the entry as `uncached`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn swapped_cache_root_publish_is_rejected_and_falls_back() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = write_worker_fixture(root.path());
+        let worker = worker.canonicalize().unwrap_or_else(|_| worker.clone());
+        let cache_root = worker.join(BUNDLE_CACHE_DIR);
+        std::fs::create_dir(&cache_root).unwrap();
+        // The victim: a sibling dir with a subdirectory and a file.
+        let victim = root.path().join("victim-swap");
+        std::fs::create_dir_all(victim.join("inner")).unwrap();
+        std::fs::write(victim.join("KEEP_ME.txt"), b"keep-me").unwrap();
+        std::fs::write(victim.join("inner").join("nested.txt"), b"nested").unwrap();
+        let before = tree_snapshot(&victim);
+        // The swap: the verified real dir is replaced by a symlink OUTSIDE
+        // the worker dir (the state the probe cannot see after it returns).
+        std::fs::remove_dir(&cache_root).unwrap();
+        std::os::unix::fs::symlink(&victim, &cache_root).unwrap();
+
+        let bundler = DenoCliBundler::default();
+        let entrypoint = worker.join("index.ts");
+        let key = worker_bundle_key(&worker, "deno 2.9.7 (test)").unwrap();
+        let err = build_and_publish(&bundler, &worker, &entrypoint, &key, &cache_root)
+            .expect_err("a swapped cache root must not be written into");
+        assert_eq!(
+            err.code, BUNDLE_ROOT_LOST_CODE,
+            "the typed root-lost error makes the caller fall back: {err}"
+        );
+        // The victim tree is byte-for-byte unchanged; nothing was renamed or
+        // pruned through the link.
+        let after = tree_snapshot(&victim);
+        assert_eq!(
+            before, after,
+            "the symlink target is byte-for-byte unchanged"
+        );
+        for (rel, _bytes) in &after {
+            assert!(
+                !rel.starts_with("v1-"),
+                "a key dir appeared in the victim: {rel}"
+            );
+        }
+        // No staging dir was created (the check runs before the mkdir), and
+        // the symlink itself was not replaced or deleted.
+        let worker_names: Vec<String> = std::fs::read_dir(&worker)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            worker_names
+                .iter()
+                .all(|name| !name.starts_with(BUNDLE_STAGING_PREFIX)),
+            "no staging dir was left behind: {worker_names:?}"
+        );
+        assert!(
+            std::fs::symlink_metadata(&cache_root).unwrap().is_symlink(),
+            "the symlink was not replaced or deleted"
+        );
+
+        // The fallback the caller takes on this error: a per-process bundle,
+        // counted `uncached`.
+        let before_stats = bundle_cache_stats();
+        let entry = bundler
+            .fallback_bundle(&worker, &entrypoint, root.path(), ROOT_LOST_FALLBACK_REASON)
+            .await
+            .expect("the fallback resolves the entry");
+        let after_stats = bundle_cache_stats();
+        assert!(
+            entry.dir.is_some(),
+            "the fallback keeps a per-process tempdir"
+        );
+        assert!(
+            !entry.bundle.path.contains(BUNDLE_CACHE_DIR),
+            "the fallback bundle does not go through the cache dir: {}",
+            entry.bundle.path
+        );
+        assert_eq!(
+            after_stats.uncached_total - before_stats.uncached_total,
+            1,
+            "the fallback counts as uncached"
+        );
+        assert_eq!(
+            after_stats.miss_total - before_stats.miss_total,
+            0,
+            "nothing was published"
+        );
+    }
+
+    /// The fresh root/staging checks see a swap that happened after the
+    /// probe: `cache_root_still_real` and `staging_dir_verified` are true
+    /// while the root is the real directory and false once it is a symlink.
+    #[cfg(unix)]
+    #[test]
+    fn fresh_checks_reject_a_swapped_cache_root() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = write_worker_fixture(root.path());
+        let worker = worker.canonicalize().unwrap_or_else(|_| worker.clone());
+        let cache_root = worker.join(BUNDLE_CACHE_DIR);
+        std::fs::create_dir(&cache_root).unwrap();
+        let staging = cache_root.join(format!("{BUNDLE_STAGING_PREFIX}test-staging"));
+        std::fs::create_dir(&staging).unwrap();
+        // Real root: both checks pass.
+        assert!(
+            cache_root_still_real(&worker, &cache_root),
+            "real root is verified"
+        );
+        assert!(
+            staging_dir_verified(&worker, &cache_root, &staging),
+            "staging inside the real root is verified"
+        );
+        // Swapped root (after the probe): both checks fail.
+        let victim = root.path().join("victim-fresh");
+        std::fs::create_dir_all(&victim).unwrap();
+        // cache_root is the real dir this test created (staging inside):
+        // remove it whole, then swap in the symlink.
+        std::fs::remove_dir_all(&cache_root).unwrap();
+        std::os::unix::fs::symlink(&victim, &cache_root).unwrap();
+        assert!(
+            !cache_root_still_real(&worker, &cache_root),
+            "a symlinked root is not the real dir"
+        );
+        assert!(
+            !staging_dir_verified(&worker, &cache_root, &staging),
+            "a staging dir reached through a symlinked root is not verified"
+        );
     }
 }
