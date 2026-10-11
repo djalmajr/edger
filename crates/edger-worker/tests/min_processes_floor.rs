@@ -99,6 +99,7 @@ impl Isolate for NumberedIsolate {
                 completed: Some(Box::pin(async { StreamCompletion::Incomplete })),
                 production_complete: None,
                 max_duration_elapsed_ms: None,
+                frame_timeout_elapsed_ms: None,
             }));
         }
         self.execute_fetch(req, config)

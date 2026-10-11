@@ -455,6 +455,11 @@ fn record_lifecycle_event(events: &OperationalStore, record: WorkerLifecycleEven
             OperationalEventLevel::Warn,
             record.detail.unwrap_or("stream_error"),
         ),
+        WorkerLifecycleEventKind::StreamFrameTimeout => (
+            "stream.frame_timeout",
+            OperationalEventLevel::Warn,
+            record.detail.unwrap_or("stream_error"),
+        ),
     };
     // (EDG-9) Preserve the reason and the drain sub-cause on the
     // operational surface (the old fields above stay untouched): the REUSE
@@ -474,7 +479,12 @@ fn record_lifecycle_event(events: &OperationalStore, record: WorkerLifecycleEven
     // detail string `Terminated` puts in its code — and the message no
     // longer depends solely on `drained_count` (which is `None` for
     // stream-abandon drains).
-    let message = if matches!(record.kind, WorkerLifecycleEventKind::DrainCompleted) {
+    // (EDG-17) A frame-timeout cut carries its per-frame read timeout in
+    // the message slot (the event schema has no dedicated field; the
+    // `duration_ms` field already holds the stream age at the cut).
+    let message = if let Some(timeout_ms) = record.timeout_ms {
+        Some(format!("per-frame timeout {timeout_ms} ms"))
+    } else if matches!(record.kind, WorkerLifecycleEventKind::DrainCompleted) {
         record.detail.map(|detail| detail.to_string()).or_else(|| {
             record
                 .drained_count
@@ -906,6 +916,7 @@ mod tests {
                 request_id: None,
                 drained_count: None,
                 duration_ms: Some(12),
+                timeout_ms: None,
                 reason: "stream_abandoned_drained",
                 detail: Some("cancelled"),
             },
@@ -920,6 +931,7 @@ mod tests {
                 request_id: None,
                 drained_count: None,
                 duration_ms: Some(34),
+                timeout_ms: None,
                 reason: "stream_abandoned_recycled",
                 detail: Some("bytes_limit"),
             },
@@ -1000,6 +1012,7 @@ mod tests {
                 request_id: Some("request-7".into()),
                 drained_count: None,
                 duration_ms: Some(1_001),
+                timeout_ms: None,
                 reason: "stream_max_duration_drained",
                 detail: Some("cancelled"),
             },
@@ -1017,5 +1030,59 @@ mod tests {
         assert_eq!(event.request_id.as_deref(), Some("request-7"));
         assert_eq!(event.duration_ms, Some(1_001));
         assert_eq!(event.outcome.as_deref(), Some("cancelled"));
+        assert!(
+            event.message.is_none(),
+            "the max-duration cut has no per-frame timeout to carry"
+        );
+    }
+
+    #[test]
+    fn frame_timeout_lifecycle_event_keeps_stream_identity_and_timeout() {
+        use edger_orchestrator::observability::OperationalEventQuery;
+
+        let mut worker_ref = edger_core::create_worker_ref(
+            std::path::PathBuf::from("/workers/frame-timeout"),
+            edger_core::WorkerManifest {
+                name: "frame-timeout".into(),
+                version: Some("1.2.3".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        worker_ref.namespace = Some("tenant-a".into());
+        let store = OperationalStore::default();
+
+        record_lifecycle_event(
+            &store,
+            WorkerLifecycleEvent {
+                kind: WorkerLifecycleEventKind::StreamFrameTimeout,
+                worker_ref,
+                process_id: Some("instance-43".into()),
+                request_id: Some("request-8".into()),
+                drained_count: None,
+                duration_ms: Some(2_001),
+                timeout_ms: Some(2_000),
+                reason: "stream_frame_timeout_drained",
+                detail: Some("cancelled"),
+            },
+        );
+
+        let page = store.query(OperationalEventQuery::default());
+        assert_eq!(page.events.len(), 1);
+        let event = &page.events[0];
+        assert_eq!(event.kind, "stream.frame_timeout");
+        assert_eq!(event.level, OperationalEventLevel::Warn);
+        assert_eq!(event.namespace.as_deref(), Some("tenant-a"));
+        assert_eq!(event.worker.as_deref(), Some("frame-timeout"));
+        assert_eq!(event.version.as_deref(), Some("1.2.3"));
+        assert_eq!(event.process_id.as_deref(), Some("instance-43"));
+        assert_eq!(event.request_id.as_deref(), Some("request-8"));
+        assert_eq!(event.duration_ms, Some(2_001));
+        assert_eq!(event.outcome.as_deref(), Some("cancelled"));
+        assert_eq!(
+            event.message.as_deref(),
+            Some("per-frame timeout 2000 ms"),
+            "the per-frame timeout rides the message slot"
+        );
     }
 }

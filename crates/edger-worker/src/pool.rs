@@ -280,6 +280,9 @@ pub enum WorkerLifecycleEventKind {
     DrainTimedOut,
     Terminated,
     StreamMaxDuration,
+    /// A per-frame read timeout cut a streamed body (EDG-17); the event
+    /// carries the per-frame `timeout_ms` and the drain outcome.
+    StreamFrameTimeout,
 }
 
 #[derive(Clone, Debug)]
@@ -290,6 +293,9 @@ pub struct WorkerLifecycleEvent {
     pub request_id: Option<String>,
     pub drained_count: Option<u64>,
     pub duration_ms: Option<u64>,
+    /// The per-frame read timeout in milliseconds (EDG-17); set only on
+    /// `StreamFrameTimeout` events.
+    pub timeout_ms: Option<u64>,
     pub reason: &'static str,
     /// Sub-cause of the reason (EDG-9): e.g. `stream_error` for a
     /// mid-stream body error that recycled the process. `None` when the
@@ -1251,6 +1257,7 @@ impl WorkerPool {
                     stream_started: Instant::now(),
                     request_id,
                     max_duration_elapsed_ms: streamed.max_duration_elapsed_ms,
+                    frame_timeout_elapsed_ms: streamed.frame_timeout_elapsed_ms,
                     // The health-check exclusion travels WITH the body: the
                     // stream terminals (completion/recycle) apply the same
                     // exclusion to the group request counter.
@@ -1283,6 +1290,13 @@ impl WorkerPool {
                             if matches!(outcome, StreamCompletion::MaxDuration(_)) {
                                 if let Some(state) = take_stream_state(&observer) {
                                     finish_max_duration_state(state, outcome).await;
+                                }
+                            } else if matches!(outcome, StreamCompletion::FrameTimeout(_)) {
+                                // (EDG-17) The per-frame timeout cut the body;
+                                // the SAME reuse/recycle decision as the
+                                // max-duration cut.
+                                if let Some(state) = take_stream_state(&observer) {
+                                    finish_frame_timeout_state(state, outcome).await;
                                 }
                             } else if matches!(outcome, StreamCompletion::Completed) {
                                 // Production completed (clean end frame,
@@ -1322,6 +1336,7 @@ impl WorkerPool {
                     completed: None,           // consumed by the observer above
                     production_complete: None, // consumed by the guarded body
                     max_duration_elapsed_ms: None,
+                    frame_timeout_elapsed_ms: None,
                 }))
             }
             Err(err) => {
@@ -1887,6 +1902,7 @@ impl WorkerPool {
                 request_id: None,
                 drained_count: None,
                 duration_ms: None,
+                timeout_ms: None,
                 reason,
                 detail,
             },
@@ -1943,6 +1959,7 @@ impl WorkerPool {
                 request_id: None,
                 drained_count: report.as_ref().and_then(|report| report.drained_count),
                 duration_ms: Some(duration_ms),
+                timeout_ms: None,
                 reason,
                 detail,
             },
@@ -1956,6 +1973,7 @@ impl WorkerPool {
                 request_id: None,
                 drained_count: None,
                 duration_ms: Some(duration_ms),
+                timeout_ms: None,
                 reason: if timed_out {
                     "drain_timeout"
                 } else if socket_poisoned {
@@ -2355,6 +2373,9 @@ struct StreamDispatchState {
     stream_started: Instant,
     request_id: String,
     max_duration_elapsed_ms: Option<Arc<AtomicU64>>,
+    /// Milliseconds from response-header arrival to a per-frame-timeout
+    /// cutoff (EDG-17); the isolate stores it before the drain starts.
+    frame_timeout_elapsed_ms: Option<Arc<AtomicU64>>,
     /// Synthetic health-check traffic (`x-edger-health-check`): the stream
     /// terminals (completion/recycle) skip the group request counters, the
     /// same exclusion the dispatch entry applies. Existing counters (duration,
@@ -2441,6 +2462,7 @@ async fn finish_max_duration_state(state: StreamDispatchState, outcome: StreamCo
             request_id: Some(state.request_id.clone()),
             drained_count: None,
             duration_ms: Some(duration_ms),
+            timeout_ms: None,
             reason: if drained {
                 "stream_max_duration_drained"
             } else {
@@ -2456,6 +2478,51 @@ async fn finish_max_duration_state(state: StreamDispatchState, outcome: StreamCo
     }
 }
 
+/// (EDG-17) Drive the lifecycle for a dispatch cut by the per-frame read
+/// timeout: the SAME cancel + abandon drain as the max-duration cut ran
+/// with origin `FrameTimeout`, so `FrameTimeout(Cancelled | Drained)`
+/// reuses the process (`stream_frame_timeout_drained`) and any other
+/// outcome recycles with `stream_frame_timeout_recycled` plus the drain
+/// sub-cause in the detail.
+async fn finish_frame_timeout_state(state: StreamDispatchState, outcome: StreamCompletion) {
+    let StreamCompletion::FrameTimeout(cause) = outcome else {
+        return;
+    };
+    let detail = abandoned_detail(cause);
+    let duration_ms = state
+        .frame_timeout_elapsed_ms
+        .as_ref()
+        .map(|elapsed| elapsed.load(Ordering::Acquire))
+        .unwrap_or_else(|| state.stream_started.elapsed().as_millis() as u64);
+    let drained = matches!(cause, AbandonedStream::Drained | AbandonedStream::Cancelled);
+    emit_lifecycle(
+        state.pool.inner.lifecycle_events.as_ref(),
+        WorkerLifecycleEvent {
+            kind: WorkerLifecycleEventKind::StreamFrameTimeout,
+            worker_ref: state.instance.worker_ref.clone(),
+            process_id: Some(state.instance.id().to_string()),
+            request_id: Some(state.request_id.clone()),
+            drained_count: None,
+            duration_ms: Some(duration_ms),
+            // The per-frame read timeout is the worker `timeout`
+            // (`timeout_ms.max(1)`, the same normalization the isolate
+            // uses for the process timeout).
+            timeout_ms: Some(state.config.timeout_ms.max(1)),
+            reason: if drained {
+                "stream_frame_timeout_drained"
+            } else {
+                "stream_frame_timeout_recycled"
+            },
+            detail: Some(detail),
+        },
+    );
+    if drained {
+        complete_stream_state(state).await;
+    } else {
+        recycle_stream_state(state, "stream_frame_timeout_recycled", Some(detail)).await;
+    }
+}
+
 /// Drive the lifecycle for a dispatch state whose body ended BEFORE
 /// production completed (mid-stream error or early drop). The decision is
 /// made with the state ALREADY taken (see `GuardedBody::finish_abandoned`):
@@ -2465,10 +2532,12 @@ async fn finish_max_duration_state(state: StreamDispatchState, outcome: StreamCo
 /// `drain_wait` — a `Completed` relay runs the normal completion (the
 /// process is reused), anything else recycles, CARRYING THE DRAIN CAUSE
 /// (EDG-9) into the recycle detail.
+#[allow(clippy::too_many_arguments)]
 fn finish_stream_state(
     state: StreamDispatchState,
     production_completed: bool,
     max_duration_outcome: Option<AbandonedStream>,
+    frame_timeout_outcome: Option<AbandonedStream>,
     completion_wait: Option<tokio::sync::oneshot::Receiver<StreamCompletion>>,
     drain_wait: Duration,
     recycle_reason: &'static str,
@@ -2479,6 +2548,11 @@ fn finish_stream_state(
             tokio::spawn(finish_max_duration_state(
                 state,
                 StreamCompletion::MaxDuration(outcome),
+            ));
+        } else if let Some(outcome) = frame_timeout_outcome {
+            tokio::spawn(finish_frame_timeout_state(
+                state,
+                StreamCompletion::FrameTimeout(outcome),
             ));
         } else {
             tokio::spawn(complete_stream_state(state));
@@ -2505,6 +2579,12 @@ fn finish_stream_state(
                 };
                 if let Some(outcome @ StreamCompletion::MaxDuration(_)) = outcome {
                     finish_max_duration_state(state, outcome).await;
+                    return;
+                }
+                // (EDG-17) The per-frame timeout cut: decide reuse/recycle
+                // the SAME way as the max-duration cut.
+                if let Some(outcome @ StreamCompletion::FrameTimeout(_)) = outcome {
+                    finish_frame_timeout_state(state, outcome).await;
                     return;
                 }
                 let drained = outcome.as_ref().is_some_and(|outcome| {
@@ -2540,6 +2620,7 @@ fn finish_stream_state(
                             request_id: None,
                             drained_count: None,
                             duration_ms: Some(started.elapsed().as_millis() as u64),
+                            timeout_ms: None,
                             reason: "stream_abandoned_drained",
                             detail,
                         },
@@ -2657,6 +2738,17 @@ impl GuardedBody {
                     .and_then(|state| state.max_duration_outcome())
             })
             .flatten();
+        // (EDG-17) A clean frame-timeout cutoff recorded its reusable
+        // outcome in the same shared state: a body that drops AFTER the
+        // cut must COMPLETE the dispatch, never recycle the (in-sync,
+        // reusable) process.
+        let frame_timeout_outcome = production_completed
+            .then(|| {
+                self.production_complete
+                    .as_ref()
+                    .and_then(|state| state.frame_timeout_outcome())
+            })
+            .flatten();
         // A completion relay exists only when the detach pipeline is
         // active: with no pipeline the behavior is the pre-EDG-9 immediate
         // recycle (`stream_recycle`), exactly as before.
@@ -2672,6 +2764,7 @@ impl GuardedBody {
             state,
             production_completed,
             max_duration_outcome,
+            frame_timeout_outcome,
             self.completion_wait.take(),
             self.drain_wait,
             if has_pipeline {
@@ -2786,6 +2879,7 @@ async fn shutdown_instances_after_drain(
                 request_id: None,
                 drained_count: None,
                 duration_ms: None,
+                timeout_ms: None,
                 reason,
                 detail: None,
             },
@@ -2846,6 +2940,7 @@ async fn terminate_shutdown_instance(
             request_id: None,
             drained_count: report.as_ref().and_then(|report| report.drained_count),
             duration_ms: Some(duration_ms),
+            timeout_ms: None,
             reason,
             detail: None,
         },
@@ -2859,6 +2954,7 @@ async fn terminate_shutdown_instance(
             request_id: None,
             drained_count: None,
             duration_ms: Some(duration_ms),
+            timeout_ms: None,
             reason: if timed_out { "drain_timeout" } else { reason },
             detail: None,
         },
@@ -3114,7 +3210,10 @@ mod stream_drop_flag_tests {
             req: SerializedRequest,
             config: &WorkerConfig,
         ) -> Result<WorkerResponse, IsolationError> {
-            if req.uri != "/stream" && req.uri != "/stream-max-duration" {
+            if req.uri != "/stream"
+                && req.uri != "/stream-max-duration"
+                && req.uri != "/stream-frame-timeout"
+            {
                 return self
                     .execute_fetch(req, config)
                     .await
@@ -3127,16 +3226,19 @@ mod stream_drop_flag_tests {
             let signal: CompletionSignal =
                 Box::pin(async move { fire_rx.await.unwrap_or(StreamCompletion::Incomplete) });
             let max_duration = req.uri == "/stream-max-duration";
+            let frame_timeout = req.uri == "/stream-frame-timeout";
             let production_state = Arc::new(StreamProductionState::default());
             if max_duration {
                 production_state.mark_max_duration_complete(AbandonedStream::Cancelled);
+            } else if frame_timeout {
+                production_state.mark_frame_timeout_complete(AbandonedStream::Cancelled);
             } else {
                 production_state.mark_complete();
             }
             Ok(WorkerResponse::Streamed(StreamedResponse {
                 status: 200,
                 headers: vec![],
-                body: if max_duration {
+                body: if max_duration || frame_timeout {
                     Box::pin(ImmediateEofBody)
                 } else {
                     Box::pin(OneThenPendingBody { consumed: false })
@@ -3144,6 +3246,7 @@ mod stream_drop_flag_tests {
                 completed: Some(signal),
                 production_complete: Some(production_state),
                 max_duration_elapsed_ms: max_duration.then(|| Arc::new(AtomicU64::new(10))),
+                frame_timeout_elapsed_ms: frame_timeout.then(|| Arc::new(AtomicU64::new(10))),
             }))
         }
 
@@ -3325,6 +3428,218 @@ mod stream_drop_flag_tests {
         assert_eq!(pool.worker_stats()[0].state, WorkerState::Idle);
     }
 
+    // (EDG-17) Same interleaving as the max-duration race, but the cut is a
+    // per-frame timeout: the body reaches EOF before the observer, the DROP
+    // takes the dispatch state, and the recorded frame-timeout outcome must
+    // drive a COMPLETE with the frame-timeout lifecycle event (reason,
+    // drain sub-cause, per-frame timeout_ms) — exactly once.
+    #[tokio::test(flavor = "current_thread")]
+    async fn eof_before_frame_timeout_observer_still_emits_one_lifecycle_event() {
+        let fixture = Arc::new(DropFlagFixture::default());
+        let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(16);
+        let pool = WorkerPool::with_factory_and_lifecycle_abandon_drain(
+            PoolConfig {
+                max_size: 16,
+                ephemeral_concurrency: 4,
+                ephemeral_queue_limit: 8,
+            },
+            Arc::new(DropFlagFactory {
+                fixture: Arc::clone(&fixture),
+            }),
+            Some(lifecycle_tx),
+            AbandonDrainLimits {
+                max_bytes: edger_core::STREAM_ABANDON_DRAIN_MAX_BYTES_DEFAULT,
+                max_ms: 50,
+            },
+        );
+        let worker_ref = create_worker_ref(
+            std::path::PathBuf::from("/workers/edg17-eof-race"),
+            WorkerManifest {
+                name: "edg17-eof-race".into(),
+                max_processes: Some(1),
+                ttl: Some(serde_yaml::Value::String("30s".into())),
+                timeout: Some("2s".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let request_id = "edg17-eof-before-observer";
+        let streamed = pool
+            .fetch_worker_stream(
+                &worker_ref,
+                SerializedRequest {
+                    method: "GET".into(),
+                    uri: "/stream-frame-timeout".into(),
+                    headers: vec![],
+                    body: None,
+                    request_id: request_id.into(),
+                    base_href: None,
+                },
+                Some(ExecutionKind::FetchHandler),
+            )
+            .await
+            .unwrap();
+        let WorkerResponse::Streamed(streamed) = streamed else {
+            panic!("expected a streamed response");
+        };
+        let mut body = streamed.body;
+
+        // Poll EOF first: production_complete is already set, so this body
+        // path takes the dispatch state before the observer receives the
+        // reader's FrameTimeout relay outcome.
+        assert!(body.next().await.is_none());
+        fixture
+            .fire
+            .lock()
+            .unwrap()
+            .take()
+            .expect("signal still pending")
+            .send(StreamCompletion::FrameTimeout(AbandonedStream::Cancelled))
+            .unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(200), lifecycle_rx.recv())
+            .await
+            .expect("frame-timeout lifecycle event arrives")
+            .expect("lifecycle channel remains open");
+        assert_eq!(event.kind, WorkerLifecycleEventKind::StreamFrameTimeout);
+        assert_eq!(event.request_id.as_deref(), Some(request_id));
+        assert_eq!(event.reason, "stream_frame_timeout_drained");
+        assert_eq!(event.detail, Some("cancelled"));
+        assert_eq!(event.timeout_ms, Some(2_000));
+        assert_eq!(
+            event.duration_ms,
+            Some(10),
+            "duration must come from the reader's cutoff recorder"
+        );
+        tokio::task::yield_now().await;
+        assert!(
+            lifecycle_rx.try_recv().is_err(),
+            "the observer must not emit a duplicate lifecycle event"
+        );
+        assert_eq!(fixture.terminated.load(Ordering::SeqCst), 0);
+        assert_eq!(pool.worker_stats()[0].state, WorkerState::Idle);
+    }
+
+    // (EDG-17) A frame-timeout cut that the drain cannot finish (time limit)
+    // recycles the process: the drain sub-cause rides the recycle detail and
+    // the frame-timeout lifecycle event carries reason, detail and the
+    // per-frame timeout.
+    #[tokio::test(flavor = "current_thread")]
+    async fn frame_timeout_time_limit_recycles_with_real_reason() {
+        let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(16);
+        let fixture = Arc::new(DropAbandonFixture::default());
+        let (pool, worker_ref) =
+            abandon_pool(&fixture, "edg17-drain-time-limit", Some(lifecycle_tx));
+
+        let _streamed = fetch_stream_body(&pool, &worker_ref).await;
+        drop(_streamed.body);
+        // The reader's frame-timeout cut reports a drain that stopped at the
+        // time limit (production did NOT complete: no flag store).
+        fixture
+            .fire
+            .lock()
+            .unwrap()
+            .take()
+            .expect("signal still pending")
+            .send(StreamCompletion::FrameTimeout(AbandonedStream::TimeLimit))
+            .unwrap();
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            fixture.terminated.load(Ordering::SeqCst),
+            1,
+            "a failed frame-timeout drain must recycle the process"
+        );
+        let cut = lifecycle_event_of(
+            &mut lifecycle_rx,
+            WorkerLifecycleEventKind::StreamFrameTimeout,
+        )
+        .expect("the frame-timeout cut event is published");
+        assert_eq!(cut.reason, "stream_frame_timeout_recycled");
+        assert_eq!(cut.detail, Some("time_limit"));
+        assert_eq!(cut.timeout_ms, Some(30_000));
+        let terminated =
+            terminated_event(&mut lifecycle_rx).expect("the recycle terminates the process");
+        assert_eq!(terminated.reason, "stream_frame_timeout_recycled");
+        assert_eq!(terminated.detail, Some("time_limit"));
+    }
+
+    // (EDG-17, EDG-8 contract) A body that is dropped AFTER a CLEAN
+    // frame-timeout cutoff (the flag stores the outcome before completion
+    // is marked) must COMPLETE the dispatch — never recycle the in-sync,
+    // reusable process.
+    #[tokio::test(flavor = "current_thread")]
+    async fn drop_after_frame_timeout_clean_complete_completes_instead_of_recycling() {
+        let fixture = Arc::new(DropFlagFixture::default());
+        let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::channel(16);
+        let pool = WorkerPool::with_factory_and_lifecycle_abandon_drain(
+            PoolConfig {
+                max_size: 16,
+                ephemeral_concurrency: 4,
+                ephemeral_queue_limit: 8,
+            },
+            Arc::new(DropFlagFactory {
+                fixture: Arc::clone(&fixture),
+            }),
+            Some(lifecycle_tx),
+            AbandonDrainLimits {
+                max_bytes: edger_core::STREAM_ABANDON_DRAIN_MAX_BYTES_DEFAULT,
+                max_ms: 50,
+            },
+        );
+        let worker_ref = create_worker_ref(
+            std::path::PathBuf::from("/workers/edg17-flag-drop"),
+            WorkerManifest {
+                name: "edg17-flag-drop".into(),
+                max_processes: Some(1),
+                ttl: Some(serde_yaml::Value::String("30s".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let req = SerializedRequest {
+            method: "GET".into(),
+            uri: "/stream-frame-timeout".into(),
+            headers: vec![],
+            body: None,
+            request_id: "edg17-flag-drop".into(),
+            base_href: None,
+        };
+
+        let streamed = pool
+            .fetch_worker_stream(&worker_ref, req, Some(ExecutionKind::FetchHandler))
+            .await
+            .unwrap();
+        let StreamedResponse { body, .. } = match streamed {
+            WorkerResponse::Streamed(streamed) => streamed,
+            _ => panic!("expected a streamed response"),
+        };
+
+        // Drop the body after the clean cutoff (the flag already stores the
+        // FrameTimeout outcome and the completion mark): the current-thread
+        // runtime makes the DROP the one that takes the state.
+        drop(body);
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            fixture.terminated.load(Ordering::SeqCst),
+            0,
+            "the frame-timeout flag (read after the state take) must settle the decision on COMPLETE"
+        );
+        assert_eq!(pool.worker_stats()[0].state, WorkerState::Idle);
+        let event = lifecycle_event_of(
+            &mut lifecycle_rx,
+            WorkerLifecycleEventKind::StreamFrameTimeout,
+        )
+        .expect("the clean frame-timeout cutoff keeps its lifecycle event");
+        assert_eq!(event.reason, "stream_frame_timeout_drained");
+        assert_eq!(event.detail, Some("cancelled"));
+    }
+
     // (EDG-9) Abandon-drain fixtures: production had NOT completed at fetch
     // time (flag `false`, signal pending) and the test plays the reader's
     // drain: it stores the flag and fires the signal at a deterministic
@@ -3439,6 +3754,7 @@ mod stream_drop_flag_tests {
                 completed: Some(signal),
                 production_complete: Some(flag),
                 max_duration_elapsed_ms: None,
+                frame_timeout_elapsed_ms: None,
             }))
         }
 

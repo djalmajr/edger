@@ -438,6 +438,15 @@ Características atuais:
 * `deno.json` ou `deno.jsonc` local é carregado quando presente;
 * `EDGER_DENO_BIN` permite apontar para um binário Deno específico;
 * timeout usa `WorkerConfig.timeout_ms`;
+* quando um corpo em stream para de produzir por mais do que o timeout por
+  frame (`WorkerConfig.timeout_ms`), o processo recebe o frame de
+  cancelamento, a resposta é drenada dentro dos limites configurados
+  (`EDGER_STREAM_ABANDON_DRAIN_MAX_BYTES` / `EDGER_STREAM_ABANDON_DRAIN_MAX_MS`)
+  e o processo é reaproveitado quando o término é limpo; caso contrário o
+  processo é reciclado (`EDG-17`). O `/metrics` expõe
+  `edger_stream_frame_timeout_total{outcome=...}` e o corte emite o evento
+  operacional `stream.frame_timeout` (`request_id`, `process_id`,
+  `duration_ms`, `timeout_ms` e o resultado do dreno);
 * streams finitos são bufferizados;
 * `stream`/`sse` usam fallback bounded-first-chunk até streaming real;
 * CommonJS server-listen tem adapter mínimo para `node:http.createServer`.
