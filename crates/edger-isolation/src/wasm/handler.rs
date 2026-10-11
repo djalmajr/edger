@@ -16,7 +16,7 @@ use edger_core::{
 };
 use sha2::{Digest, Sha256};
 use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
-use wasmtime_wasi::preview1::{self, WasiP1Ctx};
+use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::WasiCtxBuilder;
 
 const MAX_REQUEST_FRAME_BYTES: usize = 256 * 1024;
@@ -78,7 +78,7 @@ impl WasmHttpHandler {
         let module = self.compiled_module(wasm_bytes)?;
 
         let mut linker = Linker::<WasmStoreState>::new(&self.engine);
-        preview1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)
+        p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)
             .map_err(|e| IsolationError::new("WASI_LINK", e.to_string()))?;
         let mut store = Store::new(&self.engine, WasmStoreState::new(wasi, limits));
         store.limiter(|state| &mut state.limits);

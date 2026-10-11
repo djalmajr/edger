@@ -34,6 +34,9 @@ argon2 = "0.5"
 bytes.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 getrandom = "0.4"
+# console_auth.rs uses argon2's re-exported rand_core::OsRng, which needs
+# rand_core/getrandom; declare it explicitly so it holds in the non-dev graph.
+password-hash = { version = "0.5", default-features = false, features = ["getrandom"] }
 saffron = "0.1.0"
 serde.workspace = true
 serde_json.workspace = true
