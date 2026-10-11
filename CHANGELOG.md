@@ -4,7 +4,8 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.15` (each worker version
+Toward 0.3.2. Release candidates: `v0.3.2-rc.16` (version enable/disable
+survives restarts); `v0.3.2-rc.15` (each worker version
 bundled once, off the async runtime); `v0.3.2-rc.14` (per-frame stream
 timeout cancels and drains instead of recycling, wasmtime 49, Rust 1.99);
 `v0.3.2-rc.13` (opt-in warmup of fresh
@@ -295,6 +296,15 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.16]
+
+- Enabling or disabling a worker version through the Admin API or MCP now
+  survives restarts: the toggle is a `.edger-enabled` marker inside the
+  version dir, applied at load before the `minProcesses` prewarm and winning
+  over `manifest.yaml`. Before, every restart re-enabled the versions an
+  operator had disabled, with their floor processes. Package installs and
+  the files API cannot set or delete the marker; the state export keeps it.
 
 ## [0.3.2-rc.15]
 
