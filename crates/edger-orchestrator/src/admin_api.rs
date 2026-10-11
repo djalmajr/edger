@@ -33,8 +33,8 @@ use crate::deploy::{
     install_worker_from_zip, rollback_install, run_worker_release_with_events,
     MAX_DEPLOY_PACKAGE_BYTES,
 };
-use crate::manifest_loader::persist_default_version;
 use crate::manifest_loader::{clear_persisted_routing_policy, persist_routing_policy};
+use crate::manifest_loader::{persist_default_version, persist_worker_enabled};
 use crate::operational_log::log_operational_error;
 use crate::pipeline::{OrchestratorState, ADMIN_CONTROL_AUTH_HEADER, ADMIN_WORKER_VERSION_HEADER};
 use crate::routing_policy::parse_routing_policy;
@@ -1081,10 +1081,15 @@ async fn install_worker(
             // install — fica inativo até uma promoção explícita.
             transaction.installed.activation = "inactive".into();
         } else {
-            if let Err(error) = state.index.set_worker_enabled(
+            // EDG-21: the activation is persisted (marker inside the version
+            // dir) before the in-memory flag moves; the slot the install
+            // transaction already holds is passed so it is not re-claimed.
+            if let Err(error) = persist_worker_enabled(
+                &state.index,
                 &transaction.installed.name,
                 Some(&transaction.installed.version),
                 true,
+                Some(transaction.mutation_slot()),
             ) {
                 rollback_failed_install(&state, &transaction).await?;
                 return Err(error);
@@ -1857,9 +1862,12 @@ async fn worker_mutation(
     }
     .await;
     match auth.and_then(|_| {
-        state
-            .index
-            .set_worker_enabled(&name, version.as_deref(), enabled)
+        // EDG-21: the toggle is persisted inside the version dir (same slot +
+        // durable write pattern as the default-version pointer) before the
+        // in-memory flag moves; a failed persist leaves memory unchanged and
+        // errors here. MCP `enable_worker`/`disable_worker` reach the same
+        // route, so they persist through this path too.
+        persist_worker_enabled(&state.index, &name, version.as_deref(), enabled, None)
     }) {
         Ok(worker) => {
             // (EDG-12) enable prewarms the min-processes floor in the
@@ -2071,7 +2079,10 @@ fn write_worker_files(
     std::fs::create_dir_all(&requested)
         .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot create path: {err}")))?;
     let dest = resolve_within(&base, rel)?;
-    extract_zip(zip_bytes, &dest)?;
+    // EDG-21: uma extração na raiz da versão nunca escreve o marcador de
+    // toggle (estado de operador) — um upload não pode substituí-lo; em
+    // subcaminhos o nome é arquivo comum e segue para o destino.
+    extract_zip(zip_bytes, &dest, rel.is_empty())?;
     // Arquivos mudaram: a revisão CAS avança, senão um autosave force com a
     // revisão antiga passaria por cima da edição sem conflito.
     let revision = crate::deploy::bump_worker_revision(&base)?;
@@ -2139,6 +2150,13 @@ fn delete_within(base: &std::path::Path, rel: &str) -> Result<(), CoreError> {
         }
     };
     if name == crate::deploy::REVISION_FILE {
+        return Err(CoreError::new("FORBIDDEN", "reserved file"));
+    }
+    // EDG-21: o toggle é estado de operador, nunca conteúdo de usuário —
+    // apagar o marcador pela API de arquivos desfaria o enable/disable
+    // persistido (voltaria ao valor do manifesto no boot) sem
+    // `workers:toggle`; o nome reservado vale só na raiz da versão.
+    if segments.len() == 1 && crate::deploy::is_enabled_marker_name(name) {
         return Err(CoreError::new("FORBIDDEN", "reserved file"));
     }
     if target == *base {

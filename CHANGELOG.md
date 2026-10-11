@@ -223,6 +223,21 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Fixed
 
+- Per-version enable/disable now persists across restart, rescan and
+  state export/import (EDG-21): the operator's choice is stored in a
+  `.edger-enabled` marker inside the version dir and re-applied when the
+  index loads, where it beats `manifest.yaml` `enabled` in both directions
+  (a persisted `enabled=true` keeps a `enabled: false` manifest version up)
+  and is applied before the `minProcesses` prewarm, so a disabled version
+  stays disabled and its floor is never spawned. The toggle persist claims
+  the mutation slot of every indexed version of the worker before planning
+  and rolls every marker (and a cleared persisted default pointer) back on
+  any later failure, so memory and disk never disagree; a toggle that turns
+  off the version the persisted default pointer names clears that pointer.
+  The marker is operator state, not package or user content: an install
+  discards a shipped marker, the files delete API refuses to delete it
+  (reserved), and a files upload skips a zip-root marker entry. The marker
+  travels with the version dir through export/import.
 - HTTP/2 and `Host: x.:443` no longer escape to the control plane on an
   owned host: the routing authority now comes from the URI when present
   (HTTP/2 `:authority` or absolute-form request target, without userinfo),

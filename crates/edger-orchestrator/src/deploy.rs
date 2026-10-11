@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{LazyLock, Mutex};
@@ -113,6 +113,167 @@ pub(crate) fn clear_worker_staged(dir: &Path) -> Result<(), CoreError> {
     publish_revision_marker(dir, &marker.revision, false)
 }
 
+/// EDG-21: the persisted enable/disable toggle for a worker version. It lives
+/// inside the version dir next to `.edger-revision`, so it travels with the
+/// atomic swap, survives restart/rescan on the PVC, goes with the version in
+/// the state export and disappears with the version on delete. A separate
+/// file (not a line in `.edger-revision`) because versions without a revision
+/// marker (dev dirs from `RUNTIME_WORKER_DIRS`, legacy installs) must be able
+/// to carry a toggle without inventing a CAS revision.
+pub(crate) const ENABLED_FILE: &str = ".edger-enabled";
+const ENABLED_TRUE_LINE: &str = "enabled=true";
+const ENABLED_FALSE_LINE: &str = "enabled=false";
+
+/// The operator's last explicit enable/disable choice for a version, if the
+/// version dir carries a marker. `None` = no persisted toggle (the manifest
+/// value applies); a malformed marker is ignored with a warning so a bad file
+/// cannot take the version down.
+pub(crate) fn read_enabled_override(dir: &Path) -> Result<Option<bool>, CoreError> {
+    let path = dir.join(ENABLED_FILE);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(deploy_io(format!(
+                "failed to read enabled marker {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    Ok(match raw.trim() {
+        ENABLED_TRUE_LINE => Some(true),
+        ENABLED_FALSE_LINE => Some(false),
+        "" => None,
+        _ => {
+            tracing::warn!(
+                path = %path.display(),
+                "ignoring malformed enabled marker; the manifest value applies"
+            );
+            None
+        }
+    })
+}
+
+/// Writes the toggle for one version. The caller holds the version's mutation
+/// slot; the write uses the same durable pattern as the default-version
+/// pointer: temp file, fsync, atomic rename, directory sync.
+pub(crate) fn write_enabled_marker(dir: &Path, enabled: bool) -> Result<(), CoreError> {
+    let path = dir.join(ENABLED_FILE);
+    let temporary = dir.join(format!(".edger-enabled-{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = fs::File::create(&temporary).map_err(|error| {
+        deploy_io(format!(
+            "failed to create enabled marker temp file {}: {error}",
+            temporary.display()
+        ))
+    })?;
+    let line = if enabled {
+        ENABLED_TRUE_LINE
+    } else {
+        ENABLED_FALSE_LINE
+    };
+    file.write_all(format!("{line}\n").as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|error| {
+            deploy_io(format!(
+                "failed to persist enabled marker temp file {}: {error}",
+                temporary.display()
+            ))
+        })?;
+    fs::rename(&temporary, &path).map_err(|error| {
+        let _ = fs::remove_file(&temporary);
+        deploy_io(format!(
+            "failed to publish enabled marker {}: {error}",
+            path.display()
+        ))
+    })?;
+    if let Ok(directory) = fs::File::open(dir) {
+        let _ = directory.sync_all();
+    }
+    Ok(())
+}
+
+/// Removes a persisted toggle (the rollback of a write the operation had to
+/// undo). A missing marker is already the desired state.
+pub(crate) fn remove_enabled_marker(dir: &Path) -> Result<(), CoreError> {
+    let path = dir.join(ENABLED_FILE);
+    match fs::remove_file(&path) {
+        Ok(()) => {
+            if let Ok(directory) = fs::File::open(dir) {
+                let _ = directory.sync_all();
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(deploy_io(format!(
+            "failed to remove enabled marker {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
+/// The enabled toggle is operator state, never package content or user file
+/// content: a name reserved for the marker (the file itself or a temp name
+/// from a concurrent write).
+pub(crate) fn is_enabled_marker_name(file_name: &str) -> bool {
+    file_name == ENABLED_FILE
+        || (file_name.starts_with(".edger-enabled-") && file_name.ends_with(".tmp"))
+}
+
+/// EDG-21: drop a shipped toggle from a freshly installed version dir BEFORE
+/// the version can route. A package that carries `.edger-enabled` (for
+/// example a re-zip of a deployed version) would otherwise activate the
+/// version before release and the health check, and survive a restart as
+/// enabled on the older-cPanel branch where the activation is not persisted.
+/// The marker, any marker temp file and a marker directory are removed; a
+/// dir without them is a no-op.
+pub(crate) fn purge_enabled_marker(dir: &Path) -> Result<(), CoreError> {
+    let path = dir.join(ENABLED_FILE);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_dir() => {
+            fs::remove_dir_all(&path).map_err(|err| {
+                deploy_io(format!(
+                    "failed to remove shipped enabled marker dir {}: {err}",
+                    path.display()
+                ))
+            })?;
+        }
+        Ok(_) => fs::remove_file(&path).map_err(|err| {
+            deploy_io(format!(
+                "failed to remove shipped enabled marker {}: {err}",
+                path.display()
+            ))
+        })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(deploy_io(format!(
+                "failed to stat enabled marker {}: {error}",
+                path.display()
+            )));
+        }
+    }
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let file_name = entry.file_name();
+            let Some(file_name) = file_name.to_str() else {
+                continue;
+            };
+            if file_name == ENABLED_FILE || !is_enabled_marker_name(file_name) {
+                continue;
+            }
+            fs::remove_file(entry.path()).map_err(|err| {
+                deploy_io(format!(
+                    "failed to remove shipped enabled marker temp file {}: {err}",
+                    entry.path().display()
+                ))
+            })?;
+        }
+    }
+    if let Ok(directory) = fs::File::open(dir) {
+        let _ = directory.sync_all();
+    }
+    Ok(())
+}
+
 /// Marca `name@version` como "mutação em andamento" durante a TRANSAÇÃO
 /// inteira da operação que mexe no diretório do worker — install
 /// (check→swap→release→health→commit/rollback), delete e upload de files.
@@ -124,6 +285,17 @@ pub(crate) fn clear_worker_staged(dir: &Path) -> Result<(), CoreError> {
 #[derive(Debug)]
 pub(crate) struct WorkerMutationSlot {
     key: String,
+}
+
+impl WorkerMutationSlot {
+    /// `true` when this slot is the one `claim_worker_mutation_slot(root,
+    /// name, version)` would return for the same version. Callers that already
+    /// hold the slot (the install transaction) hand it to
+    /// `persist_worker_enabled`, which must not re-claim a slot it owns.
+    pub(crate) fn covers(&self, root: &Path, name: &str, version: &str) -> bool {
+        let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        self.key == format!("{}|{name}@{version}", root.display())
+    }
 }
 
 /// Plano de mutações (D36): slots por versão + a flag de export de estado.
@@ -269,6 +441,13 @@ struct ReplacementBackup {
 }
 
 impl InstallTransaction {
+    /// The mutation slot the transaction holds for its version (RAII until
+    /// commit/rollback); `persist_worker_enabled` uses it to skip re-claiming
+    /// the slot of the version just installed.
+    pub(crate) fn mutation_slot(&self) -> &WorkerMutationSlot {
+        &self._slot
+    }
+
     pub fn replaced_existing(&self) -> bool {
         self.replacement.is_some()
     }
@@ -307,7 +486,7 @@ pub fn install_worker_from_zip(
         .tempdir()
         .map_err(|err| deploy_io(format!("failed to create staging dir: {err}")))?;
 
-    extract_zip(bytes, inspection.path())?;
+    extract_zip(bytes, inspection.path(), true)?;
     let inspected_package_dir = package_root(inspection.path())?;
     let inspected_manifest = load_worker_manifest_with_name_fallback(
         &inspected_package_dir,
@@ -328,7 +507,7 @@ pub fn install_worker_from_zip(
         .prefix(".edger-install-")
         .tempdir_in(&root)
         .map_err(|err| deploy_io(format!("failed to create staging dir: {err}")))?;
-    extract_zip(bytes, staging.path())?;
+    extract_zip(bytes, staging.path(), true)?;
     let package_dir = package_root(staging.path())?;
 
     let mut manifest =
@@ -533,6 +712,15 @@ pub fn install_worker_from_zip(
                 "failed to swap replacement package into place: {error}"
             )));
         }
+        // EDG-21: um toggle de operador que viaja no pacote não é conteúdo
+        // do worker — cai antes da versão poder rotar (o insert força
+        // `enabled: false` e um marcador `enabled=true` sobrevivente
+        // reativaria a versão no boot).
+        if let Err(error) = purge_enabled_marker(&target) {
+            let _ = fs::remove_dir_all(&target);
+            let _ = fs::rename(&backup, &target);
+            return Err(error);
+        }
         manifest.enabled = Some(false);
         if let Err(error) = index.replace_with_origin(target.clone(), manifest.clone(), info.origin)
         {
@@ -550,6 +738,13 @@ pub fn install_worker_from_zip(
         let target = target_dir(&root, &worker.name, &worker.version)?;
         fs::rename(&package_dir, &target)
             .map_err(|err| deploy_io(format!("failed to move package into place: {err}")))?;
+        // EDG-21: mesmo motivo do ramo de replace acima — o marcador do
+        // pacote não pode ativar a versão antes do release e do health
+        // check (nem sobreviver ao boot no ramo cPanel mais antigo).
+        if let Err(error) = purge_enabled_marker(&target) {
+            let _ = fs::remove_dir_all(&target);
+            return Err(error);
+        }
         manifest.enabled = Some(false);
         let mut mutable_index = index.clone();
         if let Err(error) =
@@ -1160,7 +1355,11 @@ fn is_core_name(name: &str) -> bool {
     matches!(name, "cpanel" | "webide")
 }
 
-pub(crate) fn extract_zip(bytes: &[u8], destination: &Path) -> Result<(), CoreError> {
+pub(crate) fn extract_zip(
+    bytes: &[u8],
+    destination: &Path,
+    ignore_root_enabled_marker: bool,
+) -> Result<(), CoreError> {
     if bytes.len() > MAX_DEPLOY_PACKAGE_BYTES {
         return Err(CoreError::new(
             "PAYLOAD_TOO_LARGE",
@@ -1193,6 +1392,21 @@ pub(crate) fn extract_zip(bytes: &[u8], destination: &Path) -> Result<(), CoreEr
                 format!("zip entry escapes package root: {}", entry.name()),
             ));
         };
+        // EDG-21: the enabled toggle is operator state — a zip-root entry
+        // named like the marker (or its temp files) is dropped, never
+        // written, so a package or a files upload cannot ship or replace it.
+        if ignore_root_enabled_marker
+            && relative
+                .parent()
+                .map(|parent| parent.as_os_str().is_empty())
+                .unwrap_or(true)
+            && relative
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_enabled_marker_name)
+        {
+            continue;
+        }
         let target = destination.join(relative);
         if entry.is_dir() {
             fs::create_dir_all(&target)
