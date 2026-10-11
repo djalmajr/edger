@@ -4,7 +4,9 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.13` (opt-in warmup of fresh
+Toward 0.3.2. Release candidates: `v0.3.2-rc.14` (per-frame stream
+timeout cancels and drains instead of recycling, wasmtime 49, Rust 1.99);
+`v0.3.2-rc.13` (opt-in warmup of fresh
 processes, total stream duration cap, active requests in `/metrics/stats`,
 per-version recycle); `v0.3.2-rc.12` (minProcesses prewarmed on
 install/promote/enable and refilled when a removal empties the group);
@@ -255,6 +257,18 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.14]
+
+- A streamed body that stalls past the per-frame timeout (the worker
+  `timeout`) is cancelled and drained like the total-duration cut, and the
+  process is reused after a clean end. Before, every stall recycled the
+  process, and an SSE stream without keepalive paid a cold start on each
+  reconnect. The cut counts in `edger_stream_frame_timeout_total{outcome}`
+  and emits the operational event `stream.frame_timeout` (with `timeoutMs`).
+- Wasmtime and wasmtime-wasi 49.0.2 and wat 1.261.0; the WASI preview1
+  sandbox, the epoch watchdog and the memory limits are unchanged.
+- Rust 1.99 toolchain; `hyper` 1.12.0, `uuid` 1.27.0, `serde_json` 1.0.151.
 
 ## [0.3.2-rc.13]
 
