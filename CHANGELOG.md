@@ -4,8 +4,9 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.16` (version enable/disable
-survives restarts); `v0.3.2-rc.15` (each worker version
+Toward 0.3.2. Release candidates: `v0.3.2-rc.17` (warmup operational
+event, safe-Rust YAML parser, deno bundle retry); `v0.3.2-rc.16` (version
+enable/disable survives restarts); `v0.3.2-rc.15` (each worker version
 bundled once, off the async runtime); `v0.3.2-rc.14` (per-frame stream
 timeout cancels and drains instead of recycling, wasmtime 49, Rust 1.99);
 `v0.3.2-rc.13` (opt-in warmup of fresh
@@ -334,6 +335,22 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.17]
+
+- Each opt-in warmup now emits a `worker.warmup` operational event (outcome
+  `ok`, `status` or `failed`, with the HTTP status, process id and duration),
+  `info` on success and `warn` otherwise, so production can confirm that a
+  warmup happened (EDG-19).
+- Worker manifests are parsed with `serde-saphyr` (safe Rust) instead of
+  `serde_yaml`, so the unmaintained `unsafe-libyaml` (`RUSTSEC-2024-0449`)
+  leaves the dependency graph. Real manifests parse to the same values; the
+  corner-form differences are listed under Unreleased / Changed (EDG-22).
+- `deno bundle` is retried once after a transient esbuild fetch failure
+  before the minimal fallback, and the legacy bridge isolate runs the CLI
+  runner off the async runtime thread (EDG-14).
+- The clippy gate now covers test targets, and the yanked `spin` 0.9.8 is
+  updated to 0.9.9.
 
 ## [0.3.2-rc.16]
 
