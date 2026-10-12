@@ -55,11 +55,18 @@ L1 é configurado no manifesto de cada worker, não no chart global:
   pelo `Supervisor` (não arma TTL), não entra nos contadores de requisições
   nem nas métricas e não registra sucesso nem falha no circuit breaker.
   Status 2xx/3xx e qualquer outro status deixam o processo `Idle` (o socket
-  está íntegro; status fora de 2xx/3xx só gera `warn` no log). Falha de
-  dispatch do aquecimento (timeout, crash ou erro de protocolo) só gera log;
-  o processo é terminado e a instância é removida **sem reposição
-  automática** (evita o laço spawn → falha no aquecimento → reposição) e a
-  falha nunca derruba o boot, o rescan ou o install. Uma requisição de
+  está íntegro; status fora de 2xx/3xx gera `warn` no log). Falha de
+  dispatch do aquecimento (timeout, crash ou erro de protocolo) termina o
+  processo e remove a instância **sem reposição automática** (evita o laço
+  spawn → falha no aquecimento → reposição) e a falha nunca derruba o boot,
+  o rescan ou o install. Cada aquecimento emite **um** evento operacional
+  `worker.warmup` (`EDG-19`): nível `info` para o resultado `ok`, `warn`
+  para `status` (resposta fora de 2xx/3xx, processo mantido) e `failed`
+  (falha de dispatch, processo terminado com o motivo `warmup_failed`,
+  política `SpawnFailed`, sem um segundo `process.terminated`), com o
+  `process_id`, o `request_id` `warmup-<uuid>`, a duração e o status HTTP
+  respondido quando há resposta; o sucesso do aquecimento também passa a
+  ser registrado em `info` no log (antes `debug`). Uma requisição de
   usuário que chega durante o aquecimento espera pelo dispatch lock e é
   atendida depois, no mesmo processo. O aquecimento só roda em processos
   criados pelo prewarm ou pela reposição: nunca no caminho sob demanda, em
