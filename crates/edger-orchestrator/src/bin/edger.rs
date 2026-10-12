@@ -460,6 +460,17 @@ fn record_lifecycle_event(events: &OperationalStore, record: WorkerLifecycleEven
             OperationalEventLevel::Warn,
             record.detail.unwrap_or("stream_error"),
         ),
+        // (EDG-19) One warmup outcome: `ok` is info, a non-2xx/3xx answer
+        // (`status`) or a dispatch error (`failed`) is warn. The answered
+        // HTTP status rides the structured `status` field.
+        WorkerLifecycleEventKind::Warmup => (
+            "worker.warmup",
+            match record.reason {
+                "ok" => OperationalEventLevel::Info,
+                _ => OperationalEventLevel::Warn,
+            },
+            record.reason,
+        ),
     };
     // (EDG-9) Preserve the reason and the drain sub-cause on the
     // operational surface (the old fields above stay untouched): the REUSE
@@ -507,7 +518,7 @@ fn record_lifecycle_event(events: &OperationalStore, record: WorkerLifecycleEven
         request_id: record.request_id,
         trace_id: None,
         outcome: Some(outcome.into()),
-        status: None,
+        status: record.status,
         duration_ms: record.duration_ms,
         timeout_ms: record.timeout_ms,
         code,
@@ -920,6 +931,7 @@ mod tests {
                 drained_count: None,
                 duration_ms: Some(12),
                 timeout_ms: None,
+                status: None,
                 reason: "stream_abandoned_drained",
                 detail: Some("cancelled"),
             },
@@ -935,6 +947,7 @@ mod tests {
                 drained_count: None,
                 duration_ms: Some(34),
                 timeout_ms: None,
+                status: None,
                 reason: "stream_abandoned_recycled",
                 detail: Some("bytes_limit"),
             },
@@ -1016,6 +1029,7 @@ mod tests {
                 drained_count: None,
                 duration_ms: Some(1_001),
                 timeout_ms: None,
+                status: None,
                 reason: "stream_max_duration_drained",
                 detail: Some("cancelled"),
             },
@@ -1065,6 +1079,7 @@ mod tests {
                 drained_count: None,
                 duration_ms: Some(2_001),
                 timeout_ms: Some(2_000),
+                status: None,
                 reason: "stream_frame_timeout_drained",
                 detail: Some("cancelled"),
             },
@@ -1092,5 +1107,80 @@ mod tests {
             Some("per-frame timeout 2000 ms"),
             "the per-frame timeout rides the message slot"
         );
+    }
+
+    // (EDG-19) The pool's warmup lifecycle event maps to the `worker.warmup`
+    // operational event: `ok` is `info` with the answered status, a
+    // non-2xx/3xx answer is `warn` with outcome `status`, and a dispatch
+    // error is `warn` with outcome `failed` and no status. All three carry
+    // the worker, version, process and the `warmup-<uuid>` request id.
+    #[test]
+    fn warmup_lifecycle_event_maps_to_worker_warmup_with_level_outcome_and_status() {
+        use edger_orchestrator::observability::OperationalEventQuery;
+
+        let mut worker_ref = edger_core::create_worker_ref(
+            std::path::PathBuf::from("/workers/warmup-event"),
+            edger_core::WorkerManifest {
+                name: "warmup-event".into(),
+                version: Some("1.0.0".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        worker_ref.namespace = Some("tenant-a".into());
+        let store = OperationalStore::default();
+
+        for (reason, status) in [("ok", Some(200)), ("status", Some(503)), ("failed", None)] {
+            record_lifecycle_event(
+                &store,
+                WorkerLifecycleEvent {
+                    kind: WorkerLifecycleEventKind::Warmup,
+                    worker_ref: worker_ref.clone(),
+                    process_id: Some("instance-50".into()),
+                    request_id: Some("warmup-9f2c1a".into()),
+                    drained_count: None,
+                    duration_ms: Some(69),
+                    timeout_ms: None,
+                    status,
+                    reason,
+                    detail: None,
+                },
+            );
+        }
+
+        let page = store.query(OperationalEventQuery::default());
+        assert_eq!(page.events.len(), 3);
+        let by_outcome = |outcome: &str| {
+            page.events
+                .iter()
+                .find(|event| event.outcome.as_deref() == Some(outcome))
+                .unwrap_or_else(|| panic!("missing outcome {outcome}"))
+        };
+        for event in &page.events {
+            assert_eq!(event.kind, "worker.warmup");
+            assert_eq!(event.namespace.as_deref(), Some("tenant-a"));
+            assert_eq!(event.worker.as_deref(), Some("warmup-event"));
+            assert_eq!(event.version.as_deref(), Some("1.0.0"));
+            assert_eq!(event.process_id.as_deref(), Some("instance-50"));
+            assert_eq!(event.request_id.as_deref(), Some("warmup-9f2c1a"));
+            assert_eq!(event.duration_ms, Some(69));
+        }
+        let ok = by_outcome("ok");
+        assert_eq!(ok.level, OperationalEventLevel::Info, "ok is info");
+        assert_eq!(ok.status, Some(200), "the answered status is structured");
+        let status = by_outcome("status");
+        assert_eq!(
+            status.level,
+            OperationalEventLevel::Warn,
+            "a non-2xx/3xx answer is warn"
+        );
+        assert_eq!(status.status, Some(503));
+        let failed = by_outcome("failed");
+        assert_eq!(
+            failed.level,
+            OperationalEventLevel::Warn,
+            "a dispatch error is warn"
+        );
+        assert_eq!(failed.status, None, "a dispatch error has no HTTP status");
     }
 }

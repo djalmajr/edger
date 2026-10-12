@@ -52,6 +52,14 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   only warns (the socket is intact), and a warmup dispatch failure only logs:
   the process is terminated and removed without automatic replenishment, and
   it never fails the boot, the rescan or the install.
+- Worker warmup operational event: every warmup emits ONE `worker.warmup`
+  operational event (level `info` for the `ok` outcome, `warn` for `status`
+  — a non-2xx/3xx answer — and `failed` — a dispatch error —) with the
+  worker, version, process id, the `warmup-<uuid>` request id, the duration
+  and the answered HTTP status when there is one. The warmup success is now
+  logged at `info` instead of `debug`, and a failed warmup keeps its
+  `warmup_failed` termination (`SpawnFailed` policy) with a single
+  `process.terminated` event.
 - cPanel column visibility controls for API Keys and Users: permissions are
   hidden by default, choices persist independently per table in the browser,
   and management actions remain visible. API Keys keeps compact trailing

@@ -468,6 +468,15 @@ Características atuais:
   com o dreno desativado (zero relay wait), um corte já reportado
   preserva o evento e o motivo `stream_frame_timeout_recycled` (nunca é
   rotulado como abandon do cliente, `stream_abandoned_recycled`);
+* o aquecimento opcional do manifesto (`warmup`, EDG-15) emite, a cada
+  aquecimento de um processo novo, um evento operacional `worker.warmup`
+  (`EDG-19`): nível `info` para o resultado `ok`, `warn` para `status`
+  (qualquer resposta fora de 2xx/3xx, processo mantido) e `failed`
+  (falha de dispatch, processo terminado com o motivo `warmup_failed` e
+  sem reposição), com o `request_id` `warmup-<uuid>`, o `process_id`, a
+  duração e o status HTTP respondido quando há resposta; o sucesso do
+  aquecimento também passa a ser registrado em `info` no log (antes
+  `debug`);
 * streams finitos são bufferizados;
 * `stream`/`sse` usam fallback bounded-first-chunk até streaming real;
 * CommonJS server-listen tem adapter mínimo para `node:http.createServer`.

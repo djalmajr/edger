@@ -283,6 +283,11 @@ pub enum WorkerLifecycleEventKind {
     /// A per-frame read timeout cut a streamed body (EDG-17); the event
     /// carries the per-frame `timeout_ms` and the drain outcome.
     StreamFrameTimeout,
+    /// (EDG-19) One opt-in warmup of a fresh process (EDG-15): the event
+    /// carries the outcome in `reason` (`ok` / `status` / `failed`) and the
+    /// answered HTTP status in `status` when the dispatch produced a
+    /// response.
+    Warmup,
 }
 
 #[derive(Clone, Debug)]
@@ -296,6 +301,10 @@ pub struct WorkerLifecycleEvent {
     /// The per-frame read timeout in milliseconds (EDG-17); set only on
     /// `StreamFrameTimeout` events.
     pub timeout_ms: Option<u64>,
+    /// The HTTP status the warmup answered with (EDG-19); set only on
+    /// `Warmup` events whose dispatch produced a response (the `ok` and
+    /// `status` outcomes).
+    pub status: Option<u16>,
     pub reason: &'static str,
     /// Sub-cause of the reason (EDG-9): e.g. `stream_error` for a
     /// mid-stream body error that recycled the process. `None` when the
@@ -759,14 +768,21 @@ impl WorkerPool {
     /// no request counters, metrics, or circuit-breaker state.
     ///
     /// Results:
-    /// - `Ok` 200..=399: `tracing::debug!`; the process stays.
-    /// - `Ok` any other status: `tracing::warn!`; the process stays (the
-    ///   socket is intact — the warmup did not desync it).
-    /// - `Err` (timeout, crash, protocol error): `tracing::warn!`; the
-    ///   process is terminated and the instance is removed with the
-    ///   `SpawnFailed` policy — WITHOUT scheduling a replenishment, so a
-    ///   warmup failure can never chain spawn -> warmup failure ->
-    ///   replenishment.
+    /// - `Ok` 200..=399: `tracing::info!` + one `Warmup` lifecycle event
+    ///   (outcome `ok`); the process stays.
+    /// - `Ok` any other status: `tracing::warn!` + one `Warmup` lifecycle
+    ///   event (outcome `status`); the process stays (the socket is intact
+    ///   — the warmup did not desync it).
+    /// - `Err` (timeout, crash, protocol error): `tracing::warn!` + one
+    ///   `Warmup` lifecycle event (outcome `failed`); the process is
+    ///   terminated and the instance is removed with the `SpawnFailed`
+    ///   policy — WITHOUT scheduling a replenishment, so a warmup failure
+    ///   can never chain spawn -> warmup failure -> replenishment.
+    ///
+    /// (EDG-19) Exactly one `Warmup` lifecycle event per warmup reaches the
+    /// orchestrator's `worker.warmup` operational event; the `failed`
+    /// outcome keeps its existing `warmup_failed` termination lifecycle
+    /// (the warmup event is NOT a second termination).
     ///
     /// The dispatch is NOT wrapped in an outer `tokio::time::timeout`:
     /// cancelling it mid-flight would desync the process socket. The
@@ -804,7 +820,8 @@ impl WorkerPool {
         let started = Instant::now();
         let isolate = instance.isolate();
         let mut isolate_guard = isolate.lock().await;
-        instance.start_active_request(request_id);
+        let instance_id = instance.id().to_string();
+        instance.start_active_request(request_id.clone());
         let outcome =
             dispatch_to_isolate(isolate_guard.as_mut(), kind, request, &warm_config).await;
         drop(isolate_guard);
@@ -812,7 +829,22 @@ impl WorkerPool {
         let duration_ms = started.elapsed().as_millis().max(1) as u64;
         match outcome {
             Ok(response) if (200..400).contains(&response.status) => {
-                tracing::debug!(
+                emit_lifecycle(
+                    self.inner.lifecycle_events.as_ref(),
+                    WorkerLifecycleEvent {
+                        kind: WorkerLifecycleEventKind::Warmup,
+                        worker_ref: instance.worker_ref.clone(),
+                        process_id: Some(instance_id),
+                        request_id: Some(request_id),
+                        drained_count: None,
+                        duration_ms: Some(duration_ms),
+                        timeout_ms: None,
+                        status: Some(response.status),
+                        reason: "ok",
+                        detail: None,
+                    },
+                );
+                tracing::info!(
                     worker = %instance.worker_ref.name,
                     version = %instance.worker_ref.version,
                     status = response.status,
@@ -822,6 +854,21 @@ impl WorkerPool {
                 true
             }
             Ok(response) => {
+                emit_lifecycle(
+                    self.inner.lifecycle_events.as_ref(),
+                    WorkerLifecycleEvent {
+                        kind: WorkerLifecycleEventKind::Warmup,
+                        worker_ref: instance.worker_ref.clone(),
+                        process_id: Some(instance_id),
+                        request_id: Some(request_id),
+                        drained_count: None,
+                        duration_ms: Some(duration_ms),
+                        timeout_ms: None,
+                        status: Some(response.status),
+                        reason: "status",
+                        detail: None,
+                    },
+                );
                 tracing::warn!(
                     worker = %instance.worker_ref.name,
                     version = %instance.worker_ref.version,
@@ -832,6 +879,21 @@ impl WorkerPool {
                 true
             }
             Err(err) => {
+                emit_lifecycle(
+                    self.inner.lifecycle_events.as_ref(),
+                    WorkerLifecycleEvent {
+                        kind: WorkerLifecycleEventKind::Warmup,
+                        worker_ref: instance.worker_ref.clone(),
+                        process_id: Some(instance_id),
+                        request_id: Some(request_id),
+                        drained_count: None,
+                        duration_ms: Some(duration_ms),
+                        timeout_ms: None,
+                        status: None,
+                        reason: "failed",
+                        detail: None,
+                    },
+                );
                 tracing::warn!(
                     worker = %instance.worker_ref.name,
                     version = %instance.worker_ref.version,
@@ -1903,6 +1965,7 @@ impl WorkerPool {
                 drained_count: None,
                 duration_ms: None,
                 timeout_ms: None,
+                status: None,
                 reason,
                 detail,
             },
@@ -1960,6 +2023,7 @@ impl WorkerPool {
                 drained_count: report.as_ref().and_then(|report| report.drained_count),
                 duration_ms: Some(duration_ms),
                 timeout_ms: None,
+                status: None,
                 reason,
                 detail,
             },
@@ -1974,6 +2038,7 @@ impl WorkerPool {
                 drained_count: None,
                 duration_ms: Some(duration_ms),
                 timeout_ms: None,
+                status: None,
                 reason: if timed_out {
                     "drain_timeout"
                 } else if socket_poisoned {
@@ -2463,6 +2528,7 @@ async fn finish_max_duration_state(state: StreamDispatchState, outcome: StreamCo
             drained_count: None,
             duration_ms: Some(duration_ms),
             timeout_ms: None,
+            status: None,
             reason: if drained {
                 "stream_max_duration_drained"
             } else {
@@ -2508,6 +2574,7 @@ async fn finish_frame_timeout_state(state: StreamDispatchState, outcome: StreamC
             // (`timeout_ms.max(1)`, the same normalization the isolate
             // uses for the process timeout).
             timeout_ms: Some(state.config.timeout_ms.max(1)),
+            status: None,
             reason: if drained {
                 "stream_frame_timeout_drained"
             } else {
@@ -2643,6 +2710,7 @@ fn finish_stream_state(
                             drained_count: None,
                             duration_ms: Some(started.elapsed().as_millis() as u64),
                             timeout_ms: None,
+                            status: None,
                             reason: "stream_abandoned_drained",
                             detail,
                         },
@@ -2937,6 +3005,7 @@ async fn shutdown_instances_after_drain(
                 drained_count: None,
                 duration_ms: None,
                 timeout_ms: None,
+                status: None,
                 reason,
                 detail: None,
             },
@@ -2998,6 +3067,7 @@ async fn terminate_shutdown_instance(
             drained_count: report.as_ref().and_then(|report| report.drained_count),
             duration_ms: Some(duration_ms),
             timeout_ms: None,
+            status: None,
             reason,
             detail: None,
         },
@@ -3012,6 +3082,7 @@ async fn terminate_shutdown_instance(
             drained_count: None,
             duration_ms: Some(duration_ms),
             timeout_ms: None,
+            status: None,
             reason: if timed_out { "drain_timeout" } else { reason },
             detail: None,
         },

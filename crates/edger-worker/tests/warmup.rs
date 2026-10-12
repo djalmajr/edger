@@ -26,7 +26,10 @@ use edger_core::{
     create_worker_ref, ExecutionKind, Isolate, IsolationError, SerializedRequest,
     SerializedResponse, WorkerConfig, WorkerManifest, WorkerRef, WorkerWarmup,
 };
-use edger_worker::{IsolateFactory, PoolConfig, WorkerPool, WorkerState};
+use edger_worker::{
+    IsolateFactory, PoolConfig, WorkerLifecycleEvent, WorkerLifecycleEventKind, WorkerPool,
+    WorkerState,
+};
 
 /// One request as seen by an isolate (order preserved per isolate).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -342,6 +345,31 @@ fn pool(factory: Arc<WarmupFactory>, max_size: usize) -> WorkerPool {
         },
         factory,
     )
+}
+
+/// Pool wired to a lifecycle-event channel (EDG-19): every
+/// `WorkerLifecycleEvent` the pool emits is captured here. The channel is
+/// drained with `try_recv` — the emits are synchronous (`try_send`) and run
+/// inside the awaited `prewarm_worker`, so by the time the prewarm returns
+/// the events are already queued.
+fn pool_with_lifecycle(
+    factory: Arc<WarmupFactory>,
+    max_size: usize,
+) -> (
+    WorkerPool,
+    tokio::sync::mpsc::Receiver<WorkerLifecycleEvent>,
+) {
+    let (lifecycle_tx, lifecycle_rx) = tokio::sync::mpsc::channel(64);
+    let pool = WorkerPool::with_factory_and_lifecycle(
+        PoolConfig {
+            max_size,
+            ephemeral_concurrency: 4,
+            ephemeral_queue_limit: 8,
+        },
+        factory,
+        Some(lifecycle_tx),
+    );
+    (pool, lifecycle_rx)
 }
 
 fn req(uri: &str) -> SerializedRequest {
@@ -931,4 +959,249 @@ async fn shutdown_during_warmup_terminates_the_process_without_idling() {
         0,
         "an instance lost to shutdown is not counted as prewarmed"
     );
+}
+
+// i. (EDG-19) One lifecycle event per warmup, `ok` outcome: the event
+//    carries the worker/version, the instance id (the one shown in
+//    `/metrics/stats`), the `warmup-<uuid>` request id, the answered HTTP
+//    status and the duration. Nothing else is emitted, and the warmup
+//    still stays out of the request counters.
+#[tokio::test]
+async fn warmup_ok_emits_one_lifecycle_event_with_identity_and_status() {
+    tokio::time::pause();
+    let factory = Arc::new(WarmupFactory::new());
+    let (pool, mut lifecycle_rx) = pool_with_lifecycle(factory.clone(), 8);
+    let worker_ref = warmup_worker_ref("warm-event-ok", "/dashboard", 1, 1, 30_000, 0);
+
+    let spawned = pool.prewarm_worker(&worker_ref).await.unwrap();
+    assert_eq!(spawned, 1, "the warmed process counts as prewarmed");
+
+    let event = lifecycle_rx
+        .try_recv()
+        .expect("the ok warmup must emit its lifecycle event");
+    assert_eq!(event.kind, WorkerLifecycleEventKind::Warmup);
+    assert_eq!(event.reason, "ok", "the outcome rides the event reason");
+    assert_eq!(event.detail, None);
+    assert_eq!(
+        event.status,
+        Some(200),
+        "the answered HTTP status rides the event"
+    );
+    assert!(
+        event
+            .request_id
+            .as_deref()
+            .is_some_and(|request_id| request_id.starts_with("warmup-")),
+        "the synthetic request id rides the event"
+    );
+    assert!(
+        event.process_id.is_some(),
+        "the instance id rides the event"
+    );
+    assert!(
+        event.duration_ms.is_some(),
+        "the warmup duration rides the event"
+    );
+    assert_eq!(event.worker_ref.name, "warm-event-ok");
+    assert_eq!(event.worker_ref.version, worker_ref.version);
+
+    // The event's process id is the instance id shown in /metrics/stats.
+    let stats = pool.worker_stats();
+    assert_eq!(stats.len(), 1);
+    assert_eq!(event.process_id, Some(stats[0].worker_id.to_string()));
+
+    // The event did not move any counter: the warmup still stays out of
+    // the request metrics (and the group counters stay at zero).
+    assert_eq!(stats[0].request_count, 0);
+    let metrics = pool.get_metrics();
+    let group = metrics
+        .worker_groups
+        .iter()
+        .find(|group| group.name == "warm-event-ok")
+        .unwrap();
+    assert_eq!(group.request_total, 0);
+    assert_eq!(group.requests_ok_total, 0);
+    assert_eq!(group.requests_error_total, 0);
+    assert_eq!(group.requests_cancelled_total, 0);
+
+    // And the next USER request is counted exactly once — the synthetic
+    // warmup that emitted the event never leaks into the counters.
+    let body = fetch_body(&pool, &worker_ref, "/user").await;
+    assert_eq!(body, "isolate-1");
+    let metrics = pool.get_metrics();
+    let group = metrics
+        .worker_groups
+        .iter()
+        .find(|group| group.name == "warm-event-ok")
+        .unwrap();
+    assert_eq!(group.request_total, 1, "only the user request is counted");
+    assert_eq!(group.requests_ok_total, 1);
+
+    // One event per warmup: nothing else is queued after the ok outcome.
+    assert!(
+        lifecycle_rx.try_recv().is_err(),
+        "the ok outcome must emit exactly one lifecycle event"
+    );
+}
+
+// j. (EDG-19) One lifecycle event per warmup, `status` outcome: a
+//    non-2xx/3xx answer (503) emits the event with the answered status,
+//    keeps the process (Idle, serving the next request) and moves no
+//    counter.
+#[tokio::test]
+async fn warmup_status_outcome_emits_the_event_and_keeps_the_process() {
+    tokio::time::pause();
+    let factory = Arc::new(WarmupFactory::new());
+    factory.set_warmup_status(503);
+    let (pool, mut lifecycle_rx) = pool_with_lifecycle(factory.clone(), 8);
+    let worker_ref = warmup_worker_ref("warm-event-status", "/", 1, 1, 30_000, 0);
+
+    let spawned = pool.prewarm_worker(&worker_ref).await.unwrap();
+    assert_eq!(spawned, 1, "a non-2xx/3xx warmup keeps the process");
+
+    let event = lifecycle_rx
+        .try_recv()
+        .expect("the status warmup must emit its lifecycle event");
+    assert_eq!(event.kind, WorkerLifecycleEventKind::Warmup);
+    assert_eq!(event.reason, "status", "the outcome rides the event reason");
+    assert_eq!(
+        event.status,
+        Some(503),
+        "the answered status rides the event"
+    );
+    assert!(
+        event
+            .request_id
+            .as_deref()
+            .is_some_and(|request_id| request_id.starts_with("warmup-")),
+        "the synthetic request id rides the event"
+    );
+    assert!(
+        event.process_id.is_some(),
+        "the instance id rides the event"
+    );
+    assert!(
+        event.duration_ms.is_some(),
+        "the warmup duration rides the event"
+    );
+    assert_eq!(event.worker_ref.name, "warm-event-status");
+
+    let stats = pool.worker_stats();
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].state, WorkerState::Idle, "the socket is intact");
+    assert_eq!(stats[0].request_count, 0);
+    assert_eq!(
+        factory.terminated_ids().len(),
+        0,
+        "no process was terminated"
+    );
+
+    let body = fetch_body(&pool, &worker_ref, "/next").await;
+    assert_eq!(
+        body, "isolate-1",
+        "the SAME process serves the next request"
+    );
+    let metrics = pool.get_metrics();
+    let group = metrics
+        .worker_groups
+        .iter()
+        .find(|group| group.name == "warm-event-status")
+        .unwrap();
+    assert_eq!(group.request_total, 1, "only the user request is counted");
+
+    assert!(
+        lifecycle_rx.try_recv().is_err(),
+        "the status outcome must emit exactly one lifecycle event"
+    );
+}
+
+// k. (EDG-19) One lifecycle event per warmup, `failed` outcome: the
+//    event (reason `failed`, no HTTP status) is emitted BEFORE the
+//    process's termination lifecycle, which stays the single
+//    `warmup_failed` DrainStarted/DrainCompleted/Terminated sequence —
+//    no second `process.terminated` for the same process.
+#[tokio::test]
+async fn warmup_failed_emits_the_event_before_the_single_termination() {
+    tokio::time::pause();
+    let factory = Arc::new(WarmupFactory::new());
+    factory.fail_warmup_from_now_on();
+    let (pool, mut lifecycle_rx) = pool_with_lifecycle(factory.clone(), 8);
+    let worker_ref = warmup_worker_ref("warm-event-fail", "/", 1, 1, 100, 0);
+
+    // The prewarm itself must NOT fail: a warmup failure never fails the
+    // boot, the rescan or the install.
+    let spawned = pool.prewarm_worker(&worker_ref).await.unwrap();
+    assert_eq!(
+        spawned, 0,
+        "a process lost to a warmup failure is not prewarmed"
+    );
+
+    // FIRST event: the warmup outcome itself (the event this test guards:
+    // deleting its emit from the failed path makes this `expect` fail).
+    let event = lifecycle_rx
+        .try_recv()
+        .expect("the failed warmup must emit its lifecycle event");
+    assert_eq!(event.kind, WorkerLifecycleEventKind::Warmup);
+    assert_eq!(event.reason, "failed", "the outcome rides the event reason");
+    assert_eq!(event.status, None, "a dispatch error has no HTTP status");
+    assert!(
+        event
+            .request_id
+            .as_deref()
+            .is_some_and(|request_id| request_id.starts_with("warmup-")),
+        "the synthetic request id rides the event"
+    );
+    assert!(
+        event.process_id.is_some(),
+        "the instance id rides the event"
+    );
+    assert!(
+        event.duration_ms.is_some(),
+        "the warmup duration rides the event"
+    );
+    assert_eq!(event.worker_ref.name, "warm-event-fail");
+
+    // THEN the SAME process's termination lifecycle, unchanged by the
+    // new event: one `warmup_failed` DrainStarted/DrainCompleted/Terminated.
+    let drain_started = lifecycle_rx
+        .try_recv()
+        .expect("the warmup failure still terminates with its drain lifecycle");
+    assert_eq!(drain_started.kind, WorkerLifecycleEventKind::DrainStarted);
+    assert_eq!(drain_started.reason, "warmup_failed");
+    let drain_completed = lifecycle_rx.try_recv().expect("the drain completes");
+    assert_eq!(
+        drain_completed.kind,
+        WorkerLifecycleEventKind::DrainCompleted
+    );
+    assert_eq!(drain_completed.reason, "warmup_failed");
+    let terminated = lifecycle_rx
+        .try_recv()
+        .expect("the single termination event");
+    assert_eq!(terminated.kind, WorkerLifecycleEventKind::Terminated);
+    assert_eq!(
+        terminated.reason, "warmup_failed",
+        "the termination reason is unchanged"
+    );
+
+    // Exactly one termination for this process: the warmup event must not
+    // create a second `process.terminated`.
+    assert!(
+        lifecycle_rx.try_recv().is_err(),
+        "one warmup event and one termination lifecycle — nothing more"
+    );
+    assert_eq!(
+        factory.terminated_ids(),
+        vec![1],
+        "the failed process is terminated"
+    );
+    assert_eq!(pool.len(), 0, "no instance remains");
+
+    // And the SpawnFailed policy is unchanged: no replenishment scheduled.
+    let metrics = pool.get_metrics();
+    let group = metrics
+        .worker_groups
+        .iter()
+        .find(|group| group.name == "warm-event-fail")
+        .unwrap();
+    assert_eq!(group.replenish_total, 0, "no replenishment is scheduled");
 }
