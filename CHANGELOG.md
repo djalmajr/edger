@@ -235,6 +235,15 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Fixed
 
+- Worker bundling retries `deno bundle` once (300 ms) after a transient
+  esbuild fetch failure before using the minimal relative-module fallback
+  (EDG-14), so a cold cache under load keeps producing the real bundle
+  instead of the fallback; the deno bundler test now detects the fallback
+  bundle and only asserts the D29 graph property on the real `deno bundle`
+  path. The legacy bridge isolate (`EDGER_JS_RUNTIME=bridge`) now runs the
+  synchronous CLI runner on a blocking thread, so a bundling retry or a slow
+  `deno run` no longer blocks the async runtime thread and the request
+  wall-clock limit can fire.
 - Per-version enable/disable now persists across restart, rescan and
   state export/import (EDG-21): the operator's choice is stored in a
   `.edger-enabled` marker inside the version dir and re-applied when the
