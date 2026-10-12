@@ -160,7 +160,7 @@ Before opening a pull request, run:
 
 ```bash
 cargo test --workspace
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt -- --check
 cargo test -p edger-orchestrator --features otel
 helm lint charts/edger

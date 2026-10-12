@@ -1964,7 +1964,7 @@ mod tests {
         let a = std::thread::spawn(move || {
             persist_worker_enabled(&a_index, "hello", Some("1.0.0"), false, None)
         });
-        let _ = rx_parked
+        rx_parked
             .recv_timeout(std::time::Duration::from_secs(15))
             .expect("A parked between the disk half and the apply");
         // B targets the version A's plan omitted: with every slot held by A

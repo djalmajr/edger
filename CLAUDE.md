@@ -5,7 +5,7 @@
 ## Core
 - Product label is **"EdgeR"** in user-facing surfaces (UI titles, brand text, docs prose). Technical identifiers stay lowercase `edger` (crates, binary, env vars, paths, URLs).
 - Core (edger-core or lib) is pure vocabulary: no I/O.
-- Always run the Rust gate before claiming complete: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`.
+- Always run the Rust gate before claiming complete: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo fmt -- --check`.
 - Run `bun test` only if a root JS/TS test suite exists; the historical Bun adapter is removed.
 - Small behavior preserving changes.
 - Preserve worker/extension isolation.
@@ -59,7 +59,7 @@
 - Planning maturity: `/agile-refinement` Mode 1 on `planning/edger/` + `refinement-lint.py` (see `planning/edger/scripts/run-gates.sh`). Only the orchestrator agent calls ai-memory tools; subagents must not.
 - `memory_lint` (workspace `djalmajr`, project `edger`): orchestrator only, when the remote server is stable — excluded from planning gates if unstable.
 - Fix all warnings even in untouched files.
-- Rust gate: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`.
+- Rust gate: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo fmt -- --check`.
 - `edger-core` is pure vocabulary (no I/O); `Isolate`/`WorkerHandler` use `async-trait` workspace dep.
 - No emojis in code/comments/commits.
 - Naming: kebab for files, Pascal types, camel funcs.
@@ -74,7 +74,7 @@
 - Do not use the removed Bun adapter as implementation fallback; unblock Rust isolation instead.
 
 ## Verification gate
-- Rust gate: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`
+- Rust gate: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo fmt -- --check`
 - `/agile-refinement` Mode 1 report clean (`planning/edger/status/evidence/refinement-report.txt`)
 - memory_lint (edger scope; orchestrator only; optional when server stable)
 - Rust launch evidence through `cargo run -p edger-orchestrator --bin edger` + curl responses match expected

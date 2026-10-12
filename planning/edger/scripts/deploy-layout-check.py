@@ -96,7 +96,7 @@ CHECKS = (
         path="docs/developers/06-operacao-e-testes.adoc",
         tokens=(
             "cargo test --workspace",
-            "cargo clippy --workspace -- -D warnings",
+            "cargo clippy --workspace --all-targets -- -D warnings",
             "cargo fmt -- --check",
             "planning/edger/scripts/run-gates.sh",
             "planning/edger/scripts/deploy-layout-check.py",

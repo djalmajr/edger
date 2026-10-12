@@ -27,7 +27,7 @@ jobs:
       - uses: denoland/setup-deno@v2
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
-      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo fmt -- --check
 
   otel:

@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use edger_isolation::{
@@ -19,13 +19,14 @@ use edger_isolation::{
 };
 
 /// The tests of this binary share the process-wide bundle counters: serialize
-/// every test that asserts on a counter delta.
-static COUNTER_LOCK: Mutex<()> = Mutex::new(());
+/// every test that asserts on a counter delta. A `tokio` mutex (not `std`) so
+/// the guard may be held across the `await` points of the async tests, the
+/// same pattern as `TEST_MUTATION_PLANE_LOCK` in the orchestrator deploy
+/// tests.
+static COUNTER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn counter_guard() -> std::sync::MutexGuard<'static, ()> {
-    COUNTER_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+async fn counter_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    COUNTER_LOCK.lock().await
 }
 
 /// A small two-file worker whose entrypoint imports a relative module: the
@@ -60,7 +61,7 @@ const SPAWN_TIMEOUT: Duration = Duration::from_secs(60);
 /// is a direct cache hit without any new build.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_bundle_requests_build_once() {
-    let _guard = counter_guard();
+    let _guard = counter_guard().await;
     let root = tempfile::tempdir().unwrap();
     let worker = write_worker(root.path(), "bundle-app");
     let fallback = tempfile::tempdir().unwrap();
@@ -140,7 +141,7 @@ async fn concurrent_bundle_requests_build_once() {
 /// reject the graph.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failed_bundle_is_not_cached_and_counts_error() {
-    let _guard = counter_guard();
+    let _guard = counter_guard().await;
     let root = tempfile::tempdir().unwrap();
     let worker = write_worker(root.path(), "broken-app");
     fs::write(
@@ -185,7 +186,7 @@ Deno.serve(() => new Response(missing));
     // Retry semantics: fix the file and the NEXT spawn builds successfully
     // (the failure was not remembered).
     fs::write(
-        &worker.join("greeting.ts"),
+        worker.join("greeting.ts"),
         "export const greeting = 'fixed';\n",
     )
     .unwrap();
@@ -217,7 +218,7 @@ Deno.serve(() => new Response(greeting));
 /// (the next spawn is a hit).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bounded_single_flight_wait_times_out_without_poisoning_the_build() {
-    let _guard = counter_guard();
+    let _guard = counter_guard().await;
     let root = tempfile::tempdir().unwrap();
     let worker = write_worker(root.path(), "slow-app");
     let fallback = tempfile::tempdir().unwrap();
@@ -278,7 +279,7 @@ async fn bounded_single_flight_wait_times_out_without_poisoning_the_build() {
 /// key per version).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn in_place_edit_invalidates_the_key_and_prunes_the_old_one() {
-    let _guard = counter_guard();
+    let _guard = counter_guard().await;
     let root = tempfile::tempdir().unwrap();
     let worker = write_worker(root.path(), "edit-app");
     let fallback = tempfile::tempdir().unwrap();
@@ -345,7 +346,7 @@ async fn in_place_edit_invalidates_the_key_and_prunes_the_old_one() {
 /// nothing is cached, and the outcome counts as `uncached`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unwritable_worker_dir_falls_back_to_per_process_bundle() {
-    let _guard = counter_guard();
+    let _guard = counter_guard().await;
     let root = tempfile::tempdir().unwrap();
     let worker = write_worker(root.path(), "readonly-app");
     #[cfg(unix)]
@@ -455,7 +456,7 @@ fn snapshot_tree(root: &Path) -> Vec<(String, Vec<u8>)> {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn symlinked_cache_dir_is_never_followed_and_falls_back() {
-    let _guard = counter_guard();
+    let _guard = counter_guard().await;
     let root = tempfile::tempdir().unwrap();
     // The victim: a sibling dir with a subdirectory and a file.
     let victim = root.path().join("victim");
@@ -525,7 +526,7 @@ async fn symlinked_cache_dir_is_never_followed_and_falls_back() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn self_symlinked_cache_dir_keeps_the_worker_dir() {
-    let _guard = counter_guard();
+    let _guard = counter_guard().await;
     let root = tempfile::tempdir().unwrap();
     let worker = write_worker(root.path(), "self-link-worker");
     // A real subdirectory that a self-linked prune would delete.
@@ -572,7 +573,7 @@ async fn self_symlinked_cache_dir_keeps_the_worker_dir() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn planted_symlink_bundle_file_is_not_used() {
-    let _guard = counter_guard();
+    let _guard = counter_guard().await;
     let root = tempfile::tempdir().unwrap();
     let worker = write_worker(root.path(), "planted-worker");
     // The exact key the spawn path computes for this worker dir.
