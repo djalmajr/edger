@@ -155,31 +155,72 @@ impl ModuleBundler for DenoCliBundler {
                     stderr,
                     stdout,
                 }) => {
-                    if should_try_minimal_relative_fallback(&stderr) {
-                        match write_minimal_relative_bundle(&worker_dir, &entrypoint, &output_path)
+                    if !should_try_minimal_relative_fallback(&stderr) {
+                        return Err(IsolationError::new(
+                            "DENO_BUNDLE_FAILED",
+                            format!(
+                                "deno bundle exited with status {code:?}; stderr={}; stdout={}",
+                                stderr.trim(),
+                                stdout.trim()
+                            ),
+                        ));
+                    }
+                    // EDG-14: a transient esbuild fetch failure (registry
+                    // connect error under load, cold cache) recovers on a
+                    // bounded retry, so the real `deno bundle` output wins
+                    // before the minimal relative-module fallback is used.
+                    std::thread::sleep(BUNDLE_RETRY_DELAY);
+                    match run_bundle_command(executable, &worker_dir, &entrypoint, &output_path) {
+                        Ok(()) => {
+                            return bundle_from_output(&output_path);
+                        }
+                        Err(BundleCommandError::Spawn(err))
+                            if err.kind() == std::io::ErrorKind::NotFound =>
                         {
-                            Ok(()) => return bundle_from_output(&output_path),
-                            Err(fallback_err) => {
-                                return Err(IsolationError::new(
-                                    "DENO_BUNDLE_FAILED",
-                                    format!(
-                                        "deno bundle exited with status {code:?}; stderr={}; stdout={}; minimal fallback failed: {}",
-                                        stderr.trim(),
-                                        stdout.trim(),
-                                        fallback_err
-                                    ),
-                                ));
+                            spawn_errors.push(format!("{executable}: {err}"));
+                            continue;
+                        }
+                        Err(BundleCommandError::Spawn(err)) => {
+                            return Err(IsolationError::new(
+                                "DENO_BUNDLE_SPAWN_FAILED",
+                                format!("failed to spawn {executable} on retry: {err}"),
+                            ));
+                        }
+                        Err(BundleCommandError::Status {
+                            code: retry_code,
+                            stderr: retry_stderr,
+                            stdout: retry_stdout,
+                        }) => {
+                            if should_try_minimal_relative_fallback(&retry_stderr) {
+                                match write_minimal_relative_bundle(
+                                    &worker_dir,
+                                    &entrypoint,
+                                    &output_path,
+                                ) {
+                                    Ok(()) => return bundle_from_output(&output_path),
+                                    Err(fallback_err) => {
+                                        return Err(IsolationError::new(
+                                            "DENO_BUNDLE_FAILED",
+                                            format!(
+                                                "deno bundle exited with status {retry_code:?}; stderr={}; stdout={}; minimal fallback failed: {}",
+                                                retry_stderr.trim(),
+                                                retry_stdout.trim(),
+                                                fallback_err
+                                            ),
+                                        ));
+                                    }
+                                }
                             }
+                            return Err(IsolationError::new(
+                                "DENO_BUNDLE_FAILED",
+                                format!(
+                                    "deno bundle exited with status {retry_code:?}; stderr={}; stdout={}",
+                                    retry_stderr.trim(),
+                                    retry_stdout.trim()
+                                ),
+                            ));
                         }
                     }
-                    return Err(IsolationError::new(
-                        "DENO_BUNDLE_FAILED",
-                        format!(
-                            "deno bundle exited with status {code:?}; stderr={}; stdout={}",
-                            stderr.trim(),
-                            stdout.trim()
-                        ),
-                    ));
                 }
             }
         }
@@ -1518,6 +1559,11 @@ fn run_bundle_command(
     })
 }
 
+/// EDG-14: bounded delay before the single retry of `deno bundle` after a
+/// transient esbuild fetch failure, before the minimal relative-module
+/// fallback is used.
+const BUNDLE_RETRY_DELAY: Duration = Duration::from_millis(300);
+
 fn should_try_minimal_relative_fallback(stderr: &str) -> bool {
     stderr.contains("@esbuild") || stderr.contains("registry.npmjs.org")
 }
@@ -2308,6 +2354,133 @@ export default () => new Response(message);
         assert_eq!(
             err.code, "DENO_BUNDLE_PUBLISH",
             "real root: the regular publish error: {err}"
+        );
+    }
+
+    /// EDG-14: a fake `deno` executable for the retry tests. `info` answers
+    /// with a valid two-module graph; `bundle` fails its first
+    /// `fail_bundle_attempts` runs with the esbuild fetch error (the
+    /// minimal-fallback trigger) and counts every `bundle` attempt in
+    /// `root/bundle-attempts`, so a retry is observable.
+    #[cfg(unix)]
+    fn write_fake_deno(
+        root: &Path,
+        worker: &Path,
+        entry: &Path,
+        fail_bundle_attempts: u32,
+    ) -> PathBuf {
+        let lib = worker.join("lib.ts");
+        let state = root.join("bundle-attempts");
+        let graph = serde_json::json!({
+            "roots": [format!("file://{}", entry.display())],
+            "modules": [
+                {
+                    "specifier": format!("file://{}", entry.display()),
+                    "local": entry,
+                    "dependencies": [
+                        {"code": {"specifier": format!("file://{}", lib.display())}}
+                    ]
+                },
+                {
+                    "specifier": format!("file://{}", lib.display()),
+                    "local": lib,
+                    "dependencies": []
+                }
+            ]
+        });
+        let script = format!(
+            r#"#!/bin/sh
+STATE='{state}'
+FAILS={fails}
+n=$(cat "$STATE" 2>/dev/null || printf 0)
+if [ "$1" = "info" ]; then
+  printf '%s' '{graph}'
+  exit 0
+fi
+n=$((n + 1))
+printf '%s' "$n" > "$STATE"
+out=
+prev=
+for a in "$@"; do
+  if [ "$prev" = "--output" ]; then out="$a"; fi
+  prev="$a"
+done
+if [ "$n" -le "$FAILS" ]; then
+  printf 'error: Failed loading https://registry.npmjs.org/@esbuild/darwin-arm64 for package "@esbuild/darwin-arm64"\nCaused by:\n    client error (Connect)\n' 1>&2
+  exit 1
+fi
+printf 'var recovered = true;\n' > "$out"
+exit 0
+"#,
+            state = state.display(),
+            fails = fail_bundle_attempts,
+            graph = graph,
+        );
+        let fake = root.join("fake-deno");
+        std::fs::write(&fake, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        fake
+    }
+
+    // EDG-14: a transient esbuild fetch failure (the fallback trigger)
+    // recovers on the single bounded retry: the bundle is the real
+    // `deno bundle` output and the command ran exactly twice.
+    #[cfg(unix)]
+    #[test]
+    fn bundle_retries_once_after_transient_esbuild_fetch_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = write_worker_fixture(root.path());
+        let entry = worker.join("index.ts");
+        let state = root.path().join("bundle-attempts");
+        let fake = write_fake_deno(root.path(), &worker, &entry, 1);
+        let output_dir = root.path().join("out");
+        let bundler = DenoCliBundler::new(fake.to_string_lossy().into_owned());
+
+        let bundle = bundler
+            .bundle_entrypoint(&worker, &entry, &output_dir)
+            .expect("a transient esbuild failure must recover on the single retry");
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&bundle.path)).unwrap(),
+            "var recovered = true;\n",
+            "the retry must produce the real bundle, not the fallback"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&state).unwrap(),
+            "2",
+            "the bundle command must run exactly twice (first attempt fails, retry wins)"
+        );
+    }
+
+    // EDG-14: a persistent esbuild failure (retry fails too) still keeps the
+    // minimal relative-module fallback, reached only after the single retry.
+    #[cfg(unix)]
+    #[test]
+    fn bundle_falls_back_after_retry_still_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = write_worker_fixture(root.path());
+        let entry = worker.join("index.ts");
+        let state = root.path().join("bundle-attempts");
+        let fake = write_fake_deno(root.path(), &worker, &entry, 99);
+        let output_dir = root.path().join("out");
+        let bundler = DenoCliBundler::new(fake.to_string_lossy().into_owned());
+
+        let bundle = bundler
+            .bundle_entrypoint(&worker, &entry, &output_dir)
+            .expect("a persistent esbuild failure must keep the minimal fallback");
+        let source = std::fs::read_to_string(Path::new(&bundle.path)).unwrap();
+        assert!(
+            source.starts_with("// Generated by EdgeR's minimal relative-module bundler fallback."),
+            "the persistent failure must produce the fallback bundle: {source}"
+        );
+        assert!(
+            source.contains("const message = 'ok';"),
+            "the fallback keeps the relative module bodies: {source}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&state).unwrap(),
+            "2",
+            "the fallback must be reached only after the single retry"
         );
     }
 }
