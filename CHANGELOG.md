@@ -125,6 +125,24 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Changed
 
+- Worker manifests (`manifest.yaml`/`manifest.yml`) are parsed with
+  `serde-saphyr` (safe Rust) instead of `serde_yaml`: `unsafe-libyaml` leaves
+  the dependency graph and the `RUSTSEC-2024-0449` advisory ignore is
+  removed. The five duration fields (`ttl`, `streamTimeout`, `shutdownGrace`,
+  `cooldown`, `queueTimeout`) now hold an `edger-core` value type instead of
+  a YAML crate type, with the same accepted forms: a non-negative integer is
+  seconds, a string is a duration, and a float, bool, null, negative number,
+  sequence or mapping is accepted at parse time and ignored (the field's
+  default applies). Measured behavior differences versus the old parser:
+  duplicate struct fields (e.g. `name` twice) keep the last value instead of
+  failing; `ttl: 1_000` (an underscored number) was an ignored string and
+  now means 1000 s; `ttl: 0052` (a leading-zero number) used to mean 52 s
+  (a string the duration parser accepted) and is now read as the float 52.0,
+  which is ignored, so the field's default applies; integers beyond 64-bit
+  range parse as float instead of failing; non-finite floats (`.nan`, `.inf`,
+  `1e999`) are now a parse error instead of an ignored value; and a duration
+  mapping with a non-string key is now a parse error instead of an ignored
+  value.
 - The clippy gate now covers test targets: `cargo clippy --workspace
   --all-targets -- -D warnings` in CI and the documented gates, with the
   test-target lints it surfaced fixed at the root (no `#[allow(...)]`).

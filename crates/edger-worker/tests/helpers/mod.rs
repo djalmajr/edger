@@ -33,6 +33,20 @@ impl IsolateFactory for MockIsolateFactory {
     }
 }
 
+/// Canonical serde-saphyr options for parsing worker manifests (EDG-22):
+/// the same settings as the orchestrator's production parse
+/// (`manifest_loader::manifest_yaml_options`) — YAML 1.1 boolean shorthands
+/// rejected in boolean fields, `<<` merge keys kept ordinary, duplicate keys
+/// last-wins, one-line error messages.
+pub fn saphyr_options() -> serde_saphyr::Options {
+    serde_saphyr::options! {
+        strict_booleans: true,
+        merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+        duplicate_keys: serde_saphyr::DuplicateKeyPolicy::LastWins,
+        with_snippet: false,
+    }
+}
+
 /// Write `manifest.yaml` into a temp worker dir and return parsed config.
 pub fn temp_worker_dir(manifest_yaml: &str) -> (TempDir, WorkerConfig, WorkerManifest) {
     let dir = TempDir::new().expect("tempdir");
@@ -40,7 +54,8 @@ pub fn temp_worker_dir(manifest_yaml: &str) -> (TempDir, WorkerConfig, WorkerMan
     std::fs::write(dir.path().join("index.ts"), "// stub entrypoint").expect("write stub");
 
     let manifest: WorkerManifest =
-        serde_yaml::from_str(manifest_yaml).expect("manifest yaml parse");
+        serde_saphyr::from_str_with_options(manifest_yaml, saphyr_options())
+            .expect("manifest yaml parse");
     let config = parse_worker_config(&manifest);
     (dir, config, manifest)
 }

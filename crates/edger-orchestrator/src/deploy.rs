@@ -1487,12 +1487,16 @@ fn package_declares_name(dir: &Path) -> Result<bool, CoreError> {
         if path.is_file() {
             let text = fs::read_to_string(&path)
                 .map_err(|err| deploy_io(format!("failed to read {}: {err}", path.display())))?;
-            let value: serde_yaml::Value = serde_yaml::from_str(&text).map_err(|err| {
+            let value: serde_json::Value = serde_saphyr::from_str_with_options(
+                &text,
+                crate::manifest_loader::manifest_yaml_options(),
+            )
+            .map_err(|err| {
                 CoreError::parse(format!("failed to parse {}: {err}", path.display()))
             })?;
             if value
                 .get("name")
-                .and_then(serde_yaml::Value::as_str)
+                .and_then(serde_json::Value::as_str)
                 .is_some_and(|name| !name.trim().is_empty())
             {
                 return Ok(true);

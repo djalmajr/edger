@@ -9,7 +9,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use bytes::Bytes;
 use edger_core::{
-    Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig, WorkerManifest,
+    DurationValue, Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig,
+    WorkerManifest,
 };
 use edger_orchestrator::{
     build_pipeline, ApiKeyService, ControlAuth, ManifestIndex, OrchestratorState, ServerState,
@@ -130,7 +131,7 @@ fn test_state() -> OrchestratorState {
             WorkerManifest {
                 name: "echo".into(),
                 version: Some("1.0.0".into()),
-                ttl: Some(serde_yaml::Value::String("30s".into())),
+                ttl: Some(DurationValue::String("30s".into())),
                 ..Default::default()
             },
         )

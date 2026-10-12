@@ -2,7 +2,6 @@
 ignore = [
   { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill is an unmaintained transitive dependency of postcard and Wasmtime; there is no patched release and no known vulnerability" },
   { id = "RUSTSEC-2023-0071", reason = "rsa is used only by tests to generate ephemeral local OIDC keys; EdgeR does not use it for runtime signing" },
-  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained (no vulnerability, no safe upgrade); it comes in through serde_yaml, which parses manifest.yaml and config; the migration to a safe-Rust YAML parser is tracked in Cinzel (team EDG)" },
 ]
 
 [licenses]

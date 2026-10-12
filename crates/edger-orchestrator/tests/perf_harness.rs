@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use bytes::Bytes;
+use edger_core::{DurationValue, WorkerManifest, WorkerRef};
 use edger_core::{Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig};
-use edger_core::{WorkerManifest, WorkerRef};
 use edger_orchestrator::{
     build_pipeline, ControlAuth, ManifestIndex, OrchestratorState, ServerState,
 };
@@ -133,10 +133,10 @@ fn perf_manifest(max_processes: usize, queue_limit: usize, queue_timeout: &str) 
     WorkerManifest {
         name: "perf-echo".into(),
         version: Some("1.0.0".into()),
-        ttl: Some(serde_yaml::Value::String("30s".into())),
+        ttl: Some(DurationValue::String("30s".into())),
         max_processes: Some(max_processes),
         queue_limit: Some(queue_limit),
-        queue_timeout: Some(serde_yaml::Value::String(queue_timeout.into())),
+        queue_timeout: Some(DurationValue::String(queue_timeout.into())),
         ..Default::default()
     }
 }

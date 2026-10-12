@@ -11,8 +11,19 @@ use edger_core::{
     WorkerWarmupConfig,
 };
 
+/// Canonical serde-saphyr options for parsing worker manifests (EDG-22),
+/// mirroring the orchestrator's production parse.
+fn yaml_options() -> serde_saphyr::Options {
+    serde_saphyr::options! {
+        strict_booleans: true,
+        merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+        duplicate_keys: serde_saphyr::DuplicateKeyPolicy::LastWins,
+        with_snippet: false,
+    }
+}
+
 fn manifest_yaml(body: &str) -> WorkerManifest {
-    serde_yaml::from_str(body).expect("the manifest yaml parses")
+    serde_saphyr::from_str_with_options(body, yaml_options()).expect("the manifest yaml parses")
 }
 
 // The valid object: `path` + `timeout: 5s` normalize to the manifest path
@@ -78,7 +89,8 @@ warmup:
 // `warmup: /` (a string instead of an object) is a manifest PARSE error.
 #[test]
 fn warmup_as_a_string_is_a_parse_error() {
-    let result: Result<WorkerManifest, _> = serde_yaml::from_str("name: warm-app\nwarmup: /\n");
+    let result: Result<WorkerManifest, _> =
+        serde_saphyr::from_str_with_options("name: warm-app\nwarmup: /\n", yaml_options());
     assert!(
         result.is_err(),
         "a bare string where the warmup object is expected must not parse"

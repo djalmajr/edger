@@ -1203,6 +1203,21 @@ pub(crate) fn load_worker_manifest(worker_dir: &Path) -> Result<WorkerManifest, 
     load_worker_manifest_with_name_fallback(worker_dir, None)
 }
 
+/// serde-saphyr options that keep the historical `serde_yaml` 0.9 semantics
+/// (EDG-22): YAML 1.1 boolean shorthands (`yes`/`no`/`on`/`off`) are not
+/// inferred as booleans, `<<` merge keys stay ordinary (ignored) keys, and
+/// duplicate keys keep the last value, as the historical parser did inside
+/// mappings. `with_snippet: false` keeps one-line error messages (the old
+/// parser's shape) in API responses.
+pub(crate) fn manifest_yaml_options() -> serde_saphyr::Options {
+    serde_saphyr::options! {
+        strict_booleans: true,
+        merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+        duplicate_keys: serde_saphyr::DuplicateKeyPolicy::LastWins,
+        with_snippet: false,
+    }
+}
+
 pub(crate) fn load_worker_manifest_with_name_fallback(
     worker_dir: &Path,
     name_fallback: Option<&str>,
@@ -1216,7 +1231,7 @@ pub(crate) fn load_worker_manifest_with_name_fallback(
                     format!("failed to read {}: {e}", path.display()),
                 )
             })?;
-            let manifest = serde_yaml::from_str(&text)
+            let manifest = serde_saphyr::from_str_with_options(&text, manifest_yaml_options())
                 .map_err(|e| CoreError::parse(format!("failed to parse {}: {e}", path.display())));
             return manifest
                 .and_then(|manifest| complete_manifest(worker_dir, manifest, name_fallback));

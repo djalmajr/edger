@@ -14,9 +14,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use edger_core::{
-    create_worker_ref, BodyStream, ExecutionKind, Isolate, IsolationError, SerializedRequest,
-    SerializedResponse, StreamedResponse, WorkerConfig, WorkerIsolation, WorkerManifest, WorkerRef,
-    WorkerResponse,
+    create_worker_ref, BodyStream, DurationValue, ExecutionKind, Isolate, IsolationError,
+    SerializedRequest, SerializedResponse, StreamedResponse, WorkerConfig, WorkerIsolation,
+    WorkerManifest, WorkerRef, WorkerResponse,
 };
 use edger_isolation::MockIsolate;
 use edger_worker::{
@@ -369,7 +369,7 @@ fn numbered_worker_ref(max_processes: usize, min_processes: usize, max_requests:
             max_processes: Some(max_processes),
             min_processes: Some(min_processes),
             max_requests: Some(max_requests),
-            ttl: Some(serde_yaml::Value::String("30s".into())),
+            ttl: Some(DurationValue::String("30s".into())),
             ..Default::default()
         },
     )
@@ -382,9 +382,9 @@ fn circuit_breaker_worker_ref(failures: u32, cooldown: &str) -> WorkerRef {
         WorkerManifest {
             name: "story20-crashy".into(),
             circuit_breaker_failures: Some(failures),
-            cooldown: Some(serde_yaml::Value::String(cooldown.into())),
+            cooldown: Some(DurationValue::String(cooldown.into())),
             max_processes: Some(1),
-            ttl: Some(serde_yaml::Value::String("30s".into())),
+            ttl: Some(DurationValue::String("30s".into())),
             ..Default::default()
         },
     )
@@ -398,7 +398,7 @@ fn oneshot_worker_ref() -> WorkerRef {
             name: "story20-oneshot".into(),
             isolation: Some(WorkerIsolation::Oneshot),
             max_processes: Some(1),
-            ttl: Some(serde_yaml::Value::String("30s".into())),
+            ttl: Some(DurationValue::String("30s".into())),
             ..Default::default()
         },
     )
@@ -412,8 +412,8 @@ fn queued_worker_ref(max_processes: usize, queue_limit: usize, queue_timeout: &s
             name: "story18-queue".into(),
             max_processes: Some(max_processes),
             queue_limit: Some(queue_limit),
-            queue_timeout: Some(serde_yaml::Value::String(queue_timeout.into())),
-            ttl: Some(serde_yaml::Value::String("30s".into())),
+            queue_timeout: Some(DurationValue::String(queue_timeout.into())),
+            ttl: Some(DurationValue::String("30s".into())),
             ..Default::default()
         },
     )
@@ -427,8 +427,8 @@ fn ttl_stream_worker_ref(ttl: &str) -> WorkerRef {
             name: "story18-ttl-stream".into(),
             max_processes: Some(1),
             queue_limit: Some(1),
-            queue_timeout: Some(serde_yaml::Value::String("1s".into())),
-            ttl: Some(serde_yaml::Value::String(ttl.into())),
+            queue_timeout: Some(DurationValue::String("1s".into())),
+            ttl: Some(DurationValue::String(ttl.into())),
             ..Default::default()
         },
     )
@@ -694,7 +694,7 @@ async fn story18_default_manifest_keeps_one_process_per_worker() {
         std::path::PathBuf::from("/workers/story18-default"),
         WorkerManifest {
             name: "story18-default".into(),
-            ttl: Some(serde_yaml::Value::String("30s".into())),
+            ttl: Some(DurationValue::String("30s".into())),
             ..Default::default()
         },
     )
@@ -1076,7 +1076,7 @@ async fn story18_ephemeral_ignores_persistent_queue_limit() {
             name: "story18-ephemeral-queue".into(),
             max_processes: Some(1),
             queue_limit: Some(0),
-            ttl: Some(serde_yaml::Value::Number(0.into())),
+            ttl: Some(DurationValue::Number(serde_json::Number::from(0))),
             ..Default::default()
         },
     )

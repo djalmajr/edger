@@ -34,7 +34,8 @@ bytes.workspace = true
 edger-worker = { path = ".", features = ["test-hooks"] } # (EDG-10 rev3) self-reference: compile the `test-hooks` seam for this package's integration tests
 tokio = { workspace = true, features = ["rt", "macros", "test-util", "time"] }
 edger-isolation = { path = "../edger-isolation", features = ["wasm"] }
-serde_yaml.workspace = true
+serde-saphyr.workspace = true
+serde_json.workspace = true
 tempfile = "3"
 wat.workspace = true
 # Driving streamed bodies to end/error in the EDG-6 metrics tests (StreamExt::next).
