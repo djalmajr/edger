@@ -2,7 +2,8 @@
 
 use crate::execution::{normalize_fullstack_adapter, ExecutionKind};
 use crate::manifest::{
-    DenoCacheMode, WorkerHealthCheckMode, WorkerIsolation, WorkerManifest, WorkerVisibility,
+    DenoCacheMode, DurationValue, WorkerHealthCheckMode, WorkerIsolation, WorkerManifest,
+    WorkerVisibility,
 };
 
 /// Runtime-normalized worker configuration.
@@ -98,11 +99,15 @@ pub enum FullstackBasePath {
     Fixed(String),
 }
 
-/// Parse duration string or numeric seconds to milliseconds (Buntime `parseDurationToMs`).
-pub fn parse_duration_to_ms(value: &serde_yaml::Value) -> Option<u64> {
+/// Parse a duration manifest field to milliseconds (Buntime `parseDurationToMs`):
+/// a non-negative integer is seconds, a string goes through
+/// `parse_duration_string_to_ms`. Floats, booleans, nulls, negative numbers,
+/// sequences and mappings are accepted by the manifest and yield `None`
+/// (the field's default applies).
+pub fn parse_duration_to_ms(value: &DurationValue) -> Option<u64> {
     match value {
-        serde_yaml::Value::Number(n) => n.as_u64().map(|s| s * 1000),
-        serde_yaml::Value::String(s) => parse_duration_string_to_ms(s),
+        DurationValue::Number(n) => n.as_u64().map(|s| s * 1000),
+        DurationValue::String(s) => parse_duration_string_to_ms(s),
         _ => None,
     }
 }

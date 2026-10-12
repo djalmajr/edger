@@ -40,8 +40,8 @@ pub use error::{CoreError, IsolationError};
 pub use execution::{normalize_fullstack_adapter, ExecutionKind, SUPPORTED_FULLSTACK_ADAPTERS};
 pub use isolate::{Isolate, TerminationOutcome, TerminationReport};
 pub use manifest::{
-    CronJob, DenoCacheMode, WorkerHealthCheck, WorkerHealthCheckMode, WorkerIsolation,
-    WorkerManifest, WorkerVisibility, WorkerWarmup,
+    CronJob, DenoCacheMode, DurationValue, WorkerHealthCheck, WorkerHealthCheckMode,
+    WorkerIsolation, WorkerManifest, WorkerVisibility, WorkerWarmup,
 };
 pub use principal::{
     principal_can_access_namespace, principal_can_access_worker, root_principal, ApiKeyPrincipal,

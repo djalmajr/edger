@@ -10,8 +10,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use bytes::Bytes;
 use edger_core::{
-    Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig, WorkerManifest,
-    WorkerRef,
+    DurationValue, Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig,
+    WorkerManifest, WorkerRef,
 };
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
@@ -408,8 +408,8 @@ async fn pipeline_worker_queue_full_returns_429_with_stable_code() {
                 max_processes: Some(1),
                 name: "busy".into(),
                 queue_limit: Some(0),
-                queue_timeout: Some(serde_yaml::Value::String("1s".into())),
-                ttl: Some(serde_yaml::Value::String("30s".into())),
+                queue_timeout: Some(DurationValue::String("1s".into())),
+                ttl: Some(DurationValue::String("30s".into())),
                 version: Some("1.0.0".into()),
                 ..Default::default()
             },
@@ -446,8 +446,8 @@ async fn pipeline_worker_queue_timeout_returns_503_with_stable_code() {
                 max_processes: Some(1),
                 name: "timeout".into(),
                 queue_limit: Some(1),
-                queue_timeout: Some(serde_yaml::Value::String("25ms".into())),
-                ttl: Some(serde_yaml::Value::String("30s".into())),
+                queue_timeout: Some(DurationValue::String("25ms".into())),
+                ttl: Some(DurationValue::String("30s".into())),
                 version: Some("1.0.0".into()),
                 ..Default::default()
             },

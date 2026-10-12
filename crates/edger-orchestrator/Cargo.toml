@@ -40,7 +40,7 @@ password-hash = { version = "0.5", default-features = false, features = ["getran
 saffron = "0.1.0"
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml.workspace = true
+serde-saphyr.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 opentelemetry = { version = "0.32", features = ["trace"], optional = true }

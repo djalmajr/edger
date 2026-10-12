@@ -3215,7 +3215,9 @@ mod stream_drop_flag_tests {
     //! completion-signal observer.
 
     use super::*;
-    use edger_core::{AbandonedStream, CompletionSignal, IsolationError, StreamCompletion};
+    use edger_core::{
+        AbandonedStream, CompletionSignal, DurationValue, IsolationError, StreamCompletion,
+    };
     use futures_util::StreamExt;
     use std::task::{Context, Poll};
 
@@ -3406,7 +3408,7 @@ mod stream_drop_flag_tests {
             WorkerManifest {
                 name: "edg8-flag-drop".into(),
                 max_processes: Some(1),
-                ttl: Some(serde_yaml::Value::String("30s".into())),
+                ttl: Some(DurationValue::String("30s".into())),
                 ..Default::default()
             },
         )
@@ -3500,7 +3502,7 @@ mod stream_drop_flag_tests {
             WorkerManifest {
                 name: "edg16-eof-race".into(),
                 max_processes: Some(1),
-                ttl: Some(serde_yaml::Value::String("30s".into())),
+                ttl: Some(DurationValue::String("30s".into())),
                 ..Default::default()
             },
         )
@@ -3585,7 +3587,7 @@ mod stream_drop_flag_tests {
             WorkerManifest {
                 name: "edg17-eof-race".into(),
                 max_processes: Some(1),
-                ttl: Some(serde_yaml::Value::String("30s".into())),
+                ttl: Some(DurationValue::String("30s".into())),
                 timeout: Some("2s".into()),
                 ..Default::default()
             },
@@ -3722,7 +3724,7 @@ mod stream_drop_flag_tests {
             WorkerManifest {
                 name: "edg17-flag-drop".into(),
                 max_processes: Some(1),
-                ttl: Some(serde_yaml::Value::String("30s".into())),
+                ttl: Some(DurationValue::String("30s".into())),
                 ..Default::default()
             },
         )
@@ -3947,7 +3949,7 @@ mod stream_drop_flag_tests {
             WorkerManifest {
                 name: name.into(),
                 max_processes: Some(1),
-                ttl: Some(serde_yaml::Value::String("30s".into())),
+                ttl: Some(DurationValue::String("30s".into())),
                 ..Default::default()
             },
         )

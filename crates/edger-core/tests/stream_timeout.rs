@@ -1,7 +1,19 @@
 use edger_core::{parse_worker_config, WorkerManifest};
 
+/// Canonical serde-saphyr options for parsing worker manifests (EDG-22),
+/// mirroring the orchestrator's production parse.
+fn yaml_options() -> serde_saphyr::Options {
+    serde_saphyr::options! {
+        strict_booleans: true,
+        merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+        duplicate_keys: serde_saphyr::DuplicateKeyPolicy::LastWins,
+        with_snippet: false,
+    }
+}
+
 fn config(manifest: &str) -> edger_core::WorkerConfig {
-    let manifest = serde_yaml::from_str::<WorkerManifest>(manifest).unwrap();
+    let manifest =
+        serde_saphyr::from_str_with_options::<WorkerManifest>(manifest, yaml_options()).unwrap();
     parse_worker_config(&manifest)
 }
 

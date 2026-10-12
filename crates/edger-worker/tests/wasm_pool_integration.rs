@@ -94,15 +94,28 @@ kind: wasm
     .expect("write manifest");
 }
 
+/// Canonical serde-saphyr options for parsing worker manifests (EDG-22),
+/// mirroring the orchestrator's production parse.
+fn saphyr_options() -> serde_saphyr::Options {
+    serde_saphyr::options! {
+        strict_booleans: true,
+        merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+        duplicate_keys: serde_saphyr::DuplicateKeyPolicy::LastWins,
+        with_snippet: false,
+    }
+}
+
 #[tokio::test]
 async fn pool_fetch_wasm_worker_returns_hello_body() {
     let dir = tempfile::tempdir().unwrap();
     let worker_dir = dir.path().to_path_buf();
     write_wasm_fixture(&worker_dir);
 
-    let manifest: WorkerManifest =
-        serde_yaml::from_str(&fs::read_to_string(worker_dir.join("manifest.yaml")).unwrap())
-            .unwrap();
+    let manifest: WorkerManifest = serde_saphyr::from_str_with_options(
+        &fs::read_to_string(worker_dir.join("manifest.yaml")).unwrap(),
+        saphyr_options(),
+    )
+    .unwrap();
     let mut config = parse_worker_config(&manifest);
     config.worker_dir = Some(worker_dir.clone());
 
@@ -141,9 +154,11 @@ async fn pool_fetch_uses_wasm_kind_from_worker_config_without_hint() {
     let worker_dir = dir.path().to_path_buf();
     write_wasm_fixture(&worker_dir);
 
-    let manifest: WorkerManifest =
-        serde_yaml::from_str(&fs::read_to_string(worker_dir.join("manifest.yaml")).unwrap())
-            .unwrap();
+    let manifest: WorkerManifest = serde_saphyr::from_str_with_options(
+        &fs::read_to_string(worker_dir.join("manifest.yaml")).unwrap(),
+        saphyr_options(),
+    )
+    .unwrap();
     let config = parse_worker_config(&manifest);
 
     let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(WasmHelloFactory));

@@ -3,8 +3,8 @@
 use edger_core::{
     create_worker_ref, effective_max_body_size_bytes, infer_execution_kind,
     parse_duration_string_to_ms, parse_size_to_bytes, parse_worker_config,
-    validate_worker_manifest, DenoCacheMode, ExecutionKind, FullstackBasePath, WorkerIsolation,
-    WorkerManifest, DEFAULT_MAX_BODY_BYTES,
+    validate_worker_manifest, DenoCacheMode, DurationValue, ExecutionKind, FullstackBasePath,
+    WorkerIsolation, WorkerManifest, DEFAULT_MAX_BODY_BYTES,
 };
 
 #[test]
@@ -58,9 +58,26 @@ fn health_check_is_validated_and_normalized_without_periodic_mode() {
 
 const SAMPLE_YAML: &str = include_str!("fixtures/sample_manifest.yaml");
 
+/// Canonical serde-saphyr options for parsing worker manifests (EDG-22),
+/// mirroring the orchestrator's production parse
+/// (`manifest_loader::manifest_yaml_options`).
+fn yaml_options() -> serde_saphyr::Options {
+    serde_saphyr::options! {
+        strict_booleans: true,
+        merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+        duplicate_keys: serde_saphyr::DuplicateKeyPolicy::LastWins,
+        with_snippet: false,
+    }
+}
+
+/// Parse a manifest YAML string with the canonical options.
+fn parse_manifest(text: &str) -> Result<WorkerManifest, serde_saphyr::Error> {
+    serde_saphyr::from_str_with_options(text, yaml_options())
+}
+
 #[test]
 fn manifest_deserializes_from_yaml_fixture() {
-    let manifest: WorkerManifest = serde_yaml::from_str(SAMPLE_YAML).expect("yaml parse");
+    let manifest: WorkerManifest = parse_manifest(SAMPLE_YAML).expect("yaml parse");
     assert_eq!(manifest.name, "@acme/checkout");
     assert_eq!(manifest.version.as_deref(), Some("1.2.3"));
     assert_eq!(manifest.max_requests, Some(1000));
@@ -68,7 +85,7 @@ fn manifest_deserializes_from_yaml_fixture() {
 
 #[test]
 fn parse_worker_config_normalizes_buntime_fields() {
-    let manifest: WorkerManifest = serde_yaml::from_str(SAMPLE_YAML).unwrap();
+    let manifest: WorkerManifest = parse_manifest(SAMPLE_YAML).unwrap();
     let config = parse_worker_config(&manifest);
 
     assert!(config.enabled);
@@ -91,7 +108,7 @@ fn parse_worker_config_normalizes_buntime_fields() {
 
 #[test]
 fn parse_worker_config_normalizes_circuit_breaker_and_oneshot_isolation() {
-    let manifest: WorkerManifest = serde_yaml::from_str(
+    let manifest: WorkerManifest = parse_manifest(
         r#"name: crashy
 entrypoint: index.ts
 maxRequests: 99
@@ -116,7 +133,7 @@ isolation: oneshot
 #[test]
 fn manifest_deserializes_public_env_allowlist() {
     // Guards against leaving publicEnv out of the manifest/config mapping.
-    let manifest: WorkerManifest = serde_yaml::from_str(
+    let manifest: WorkerManifest = parse_manifest(
         r#"name: public-spa
 entrypoint: index.html
 env:
@@ -157,7 +174,7 @@ fn effective_body_limit_uses_global_default_without_manifest_override() {
 
 #[test]
 fn worker_ref_includes_namespace_and_version() {
-    let manifest: WorkerManifest = serde_yaml::from_str(SAMPLE_YAML).unwrap();
+    let manifest: WorkerManifest = parse_manifest(SAMPLE_YAML).unwrap();
     let worker =
         create_worker_ref(std::path::PathBuf::from("/workers/checkout"), manifest).unwrap();
     assert_eq!(worker.namespace.as_deref(), Some("@acme"));
@@ -319,7 +336,7 @@ fn lume_fullstack_manifest_accepts_static_site_entrypoint() {
 
 #[test]
 fn parse_worker_config_normalizes_fullstack_tanstack_fields() {
-    let manifest: WorkerManifest = serde_yaml::from_str(
+    let manifest: WorkerManifest = parse_manifest(
         r#"name: tanstack-demo
 version: "1.0.0"
 kind: fullstack
@@ -393,7 +410,7 @@ fn duration_and_size_parsers() {
 fn ttl_zero_means_ephemeral() {
     let manifest = WorkerManifest {
         name: "ephemeral".into(),
-        ttl: Some(serde_yaml::Value::Number(0.into())),
+        ttl: Some(DurationValue::Number(serde_json::Number::from(0))),
         ..Default::default()
     };
     assert_eq!(parse_worker_config(&manifest).ttl_ms, 0);
@@ -404,7 +421,7 @@ fn parse_worker_config_normalizes_worker_queue_controls() {
     let manifest = WorkerManifest {
         name: "queued".into(),
         queue_limit: Some(0),
-        queue_timeout: Some(serde_yaml::Value::String("25ms".into())),
+        queue_timeout: Some(DurationValue::String("25ms".into())),
         ..Default::default()
     };
 
@@ -416,7 +433,7 @@ fn parse_worker_config_normalizes_worker_queue_controls() {
 
 #[test]
 fn parse_worker_config_normalizes_deno_sandbox_controls() {
-    let manifest: WorkerManifest = serde_yaml::from_str(
+    let manifest: WorkerManifest = parse_manifest(
         r#"name: sandboxed
 entrypoint: index.ts
 allow_net:

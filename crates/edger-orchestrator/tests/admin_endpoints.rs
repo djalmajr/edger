@@ -6,7 +6,9 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use edger_core::{CreateApiKeyRequest, ExecutionKind, SerializedRequest, WorkerManifest};
+use edger_core::{
+    CreateApiKeyRequest, DurationValue, ExecutionKind, SerializedRequest, WorkerManifest,
+};
 use edger_isolation::MockIsolate;
 use edger_orchestrator::{
     api_keys::ApiKeyService, build_pipeline, ControlAuth, ControlAuthConfig, ManifestIndex,
@@ -355,7 +357,7 @@ async fn worker_recycle_targets_one_version_and_requires_an_existing_version() {
                     version: Some(version.into()),
                     min_processes: Some(0),
                     max_processes: Some(1),
-                    ttl: Some(serde_yaml::Value::String("30s".into())),
+                    ttl: Some(DurationValue::String("30s".into())),
                     ..Default::default()
                 },
             )
@@ -489,7 +491,7 @@ async fn worker_recycle_rewarms_an_enabled_min_process_floor() {
                 version: Some("1.0.0".into()),
                 min_processes: Some(1),
                 max_processes: Some(1),
-                ttl: Some(serde_yaml::Value::String("30s".into())),
+                ttl: Some(DurationValue::String("30s".into())),
                 ..Default::default()
             },
         )

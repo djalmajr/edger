@@ -82,6 +82,35 @@ pub struct WorkerWarmup {
     pub timeout: Option<String>,
 }
 
+/// Raw value of a duration manifest field (`ttl`, `streamTimeout`,
+/// `shutdownGrace`, `cooldown`, `queueTimeout`).
+///
+/// The manifest accepts any scalar or collection in these fields; only
+/// non-negative integers (seconds) and duration strings normalize to
+/// milliseconds (`parse_duration_to_ms`), and every other form is accepted at
+/// parse time and yields `None` (the field's default). The variants mirror
+/// the shapes the historical `serde_yaml::Value` fields carried, so the JSON
+/// a manifest serializes to is unchanged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DurationValue {
+    /// Any number (integer or float); negative and non-integer values are
+    /// ignored during normalization.
+    Number(serde_json::Number),
+    /// Any string (duration text such as `30s`, or an ignored scalar).
+    String(String),
+    /// A boolean; accepted, ignored during normalization.
+    Bool(bool),
+    /// An explicit `~`/`null`; accepted, ignored during normalization.
+    Null,
+    /// A sequence; accepted, ignored during normalization.
+    Sequence(Vec<DurationValue>),
+    /// A mapping with string keys (sorted, as the historical
+    /// `serde_yaml::Value::Mapping` serialized); accepted, ignored during
+    /// normalization. Mappings with non-string keys are a parse error.
+    Mapping(std::collections::BTreeMap<String, DurationValue>),
+}
+
 /// Human-editable worker manifest (from manifest.yaml / package.json fallback).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -105,22 +134,22 @@ pub struct WorkerManifest {
     pub public_env: Vec<String>,
     #[serde(default, alias = "allow_net")]
     pub allow_net: Option<Vec<String>>,
-    pub ttl: Option<serde_yaml::Value>,
-    pub stream_timeout: Option<serde_yaml::Value>,
+    pub ttl: Option<DurationValue>,
+    pub stream_timeout: Option<DurationValue>,
     pub timeout: Option<String>,
     pub idle_timeout: Option<String>,
     #[serde(default, alias = "shutdown_grace")]
-    pub shutdown_grace: Option<serde_yaml::Value>,
+    pub shutdown_grace: Option<DurationValue>,
     pub max_requests: Option<u32>,
     pub concurrency: Option<usize>,
     pub min_processes: Option<usize>,
     pub max_processes: Option<usize>,
     #[serde(default, alias = "circuit_breaker_failures")]
     pub circuit_breaker_failures: Option<u32>,
-    pub cooldown: Option<serde_yaml::Value>,
+    pub cooldown: Option<DurationValue>,
     pub isolation: Option<WorkerIsolation>,
     pub queue_limit: Option<usize>,
-    pub queue_timeout: Option<serde_yaml::Value>,
+    pub queue_timeout: Option<DurationValue>,
     pub max_body_size: Option<String>,
     pub low_memory: Option<bool>,
     #[serde(default, alias = "memory_mb")]
