@@ -1106,10 +1106,7 @@ async fn worker_files_listing_and_zip_hide_edge_r_bundle_artifacts() {
         ".well-known/a.txt",
         "src/visible.txt",
     ] {
-        assert!(
-            names.iter().any(|name| *name == kept),
-            "missing from the zip: {kept}"
-        );
+        assert!(names.contains(&kept), "missing from the zip: {kept}");
     }
     assert!(
         names.iter().all(|name| !name.starts_with(".edger-")),

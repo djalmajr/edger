@@ -13,7 +13,7 @@ Before opening a pull request:
 1. keep changes small and preserve worker isolation;
 2. update planning and documentation when behavior changes;
 3. run `cargo test --workspace`;
-4. run `cargo clippy --workspace -- -D warnings`;
+4. run `cargo clippy --workspace --all-targets -- -D warnings`;
 5. run `cargo fmt -- --check`;
 6. run the relevant OTLP, cPanel, Helm or runtime-specific checks;
 7. keep compatibility removals and breaking changes explicit.

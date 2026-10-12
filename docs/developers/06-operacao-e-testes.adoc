@@ -103,7 +103,7 @@ Antes de declarar uma mudança completa, rode:
 [source,bash]
 ----
 cargo test --workspace
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt -- --check
 ----
 
@@ -854,7 +854,7 @@ completo exigido para fechar uma story:
 [source,bash]
 ----
 cargo test --workspace
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt -- --check
 ----
 

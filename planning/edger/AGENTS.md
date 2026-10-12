@@ -4,7 +4,7 @@
 
 ## Core
 - Core (edger-core or lib) is pure vocabulary: no I/O.
-- Always run the Rust gate before claiming complete: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`.
+- Always run the Rust gate before claiming complete: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo fmt -- --check`.
 - Run `bun test` only if a root JS/TS test suite exists; the historical Bun adapter is removed.
 - Small behavior preserving changes.
 - Preserve worker/extension isolation.

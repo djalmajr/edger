@@ -85,6 +85,11 @@ fn plan_effects_match(left: &WorkerEnabledPlan, right: &WorkerEnabledPlan) -> bo
         }
 }
 
+/// (EDG-21 test hook) the one-shot apply callback installed on the index
+/// by `set_persist_worker_enabled_before_apply_for_test`.
+#[cfg(test)]
+type PersistApplyHook = Box<dyn Fn(&ManifestIndex) + Send>;
+
 /// Minimal manifest index used by `resolve_route`.
 pub struct ManifestIndex {
     inner: Arc<RwLock<ManifestIndexState>>,
@@ -93,7 +98,7 @@ pub struct ManifestIndex {
     /// instance (not in a global), so parallel tests that park or poison the
     /// apply never see each other's hook; clones carry an empty hook.
     #[cfg(test)]
-    persist_enabled_apply_hook: std::sync::Mutex<Option<Box<dyn Fn(&ManifestIndex) + Send>>>,
+    persist_enabled_apply_hook: std::sync::Mutex<Option<PersistApplyHook>>,
 }
 
 impl Clone for ManifestIndex {
@@ -126,7 +131,7 @@ impl ManifestIndex {
     #[cfg(test)]
     pub(crate) fn set_persist_worker_enabled_before_apply_for_test(
         &self,
-        hook: Option<Box<dyn Fn(&ManifestIndex) + Send>>,
+        hook: Option<PersistApplyHook>,
     ) {
         *self
             .persist_enabled_apply_hook
@@ -135,9 +140,7 @@ impl ManifestIndex {
     }
 
     #[cfg(test)]
-    pub(crate) fn take_persist_worker_enabled_before_apply_hook(
-        &self,
-    ) -> Option<Box<dyn Fn(&ManifestIndex) + Send>> {
+    pub(crate) fn take_persist_worker_enabled_before_apply_hook(&self) -> Option<PersistApplyHook> {
         self.persist_enabled_apply_hook
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2127,7 +2130,7 @@ mod tests {
             "name: hello\nversion: \"1.0.0\"\nenabled: true\nentrypoint: index.html\nkind: static\n",
         )
         .unwrap();
-        std::fs::write(&dir.join("index.html"), "hello").unwrap();
+        std::fs::write(dir.join("index.html"), "hello").unwrap();
         std::fs::write(dir.join(crate::deploy::ENABLED_FILE), "enabled=false\n").unwrap();
 
         let mut index = ManifestIndex::new();
@@ -2150,7 +2153,7 @@ mod tests {
             "name: app\nversion: \"2.0.0\"\nenabled: false\nentrypoint: index.html\nkind: static\n",
         )
         .unwrap();
-        std::fs::write(&dir2.join("index.html"), "app").unwrap();
+        std::fs::write(dir2.join("index.html"), "app").unwrap();
         std::fs::write(dir2.join(crate::deploy::ENABLED_FILE), "enabled=true\n").unwrap();
 
         let mut index = ManifestIndex::new();
@@ -2169,7 +2172,7 @@ mod tests {
             "name: bad\nversion: \"3.0.0\"\nentrypoint: index.html\nkind: static\n",
         )
         .unwrap();
-        std::fs::write(&dir3.join("index.html"), "bad").unwrap();
+        std::fs::write(dir3.join("index.html"), "bad").unwrap();
         std::fs::write(dir3.join(crate::deploy::ENABLED_FILE), "not-a-toggle\n").unwrap();
 
         let mut index = ManifestIndex::new();

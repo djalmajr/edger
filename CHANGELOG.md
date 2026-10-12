@@ -117,6 +117,9 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Changed
 
+- The clippy gate now covers test targets: `cargo clippy --workspace
+  --all-targets -- -D warnings` in CI and the documented gates, with the
+  test-target lints it surfaced fixed at the root (no `#[allow(...)]`).
 - Worker versions that need bundling are now bundled ONCE per version and
   reused by every later process of that version: the multiproc spawn path
   runs `deno bundle` a single time, publishes the result atomically to
