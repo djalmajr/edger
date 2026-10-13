@@ -30,6 +30,7 @@ import {
   CopyIcon,
   PencilIcon,
   PlusIcon,
+  RefreshCwIcon,
   Trash2Icon,
 } from "@edger/ui/icons/lucide";
 import * as React from "react";
@@ -96,10 +97,12 @@ const DEFAULT_KEY_COLUMN_VISIBILITY: VisibilityState = { permissions: false };
 
 export function ApiKeys({
   apiKey,
+  onRefresh,
   principal,
   renderPageAction,
 }: {
   apiKey: string;
+  onRefresh?: () => void | Promise<void>;
   principal: Principal;
   renderPageAction?: (action: React.ReactNode) => React.ReactNode;
 }) {
@@ -247,7 +250,9 @@ export function ApiKeys({
       {
         id: "actions",
         enableSorting: false,
-        header: () => <span className="sr-only">{t("keys.actions")}</span>,
+        header: () => (
+          <span className="block text-right">{t("keys.actions")}</span>
+        ),
         cell: ({ row }) => {
           const key = row.original;
           const status = keyStatus(key);
@@ -367,22 +372,29 @@ export function ApiKeys({
   return (
     <div className="space-y-4">
       {renderPageAction?.(pageActions)}
-      {!renderPageAction && (
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          {pageActions}
-        </div>
-      )}
-
-      <Input
-        aria-label={t("keys.search")}
-        className="max-w-xs"
-        onChange={(event) => {
-          setSearch(event.target.value);
-          table.setPageIndex(0);
-        }}
-        placeholder={t("keys.search")}
-        value={search}
-      />
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          aria-label={t("keys.search")}
+          className="max-w-xs"
+          onChange={(event) => {
+            setSearch(event.target.value);
+            table.setPageIndex(0);
+          }}
+          placeholder={t("keys.search")}
+          value={search}
+        />
+        {!renderPageAction && (
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {onRefresh && (
+              <Button onClick={() => void onRefresh()} variant="outline">
+                <RefreshCwIcon />
+                {t("overview.refresh")}
+              </Button>
+            )}
+            {pageActions}
+          </div>
+        )}
+      </div>
 
       {keysQuery.error ? (
         <p className="text-sm text-destructive">
@@ -390,7 +402,7 @@ export function ApiKeys({
         </p>
       ) : (
         <DataGrid
-          elasticColumnId="name"
+          elasticColumnIds={["name", "keyPrefix"]}
           emptyText={
             keysQuery.isLoading
               ? t("keys.loading")
@@ -558,7 +570,7 @@ function CreateKeyDialog({
                       }
                       type="checkbox"
                     />
-                    <span className="text-xs">{permission}</span>
+                    <span>{permission}</span>
                   </label>
                 );
               })}

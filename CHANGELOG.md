@@ -29,6 +29,36 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Added
 
+- Console sessions and settings API (root only, all `Cache-Control: no-store`):
+  `GET /api/admin/sessions` lists up to 1000 non-expired sessions of active
+  users ordered by creation then id, with a `truncated` flag, exposing only
+  opaque metadata (id, userId, username, role, isRoot, createdAt, expiresAt,
+  current) — never a token or hash. `DELETE /api/admin/sessions/{id}` passes
+  the origin gate of the other mutating console routes, validates the id as
+  32 lowercase hex characters (400 otherwise, 404 unknown) and revokes
+  another user's session so its token stops authenticating immediately;
+  revoking your own session is a 403 guarded inside the atomic DELETE (logout
+  ends your own). `GET /api/admin/settings` is a read-only allowlist of the
+  runtime version, the tenant and weighted routing flags, whether password
+  login is available, and the existing session, password and login policies —
+  no URLs, paths or secrets.
+- cPanel console: active-sessions and settings pages (root only, `Sistema`/System
+  navigation group; non-root never sees the group and the page queries never
+  run). Sessions lists the connected sessions in a fixed-layout grid with a
+  case-insensitive search, a 30 s refresh and a confirmation dialog before
+  revoking a foreign session — the current session stays blocked and only
+  ends through logout. Settings shows the installation's startup values in
+  read-only cards (runtime version, routing flags, password and session
+  policies) with no write controls. Both pages follow the selected language
+  (pt-BR, en-US, es-ES) and keep the proxy/version route prefixes.
+  Layout pins: Users and API Keys put the local search on the left and the
+  Refresh/Columns/create actions on the right in one wrapping row; the
+  Actions column header is visible and right-aligned; Users orders Status
+  before Created with an elastic username column, and API Keys keeps the
+  elastic Name and Key columns (`elasticColumnIds`, backward compatible with
+  `elasticColumnId`). The Columns menu drops its redundant inner label and the
+  permission labels inherit the platform's default font size. The navigation
+  is grouped into Management, Operations and System.
 - Worker manifests may set `streamTimeout` as a duration (including `0` to
   disable it); otherwise `EDGER_STREAM_MAX_DURATION_MS` applies, defaulting to
   five minutes (`0` disables the global default). When a multiprocess streamed

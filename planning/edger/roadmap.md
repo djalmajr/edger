@@ -161,3 +161,7 @@ Paralelismo possível: Após Fase 1-2, algumas partes de worker e orquestrador p
 ## Follow-up 2026-10-01 — readmissão após evicção
 
 Correção local aprovada; benchmarks de seleção e HTTP executados, com readmissão após 40 versões e zero falhas em 1.486 requests. Revisão final aprovada e gates verdes; concluído localmente. O teto LRU não bloqueia permanentemente uma versão removida por capacidade. Evidência e critérios em `status/evidence/lru-readmission-benchmarks-2026-10-01.md`. Nenhuma publicação ou implantação faz parte desta entrega.
+
+## Incremento local da console — 2026-09-30
+
+[26.05 Sessões e configurações](epics/26-console-auth/05-sessoes-configuracoes.md): verificada localmente, root-only, configurações somente leitura. Não altera o estado da release implantada.

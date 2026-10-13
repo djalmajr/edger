@@ -30,6 +30,7 @@ export const PAGE_SIZE_OPTIONS = [15, 30, 60] as const;
 
 export function DataGrid<TData>({
   elasticColumnId,
+  elasticColumnIds,
   emptyText,
   fixedLayout = false,
   onRowClick,
@@ -37,19 +38,20 @@ export function DataGrid<TData>({
   table,
 }: {
   elasticColumnId?: string;
+  elasticColumnIds?: readonly string[];
   emptyText: string;
   fixedLayout?: boolean;
   onRowClick?: (row: TData) => void;
   rowLabel?: (row: TData) => string;
   table: TanstackTable<TData>;
 }) {
-  // Opt-in elastic column: under the fixed layout it gets no explicit width,
-  // so the browser assigns it everything the table width leaves over after
-  // the px-defined columns. Non-opting grids keep the uniform distribution.
+  // Opt-in elastic columns: under the fixed layout they get no explicit
+  // width, so the browser assigns them everything the table width leaves
+  // over after the px-defined columns. Non-opting grids keep the uniform
+  // distribution.
   const isElasticColumn = (column: Column<TData, unknown>) =>
     fixedLayout &&
-    elasticColumnId !== undefined &&
-    column.id === elasticColumnId;
+    (column.id === elasticColumnId || elasticColumnIds?.includes(column.id));
   const fixedStyle = (column: Column<TData, unknown>) =>
     fixedLayout && !isElasticColumn(column)
       ? { width: column.getSize() }

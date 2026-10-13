@@ -10,7 +10,6 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
-  DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@edger/ui/components/ui/dropdown-menu";
 import { SettingsIcon } from "@edger/ui/icons/lucide";
@@ -129,9 +128,7 @@ export function ColumnVisibilityMenu<TData>({
         {t("grid.columns")}
       </DropdownMenuTrigger>
       <DropdownMenuContent aria-label={t("grid.columns")} className="min-w-44">
-        {/* base-ui: the group label must live inside a Menu.Group */}
         <DropdownMenuGroup>
-          <DropdownMenuLabel>{t("grid.columns")}</DropdownMenuLabel>
           {columns.map(({ id, label }) => {
             const column = table.getColumn(id);
             if (!column) return null;
