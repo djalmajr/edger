@@ -42,7 +42,11 @@ use crate::security::validate_admin_mutation_security;
 use crate::server::request_id_from_headers;
 use crate::{
     auth::extract_api_key,
-    console_auth::{ConsoleAuthError, ConsoleUserInfo, ConsoleUserPatch, SESSION_PREFIX},
+    console_auth::{
+        ConsoleAuthError, ConsoleUserInfo, ConsoleUserPatch, RevokeSessionOutcome,
+        LOGIN_MAX_FAILURES, LOGIN_WINDOW, PASSWORD_MAX_LEN, PASSWORD_MIN_LEN, SESSION_PREFIX,
+        SESSION_TTL,
+    },
 };
 
 const MAX_ROUTING_POLICY_BYTES: usize = 16 * 1024;
@@ -143,6 +147,9 @@ pub fn router() -> Router<OrchestratorState> {
             "/api/admin/users/{id}/reset-password",
             post(reset_user_password_route).layer(DefaultBodyLimit::max(CONSOLE_BODY_LIMIT)),
         )
+        .route("/api/admin/sessions", get(list_sessions_route))
+        .route("/api/admin/sessions/{id}", delete(revoke_session_route))
+        .route("/api/admin/settings", get(settings_route))
 }
 
 #[derive(Deserialize)]
@@ -837,6 +844,127 @@ async fn delete_user_route(
         Ok(payload) => Json(payload).into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
+}
+
+// --------------------------------------------------------------------------
+// Sessões e configurações da console (root-only, somente leitura). Sessões:
+// metadados SEM token/hash, `current` pela credencial do chamador; a
+// revogação por id é a única mutação (self-revoke negado — logout).
+// Configurações: allowlist estrita — sem URL/caminho/senha/chave/env raw e
+// sem mutação (nenhum PATCH nesta fatia).
+// --------------------------------------------------------------------------
+
+/// `GET /api/admin/sessions` — root apenas; sessões vivas (usuário ativo e
+/// não expiradas) sem segredos, `createdAt desc/id`, limite 1000 com
+/// `truncated`. `current` marca a sessão da credencial quando ela é `ses-…`
+/// (root token estático não tem sessão corrente). `no-store`; sem console é
+/// 503 honesto.
+async fn list_sessions_route(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+) -> Response {
+    let result = async {
+        require_root(&state, &headers).await?;
+        let service = console_store(&state)?;
+        let credential = extract_api_key(&headers);
+        service.list_sessions(credential.as_deref())
+    }
+    .await;
+    match result {
+        Ok((sessions, truncated)) => (
+            [(CACHE_CONTROL, "no-store")],
+            Json(json!({ "sessions": sessions, "truncated": truncated })),
+        )
+            .into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+/// Id de sessão no formato existente (Uuid simple): 32 hex ASCII
+/// MINÚSCULOS — id fora disso (hostil, maiúsculo, curto, injeção) nunca
+/// chega ao SQL (o statement é parametrizado de qualquer forma).
+fn valid_session_id(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// `DELETE /api/admin/sessions/{id}` — root apenas + validação de mutação;
+/// id estrito (400 `VALIDATION_ERROR` se hostil), SQL parametrizado. Sessão
+/// alheia viva => 200 `{ok:true}` e a autenticação daquele token morre na
+/// hora; inexistente => 404; a PRÓPRIA sessão do chamador => 403 (sai pelo
+/// logout) — a proteção contra self-revoke vive no predicado SQL atômico
+/// por `token_hash`, não num pré-check.
+async fn revoke_session_route(
+    State(state): State<OrchestratorState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let result = async {
+        let principal = require_root(&state, &headers).await?;
+        validate_admin_mutation_security("DELETE", &headers, &principal)?;
+        if !valid_session_id(&id) {
+            return Err(CoreError::new(
+                "VALIDATION_ERROR",
+                "session id must be 32 lowercase hex characters",
+            ));
+        }
+        let service = console_store(&state)?;
+        let credential = extract_api_key(&headers);
+        service.revoke_session_by_id(&id, credential.as_deref())
+    }
+    .await;
+    match result {
+        Ok(RevokeSessionOutcome::Revoked) => Json(json!({ "ok": true })).into_response(),
+        Ok(RevokeSessionOutcome::NotFound) => {
+            let error = CoreError::new("NOT_FOUND", "session not found");
+            admin_error(map_error_status(&error), &error, &headers)
+        }
+        Ok(RevokeSessionOutcome::OwnSession) => {
+            let error = CoreError::new(
+                "FORBIDDEN",
+                "cannot revoke your own session; use the logout endpoint",
+            );
+            admin_error(map_error_status(&error), &error, &headers)
+        }
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+/// `GET /api/admin/settings` — root apenas; allowlist estrita da
+/// configuração ATUAL (somente leitura): versão do runtime, flags de
+/// roteamento, disponibilidade do login por senha (reflete `login-options`:
+/// `false` sem console; falha de store vira 503) e as políticas FIXAS já
+/// implementadas (TTL de sessão, política de senha, janela/limite de
+/// login). Nada de URL, caminho, senha, chave, env raw ou configuração
+/// mutável; `no-store`.
+async fn settings_route(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
+    if let Err(err) = require_root(&state, &headers).await {
+        return admin_error(map_error_status(&err), &err, &headers);
+    }
+    let password_enabled = match state.auth.console_service() {
+        Some(console) => match console.password_enabled() {
+            Ok(enabled) => enabled,
+            Err(err) => return admin_error(StatusCode::SERVICE_UNAVAILABLE, &err, &headers),
+        },
+        None => false,
+    };
+    (
+        [(CACHE_CONTROL, "no-store")],
+        Json(json!({
+            "runtimeVersion": env!("CARGO_PKG_VERSION"),
+            "tenantRoutingEnabled": state.server.tenant_routing_enabled(),
+            "weightedRoutingEnabled": state.server.weighted_routing_enabled(),
+            "passwordEnabled": password_enabled,
+            "sessionTtlSeconds": SESSION_TTL.as_secs(),
+            "passwordMinLength": PASSWORD_MIN_LEN,
+            "passwordMaxLength": PASSWORD_MAX_LEN,
+            "loginWindowSeconds": LOGIN_WINDOW.as_secs(),
+            "loginMaxFailures": LOGIN_MAX_FAILURES,
+        })),
+    )
+        .into_response()
 }
 
 async fn catalog(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {

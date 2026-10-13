@@ -663,7 +663,7 @@ describe("ConsoleUsers", () => {
     expect(
       longNameCell.querySelector("[title]")?.getAttribute("title"),
     ).toBe(longName);
-    const workersCell = longRow.querySelectorAll("td")[4] as HTMLElement;
+    const workersCell = longRow.querySelectorAll("td")[3] as HTMLElement;
     expect(workersCell.querySelector("code")?.getAttribute("title")).toBe(
       longWorkers.join(", "),
     );
@@ -688,7 +688,7 @@ describe("ConsoleUsers", () => {
     const row = screen
       .getByRole("table")
       .querySelector("tbody tr") as HTMLElement;
-    const permissionsCell = row.querySelectorAll("td")[2] as HTMLElement;
+    const permissionsCell = row.querySelectorAll("td")[1] as HTMLElement;
     const list = permissionsCell.querySelector<HTMLElement>(
       "[data-permission-badges]",
     )!;

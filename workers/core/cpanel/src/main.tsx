@@ -82,6 +82,7 @@ import {
   Sidebar,
   SidebarContent,
   SidebarGroup,
+  SidebarGroupLabel,
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
@@ -134,6 +135,7 @@ import {
   ScrollTextIcon,
   SearchIcon,
   ShieldCheckIcon,
+  SettingsIcon,
   Trash2Icon,
   UploadCloudIcon,
   UploadIcon,
@@ -149,6 +151,8 @@ import {
   DEFAULT_PAGE_SIZE,
   PaginationControls,
 } from "./components/data-grid";
+import { ConsoleSessions } from "./components/console-sessions";
+import { ConsoleSettings } from "./components/console-settings";
 import { ApiKeys } from "./components/api-keys";
 import { PageTitleHelp } from "./components/page-title-help";
 import { Overview } from "./components/overview";
@@ -252,6 +256,18 @@ const NAVIGATION = [
     icon: ShieldCheckIcon,
     id: "users" as const,
     titleKey: "nav.users" as TranslationKey,
+  },
+  {
+    descriptionKey: "nav.sessions.description" as TranslationKey,
+    icon: LogOutIcon,
+    id: "sessions" as const,
+    titleKey: "nav.sessions" as TranslationKey,
+  },
+  {
+    descriptionKey: "nav.settings.description" as TranslationKey,
+    icon: SettingsIcon,
+    id: "settings" as const,
+    titleKey: "nav.settings" as TranslationKey,
   },
 ];
 
@@ -2067,6 +2083,26 @@ function Shell({
       (entry) => entry.id === (route.target ? "workers" : "observability"),
     ) ??
     NAVIGATION[0];
+  const visibleNavigation = NAVIGATION.filter(
+    (entry) =>
+      (entry.id !== "keys" || canManageKeys(data.principal)) &&
+      (entry.id !== "observability" || can(data.principal, "observability:read")) &&
+      (!["users", "sessions", "settings"].includes(entry.id) || data.principal.isRoot),
+  );
+  const navigationGroups = [
+    {
+      label: t("nav.management"),
+      entries: visibleNavigation.filter((entry) => !["observability", "sessions", "settings"].includes(entry.id)),
+    },
+    {
+      label: t("nav.operations"),
+      entries: visibleNavigation.filter((entry) => entry.id === "observability"),
+    },
+    {
+      label: t("nav.system"),
+      entries: visibleNavigation.filter((entry) => ["sessions", "settings"].includes(entry.id)),
+    },
+  ].filter((group) => group.entries.length > 0);
   React.useEffect(() => {
     const pop = () => setRoute(readRoute(location.pathname, cpanelBase));
     addEventListener("popstate", pop);
@@ -2108,16 +2144,11 @@ function Shell({
           </div>
         </SidebarHeader>
         <SidebarContent>
-          <SidebarGroup>
-            <SidebarMenu>
-              {NAVIGATION.filter(
-                (entry) =>
-                  (entry.id !== "keys" ||
-                    canManageKeys(data.principal)) &&
-                  (entry.id !== "observability" ||
-                    can(data.principal, "observability:read")) &&
-                  (entry.id !== "users" || data.principal.isRoot),
-              ).map((entry) => (
+          {navigationGroups.map((group) => (
+            <SidebarGroup key={group.label}>
+              <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+              <SidebarMenu>
+                {group.entries.map((entry) => (
                 <SidebarMenuItem key={entry.id}>
                   <SidebarMenuButton
                     isActive={
@@ -2133,9 +2164,10 @@ function Shell({
                     <span>{t(entry.titleKey)}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroup>
+                ))}
+              </SidebarMenu>
+            </SidebarGroup>
+          ))}
         </SidebarContent>
       </Sidebar>
       <SidebarInset className="min-w-0">
@@ -2185,7 +2217,7 @@ function Shell({
           <PageActionsContext.Provider value={pageActionsElement}>
             <div
               className={
-                route.view === "workers"
+                ["workers", "users", "keys", "sessions", "settings"].includes(route.view)
                   ? "hidden"
                   : "mb-4 flex min-h-8 items-center gap-3"
               }
@@ -2274,16 +2306,22 @@ function Shell({
             {route.view === "keys" && (
               <ApiKeys
                 apiKey={apiKey}
+                onRefresh={refresh}
                 principal={data.principal}
-                renderPageAction={(action) => <PageActions>{action}</PageActions>}
               />
             )}
             {route.view === "users" && (
               <ConsoleUsers
                 apiKey={apiKey}
+                onRefresh={refresh}
                 principal={data.principal}
-                renderPageAction={(action) => <PageActions>{action}</PageActions>}
               />
+            )}
+            {route.view === "sessions" && (
+              <ConsoleSessions apiKey={apiKey} principal={data.principal} />
+            )}
+            {route.view === "settings" && (
+              <ConsoleSettings apiKey={apiKey} principal={data.principal} />
             )}
             {route.view === "observability" && (
               <Observability

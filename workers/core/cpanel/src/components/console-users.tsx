@@ -20,7 +20,7 @@ import {
 } from "@edger/ui/components/ui/dialog";
 import { Input } from "@edger/ui/components/ui/input";
 import { Label } from "@edger/ui/components/ui/label";
-import { PlusIcon } from "@edger/ui/icons/lucide";
+import { PlusIcon, RefreshCwIcon } from "@edger/ui/icons/lucide";
 import {
   Tooltip,
   TooltipContent,
@@ -84,10 +84,10 @@ function describeError(reason: unknown): string {
 // present. The ids mirror the column definitions below.
 const HIDEABLE_USER_COLUMNS = [
   "username",
-  "status",
   "permissions",
   "namespaces",
   "workers",
+  "status",
   "createdAt",
 ] as const;
 const DEFAULT_USER_COLUMN_VISIBILITY: VisibilityState = { permissions: false };
@@ -129,7 +129,7 @@ function PermissionsField({
                 }
                 type="checkbox"
               />
-              <span className="text-xs">{permission}</span>
+              <span>{permission}</span>
             </label>
           );
         })}
@@ -140,10 +140,12 @@ function PermissionsField({
 
 export function ConsoleUsers({
   apiKey,
+  onRefresh,
   principal,
   renderPageAction,
 }: {
   apiKey: string;
+  onRefresh?: () => void | Promise<void>;
   principal: Principal;
   renderPageAction?: (action: React.ReactNode) => React.ReactNode;
 }) {
@@ -156,14 +158,22 @@ export function ConsoleUsers({
       <p className="text-sm text-muted-foreground">{t("users.noManagement")}</p>
     );
   }
-  return <UsersPanel apiKey={apiKey} renderPageAction={renderPageAction} />;
+  return (
+    <UsersPanel
+      apiKey={apiKey}
+      onRefresh={onRefresh}
+      renderPageAction={renderPageAction}
+    />
+  );
 }
 
 function UsersPanel({
   apiKey,
+  onRefresh,
   renderPageAction,
 }: {
   apiKey: string;
+  onRefresh?: () => void | Promise<void>;
   renderPageAction?: (action: React.ReactNode) => React.ReactNode;
 }) {
   const { locale, t } = useI18n();
@@ -229,19 +239,6 @@ function UsersPanel({
         size: 180,
       },
       {
-        accessorFn: (user) => (user.disabled ? "disabled" : "active"),
-        id: "status",
-        header: ({ column }) => (
-          <DataGridColumnHeader column={column} label={t("users.status")} />
-        ),
-        cell: ({ row }) => (
-          <Badge variant={row.original.disabled ? "outline" : "default"}>
-            {row.original.disabled ? t("users.disabled") : t("users.active")}
-          </Badge>
-        ),
-        size: 100,
-      },
-      {
         accessorFn: (user) => user.permissions.join(", "),
         id: "permissions",
         header: ({ column }) => (
@@ -285,6 +282,19 @@ function UsersPanel({
         size: 120,
       },
       {
+        accessorFn: (user) => (user.disabled ? "disabled" : "active"),
+        id: "status",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} label={t("users.status")} />
+        ),
+        cell: ({ row }) => (
+          <Badge variant={row.original.disabled ? "outline" : "default"}>
+            {row.original.disabled ? t("users.disabled") : t("users.active")}
+          </Badge>
+        ),
+        size: 100,
+      },
+      {
         accessorKey: "createdAt",
         header: ({ column }) => (
           <DataGridColumnHeader column={column} label={t("users.created")} />
@@ -305,7 +315,7 @@ function UsersPanel({
       {
         id: "actions",
         enableSorting: false,
-        header: () => <span className="sr-only">{t("keys.actions")}</span>,
+        header: () => <span className="block text-right">{t("keys.actions")}</span>,
         cell: ({ row }) => {
           const user = row.original;
           // The root row is immutable: no mutable buttons, as before the
@@ -414,10 +424,10 @@ function UsersPanel({
   const visibilityColumns = React.useMemo(
     () => [
       { id: "username", label: t("users.username") },
-      { id: "status", label: t("users.status") },
       { id: "permissions", label: t("users.permissions") },
       { id: "namespaces", label: t("account.namespaces") },
       { id: "workers", label: t("keys.workers") },
+      { id: "status", label: t("users.status") },
       { id: "createdAt", label: t("users.created") },
     ],
     [t],
@@ -462,21 +472,29 @@ function UsersPanel({
   return (
     <div className="space-y-4">
       {renderPageAction?.(pageActions)}
-      {!renderPageAction && (
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          {pageActions}
-        </div>
-      )}
-      <Input
-        aria-label={t("users.search")}
-        className="max-w-xs"
-        onChange={(event) => {
-          setSearch(event.target.value);
-          table.setPageIndex(0);
-        }}
-        placeholder={t("users.search")}
-        value={search}
-      />
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          aria-label={t("users.search")}
+          className="max-w-xs"
+          onChange={(event) => {
+            setSearch(event.target.value);
+            table.setPageIndex(0);
+          }}
+          placeholder={t("users.search")}
+          value={search}
+        />
+        {!renderPageAction && (
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {onRefresh && (
+              <Button onClick={() => void onRefresh()} variant="outline">
+                <RefreshCwIcon />
+                {t("overview.refresh")}
+              </Button>
+            )}
+            {pageActions}
+          </div>
+        )}
+      </div>
       {usersQuery.isLoading && (
         <p className="text-sm text-foreground" role="status">
           {t("users.loading")}
@@ -499,6 +517,7 @@ function UsersPanel({
       )}
       {!usersQuery.isLoading && !usersQuery.error && (
         <DataGrid
+          elasticColumnId="username"
           emptyText={search.trim() ? t("users.noResults") : t("users.empty")}
           fixedLayout
           table={table}

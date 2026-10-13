@@ -14,6 +14,8 @@ const routes: Record<string, RouteState> = {
   workers: { path: "", view: "workers" },
   keys: { path: "", view: "keys" },
   users: { path: "", view: "users" },
+  sessions: { path: "", view: "sessions" },
+  settings: { path: "", view: "settings" },
   observability: { path: "", view: "observability" },
   logs: { path: "", view: "logs" },
   "worker files": { path: "src/hello world/índex.txt", target, view: "files" },

@@ -22,6 +22,7 @@ O mesmo banco SQLite persistente de API keys recebe usuários e sessões da cons
 | [26.02 Tela de acesso](02-tela-acesso.md) | Card semelhante ao appliance, idioma/tema, senha e token, favicon | verificada localmente |
 | [26.03 Configuração e prova](03-configuracao-prova.md) | Secret existente no Rancher, docs, gate Rust/JS/Helm, browser e smoke local | verificada localmente |
 | [26.04 Gestão de usuários](04-gestao-usuarios.md) | Root cria, lista, altera permissões e escopos, desativa, redefine senha e exclui usuários adicionais; cPanel expõe essas ações | verificada localmente |
+| [26.05 Sessões e configurações](05-sessoes-configuracoes.md) | Root lista/revoga sessões alheias; configurações readonly e grupo Sistema | verificada localmente; não publicada |
 
 ## Epic acceptance criteria
 

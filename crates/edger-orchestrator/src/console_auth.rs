@@ -50,6 +50,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use edger_core::{root_principal, validate_key_grant, ApiKeyPrincipal, CoreError};
 use rusqlite::{params, Connection};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
@@ -67,14 +68,21 @@ pub const SESSION_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// (forjáveis: girar o header não rotaciona o bucket). Janela deslizante de
 /// 20 falhas em 15 min por IP, com teto de memória e sweep (buckets vazios
 /// somem; estourado o teto, evicta o menos recente).
-const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
-const LOGIN_MAX_FAILURES: usize = 20;
+pub(crate) const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
+pub(crate) const LOGIN_MAX_FAILURES: usize = 20;
 const MAX_LIMITER_BUCKETS: usize = 10_000;
 
 const USERNAME_MAX_LEN: usize = 64;
-const PASSWORD_MAX_LEN: usize = 128;
+/// Política de senha: intervalo de tamanho (fonte única — o validador e o
+/// endpoint de configurações leem daqui, nunca de literal espalhado).
+pub(crate) const PASSWORD_MIN_LEN: usize = 12;
+pub(crate) const PASSWORD_MAX_LEN: usize = 128;
 const USERNAME_MIN_LEN: usize = 2;
 const USERNAME_ALLOWED_LEN: usize = 32;
+
+/// Teto da listagem de sessões do admin API: lê `LIMIT + 1` e sinaliza
+/// `truncated` sem carregar o banco inteiro.
+pub(crate) const SESSION_LIST_LIMIT: usize = 1000;
 
 /// Limite compartilhado de cálculos Argon2 simultâneos (login, troca de
 /// senha, criação/reset de usuário): cada hash reserva ~19 MiB (m=19456
@@ -111,6 +119,39 @@ pub struct ConsoleUserPatch {
     pub permissions: Option<Vec<String>>,
     pub namespaces: Option<Vec<String>>,
     pub workers: Option<Vec<String>>,
+}
+
+/// Metadados de uma sessão viva para o admin API (root-only) — SEM token/
+/// hash: o `id` é o id SQL opaco existente (Uuid simple) e `current` marca a
+/// sessão da credencial do chamador quando esta é uma sessão (a comparação é
+/// por hash DENTRO do store; token root estático não tem sessão corrente).
+/// `role` segue a semântica dos usuários: `admin` para o root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInfo {
+    pub id: String,
+    pub user_id: i64,
+    pub username: String,
+    pub role: String,
+    pub is_root: bool,
+    /// Epoch em segundos.
+    pub created_at: i64,
+    /// Epoch em segundos.
+    pub expires_at: i64,
+    pub current: bool,
+}
+
+/// Resultado da revogação de sessão por id (sem segredos). A proteção contra
+/// self-revoke vive no predicado SQL atômico por `token_hash`, não num
+/// pré-check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevokeSessionOutcome {
+    /// Sessão alheia viva revogada: a autenticação do token morre na hora.
+    Revoked,
+    /// Id inexistente (ou removida em paralelo entre a leitura e o DELETE).
+    NotFound,
+    /// Era a própria sessão da credencial do chamador: sai pelo logout.
+    OwnSession,
 }
 
 /// Janela deslizante de falhas de senha POR IP REAL (ver `LOGIN_WINDOW`).
@@ -213,7 +254,7 @@ impl LoginLimiter {
 /// passam por ela — "inválida" significa fora dessa política.
 pub fn validate_password_policy(password: &str) -> Result<(), CoreError> {
     let len = password.chars().count();
-    if !(12..=PASSWORD_MAX_LEN).contains(&len) {
+    if !(PASSWORD_MIN_LEN..=PASSWORD_MAX_LEN).contains(&len) {
         return Err(policy_error());
     }
     let has_letter = password.chars().any(|c| c.is_alphabetic());
@@ -232,7 +273,7 @@ fn policy_error() -> CoreError {
     CoreError::new(
         "VALIDATION_ERROR",
         format!(
-            "password must be 12-{PASSWORD_MAX_LEN} characters and include a letter, a digit, and a symbol"
+            "password must be {PASSWORD_MIN_LEN}-{PASSWORD_MAX_LEN} characters and include a letter, a digit, and a symbol"
         ),
     )
 }
@@ -1122,6 +1163,101 @@ impl SqliteConsoleStore {
         Ok(removed > 0)
     }
 
+    /// Sessões vivas (usuário ativo e `expires_at > now`), SEM segredos, em
+    /// `created_at DESC, id`, lendo `SESSION_LIST_LIMIT + 1` para sinalizar
+    /// `truncated`. `caller_token_hash` (quando a credencial do chamador é
+    /// uma sessão) marca `current` — o `token_hash` é lido apenas para essa
+    /// comparação e NUNCA sai do store.
+    fn list_sessions(
+        &self,
+        caller_token_hash: Option<&str>,
+        now: i64,
+    ) -> Result<(Vec<SessionInfo>, bool), CoreError> {
+        let conn = self.conn.lock().map_err(|_| lock_err())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT s.id, s.user_id, u.username, u.role,
+                        s.created_at, s.expires_at, s.token_hash
+                 FROM console_sessions AS s
+                 JOIN console_users AS u ON u.id = s.user_id
+                 WHERE s.expires_at > ?1 AND u.active = 1
+                 ORDER BY s.created_at DESC, s.id
+                 LIMIT ?2",
+            )
+            .map_err(store_err)?;
+        let rows = stmt
+            .query_map(params![now, SESSION_LIST_LIMIT as i64 + 1], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .map_err(store_err)?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            let (id, user_id, username, role, created_at, expires_at, token_hash) =
+                row.map_err(store_err)?;
+            let is_root = username.eq_ignore_ascii_case(ROOT_USERNAME);
+            sessions.push(SessionInfo {
+                id,
+                user_id,
+                username,
+                role: if is_root { "admin".to_string() } else { role },
+                is_root,
+                created_at,
+                expires_at,
+                current: caller_token_hash.is_some_and(|caller| caller == token_hash),
+            });
+        }
+        let truncated = sessions.len() > SESSION_LIST_LIMIT;
+        sessions.truncate(SESSION_LIST_LIMIT);
+        Ok((sessions, truncated))
+    }
+
+    /// Revogação por id com proteção contra self-revoke NO PREDICADO ATÔMICO:
+    /// o `DELETE` carrega `token_hash IS NOT ?2` (NULL quando a credencial do
+    /// chamador não é sessão), então a própria sessão do chamador nunca sai
+    /// por aqui — mesmo se o pré-check da leitura anterior estiver defasado.
+    /// O `token_hash` da linha lida não é devolvido ao caller: a comparação
+    /// própria/alheia acontece dentro do store.
+    fn revoke_session_by_id(
+        &self,
+        session_id: &str,
+        caller_token_hash: Option<&str>,
+    ) -> Result<RevokeSessionOutcome, CoreError> {
+        let conn = self.conn.lock().map_err(|_| lock_err())?;
+        let mut stmt = conn
+            .prepare("SELECT token_hash FROM console_sessions WHERE id = ?1")
+            .map_err(store_err)?;
+        let mut rows = stmt
+            .query_map(params![session_id], |row| row.get::<_, String>(0))
+            .map_err(store_err)?;
+        let Some(current_hash) = rows.next().transpose().map_err(store_err)? else {
+            return Ok(RevokeSessionOutcome::NotFound);
+        };
+        if caller_token_hash.is_some_and(|caller| caller == current_hash) {
+            return Ok(RevokeSessionOutcome::OwnSession);
+        }
+        let removed = conn
+            .execute(
+                "DELETE FROM console_sessions WHERE id = ?1 AND token_hash IS NOT ?2",
+                params![session_id, caller_token_hash],
+            )
+            .map_err(store_err)?;
+        if removed == 1 {
+            Ok(RevokeSessionOutcome::Revoked)
+        } else {
+            // Sumiu entre a leitura e o DELETE (logout/expiração em
+            // paralelo): o estado honesto é "não existe mais".
+            Ok(RevokeSessionOutcome::NotFound)
+        }
+    }
+
     /// Troca atômica da senha do dono da sessão + rotação de sessões, com
     /// REVALIDAÇÃO dentro da transação: só altera se (1) a SESSÃO SOLICITANTE
     /// ainda existe e está viva, (2) o usuário está ativo e (3) o hash atual
@@ -1447,6 +1583,41 @@ impl ConsoleAuthService {
             return Ok(false);
         }
         self.store.delete_session(raw_token)
+    }
+
+    /// Sessões vivas (usuário ativo e não expiradas) SEM segredos, em
+    /// `createdAt desc, id`, com teto de `SESSION_LIST_LIMIT` (o store lê
+    /// `+1` e sinaliza `truncated`). Quando a credencial do chamador é uma
+    /// sessão (`ses-…`), `current` marca a linha dela pela comparação de
+    /// hash — o hash nunca sai do store e credencial que não é sessão (root
+    /// token estático, `egk_`) não tem sessão corrente.
+    pub fn list_sessions(
+        &self,
+        caller_credential: Option<&str>,
+    ) -> Result<(Vec<SessionInfo>, bool), CoreError> {
+        let caller_hash = caller_credential
+            .filter(|credential| credential.starts_with(SESSION_PREFIX))
+            .map(hash_token);
+        let now = now_epoch()? as i64;
+        self.store.list_sessions(caller_hash.as_deref(), now)
+    }
+
+    /// Revoga por id uma sessão ALHEIA à credencial do chamador: a própria
+    /// sessão é `OwnSession` (403 no handler — ela só sai pelo logout), id
+    /// inexistente é `NotFound` e a revogação apaga a linha (a autenticação
+    /// daquele token morre na hora). O id é validado pelo caller (32 hex
+    /// minúsculos) e o SQL é parametrizado; a proteção contra self-revoke
+    /// vive no predicado atômico do DELETE por `token_hash`.
+    pub fn revoke_session_by_id(
+        &self,
+        session_id: &str,
+        caller_credential: Option<&str>,
+    ) -> Result<RevokeSessionOutcome, CoreError> {
+        let caller_hash = caller_credential
+            .filter(|credential| credential.starts_with(SESSION_PREFIX))
+            .map(hash_token);
+        self.store
+            .revoke_session_by_id(session_id, caller_hash.as_deref())
     }
 
     /// Troca a senha do dono da sessão: valida a atual (prova contra o
@@ -2736,5 +2907,142 @@ mod tests {
         let before = limiter.lock().len();
         limiter.check(IpAddr::from([127, 0, 0, 1]));
         assert_eq!(limiter.lock().len(), before);
+    }
+
+    #[test]
+    fn session_list_limits_to_1000_and_flags_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("console.db");
+        let service = ConsoleAuthService::open(&path).unwrap();
+        service.seed_root_if_empty(Some(STRONG)).unwrap();
+        // 1002 sessões vivas direto no banco (hash fake — sem gastar 1001
+        // cálculos Argon2): `created_at` decrescente e a MAIS NOVA com o hash
+        // de uma credencial de unidade (para checar `current`).
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let user_id: i64 = conn
+            .query_row(
+                "SELECT id FROM console_users WHERE username = 'root'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let now = now_epoch().unwrap() as i64;
+        for i in 0..=1001 {
+            conn.execute(
+                "INSERT INTO console_sessions (id, user_id, token_hash, created_at, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                raw_params![
+                    format!("{:032x}", i + 1),
+                    user_id,
+                    if i == 0 {
+                        hash_token("ses-unit-caller")
+                    } else {
+                        format!("unit-{i:04x}")
+                    },
+                    now - i as i64,
+                    now + 3_600,
+                ],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        // Limite: 1000 voltam e `truncated` sinaliza que há mais; a ordem é
+        // `created_at DESC` (a mais nova é a linha da credencial de unidade).
+        let (sessions, truncated) = service.list_sessions(None).unwrap();
+        assert!(truncated, "esperado truncado com 1002 sessões vivas");
+        assert_eq!(sessions.len(), SESSION_LIST_LIMIT);
+        for (position, session) in sessions.iter().enumerate() {
+            assert_eq!(session.created_at, now - position as i64);
+            assert_eq!(session.username, "root");
+            assert!(session.is_root);
+            assert_eq!(session.role, "admin");
+            assert!(session.expires_at > now);
+            assert_eq!(session.id.len(), 32);
+            assert!(!session.current, "credencial ausente não marca current");
+        }
+        // `current` pela credencial (comparação por hash no store): só a
+        // linha dela sai marcada — e nenhuma linha devolve token/hash.
+        let (sessions, truncated) = service.list_sessions(Some("ses-unit-caller")).unwrap();
+        assert!(truncated);
+        assert_eq!(sessions.len(), SESSION_LIST_LIMIT);
+        assert!(sessions[0].current);
+        assert!(
+            sessions[1..].iter().all(|session| !session.current),
+            "apenas a sessão da credencial marca current"
+        );
+    }
+
+    #[test]
+    fn revoke_session_by_id_outcomes_and_atomic_self_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("console.db");
+        let service = ConsoleAuthService::open(&path).unwrap();
+        service.seed_root_if_empty(Some(STRONG)).unwrap();
+        let now = now_epoch().unwrap() as i64;
+        let own_id = format!("{:032x}", 1);
+        let victim_id = format!("{:032x}", 2);
+        let foreign_id = format!("{:032x}", 3);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let user_id: i64 = conn
+            .query_row(
+                "SELECT id FROM console_users WHERE username = 'root'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        for (id, token_hash) in [
+            (own_id.clone(), hash_token("ses-unit-own")),
+            (victim_id.clone(), "unit-victim".to_string()),
+            (foreign_id.clone(), "unit-foreign".to_string()),
+        ] {
+            conn.execute(
+                "INSERT INTO console_sessions (id, user_id, token_hash, created_at, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                raw_params![id, user_id, token_hash, now, now + 3_600],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let (sessions, truncated) = service.list_sessions(None).unwrap();
+        assert!(!truncated);
+        assert_eq!(sessions.len(), 3);
+
+        // Própria sessão do chamador: `OwnSession` e a linha NUNCA sai por
+        // aqui (o predicado atômico a protege — o banco continua com 3).
+        assert_eq!(
+            service
+                .revoke_session_by_id(&own_id, Some("ses-unit-own"))
+                .unwrap(),
+            RevokeSessionOutcome::OwnSession
+        );
+        let (after_own, _) = service.list_sessions(Some("ses-unit-own")).unwrap();
+        assert_eq!(after_own.len(), 3, "self-revoke não toca a linha");
+        assert!(after_own.iter().any(|session| session.current));
+
+        // Sessão alheia (chamador com sessão): revogada, exatamente uma
+        // linha sai e as demais seguem vivas.
+        assert_eq!(
+            service
+                .revoke_session_by_id(&victim_id, Some("ses-unit-own"))
+                .unwrap(),
+            RevokeSessionOutcome::Revoked
+        );
+        let (after_victim, _) = service.list_sessions(Some("ses-unit-own")).unwrap();
+        assert_eq!(after_victim.len(), 2);
+        assert!(!after_victim.iter().any(|session| session.id == victim_id));
+
+        // Chamador sem sessão (root token estático): revoga sem a guarda se
+        // aplicar — e id desconhecido é `NotFound`, não erro de store.
+        assert_eq!(
+            service.revoke_session_by_id(&foreign_id, None).unwrap(),
+            RevokeSessionOutcome::Revoked
+        );
+        assert_eq!(
+            service
+                .revoke_session_by_id(&format!("{:032x}", 99), None)
+                .unwrap(),
+            RevokeSessionOutcome::NotFound
+        );
     }
 }
