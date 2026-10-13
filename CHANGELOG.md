@@ -4,8 +4,9 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.17` (warmup operational
-event, safe-Rust YAML parser, deno bundle retry); `v0.3.2-rc.16` (version
+Toward 0.3.2. Release candidates: `v0.3.2-rc.18` (root-only console
+sessions and settings, grouped cPanel navigation); `v0.3.2-rc.17` (warmup
+operational event, safe-Rust YAML parser, deno bundle retry); `v0.3.2-rc.16` (version
 enable/disable survives restarts); `v0.3.2-rc.15` (each worker version
 bundled once, off the async runtime); `v0.3.2-rc.14` (per-frame stream
 timeout cancels and drains instead of recycling, wasmtime 49, Rust 1.99);
@@ -365,6 +366,18 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.18]
+
+- Root-only console sessions and settings: `GET /api/admin/sessions` lists
+  opaque session metadata (never a token or hash), `DELETE
+  /api/admin/sessions/{id}` revokes another user's session immediately (your
+  own session is a 403; logout ends it) and `GET /api/admin/settings` returns
+  a read-only allowlist of the runtime version, routing flags and console
+  policies. All three answer `Cache-Control: no-store` (EDG-23).
+- cPanel: Sessions and Settings pages under a root-only System group, the
+  navigation grouped into Management, Operations and System, and the Users /
+  API Keys toolbar and column layout pins (EDG-23).
 
 ## [0.3.2-rc.17]
 
