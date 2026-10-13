@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.2-rc.17"
+version = "0.3.2-rc.18"
 edition = "2021"
 license-file = "LICENSE"
 repository = "https://github.com/djalmajr/edger"
