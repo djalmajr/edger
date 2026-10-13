@@ -32,6 +32,8 @@ root-key.txt
 coverage/
 *.lcov
 .playwright-cli/
+.playwright-mcp/
+/output/
 
 # Scratch / local binaries
 edger-bin
