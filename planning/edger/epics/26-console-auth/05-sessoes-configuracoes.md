@@ -45,4 +45,4 @@ cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings 
 
 Frontend: typecheck, Vitest, Bun e build. Provas locais: no credential401, operador/egk403, root aceito, JSON allowlist/no-store, expiradas/inativas omitidas, limite1000, origem hostil403, self403 preservada, revoke200 seguido de token401, unknown404/invalid400 e flags off/on. Browser: cancelar mantém sessão, confirmar remove linha e credencial revogada falha; fixtures temporárias removidas.
 
-Evidência original (base rc.6) em `planning/edger/status/evidence/console-system-2026-09-30.md` do worktree `cpanel-act-warnings` — não copiada por descrever outra base; na portação EDG-23 a prova local é a suíte `crates/edger-orchestrator/tests/console_system.rs`. Nenhuma prova local implica merge, publicação ou deploy remoto.
+A evidência original (base rc.6, de 2026-09-30) ficou no worktree `cpanel-act-warnings` e não foi copiada, porque descreve outra base; na portação EDG-23 a prova local é a suíte `crates/edger-orchestrator/tests/console_system.rs`. Nenhuma prova local implica merge, publicação ou deploy remoto.
