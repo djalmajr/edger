@@ -42,3 +42,6 @@ edger-bin
 .claude/
 .herdr-agents/
 .herdr-soho/
+# Personal herdr-soho team choices (roles, kinds, models, effort)
+/.agents/herdr-soho.conf
+/.agents/herdr-roles/
