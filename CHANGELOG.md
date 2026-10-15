@@ -167,6 +167,12 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   requested grants against the permission catalog, applies the
   anti-escalation rule, refuses a revoked key, and refreshes authorization
   immediately after an update.
+- `ConsoleAuthService` exposes `max_observed_hash_concurrency()`: the peak
+  number of concurrent Argon2 password calculations observed since the
+  service started (operational diagnostic of the shared hash-slot limit —
+  the slot is reserved before the calculation and stays held until it
+  finishes, so the peak never exceeds the configured `with_hash_concurrency`
+  ceiling).
 
 ### Changed
 
@@ -303,6 +309,15 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   list of hidden permissions, and the page follows the selected language.
 
 ### Fixed
+
+- Console hash slots stay held until the end of the calculation (EDG-28):
+  the shared Argon2 limit's permit is moved inside the `spawn_blocking`
+  closure and released only when the calculation completes, alongside the
+  in-flight counter guard, so a client that disconnects mid-login no longer
+  frees the slot while the calculation keeps running — abandoned
+  connections can no longer push concurrent password calculations past the
+  configured limit (the acquisition timeout, the `CONSOLE_BUSY` 503 and the
+  login statuses are unchanged).
 
 - The manifest `cron[]` jobs now follow the default version and track the
   index (EDG-26): instead of a fixed registration list built once at boot,

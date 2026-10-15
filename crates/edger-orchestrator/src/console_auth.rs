@@ -39,6 +39,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -1344,6 +1345,10 @@ pub struct ConsoleAuthService {
     /// teto também é teto de memória.
     hash_slots: Arc<Semaphore>,
     hash_acquire_timeout: Duration,
+    /// Cálculos de senha em voo agora e o pico observado desde o start do
+    /// serviço (diagnóstico do teto — ver `max_observed_hash_concurrency`).
+    hash_in_flight: Arc<AtomicUsize>,
+    hash_peak: Arc<AtomicUsize>,
 }
 
 impl ConsoleAuthService {
@@ -1353,6 +1358,8 @@ impl ConsoleAuthService {
             limiter: LoginLimiter::default_policy(),
             hash_slots: Arc::new(Semaphore::new(HASH_CONCURRENCY)),
             hash_acquire_timeout: HASH_ACQUIRE_TIMEOUT,
+            hash_in_flight: Arc::new(AtomicUsize::new(0)),
+            hash_peak: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -1362,6 +1369,8 @@ impl ConsoleAuthService {
             limiter: LoginLimiter::default_policy(),
             hash_slots: Arc::new(Semaphore::new(HASH_CONCURRENCY)),
             hash_acquire_timeout: HASH_ACQUIRE_TIMEOUT,
+            hash_in_flight: Arc::new(AtomicUsize::new(0)),
+            hash_peak: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -1376,6 +1385,8 @@ impl ConsoleAuthService {
             limiter: LoginLimiter::new(window, max_failures),
             hash_slots: Arc::new(Semaphore::new(HASH_CONCURRENCY)),
             hash_acquire_timeout: HASH_ACQUIRE_TIMEOUT,
+            hash_in_flight: Arc::new(AtomicUsize::new(0)),
+            hash_peak: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -1394,6 +1405,16 @@ impl ConsoleAuthService {
     /// Slots compartilhados de cálculo de senha (testes do limite).
     pub fn hash_slots(&self) -> &Arc<Semaphore> {
         &self.hash_slots
+    }
+
+    /// Pico de cálculos de senha Argon2 simultâneos observado desde o start
+    /// do serviço (login, troca de senha e criação/reset de usuário
+    /// compartilham o mesmo limite de slots): diagnóstico operacional do
+    /// teto de concorrência — com `with_hash_concurrency(n)`, nunca excede
+    /// `n` (o slot é reservado ANTES do cálculo); abaixo de `n` é falta de
+    /// demanda, nunca fila sem limite.
+    pub fn max_observed_hash_concurrency(&self) -> usize {
+        self.hash_peak.load(Ordering::Relaxed)
     }
 
     /// Caminho do arquivo de banco do store, se persistir em arquivo.
@@ -1483,12 +1504,14 @@ impl ConsoleAuthService {
             Ok(permit) => permit,
             Err(_) => return Err(ConsoleAuthError::Busy),
         };
-        let proof = tokio::task::spawn_blocking(move || store.prove_password(&username, &password))
+        // O slot vai junto com o cálculo (solto no closure, no fim do
+        // Argon2): futuro descartado não libera o slot antes do cálculo.
+        let proof = self
+            .spawn_password_calculation(permit, move || store.prove_password(&username, &password))
             .await
             .map_err(|err| {
                 CoreError::new("STORE_ERROR", format!("password proof task failed: {err}"))
             });
-        drop(permit);
         let proof = proof.map_err(ConsoleAuthError::Store)?;
         self.finish_login(client_ip, proof)
     }
@@ -1690,20 +1713,24 @@ impl ConsoleAuthService {
             Ok(permit) => permit,
             Err(_) => return Err(ConsoleAuthError::Busy),
         };
-        let heavy =
-            tokio::task::spawn_blocking(move || -> Result<Option<(String, String)>, CoreError> {
-                let expected_hash =
-                    match store.prove_session_user_password(&session_owned, &current)? {
-                        Some(hash) => hash,
-                        None => return Ok(None),
-                    };
-                Ok(Some((expected_hash, hash_password(&new)?)))
-            })
+        // O slot vai junto com o cálculo (solto no closure, no fim do
+        // Argon2): futuro descartado não libera o slot antes do cálculo.
+        let heavy = self
+            .spawn_password_calculation(
+                permit,
+                move || -> Result<Option<(String, String)>, CoreError> {
+                    let expected_hash =
+                        match store.prove_session_user_password(&session_owned, &current)? {
+                            Some(hash) => hash,
+                            None => return Ok(None),
+                        };
+                    Ok(Some((expected_hash, hash_password(&new)?)))
+                },
+            )
             .await
             .map_err(|err| {
                 CoreError::new("STORE_ERROR", format!("password change task failed: {err}"))
             });
-        drop(permit);
         let heavy = heavy.map_err(ConsoleAuthError::Store)?;
         let Some((expected_hash, new_hash)) = heavy.map_err(ConsoleAuthError::Store)? else {
             self.limiter.record_failure(client_ip);
@@ -1796,6 +1823,38 @@ impl ConsoleAuthService {
         self.store.delete_user_tx(id)
     }
 
+    /// Spawn na pool de blocking com a contagem de hashes em voo E com o
+    /// slot do limite: o `OwnedSemaphorePermit` é MOVIDO para dentro do
+    /// closure e só é solto quando o cálculo termina, junto com o guard do
+    /// contador — se o futuro que espera for descartado no meio (cliente
+    /// desconectou), o Argon2 continua rodando na pool e o slot continua
+    /// preso, então conexões abandonadas não empurram os cálculos
+    /// simultâneos além do teto. O closure SEMPRE chega ao fim
+    /// (`spawn_blocking` não cancela) e o decremento fecha por `Drop`,
+    /// então o contador acerta mesmo se o trabalho panica.
+    fn spawn_password_calculation<R>(
+        &self,
+        permit: OwnedSemaphorePermit,
+        work: impl FnOnce() -> R + Send + 'static,
+    ) -> tokio::task::JoinHandle<R>
+    where
+        R: Send + 'static,
+    {
+        let in_flight = Arc::clone(&self.hash_in_flight);
+        let peak = Arc::clone(&self.hash_peak);
+        tokio::task::spawn_blocking(move || {
+            let running = in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+            let guard = HashInFlightGuard(in_flight);
+            peak.fetch_max(running, Ordering::Relaxed);
+            let result = work();
+            // Slot e contador saem JUNTOS, no fim do CÁLCULO (não no futuro
+            // que espera): descarte do futuro não libera o slot antes.
+            drop(guard);
+            drop(permit);
+            result
+        })
+    }
+
     /// Slot do limite compartilhado de cálculos Argon2; sem slot no tempo do
     /// timeout, `CONSOLE_BUSY` (o cálculo não anda — nunca autentica).
     async fn acquire_hash_slot(&self) -> Result<OwnedSemaphorePermit, CoreError> {
@@ -1821,13 +1880,26 @@ impl ConsoleAuthService {
     async fn hash_password_limited(&self, password: &str) -> Result<String, CoreError> {
         let password = password.to_string();
         let permit = self.acquire_hash_slot().await?;
-        let result = tokio::task::spawn_blocking(move || hash_password(&password))
+        // O slot vai junto com o cálculo (solto no closure, no fim do
+        // Argon2): futuro descartado não libera o slot antes do cálculo.
+        let result = self
+            .spawn_password_calculation(permit, move || hash_password(&password))
             .await
             .map_err(|err| {
                 CoreError::new("STORE_ERROR", format!("password hash task failed: {err}"))
             })?;
-        drop(permit);
         result
+    }
+}
+
+/// Fecha o contador de hashes em voo em QUALQUER saída do cálculo (sucesso,
+/// erro ou panic): o `spawn_blocking` sempre executa o closure até o fim,
+/// então o pico observado nunca infla por tarefa descartada.
+struct HashInFlightGuard(Arc<AtomicUsize>);
+
+impl Drop for HashInFlightGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -3044,5 +3116,172 @@ mod tests {
                 .unwrap(),
             RevokeSessionOutcome::NotFound
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Limite compartilhado de hashes: ocupação determinística dos slots e
+    // slot preso até o fim do CÁLCULO (não do futuro que o espera).
+    // ------------------------------------------------------------------
+
+    /// Par de canais std para sincronizar trabalho bloqueado (closure da
+    /// pool de blocking) com o teste: `Sender` para o trabalho, `Receiver`
+    /// para o teste.
+    fn signal_pair() -> (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) {
+        std::sync::mpsc::channel()
+    }
+
+    /// Aguarda um sinal de canal std (o trabalho bloqueado roda na thread de
+    /// blocking; o `spawn_blocking` sai do runtime para fazer o `recv`),
+    /// com timeout para o teste nunca pendurar: a ordem é decidida por
+    /// canais, nunca por sleep.
+    async fn await_channel_signal(rx: std::sync::mpsc::Receiver<()>, label: &str) {
+        match tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::task::spawn_blocking(move || rx.recv()),
+        )
+        .await
+        {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(_))) => panic!("{label}: canal fechado sem sinal"),
+            Ok(Err(err)) => panic!("{label}: thread do sinal falhou: {err:?}"),
+            Err(_) => panic!("{label}: timeout esperando o sinal"),
+        }
+    }
+
+    /// Ocupação determinística dos 2 slots (sem sobreposição casual do pool
+    /// de blocking): com limite 2 e três cálculos presos por canais, dois
+    /// começam, o terceiro espera o slot (`available_permits() == 0` e
+    /// contagem em voo 2) e, ao liberar um, o terceiro começa mantendo o
+    /// pico em 2.
+    #[tokio::test]
+    async fn two_hash_slots_are_held_deterministically_before_the_third_calculation_starts() {
+        let service = Arc::new(
+            ConsoleAuthService::in_memory()
+                .unwrap()
+                .with_hash_concurrency(2),
+        );
+
+        // Três cálculos presos por canais: sinalizam o início, bloqueiam
+        // até a liberação e sinalizam o fim.
+        let (rel0, rel0_rx) = signal_pair();
+        let (rel1, rel1_rx) = signal_pair();
+        let (rel2, rel2_rx) = signal_pair();
+        let (st0, st0_rx) = signal_pair();
+        let (st1, st1_rx) = signal_pair();
+        let (st2, st2_rx) = signal_pair();
+        let (dn0, dn0_rx) = signal_pair();
+        let (dn1, dn1_rx) = signal_pair();
+        let (dn2, dn2_rx) = signal_pair();
+        let blocked = |st: std::sync::mpsc::Sender<()>,
+                       rel: std::sync::mpsc::Receiver<()>,
+                       dn: std::sync::mpsc::Sender<()>| {
+            move || {
+                st.send(()).expect("sinal de início");
+                rel.recv().expect("liberação do cálculo");
+                dn.send(()).expect("sinal de fim");
+            }
+        };
+
+        let permit0 = service.acquire_hash_slot().await.expect("slot 1 livre");
+        let permit1 = service.acquire_hash_slot().await.expect("slot 2 livre");
+        let j0 = service.spawn_password_calculation(permit0, blocked(st0, rel0_rx, dn0));
+        let j1 = service.spawn_password_calculation(permit1, blocked(st1, rel1_rx, dn1));
+
+        await_channel_signal(st0_rx, "início do cálculo 0").await;
+        await_channel_signal(st1_rx, "início do cálculo 1").await;
+
+        // Dois em voo e nenhum slot livre: o terceiro ainda não pode entrar.
+        assert_eq!(service.hash_slots().available_permits(), 0);
+        assert_eq!(service.hash_in_flight.load(Ordering::Relaxed), 2);
+        assert_eq!(service.max_observed_hash_concurrency(), 2);
+
+        // O terceiro espera o slot enquanto os dois primeiros seguem presos.
+        let svc = Arc::clone(&service);
+        let permit2_task = tokio::spawn(async move { svc.acquire_hash_slot().await });
+
+        // Libera o primeiro: o terceiro entra e o pico continua 2.
+        rel0.send(()).expect("libera o cálculo 0");
+        await_channel_signal(dn0_rx, "fim do cálculo 0").await;
+        let permit2 = permit2_task
+            .await
+            .expect("task do slot")
+            .expect("slot do cálculo 2");
+        let j2 = service.spawn_password_calculation(permit2, blocked(st2, rel2_rx, dn2));
+        await_channel_signal(st2_rx, "início do cálculo 2").await;
+        assert_eq!(service.hash_slots().available_permits(), 0);
+        assert_eq!(service.hash_in_flight.load(Ordering::Relaxed), 2);
+        assert_eq!(service.max_observed_hash_concurrency(), 2);
+
+        // Limpeza: libera os demais; tudo volta a 0 em voo e 2 slots livres.
+        rel1.send(()).expect("libera o cálculo 1");
+        rel2.send(()).expect("libera o cálculo 2");
+        await_channel_signal(dn1_rx, "fim do cálculo 1").await;
+        await_channel_signal(dn2_rx, "fim do cálculo 2").await;
+        j0.await.expect("cálculo 0 terminou");
+        j1.await.expect("cálculo 1 terminou");
+        j2.await.expect("cálculo 2 terminou");
+        assert_eq!(service.hash_slots().available_permits(), 2);
+        assert_eq!(service.hash_in_flight.load(Ordering::Relaxed), 0);
+        assert_eq!(service.max_observed_hash_concurrency(), 2);
+    }
+
+    /// O slot fica preso até o fim do CÁLCULO, não do futuro que o espera:
+    /// com limite 1 e um cálculo preso por canal, o futuro que o aguarda é
+    /// descartado no meio (cliente desconectou) e o semáforo continua sem
+    /// permit livre enquanto o cálculo roda; ao liberar o cálculo, o permit
+    /// volta.
+    #[tokio::test]
+    async fn hash_slot_stays_held_until_the_blocked_calculation_finishes_even_if_waiter_drops() {
+        let service = Arc::new(
+            ConsoleAuthService::in_memory()
+                .unwrap()
+                .with_hash_concurrency(1),
+        );
+
+        let (release, release_rx) = signal_pair();
+        let (started, started_rx) = signal_pair();
+        let (done, done_rx) = signal_pair();
+
+        // Mesma sequência de `login_async` (slot antes, cálculo dentro) num
+        // futuro que o teste descarta no meio.
+        let svc = Arc::clone(&service);
+        let waiter = tokio::spawn(async move {
+            let permit = svc.acquire_hash_slot().await.expect("slot único livre");
+            let join = svc.spawn_password_calculation(permit, move || {
+                started.send(()).expect("sinal de início");
+                release_rx.recv().expect("liberação do cálculo");
+                done.send(()).expect("sinal de fim");
+            });
+            join.await
+        });
+
+        await_channel_signal(started_rx, "início do cálculo").await;
+        assert_eq!(service.hash_slots().available_permits(), 0);
+        assert_eq!(service.hash_in_flight.load(Ordering::Relaxed), 1);
+
+        // Cliente desconectou: o futuro que esperava o cálculo é descartado.
+        waiter.abort();
+        let _ = waiter.await;
+
+        // Slot continua preso: o cálculo ainda roda na pool de blocking.
+        assert_eq!(service.hash_slots().available_permits(), 0);
+        assert_eq!(service.hash_in_flight.load(Ordering::Relaxed), 1);
+
+        // O cálculo termina; só então o permit volta.
+        release.send(()).expect("libera o cálculo");
+        await_channel_signal(done_rx, "fim do cálculo").await;
+        // `done` sai de dentro de `work()`, antes de o helper soltar o guard e
+        // o permit: espere o permit voltar ao semáforo antes de olhar os
+        // contadores (o guard cai antes do permit).
+        let permit = tokio::time::timeout(
+            Duration::from_secs(5),
+            Arc::clone(service.hash_slots()).acquire_owned(),
+        )
+        .await
+        .expect("o permit volta quando o cálculo termina")
+        .expect("semáforo aberto");
+        assert_eq!(service.hash_in_flight.load(Ordering::Relaxed), 0);
+        drop(permit);
+        assert_eq!(service.hash_slots().available_permits(), 1);
     }
 }
