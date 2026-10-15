@@ -43,6 +43,8 @@ fn write_hog(dir: &std::path::Path) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn memory_cap_kills_only_the_worker_that_exceeds_it() {
     // Same worker code, two caps. Under 48 MB it must die; under 256 MB it lives.
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     let tight_dir = tempfile::tempdir().unwrap();
     write_hog(tight_dir.path());
     let mut tight = DenoWorkerProcess::spawn(
@@ -51,6 +53,7 @@ async fn memory_cap_kills_only_the_worker_that_exceeds_it() {
         Duration::from_secs(20),
         &HashMap::new(),
         Some(48),
+        Some(deno_cache.path()),
     )
     .await
     .expect("spawn under tight cap");
@@ -72,6 +75,7 @@ async fn memory_cap_kills_only_the_worker_that_exceeds_it() {
         Duration::from_secs(20),
         &HashMap::new(),
         Some(256),
+        Some(deno_cache.path()),
     )
     .await
     .expect("spawn under roomy cap");

@@ -73,6 +73,8 @@ struct CancelFactory {
     /// Optional console capture (the focal proof reads the harness's
     /// stderr `[harness-test] frame-observations=<n>` record).
     console_tx: Option<edger_isolation::ConsoleLogSender>,
+    /// EDG-32: per-worker Deno cache root inside the test's own tempdir.
+    deno_cache_root: std::path::PathBuf,
 }
 
 impl CancelFactory {
@@ -83,6 +85,9 @@ impl CancelFactory {
             drain_max_bytes,
             drain_max_ms,
             console_tx: None,
+            // The `state_with_lifecycle` helper always replaces this with the
+            // test's own tempdir root before the pool is built.
+            deno_cache_root: std::env::temp_dir().join("edger-test-deno-cache"),
         }
     }
 
@@ -112,6 +117,7 @@ impl IsolateFactory for CancelFactory {
                 };
                 Box::new(
                     isolate
+                        .with_per_worker_deno_cache_root(self.deno_cache_root.clone())
                         .with_stream_detach(self.detach_max_bytes, Arc::clone(&self.budget))
                         // On consumer loss the drain writes the cancel control
                         // frame first (EDG-9 slice 2) and then drains.
@@ -135,6 +141,11 @@ fn state_with_lifecycle(
     tokio::sync::mpsc::Receiver<WorkerLifecycleEvent>,
 ) {
     let server = ServerState::new_unready();
+    // EDG-32: keep the per-worker Deno cache inside the test's own tempdir.
+    let factory = CancelFactory {
+        deno_cache_root: root.join(".edger-test-deno-cache"),
+        ..factory
+    };
     let drain_max_bytes = factory.drain_max_bytes;
     let drain_max_ms = factory.drain_max_ms;
     let (lifecycle_tx, lifecycle_rx) = tokio::sync::mpsc::channel(64);

@@ -827,12 +827,15 @@ pub struct DenoWorkerProcess {
 impl DenoWorkerProcess {
     /// Spawn a persistent Deno worker for `worker_dir`/`entrypoint`, wait for it
     /// to connect and finish importing the module (ready handshake).
+    /// `deno_cache_root` (EDG-32) sets an explicit root for the per-worker
+    /// Deno cache, taking precedence over `EDGER_DENO_CACHE_ROOT`.
     pub async fn spawn(
         worker_dir: &Path,
         entrypoint: Option<&str>,
         timeout: Duration,
         env: &std::collections::HashMap<String, String>,
         memory_mb: Option<u32>,
+        deno_cache_root: Option<&Path>,
     ) -> Result<Self, IsolationError> {
         Self::spawn_with_policy(
             worker_dir,
@@ -843,6 +846,7 @@ impl DenoWorkerProcess {
             NodeHttpMode::Capture,
             true,
             None,
+            deno_cache_root,
             DenoCacheMode::default(),
             None,
             None,
@@ -854,12 +858,15 @@ impl DenoWorkerProcess {
     /// Spawn with a real node:http server bound to a private Unix socket.
     /// Heavy frameworks that require genuine IncomingMessage/ServerResponse
     /// semantics use this path; no TCP port or network permission is opened.
+    /// `deno_cache_root` (EDG-32) sets an explicit root for the per-worker
+    /// Deno cache, taking precedence over `EDGER_DENO_CACHE_ROOT`.
     pub async fn spawn_with_node_http_proxy(
         worker_dir: &Path,
         entrypoint: Option<&str>,
         timeout: Duration,
         env: &std::collections::HashMap<String, String>,
         memory_mb: Option<u32>,
+        deno_cache_root: Option<&Path>,
     ) -> Result<Self, IsolationError> {
         Self::spawn_with_policy(
             worker_dir,
@@ -870,6 +877,7 @@ impl DenoWorkerProcess {
             NodeHttpMode::Proxy,
             true,
             None,
+            deno_cache_root,
             DenoCacheMode::default(),
             None,
             None,
@@ -878,6 +886,9 @@ impl DenoWorkerProcess {
         .await
     }
 
+    /// `deno_cache_root` (EDG-32) sets an explicit root for the per-worker
+    /// Deno cache, taking precedence over `EDGER_DENO_CACHE_ROOT`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_with_console(
         worker_dir: &Path,
         entrypoint: Option<&str>,
@@ -886,6 +897,7 @@ impl DenoWorkerProcess {
         memory_mb: Option<u32>,
         console_sender: ConsoleLogSender,
         console_context: ConsoleLogContext,
+        deno_cache_root: Option<&Path>,
     ) -> Result<Self, IsolationError> {
         Self::spawn_with_policy(
             worker_dir,
@@ -896,6 +908,7 @@ impl DenoWorkerProcess {
             NodeHttpMode::Capture,
             true,
             None,
+            deno_cache_root,
             DenoCacheMode::default(),
             None,
             Some(console_sender),
@@ -914,6 +927,7 @@ impl DenoWorkerProcess {
         node_http_mode: NodeHttpMode,
         bundle_entrypoint: bool,
         allow_net: Option<&[String]>,
+        deno_cache_root: Option<&Path>,
         deno_cache_mode: DenoCacheMode,
         caps: Option<crate::limits::ResourceLimits>,
         console_sender: Option<ConsoleLogSender>,
@@ -954,6 +968,7 @@ impl DenoWorkerProcess {
             deno_cache_mode,
             std::env::var("DENO_DIR").ok().as_deref(),
             std::env::var("HOME").ok().as_deref(),
+            deno_cache_root,
             std::env::var("EDGER_DENO_CACHE_ROOT").ok().as_deref(),
         );
         if let Some(dir) = deno_dir.env_dir.as_deref() {
@@ -2905,11 +2920,26 @@ pub struct DenoProcessIsolate {
     detach: Option<StreamDetach>,
     /// Process-wide default duration from the orchestrator environment.
     stream_max_duration_default_ms: Option<u64>,
+    /// Explicit root for the per-worker Deno cache (EDG-32); takes
+    /// precedence over the `EDGER_DENO_CACHE_ROOT` environment variable.
+    deno_cache_root: Option<PathBuf>,
 }
 
 impl DenoProcessIsolate {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set the explicit per-worker Deno cache root (EDG-32). Takes precedence
+    /// over the `EDGER_DENO_CACHE_ROOT` environment variable; without it the
+    /// previous behavior (env, then `${TMPDIR}/edger-deno-cache`) is kept.
+    /// Tests point this at their own tempdir so nothing lands in the shared
+    /// per-worker cache directory.
+    pub fn with_per_worker_deno_cache_root(self, root: impl Into<PathBuf>) -> Self {
+        Self {
+            deno_cache_root: Some(root.into()),
+            ..self
+        }
     }
 
     pub fn with_console(sender: ConsoleLogSender, context: ConsoleLogContext) -> Self {
@@ -2986,6 +3016,7 @@ impl DenoProcessIsolate {
                     matches!(fullstack.adapter.as_str(), "fresh" | "sveltekit")
                 }),
                 config.allow_net.as_deref(),
+                self.deno_cache_root.as_deref(),
                 config.deno_cache_mode,
                 Some(limits.clone()),
                 self.console_sender.clone(),
@@ -4527,6 +4558,7 @@ mod stream_detach_tests {
             console_context: None,
             stream_max_duration_default_ms: None,
             detach: None,
+            deno_cache_root: None,
         };
         (isolate, stream_b)
     }
@@ -4661,6 +4693,7 @@ mod stream_detach_tests {
             console_context: None,
             stream_max_duration_default_ms: None,
             detach: None,
+            deno_cache_root: None,
         };
         (isolate, stream_b)
     }

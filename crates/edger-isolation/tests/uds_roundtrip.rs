@@ -30,6 +30,8 @@ fn request(method: &str, uri: &str, body: Option<&[u8]>) -> SerializedRequest {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restricted_network_worker_still_connects_to_internal_uds() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"Deno.serve(() => new Response("restricted-network-ok"));"#,
@@ -42,7 +44,7 @@ async fn restricted_network_worker_still_connects_to_internal_uds() {
     });
     config.worker_dir = Some(dir.path().to_path_buf());
 
-    let mut isolate = DenoProcessIsolate::new();
+    let mut isolate = DenoProcessIsolate::new().with_per_worker_deno_cache_root(deno_cache.path());
     let response = isolate
         .execute_fetch(request("GET", "/", None), &config)
         .await
@@ -58,6 +60,8 @@ async fn restricted_network_worker_still_connects_to_internal_uds() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scoped_network_worker_still_connects_to_internal_uds() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"Deno.serve(() => new Response("scoped-network-ok"));"#,
@@ -70,7 +74,7 @@ async fn scoped_network_worker_still_connects_to_internal_uds() {
     });
     config.worker_dir = Some(dir.path().to_path_buf());
 
-    let mut isolate = DenoProcessIsolate::new();
+    let mut isolate = DenoProcessIsolate::new().with_per_worker_deno_cache_root(deno_cache.path());
     let response = isolate
         .execute_fetch(request("GET", "/", None), &config)
         .await
@@ -169,6 +173,8 @@ exec {} "$@"
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn persistent_worker_serves_multiple_requests_without_reimport() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     // Module-scope state proves the module is evaluated once and reused.
     write_worker(
         dir.path(),
@@ -187,6 +193,7 @@ Deno.serve(async (req: Request) => {
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("worker should spawn and become ready");
@@ -215,6 +222,8 @@ Deno.serve(async (req: Request) => {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn routes_method_map_dispatches_and_reports_allow_on_405() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"export const routes = {
@@ -231,6 +240,7 @@ async fn routes_method_map_dispatches_and_reports_allow_on_405() {
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("routes worker should spawn");
@@ -268,6 +278,8 @@ async fn routes_method_map_dispatches_and_reports_allow_on_405() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn routes_prefer_exact_then_parameter_then_most_specific_wildcard() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"export const routes = {
@@ -284,6 +296,7 @@ async fn routes_prefer_exact_then_parameter_then_most_specific_wildcard() {
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("routes worker should spawn");
@@ -310,6 +323,8 @@ async fn routes_prefer_exact_then_parameter_then_most_specific_wildcard() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deno_serve_handler_receives_connection_info() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"Deno.serve((_request, info) => Response.json({
@@ -324,6 +339,7 @@ async fn deno_serve_handler_receives_connection_info() {
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("Deno.serve worker should spawn");
@@ -340,6 +356,8 @@ async fn deno_serve_handler_receives_connection_info() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exported_handle_entrypoint_serves_astro_style_builds() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"export function handle(request: Request) {
@@ -353,6 +371,7 @@ async fn exported_handle_entrypoint_serves_astro_style_builds() {
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("exported handle worker should spawn");
@@ -367,6 +386,8 @@ async fn exported_handle_entrypoint_serves_astro_style_builds() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_http_proxy_preserves_real_request_and_response_semantics() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"import http from "node:http";
@@ -393,6 +414,7 @@ http.createServer(async (request, response) => {
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("node:http proxy worker should spawn");
@@ -420,6 +442,8 @@ http.createServer(async (request, response) => {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handler_error_returns_opaque_public_body() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"Deno.serve(() => { throw new Error("secret internal detail"); });"#,
@@ -430,6 +454,7 @@ async fn handler_error_returns_opaque_public_body() {
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("worker should spawn");
@@ -460,6 +485,8 @@ async fn single_file_worker_uses_direct_entrypoint_when_bundler_command_is_block
     let _env_guard = EnvVarGuard::set("EDGER_DENO_BIN", wrapper.as_os_str());
 
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"Deno.serve(() => new Response("fast path"));"#,
@@ -471,6 +498,7 @@ async fn single_file_worker_uses_direct_entrypoint_when_bundler_command_is_block
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("single-file worker should spawn without deno bundle");
@@ -489,6 +517,8 @@ async fn single_file_worker_uses_direct_entrypoint_when_bundler_command_is_block
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_that_throws_on_load_fails_spawn() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(dir.path(), r#"throw new Error("boom at module load");"#);
 
     let result = DenoWorkerProcess::spawn(
@@ -497,6 +527,7 @@ async fn worker_that_throws_on_load_fails_spawn() {
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await;
     let err = match result {
@@ -516,6 +547,8 @@ async fn worker_that_throws_on_load_fails_spawn() {
 #[ignore = "perf probe; run with --ignored --nocapture"]
 async fn warm_worker_latency_probe() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(dir.path(), r#"Deno.serve(() => new Response("ok"));"#);
     let mut worker = DenoWorkerProcess::spawn(
         dir.path(),
@@ -523,6 +556,7 @@ async fn warm_worker_latency_probe() {
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .unwrap();
@@ -562,6 +596,8 @@ async fn graceful_shutdown_dispatches_beforeunload_and_drains_wait_until() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"addEventListener("beforeunload", () => {
@@ -577,6 +613,7 @@ Deno.serve(() => new Response("ok"));
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("worker spawns and becomes ready");
@@ -604,6 +641,8 @@ async fn graceful_shutdown_remains_bounded_when_wait_until_never_resolves() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"addEventListener("beforeunload", () => {
@@ -618,6 +657,7 @@ Deno.serve(() => new Response("ok"));
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("worker spawns and becomes ready");
@@ -650,6 +690,8 @@ async fn deno_kv_persists_across_requests() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"const kv = await Deno.openKv(":memory:");
@@ -668,6 +710,7 @@ Deno.serve(async () => {
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("worker spawns");
@@ -702,6 +745,8 @@ async fn commonjs_worker_with_require_loads_and_serves() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("package.json"), r#"{"type":"commonjs"}"#).unwrap();
     fs::write(
         dir.path().join("index.js"),
@@ -720,6 +765,7 @@ http.createServer((req, res) => {
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("commonjs worker should spawn and become ready");

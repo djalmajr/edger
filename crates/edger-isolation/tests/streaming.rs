@@ -33,6 +33,8 @@ fn write_worker(dir: &std::path::Path, src: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn finite_multi_chunk_stream_delivers_whole_body() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"Deno.serve(() => {
@@ -55,6 +57,7 @@ async fn finite_multi_chunk_stream_delivers_whole_body() {
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("spawn");
@@ -67,6 +70,8 @@ async fn finite_multi_chunk_stream_delivers_whole_body() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn infinite_stream_is_bounded_and_process_survives() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     // A stream that never closes; drainBounded must stop at the byte cap.
     write_worker(
         dir.path(),
@@ -87,6 +92,7 @@ async fn infinite_stream_is_bounded_and_process_survives() {
         Duration::from_secs(20),
         &env,
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("spawn");
@@ -125,6 +131,8 @@ async fn infinite_stream_is_bounded_and_process_survives() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn background_error_after_response_keeps_process_alive() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"Deno.serve(() => {
@@ -140,6 +148,7 @@ async fn background_error_after_response_keeps_process_alive() {
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("spawn");
@@ -169,6 +178,8 @@ async fn background_error_after_response_keeps_process_alive() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sse_stream_delivers_chunks_incrementally() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     write_worker(
         dir.path(),
         r#"Deno.serve(() => {
@@ -192,6 +203,7 @@ async fn sse_stream_delivers_chunks_incrementally() {
         Duration::from_secs(20),
         &HashMap::new(),
         None,
+        Some(deno_cache.path()),
     )
     .await
     .expect("spawn");

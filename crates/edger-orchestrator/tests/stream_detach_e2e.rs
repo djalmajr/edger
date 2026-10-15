@@ -55,6 +55,8 @@ const TOTAL_BYTES: usize = CHUNK_BYTES * CHUNKS;
 struct DetachFactory {
     max_bytes: u64,
     budget: Arc<StreamDetachBudget>,
+    /// EDG-32: per-worker Deno cache root inside the test's own tempdir.
+    deno_cache_root: std::path::PathBuf,
 }
 
 impl DetachFactory {
@@ -62,6 +64,9 @@ impl DetachFactory {
         Self {
             max_bytes,
             budget: Arc::new(StreamDetachBudget::new(budget_bytes)),
+            // The `state` helper always replaces this with the test's own
+            // tempdir root before the pool is built.
+            deno_cache_root: std::env::temp_dir().join("edger-test-deno-cache"),
         }
     }
 }
@@ -74,6 +79,7 @@ impl IsolateFactory for DetachFactory {
             }
             _ => Box::new(
                 DenoProcessIsolate::new()
+                    .with_per_worker_deno_cache_root(self.deno_cache_root.clone())
                     .with_stream_detach(self.max_bytes, Arc::clone(&self.budget)),
             ),
         }
@@ -82,6 +88,11 @@ impl IsolateFactory for DetachFactory {
 
 fn state(root: std::path::PathBuf, factory: DetachFactory) -> OrchestratorState {
     let server = ServerState::new_unready();
+    // EDG-32: keep the per-worker Deno cache inside the test's own tempdir.
+    let factory = DetachFactory {
+        deno_cache_root: root.join(".edger-test-deno-cache"),
+        ..factory
+    };
     let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(factory));
     server.mark_ready(pool.clone());
     OrchestratorState {
