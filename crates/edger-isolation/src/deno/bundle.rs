@@ -8,7 +8,7 @@
 //! resulting dead-code here rather than collapsing the aligned surface.
 #![allow(dead_code)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -76,6 +76,35 @@ impl ModuleBundler for DenoCliBundler {
         entrypoint: &Path,
         output_dir: &Path,
     ) -> Result<ModuleBundle, IsolationError> {
+        // The origin signal (EDG-30) is dropped here: the trait surface
+        // predates it and its callers never publish to the per-version cache.
+        self.bundle_entrypoint_origin(worker_dir, entrypoint, output_dir)
+            .map(|(bundle, _cacheable)| bundle)
+    }
+
+    fn load_eszip(&self, path: &str) -> Result<ModuleBundle, IsolationError> {
+        load_existing_artifact(path, BundleFormat::Eszip)
+    }
+
+    fn load_precompiled(&self, path: &str) -> Result<ModuleBundle, IsolationError> {
+        load_existing_artifact(path, BundleFormat::Precompiled)
+    }
+}
+
+/// `bundle_entrypoint` with an explicit ORIGIN signal (EDG-30): the returned
+/// `cacheable` flag is true ONLY when the real `deno bundle` produced the
+/// file (first attempt or the EDG-14 retry). A file written by the minimal
+/// relative-module fallback — the real bundler failed on a registry error —
+/// comes back `cacheable = false`, so the per-version cache (EDG-20) never
+/// publishes it. The signal lives in the return value, not in the bundle's
+/// header comment.
+impl DenoCliBundler {
+    fn bundle_entrypoint_origin(
+        &self,
+        worker_dir: &Path,
+        entrypoint: &Path,
+        output_dir: &Path,
+    ) -> Result<(ModuleBundle, bool), IsolationError> {
         let worker_dir = worker_dir.canonicalize().map_err(|err| {
             IsolationError::new(
                 "DENO_BUNDLE_WORKER_DIR",
@@ -137,7 +166,7 @@ impl ModuleBundler for DenoCliBundler {
             }
             match run_bundle_command(executable, &worker_dir, &entrypoint, &output_path) {
                 Ok(()) => {
-                    return bundle_from_output(&output_path);
+                    return bundle_from_output(&output_path).map(|bundle| (bundle, true));
                 }
                 Err(BundleCommandError::Spawn(err))
                     if err.kind() == std::io::ErrorKind::NotFound =>
@@ -172,7 +201,7 @@ impl ModuleBundler for DenoCliBundler {
                     std::thread::sleep(BUNDLE_RETRY_DELAY);
                     match run_bundle_command(executable, &worker_dir, &entrypoint, &output_path) {
                         Ok(()) => {
-                            return bundle_from_output(&output_path);
+                            return bundle_from_output(&output_path).map(|bundle| (bundle, true));
                         }
                         Err(BundleCommandError::Spawn(err))
                             if err.kind() == std::io::ErrorKind::NotFound =>
@@ -192,12 +221,25 @@ impl ModuleBundler for DenoCliBundler {
                             stdout: retry_stdout,
                         }) => {
                             if should_try_minimal_relative_fallback(&retry_stderr) {
-                                match write_minimal_relative_bundle(
+                                // EDG-30: the fallback output is a single
+                                // file; a relative import left in it (any
+                                // form) would break at runtime, so the
+                                // output is validated with the same
+                                // `deno info --json` graph the bundler uses
+                                // before `deno bundle` (the real Deno
+                                // parser, the SAME executable that produced
+                                // the original error).
+                                let fallback = write_minimal_relative_bundle(
                                     &worker_dir,
                                     &entrypoint,
                                     &output_path,
-                                ) {
-                                    Ok(()) => return bundle_from_output(&output_path),
+                                )
+                                .and_then(|()| validate_fallback_output(executable, &output_path));
+                                match fallback {
+                                    Ok(()) => {
+                                        return bundle_from_output(&output_path)
+                                            .map(|bundle| (bundle, false));
+                                    }
                                     Err(fallback_err) => {
                                         return Err(IsolationError::new(
                                             "DENO_BUNDLE_FAILED",
@@ -233,14 +275,6 @@ impl ModuleBundler for DenoCliBundler {
                 spawn_errors.join("; ")
             ),
         ))
-    }
-
-    fn load_eszip(&self, path: &str) -> Result<ModuleBundle, IsolationError> {
-        load_existing_artifact(path, BundleFormat::Eszip)
-    }
-
-    fn load_precompiled(&self, path: &str) -> Result<ModuleBundle, IsolationError> {
-        load_existing_artifact(path, BundleFormat::Precompiled)
     }
 }
 
@@ -591,8 +625,9 @@ pub struct BundleCacheStats {
     pub miss_total: u64,
     /// Bundle builds that failed (a failed build is never cached).
     pub error_total: u64,
-    /// Spawns that ran `deno bundle` in the legacy per-process fallback
-    /// (worker dir not writable: nothing was cached).
+    /// Spawns that ran `deno bundle` and got a bundle that was NEVER cached:
+    /// the legacy per-process fallback (worker dir not writable) or a minimal
+    /// relative-module fallback after a real-bundler failure (EDG-30).
     pub uncached_total: u64,
 }
 
@@ -787,20 +822,33 @@ pub fn deno_version_for_candidates(candidates: &[String]) -> String {
     "unknown".to_string()
 }
 
-/// A resolved worker entry for a multiproc spawn. `dir` is `Some` ONLY in
-/// the legacy per-process fallback (worker dir not writable): it keeps the
-/// bundle file alive for the process lifetime. `None` when the bundle was
-/// read from or published to the per-version cache dir.
+/// A resolved worker entry for a multiproc spawn. `dir` is `Some` when the
+/// bundle is a PER-PROCESS file that must be kept alive for the process
+/// lifetime: the legacy fallback (worker dir not writable) or a minimal
+/// relative-module fallback bundle (EDG-30: the real `deno bundle` failed and
+/// nothing was cached). `None` when the bundle was read from or published to
+/// the per-version cache dir.
 #[derive(Debug)]
 pub struct BundleEntry {
     pub bundle: ModuleBundle,
     pub dir: Option<TempDir>,
 }
 
+/// The single-flight build result shared with the waiters (EDG-30). `inline`
+/// is `Some` only for a minimal relative-module fallback bundle, which is
+/// never published to the per-version cache: every waiter materializes its
+/// own copy in its own per-process tempdir and never reads the builder's
+/// temp file.
+#[derive(Clone, Debug)]
+struct BundleJobResult {
+    bundle: ModuleBundle,
+    inline: Option<(String, Vec<u8>)>,
+}
+
 #[derive(Clone, Debug)]
 enum BundleJobState {
     Building,
-    Finished(Result<ModuleBundle, IsolationError>),
+    Finished(Result<BundleJobResult, IsolationError>),
 }
 
 /// One in-flight bundle build. Concurrent spawns of the same key subscribe
@@ -815,7 +863,7 @@ impl BundleJob {
         Self { outcome }
     }
 
-    fn finish(&self, result: Result<ModuleBundle, IsolationError>) {
+    fn finish(&self, result: Result<BundleJobResult, IsolationError>) {
         let _ = self.outcome.send(BundleJobState::Finished(result));
     }
 }
@@ -849,7 +897,7 @@ fn remove_bundle_job(key: &str, job: &Arc<BundleJob>) {
 async fn wait_for_bundle_job(
     job: &BundleJob,
     timeout: Duration,
-) -> Result<ModuleBundle, IsolationError> {
+) -> Result<BundleJobResult, IsolationError> {
     let mut rx = job.outcome.subscribe();
     let finished = tokio::time::timeout(timeout, async {
         loop {
@@ -997,20 +1045,26 @@ fn classify_publish_rename_error(
     )
 }
 
-/// Bundle and publish into the verified cache root (EDG-20). `worker_dir`
-/// must be canonical and the cache root a verified real directory (the
-/// caller probed it). The root is re-verified right before the staging
-/// mkdir, before the publish rename, before the collision retry and before
-/// the prune: a root swapped for a symlink after the probe is never written
-/// into, renamed through or pruned — the `DENO_BUNDLE_ROOT_LOST` error then
-/// makes the caller take the per-process fallback.
+/// Bundle and publish into the verified cache root (EDG-20/EDG-30).
+/// `worker_dir` must be canonical and the cache root a verified real
+/// directory (the caller probed it). The root is re-verified right before the
+/// staging mkdir, before the publish rename, before the collision retry and
+/// before the prune: a root swapped for a symlink after the probe is never
+/// written into, renamed through or pruned — the `DENO_BUNDLE_ROOT_LOST`
+/// error then makes the caller take the per-process fallback.
+///
+/// A bundle produced by the minimal relative-module fallback (the real
+/// `deno bundle` failed on a registry error, EDG-30) is NEVER published:
+/// it comes back as `BundleBuildStep::Inline` (file name + bytes) so every
+/// consumer keeps its own per-process copy, the cache stays entry-less and
+/// the next spawn retries the real `deno bundle`.
 fn build_and_publish(
     bundler: &DenoCliBundler,
     worker_dir: &Path,
     entrypoint: &Path,
     key: &str,
     cache_root: &Path,
-) -> Result<ModuleBundle, IsolationError> {
+) -> Result<BundleBuildStep, IsolationError> {
     // Fresh check right before the staging mkdir: the probe ran earlier and
     // the root may have been swapped since.
     if !cache_root_still_real(worker_dir, cache_root) {
@@ -1032,11 +1086,30 @@ fn build_and_publish(
     }
     // A failed bundle is never cached: drop the staging dir and surface the
     // same error as before.
-    bundler
-        .bundle_entrypoint(worker_dir, entrypoint, staging.path())
+    let (bundle, cacheable) = bundler
+        .bundle_entrypoint_origin(worker_dir, entrypoint, staging.path())
         .inspect_err(|_err| {
             cleanup_staging(worker_dir, staging.path());
         })?;
+    // EDG-30: a minimal relative-module fallback bundle is NEVER published
+    // into the per-version cache: the current spawn may use it (its bytes
+    // go to every consumer's own per-process tempdir) but the cache stays
+    // entry-less, so the next spawn retries the real `deno bundle`.
+    if !cacheable {
+        let bytes = match std::fs::read(&bundle.path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                cleanup_staging(worker_dir, staging.path());
+                return Err(IsolationError::new(
+                    "DENO_BUNDLE_FALLBACK",
+                    format!("failed to read the fallback bundle from the staging dir: {err}"),
+                ));
+            }
+        };
+        let file_name = bundle_file_name(entrypoint);
+        cleanup_staging(worker_dir, staging.path());
+        return Ok(BundleBuildStep::Inline { file_name, bytes });
+    }
     let final_dir = cache_root.join(key);
     // Fresh check right before the publish rename.
     if !cache_root_still_real(worker_dir, cache_root) {
@@ -1044,17 +1117,18 @@ fn build_and_publish(
         return Err(root_lost_error("before the publish rename"));
     }
     match std::fs::rename(staging.path(), &final_dir) {
-        Ok(()) => publish_from_staging(worker_dir, entrypoint, cache_root, key),
+        Ok(()) => publish_from_staging(worker_dir, entrypoint, cache_root, key)
+            .map(BundleBuildStep::Published),
         Err(first_err) => {
             // A concurrent publish already owns this key with a VALID
             // bundle: adopt it.
             let expected = final_dir.join(bundle_file_name(entrypoint));
             if let Some(path) = validated_bundle_file(worker_dir, &expected) {
                 remove_real_dir(staging.path());
-                return Ok(ModuleBundle {
+                return Ok(BundleBuildStep::Published(ModuleBundle {
                     path,
                     format: BundleFormat::JavaScript,
-                });
+                }));
             }
             // An invalid entry (a planted symlink, a crashed publish)
             // occupies the key dir: clear it — only a REAL, non-symlink
@@ -1069,7 +1143,8 @@ fn build_and_publish(
                 remove_real_dir(&final_dir);
                 match std::fs::rename(staging.path(), &final_dir) {
                     Ok(()) => {
-                        return publish_from_staging(worker_dir, entrypoint, cache_root, key);
+                        return publish_from_staging(worker_dir, entrypoint, cache_root, key)
+                            .map(BundleBuildStep::Published);
                     }
                     Err(second_err) => {
                         cleanup_staging(worker_dir, staging.path());
@@ -1087,6 +1162,30 @@ fn build_and_publish(
             ))
         }
     }
+}
+
+/// The build step of the per-version cache (EDG-20/EDG-30).
+#[derive(Debug)]
+enum BundleBuildStep {
+    /// The real `deno bundle` output, renamed into the cache key dir.
+    Published(ModuleBundle),
+    /// A minimal relative-module fallback bundle (EDG-30): NEVER published —
+    /// the file name and the bytes are returned so every consumer keeps its
+    /// own per-process copy and the next spawn retries the real `deno
+    /// bundle`.
+    Inline { file_name: String, bytes: Vec<u8> },
+}
+
+/// The build task result of `resolve_bundle_entry` (EDG-20/EDG-30). `dir`
+/// keeps a per-process copy of an inline fallback bundle alive; `inline`
+/// carries that bundle's bytes for the single-flight waiters.
+#[derive(Debug)]
+struct BuiltBundle {
+    bundle: ModuleBundle,
+    dir: Option<TempDir>,
+    inline: Option<(String, Vec<u8>)>,
+    rebuilt: bool,
+    elapsed_ms: u64,
 }
 
 /// After a successful rename: validate the published path (it must be a
@@ -1196,6 +1295,63 @@ fn create_bundle_tempdir(
                 format!("failed to create bundle tempdir: {err}"),
             )
         })
+}
+
+/// Materialize an inline (never-cached, EDG-30) fallback bundle into a
+/// per-process tempdir (inside `worker_dir` first, then the caller's
+/// `fallback_dir`): the copy lives only as long as the calling spawn's
+/// `BundleEntry::dir` keeps the tempdir alive.
+fn materialize_fallback_bundle_sync(
+    worker_dir: &Path,
+    fallback_dir: &Path,
+    file_name: &str,
+    bytes: &[u8],
+) -> Result<(ModuleBundle, TempDir), IsolationError> {
+    let dir = create_bundle_tempdir(worker_dir, fallback_dir)?;
+    let path = dir.path().join(file_name);
+    std::fs::write(&path, bytes).map_err(|err| {
+        IsolationError::new(
+            "DENO_BUNDLE_FALLBACK",
+            format!("failed to write the per-process fallback bundle: {err}"),
+        )
+    })?;
+    let canonical = path.canonicalize().map_err(|err| {
+        IsolationError::new(
+            "DENO_BUNDLE_FALLBACK",
+            format!("invalid fallback bundle path: {err}"),
+        )
+    })?;
+    Ok((
+        ModuleBundle {
+            path: canonical.to_string_lossy().into_owned(),
+            format: BundleFormat::JavaScript,
+        },
+        dir,
+    ))
+}
+
+/// `materialize_fallback_bundle_sync`, off the runtime.
+async fn materialize_fallback_bundle(
+    worker_dir: &Path,
+    fallback_dir: &Path,
+    file_name: &str,
+    bytes: &[u8],
+) -> Result<(ModuleBundle, TempDir), IsolationError> {
+    let worker_dir = worker_dir.to_path_buf();
+    let fallback_dir = fallback_dir.to_path_buf();
+    let file_name = file_name.to_string();
+    let bytes = bytes.to_vec();
+    let result = tokio::task::spawn_blocking(move || {
+        materialize_fallback_bundle_sync(&worker_dir, &fallback_dir, &file_name, &bytes)
+    })
+    .await
+    .map_err(|err| {
+        IsolationError::new(
+            "DENO_BUNDLE_BLOCKING",
+            format!("bundle fallback materialization failed: {err}"),
+        )
+    })?;
+    result
 }
 
 /// State of `<worker>/.edger-bundle-cache` before the cache is created,
@@ -1333,8 +1489,24 @@ impl DenoCliBundler {
         // the worker's spawn timeout).
         let (job, is_builder) = register_bundle_job(&key);
         if !is_builder {
-            let bundle = match wait_for_bundle_job(&job, timeout).await {
-                Ok(bundle) => bundle,
+            let (bundle, dir) = match wait_for_bundle_job(&job, timeout).await {
+                Ok(result) => match result.inline {
+                    // The builder's bundle was a minimal relative-module
+                    // fallback, never cached (EDG-30): materialize THIS
+                    // spawn's own per-process copy (never read the builder's
+                    // temp file).
+                    Some((file_name, bytes)) => {
+                        let (bundle, dir) = materialize_fallback_bundle(
+                            &canonical_worker_dir,
+                            &fallback_dir,
+                            &file_name,
+                            &bytes,
+                        )
+                        .await?;
+                        (bundle, Some(dir))
+                    }
+                    None => (result.bundle, None),
+                },
                 // The builder found the cache root replaced while building:
                 // take the same per-process fallback (counted `uncached`)
                 // instead of failing the spawn.
@@ -1351,7 +1523,7 @@ impl DenoCliBundler {
                 Err(err) => return Err(err),
             };
             record_bundle_outcome(BundleOutcome::Hit);
-            return Ok(BundleEntry { bundle, dir: None });
+            return Ok(BundleEntry { bundle, dir });
         }
 
         // 5. The build, off the runtime.
@@ -1361,34 +1533,65 @@ impl DenoCliBundler {
         let build_key = key.clone();
         let build_cache_root = cache_root.clone();
         let build_entry_file = entry_file.clone();
-        let build = tokio::task::spawn_blocking(
-            move || -> Result<(ModuleBundle, bool, u64), IsolationError> {
-                let started = Instant::now();
-                // Re-check: the entry may have been published between the
-                // step-3 lookup and this point (leftover from a previous
-                // process). Same validation: regular file inside the
-                // verified cache root, never a symlink.
-                if let Some(path) = validated_bundle_file(&build_worker_dir, &build_entry_file) {
-                    return Ok((
-                        ModuleBundle {
-                            path,
-                            format: BundleFormat::JavaScript,
-                        },
-                        false,
-                        0,
-                    ));
+        let build_fallback_dir = fallback_dir.clone();
+        let build = tokio::task::spawn_blocking(move || -> Result<BuiltBundle, IsolationError> {
+            let started = Instant::now();
+            // Re-check: the entry may have been published between the
+            // step-3 lookup and this point (leftover from a previous
+            // process). Same validation: regular file inside the
+            // verified cache root, never a symlink.
+            if let Some(path) = validated_bundle_file(&build_worker_dir, &build_entry_file) {
+                return Ok(BuiltBundle {
+                    bundle: ModuleBundle {
+                        path,
+                        format: BundleFormat::JavaScript,
+                    },
+                    dir: None,
+                    inline: None,
+                    rebuilt: false,
+                    elapsed_ms: 0,
+                });
+            }
+            let step = build_and_publish(
+                &build_bundler,
+                &build_worker_dir,
+                &build_entrypoint,
+                &build_key,
+                &build_cache_root,
+            )?;
+            let elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+            match step {
+                BundleBuildStep::Published(bundle) => Ok(BuiltBundle {
+                    bundle,
+                    dir: None,
+                    inline: None,
+                    rebuilt: true,
+                    elapsed_ms,
+                }),
+                // EDG-30: the real `deno bundle` failed (registry) and
+                // the minimal relative-module fallback produced the
+                // file: it is never published. The builder keeps its own
+                // per-process copy (this task is synchronous) and the
+                // bytes go to the single-flight job so every waiter
+                // materializes its own copy too.
+                BundleBuildStep::Inline { file_name, bytes } => {
+                    let inline = Some((file_name.clone(), bytes.clone()));
+                    let (bundle, dir) = materialize_fallback_bundle_sync(
+                        &build_worker_dir,
+                        &build_fallback_dir,
+                        &file_name,
+                        &bytes,
+                    )?;
+                    Ok(BuiltBundle {
+                        bundle,
+                        dir: Some(dir),
+                        inline,
+                        rebuilt: true,
+                        elapsed_ms,
+                    })
                 }
-                let bundle = build_and_publish(
-                    &build_bundler,
-                    &build_worker_dir,
-                    &build_entrypoint,
-                    &build_key,
-                    &build_cache_root,
-                )?;
-                let elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-                Ok((bundle, true, elapsed_ms))
-            },
-        )
+            }
+        })
         .await;
         let build = match build {
             Ok(inner) => inner,
@@ -1408,11 +1611,8 @@ impl DenoCliBundler {
             }
         };
 
-        let (bundle, rebuilt, elapsed_ms) = match build {
-            Ok((bundle, rebuilt, elapsed_ms)) => {
-                job.finish(Ok(bundle.clone()));
-                (bundle, rebuilt, elapsed_ms)
-            }
+        let built = match build {
+            Ok(built) => built,
             // The cache root stopped being the real directory while building:
             // nothing was published through it. Finish the job (a waiter
             // takes the same path) and take the per-process fallback —
@@ -1436,22 +1636,50 @@ impl DenoCliBundler {
                 return Err(err);
             }
         };
+        let BuiltBundle {
+            bundle,
+            dir,
+            inline,
+            rebuilt,
+            elapsed_ms,
+        } = built;
+        job.finish(Ok(BundleJobResult {
+            bundle: bundle.clone(),
+            inline: inline.clone(),
+        }));
         if rebuilt {
-            record_bundle_outcome(BundleOutcome::Miss);
-            tracing::info!(
-                worker_dir = %worker_dir
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                key = %key.chars().take(16).collect::<String>(),
-                duration_ms = elapsed_ms,
-                "edger: bundle cache miss: built the worker bundle"
-            );
+            if inline.is_some() {
+                // EDG-30: the real `deno bundle` failed and the minimal
+                // relative-module fallback produced the bundle: nothing was
+                // published, the next spawn retries the real bundler.
+                // Counted `uncached` like every per-process bundle.
+                record_bundle_outcome(BundleOutcome::Uncached);
+                tracing::info!(
+                    worker_dir = %worker_dir
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    key = %key.chars().take(16).collect::<String>(),
+                    duration_ms = elapsed_ms,
+                    "edger: bundle built with the minimal relative-module fallback after the real `deno bundle` failed; not cached, the next spawn retries"
+                );
+            } else {
+                record_bundle_outcome(BundleOutcome::Miss);
+                tracing::info!(
+                    worker_dir = %worker_dir
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    key = %key.chars().take(16).collect::<String>(),
+                    duration_ms = elapsed_ms,
+                    "edger: bundle cache miss: built the worker bundle"
+                );
+            }
         } else {
             record_bundle_outcome(BundleOutcome::Hit);
         }
         remove_bundle_job(&key, &job);
-        Ok(BundleEntry { bundle, dir: None })
+        Ok(BundleEntry { bundle, dir })
     }
 
     /// The legacy per-process fallback bundle (EDG-20): today's behavior,
@@ -1583,6 +1811,270 @@ fn write_minimal_relative_bundle(
             format!("failed to write fallback bundle: {err}"),
         )
     })
+}
+
+/// EDG-30: the fallback's single-file output is validated with the SAME
+/// mechanism the bundler already uses before `deno bundle` — a real-parser
+/// dependency graph (`deno info --json`, the same command as
+/// `validate_bundle_graph`) of the OUTPUT FILE itself, run from the
+/// directory the file will be executed in (the staging dir or the
+/// per-process tempdir). The real Deno parser catches every surviving
+/// relative-import form the hand-written scanner missed — comment
+/// (`import(/* chunk */"./x")`), template (`` import(`"./x") ``), escape
+/// (`import("\x2e/x")`) and minified (`import{a}from"./x"`) — and does not
+/// flag method calls (`o.import("./a")`) or template TEXT that merely looks
+/// like an import (`` const s = `import("./a")` ``): the scanner's false
+/// positives. `executable` is the SAME Deno that produced the original
+/// `deno bundle` failure.
+///
+/// The output is refused when a CODE dependency of a module REACHABLE from
+/// the graph ROOTS by code edges only points at a `file:` module different
+/// from the output file itself (the graph ROOT) — a surviving relative
+/// import, refused whether or not the target exists or resolves (a correct
+/// fallback embeds every relative module, so no `file:` code dependency may
+/// survive; the rule does not depend on the directory the graph was
+/// inspected in, because the staging dir is one level deeper than the
+/// per-process dir the bundle is finally materialized in, so a `../../x.js`
+/// that resolves from the staging dir can point outside the worker from the
+/// final dir) — or when the ROOT `file:` module (the output file itself)
+/// carries an `error` (the generated artifact is broken, e.g. a
+/// SyntaxError). Type-only edges never count (D29), and — since amendment 3
+/// — the refusal rule does not count modules reachable ONLY by type edges:
+/// a subgraph behind a type edge never executes, so its own surviving
+/// `file:` code edges cannot refuse a working fallback. Remote, `npm:` and
+/// `jsr:` targets are ignored (the previous behavior for them is kept). When
+/// `deno info` itself exits with an error status, the output is refused only
+/// when the failure output names a `file:` module.
+fn validate_fallback_output(executable: &str, output_path: &Path) -> Result<(), IsolationError> {
+    let working_dir = output_path.parent().ok_or_else(|| {
+        IsolationError::new(
+            "DENO_BUNDLE_FALLBACK_GRAPH",
+            format!(
+                "fallback output has no parent directory: {}",
+                output_path.display()
+            ),
+        )
+    })?;
+    let file_name = output_path.file_name().ok_or_else(|| {
+        IsolationError::new(
+            "DENO_BUNDLE_FALLBACK_GRAPH",
+            format!(
+                "fallback output has no file name: {}",
+                output_path.display()
+            ),
+        )
+    })?;
+    let mut command = Command::new(executable);
+    command
+        .arg("info")
+        .arg("--json")
+        .current_dir(working_dir)
+        .arg(file_name);
+    let output = command.output().map_err(|err| {
+        IsolationError::new(
+            "DENO_BUNDLE_FALLBACK_GRAPH",
+            format!("failed to inspect the fallback bundle graph with {executable}: {err}"),
+        )
+    })?;
+    if !output.status.success() {
+        let mut failure = String::from_utf8_lossy(&output.stderr).into_owned();
+        failure.push(' ');
+        failure.push_str(&String::from_utf8_lossy(&output.stdout));
+        let Some(specifier) = first_file_url(&failure) else {
+            // A non-`file:` failure (remote / `npm:` / `jsr:` resolution,
+            // environment): the previous behavior is kept — the fallback
+            // output is served.
+            return Ok(());
+        };
+        return Err(IsolationError::new(
+            "DENO_BUNDLE_FALLBACK_GRAPH",
+            format!(
+                "deno info failed with status {:?} on a file: module: {}; {}",
+                output.status.code(),
+                specifier,
+                failure.trim()
+            ),
+        ));
+    }
+    match first_surviving_fallback_file_dependency(&output.stdout) {
+        Some(specifier) => Err(IsolationError::new(
+            "DENO_BUNDLE_FALLBACK_GRAPH",
+            format!(
+                "file: code dependency left in the fallback bundle: {specifier}; a correct fallback embeds every relative module, so the single-file bundle is refused"
+            ),
+        )),
+        // A clean graph (or a graph that could not be parsed, which keeps
+        // the previous behavior): the fallback output is served.
+        None => Ok(()),
+    }
+}
+
+/// The first problematic specifier of the fallback-output graph (EDG-30,
+/// amendments 2 and 3): a CODE dependency of a module REACHABLE from the
+/// graph ROOTS by following CODE edges only (`dependencies[].code.specifier`,
+/// with `redirects` applied exactly as the D29 logic in
+/// `validate_dependency_graph_json` does) whose (post-redirect) target is a
+/// `file:` module DIFFERENT from the output file itself (the graph root),
+/// or a ROOT `file:` module (the output file itself) with an `error` field.
+/// A correct fallback embeds every relative module, so a `file:` code
+/// target other than the output file is a surviving import — it is refused
+/// whether or not it exists or resolves: the rule no longer depends on the
+/// directory the graph was inspected in (the staging dir is one level
+/// deeper than the per-process dir the bundle is finally materialized in,
+/// so a `../../x.js` that resolves from the staging dir can point outside
+/// the worker from the final dir). `None` for a clean graph or a graph that
+/// could not be parsed (the caller keeps the previous behavior).
+///
+/// Amendment 3: the refusal rule applies ONLY to the modules reached by
+/// that code-edge search. Modules reachable exclusively by type edges never
+/// execute (the bundle drops type-only imports, D29), so a subgraph behind
+/// a type edge — even with its own surviving `file:` code edges — is
+/// exempt: the refusal must not refuse a working fallback for code that
+/// the runtime never loads. Type-only edges never count (D29), and remote /
+/// `npm:` / `jsr:` targets are ignored — the previous behavior for them is
+/// kept (a code edge to a remote module still leads the search there, so a
+/// `file:` code dependency OF such a reached remote module is refused,
+/// exactly as before amendment 3).
+fn first_surviving_fallback_file_dependency(raw: &[u8]) -> Option<String> {
+    let graph: serde_json::Value = serde_json::from_slice(raw).ok()?;
+    let modules = graph.get("modules").and_then(serde_json::Value::as_array)?;
+    let roots: HashSet<String> = graph
+        .get("roots")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_string)
+        .collect();
+    let redirects: HashMap<String, String> = graph
+        .get("redirects")
+        .and_then(serde_json::Value::as_object)
+        .map(|redirects| {
+            redirects
+                .iter()
+                .filter_map(|(from, to)| to.as_str().map(|to| (from.clone(), to.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    // Code-edge adjacency of EVERY module (key: module specifier; value: the
+    // post-redirect targets of its CODE edges, in dependency order). Type-
+    // only edges never enter the map (D29).
+    let mut code_edges: HashMap<String, Vec<String>> = HashMap::new();
+    for module in modules {
+        let Some(specifier) = module.get("specifier").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(dependencies) = module
+            .get("dependencies")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for dependency in dependencies {
+            let Some(target) = dependency
+                .get("code")
+                .and_then(|code| code.get("specifier"))
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            code_edges
+                .entry(specifier.to_string())
+                .or_default()
+                .push(follow_redirects(&redirects, target));
+        }
+    }
+    // EDG-30 amendment 3: the modules REACHABLE from the roots by following
+    // CODE edges only. A module reached exclusively through type edges never
+    // executes, so the refusal rule below does not count it (nor its code
+    // edges).
+    let mut reachable: HashSet<String> = roots.clone();
+    let mut queue: VecDeque<String> = roots.iter().cloned().collect();
+    while let Some(current) = queue.pop_front() {
+        let Some(targets) = code_edges.get(&current) else {
+            continue;
+        };
+        for target in targets {
+            if reachable.insert(target.clone()) {
+                queue.push_back(target.clone());
+            }
+        }
+    }
+    for module in modules {
+        let Some(specifier) = module.get("specifier").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        // Only modules reached from the roots by CODE edges count — a module
+        // reachable only by type edges never executes (amendment 3).
+        if !reachable.contains(specifier) {
+            continue;
+        }
+        if !specifier.starts_with("file:") {
+            continue;
+        }
+        // The output file itself (a root) with an error: the generated
+        // artifact is broken (e.g. a SyntaxError) — refuse it.
+        if roots.contains(specifier) && module.get("error").is_some() {
+            return Some(specifier.to_string());
+        }
+        let Some(dependencies) = module
+            .get("dependencies")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for dependency in dependencies {
+            // A CODE edge only: type-only edges never count (D29).
+            let Some(target) = dependency
+                .get("code")
+                .and_then(|code| code.get("specifier"))
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            if !target.starts_with("file:") {
+                continue; // remote / npm: / jsr: targets keep the previous behavior
+            }
+            let final_target = follow_redirects(&redirects, target);
+            if !final_target.starts_with("file:") {
+                continue;
+            }
+            // A correct fallback embeds every relative module: any `file:`
+            // code target other than the output file itself (a root) is a
+            // surviving import — refused whether or not it exists or
+            // resolves (the rule does not depend on the inspection dir).
+            if !roots.contains(&final_target) {
+                return Some(final_target);
+            }
+        }
+    }
+    None
+}
+
+/// The redirect resolution of a code edge (EDG-30): up to 8 redirect hops
+/// (a cycle or a longer chain stops at the last hop), the same bounded
+/// chase the rule applied to every edge before amendment 3.
+fn follow_redirects(redirects: &HashMap<String, String>, target: &str) -> String {
+    let mut final_target = target.to_string();
+    for _ in 0..8 {
+        match redirects.get(&final_target) {
+            Some(next) if next != &final_target => final_target = next.clone(),
+            _ => break,
+        }
+    }
+    final_target
+}
+
+/// The first `file:` URL named in a `deno info` failure output (the
+/// status-error rule of EDG-30): `None` when the failure does not name a
+/// `file:` module (a remote / `npm:` / `jsr:` or environment cause).
+fn first_file_url(text: &str) -> Option<String> {
+    let start = text.find("file://")?;
+    let rest = &text[start..];
+    let end = rest
+        .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | ']' | ','))
+        .unwrap_or(rest.len());
+    Some(rest[..end].to_string())
 }
 
 fn append_module(
@@ -2358,10 +2850,14 @@ export default () => new Response(message);
     }
 
     /// EDG-14: a fake `deno` executable for the retry tests. `info` answers
-    /// with a valid two-module graph; `bundle` fails its first
-    /// `fail_bundle_attempts` runs with the esbuild fetch error (the
-    /// minimal-fallback trigger) and counts every `bundle` attempt in
-    /// `root/bundle-attempts`, so a retry is observable.
+    /// with a valid two-module graph for the WORKER entrypoint and with a
+    /// CLEAN single-module graph for the fallback OUTPUT file
+    /// (`index.bundle.mjs` — a fully-resolved single file with no
+    /// surviving `file:` code dependency, the shape the amendment-2 rule
+    /// accepts); `bundle` fails its first `fail_bundle_attempts` runs with
+    /// the esbuild fetch error (the minimal-fallback trigger) and counts
+    /// every `bundle` attempt in `root/bundle-attempts`, so a retry is
+    /// observable.
     #[cfg(unix)]
     fn write_fake_deno(
         root: &Path,
@@ -2388,12 +2884,27 @@ export default () => new Response(message);
                 }
             ]
         });
+        let output_graph = serde_json::json!({
+            "roots": ["file://./index.bundle.mjs"],
+            "modules": [
+                {
+                    "specifier": "file://./index.bundle.mjs",
+                    "local": "index.bundle.mjs",
+                    "dependencies": []
+                }
+            ]
+        });
         let script = format!(
             r#"#!/bin/sh
 STATE='{state}'
 FAILS={fails}
 n=$(cat "$STATE" 2>/dev/null || printf 0)
 if [ "$1" = "info" ]; then
+  name=$(basename "$3")
+  if [ "$name" = "index.bundle.mjs" ]; then
+    printf '%s' '{output_graph}'
+    exit 0
+  fi
   printf '%s' '{graph}'
   exit 0
 fi
@@ -2415,6 +2926,7 @@ exit 0
             state = state.display(),
             fails = fail_bundle_attempts,
             graph = graph,
+            output_graph = output_graph,
         );
         let fake = root.join("fake-deno");
         std::fs::write(&fake, script).unwrap();
@@ -2481,6 +2993,535 @@ exit 0
             std::fs::read_to_string(&state).unwrap(),
             "2",
             "the fallback must be reached only after the single retry"
+        );
+    }
+
+    // EDG-30 (amendment 1): the fallback-output graph rule — a `file:`
+    // CODE dependency whose target is present in the graph with an
+    // `error` field (the real `deno info` shape for a surviving relative
+    // import) refuses the output, citing the target specifier.
+    #[test]
+    fn fallback_graph_refuses_errored_file_dependency() {
+        let bundle = "file:///staging/index.bundle.mjs";
+        let target = "file:///staging/assets/chunk.js";
+        let graph = serde_json::json!({
+            "roots": [bundle],
+            "modules": [
+                {
+                    "kind": "esm",
+                    "local": "/staging/index.bundle.mjs",
+                    "size": 52,
+                    "mediaType": "Mjs",
+                    "specifier": bundle,
+                    "dependencies": [
+                        {
+                            "specifier": "./assets/chunk.js",
+                            "code": {
+                                "specifier": target,
+                                "span": {
+                                    "start": {"line": 0, "character": 26},
+                                    "end": {"line": 0, "character": 34}
+                                }
+                            },
+                            "isDynamic": true
+                        }
+                    ]
+                },
+                {
+                    "specifier": target,
+                    "error": format!("Module not found \"{target}\".")
+                }
+            ],
+            "redirects": {},
+            "npmPackages": {}
+        });
+        assert_eq!(
+            first_surviving_fallback_file_dependency(graph.to_string().as_bytes()),
+            Some(target.to_string()),
+            "a code edge to an errored file: module refuses the output"
+        );
+    }
+
+    // EDG-30 (amendment 2): a `file:` CODE dependency whose target is
+    // PRESENT in the graph with no error — the relocation case, where the
+    // staging dir is one level deeper than the per-process dir the bundle
+    // is finally materialized in, so a `../../x.js` that resolves from the
+    // staging dir can point outside the worker from the final dir — still
+    // refuses the output: a correct fallback embeds every relative module,
+    // so the rule no longer depends on the inspection directory.
+    #[test]
+    fn fallback_graph_refuses_existing_file_dependency() {
+        let bundle = "file:///staging/index.bundle.mjs";
+        let target = "file:///worker/x.js";
+        let graph = serde_json::json!({
+            "roots": [bundle],
+            "modules": [
+                {
+                    "kind": "esm",
+                    "local": "/staging/index.bundle.mjs",
+                    "size": 52,
+                    "mediaType": "Mjs",
+                    "specifier": bundle,
+                    "dependencies": [
+                        {
+                            "specifier": "../../x.js",
+                            "code": {
+                                "specifier": target,
+                                "span": {
+                                    "start": {"line": 0, "character": 26},
+                                    "end": {"line": 0, "character": 34}
+                                }
+                            },
+                            "isDynamic": true
+                        }
+                    ]
+                },
+                {
+                    "kind": "esm",
+                    "local": "/worker/x.js",
+                    "size": 10,
+                    "mediaType": "Js",
+                    "specifier": target
+                }
+            ],
+            "redirects": {},
+            "npmPackages": {}
+        });
+        assert_eq!(
+            first_surviving_fallback_file_dependency(graph.to_string().as_bytes()),
+            Some(target.to_string()),
+            "a surviving file: code dependency refuses the output even when the target exists and resolves"
+        );
+    }
+
+    // EDG-30 (amendment 2): a CODE edge whose target is the output file
+    // ITSELF (the graph root) is the one `file:` target the rule allows —
+    // the output is accepted.
+    #[test]
+    fn fallback_graph_accepts_code_edge_to_the_output_root() {
+        let bundle = "file:///staging/index.bundle.mjs";
+        let graph = serde_json::json!({
+            "roots": [bundle],
+            "modules": [
+                {
+                    "specifier": bundle,
+                    "local": "/staging/index.bundle.mjs",
+                    "dependencies": [
+                        {"code": {"specifier": bundle}}
+                    ]
+                }
+            ]
+        });
+        assert_eq!(
+            first_surviving_fallback_file_dependency(graph.to_string().as_bytes()),
+            None,
+            "a code edge back to the output file itself (the root) does not refuse the output"
+        );
+    }
+
+    // EDG-30 (amendment 1): a `file:` CODE dependency whose target is
+    // absent from the graph entirely refuses the output.
+    #[test]
+    fn fallback_graph_refuses_missing_file_dependency() {
+        let bundle = "file:///staging/index.bundle.mjs";
+        let target = "file:///staging/x.js";
+        let graph = serde_json::json!({
+            "roots": [bundle],
+            "modules": [
+                {
+                    "specifier": bundle,
+                    "local": "/staging/index.bundle.mjs",
+                    "dependencies": [
+                        {"code": {"specifier": target}}
+                    ]
+                }
+            ]
+        });
+        assert_eq!(
+            first_surviving_fallback_file_dependency(graph.to_string().as_bytes()),
+            Some(target.to_string()),
+            "a code edge to an absent file: module refuses the output"
+        );
+    }
+
+    // EDG-30 (amendment 1) / D29: a type-only edge (a `type` dependency,
+    // no `code`) to an errored or missing `file:` target never counts —
+    // the bundle drops type-only imports, so the output is accepted.
+    #[test]
+    fn fallback_graph_ignores_type_only_edges() {
+        let bundle = "file:///staging/index.bundle.mjs";
+        let target = "file:///outside/types/index";
+        let graph = serde_json::json!({
+            "roots": [bundle],
+            "modules": [
+                {
+                    "kind": "esm",
+                    "local": "/staging/index.bundle.mjs",
+                    "mediaType": "Mjs",
+                    "specifier": bundle,
+                    "dependencies": [
+                        {
+                            "specifier": "../outside/types/index",
+                            "type": {
+                                "specifier": target,
+                                "span": {
+                                    "start": {"line": 0, "character": 18},
+                                    "end": {"line": 0, "character": 34}
+                                }
+                            }
+                        }
+                    ]
+                },
+                {
+                    "specifier": target,
+                    "error": format!("Module not found \"{target}\".")
+                }
+            ],
+            "redirects": {},
+            "npmPackages": {}
+        });
+        assert_eq!(
+            first_surviving_fallback_file_dependency(graph.to_string().as_bytes()),
+            None,
+            "a type-only edge never counts (D29)"
+        );
+    }
+
+    // EDG-30 (amendment 3): the refusal rule applies ONLY to the modules
+    // reachable from the roots by CODE edges. The reviewer's fixture in
+    // fixed JSON: the root references `types.js` through a type edge only
+    // (a JSDoc `typeof import('types').v` mapped by the import map), and
+    // `types.js` re-exports from `helper.js` through a CODE edge. The
+    // subgraph never executes, so the output is ACCEPTED.
+    #[test]
+    fn fallback_graph_accepts_type_reachable_subgraph() {
+        let bundle = "file:///staging/index.bundle.mjs";
+        let types = "file:///staging/types.js";
+        let helper = "file:///staging/helper.js";
+        let graph = serde_json::json!({
+            "version": 1,
+            "roots": [bundle],
+            "modules": [
+                {
+                    "kind": "esm",
+                    "local": "/staging/index.bundle.mjs",
+                    "size": 266,
+                    "mediaType": "Mjs",
+                    "specifier": bundle,
+                    "dependencies": [
+                        {
+                            "specifier": "types",
+                            "type": {
+                                "specifier": types,
+                                "span": {
+                                    "start": {"line": 3, "character": 25},
+                                    "end": {"line": 3, "character": 32}
+                                }
+                            }
+                        }
+                    ]
+                },
+                {
+                    "kind": "esm",
+                    "local": "/staging/types.js",
+                    "size": 33,
+                    "mediaType": "JavaScript",
+                    "specifier": types,
+                    "dependencies": [
+                        {
+                            "specifier": "./helper.js",
+                            "code": {
+                                "specifier": helper,
+                                "span": {
+                                    "start": {"line": 0, "character": 18},
+                                    "end": {"line": 0, "character": 31}
+                                }
+                            }
+                        }
+                    ]
+                },
+                {
+                    "kind": "esm",
+                    "local": "/staging/helper.js",
+                    "size": 18,
+                    "mediaType": "JavaScript",
+                    "specifier": helper
+                }
+            ],
+            "redirects": {},
+            "npmPackages": {}
+        });
+        assert_eq!(
+            first_surviving_fallback_file_dependency(graph.to_string().as_bytes()),
+            None,
+            "a subgraph reachable only by a type edge never executes: its code edges do not count"
+        );
+    }
+
+    // EDG-30 (amendment 3): the code-edge search LEADS THROUGH remote
+    // modules — a code edge from the root to a remote module makes that
+    // module count — but the current rule for remotes is kept: the refusal
+    // rule only counts code edges that originate in a `file:` module, so a
+    // `file:` code dependency OF the reached remote module is NOT refused
+    // (exactly as before amendment 3, when every `file:` module was
+    // iterated and every non-`file:` module skipped).
+    #[test]
+    fn fallback_graph_ignores_file_dependency_of_reached_remote_module() {
+        let bundle = "file:///staging/index.bundle.mjs";
+        let remote = "https://example.test/remote.js";
+        let helper = "file:///staging/helper.js";
+        let graph = serde_json::json!({
+            "roots": [bundle],
+            "modules": [
+                {
+                    "kind": "esm",
+                    "local": "/staging/index.bundle.mjs",
+                    "mediaType": "Mjs",
+                    "specifier": bundle,
+                    "dependencies": [
+                        {"code": {"specifier": remote}}
+                    ]
+                },
+                {
+                    "kind": "esm",
+                    "specifier": remote,
+                    "dependencies": [
+                        {"code": {"specifier": helper}}
+                    ]
+                }
+            ],
+            "redirects": {},
+            "npmPackages": {}
+        });
+        assert_eq!(
+            first_surviving_fallback_file_dependency(graph.to_string().as_bytes()),
+            None,
+            "a code edge that originates in a non-file: (remote) module keeps the previous behavior: not refused"
+        );
+    }
+
+    // EDG-30 (amendment 1): a CODE dependency on a `npm:` target that
+    // carries an `error` does NOT refuse the fallback — the previous
+    // behavior for non-`file:` targets is kept.
+    #[test]
+    fn fallback_graph_ignores_npm_dependency_error() {
+        let bundle = "file:///staging/index.bundle.mjs";
+        let graph = serde_json::json!({
+            "roots": [bundle],
+            "modules": [
+                {
+                    "specifier": bundle,
+                    "local": "/staging/index.bundle.mjs",
+                    "dependencies": [
+                        {"code": {"specifier": "npm:lib@1.0.0"}}
+                    ]
+                },
+                {
+                    "specifier": "npm:lib@1.0.0",
+                    "error": "error: failed to download https://registry.npmjs.org/lib"
+                }
+            ],
+            "redirects": {},
+            "npmPackages": {}
+        });
+        assert_eq!(
+            first_surviving_fallback_file_dependency(graph.to_string().as_bytes()),
+            None,
+            "an errored npm: target keeps the previous behavior"
+        );
+    }
+
+    // EDG-30 (amendment 1): a clean graph (only the root module, no
+    // dependencies) accepts the output — the fully-resolved fallback.
+    #[test]
+    fn fallback_graph_accepts_clean_graph() {
+        let graph = serde_json::json!({
+            "version": 1,
+            "roots": ["file:///staging/index.bundle.mjs"],
+            "modules": [
+                {
+                    "kind": "esm",
+                    "local": "/staging/index.bundle.mjs",
+                    "size": 110,
+                    "mediaType": "Mjs",
+                    "specifier": "file:///staging/index.bundle.mjs"
+                }
+            ],
+            "redirects": {},
+            "npmPackages": {}
+        });
+        assert_eq!(
+            first_surviving_fallback_file_dependency(graph.to_string().as_bytes()),
+            None
+        );
+        // A graph that could not be parsed keeps the previous behavior.
+        assert_eq!(first_surviving_fallback_file_dependency(b"not json"), None);
+    }
+
+    // EDG-30 (amendment 1): the output file ITSELF (a root `file:` module)
+    // with an `error` field — e.g. a SyntaxError in the generated file —
+    // refuses the output, citing the root specifier.
+    #[test]
+    fn fallback_graph_refuses_broken_root_module() {
+        let bundle = "file:///staging/index.bundle.mjs";
+        let graph = serde_json::json!({
+            "roots": [bundle],
+            "modules": [
+                {
+                    "specifier": bundle,
+                    "error": "SyntaxError: Expression expected\n  |\n1 | const p = import(.\n    at file:///staging/index.bundle.mjs"
+                }
+            ]
+        });
+        assert_eq!(
+            first_surviving_fallback_file_dependency(graph.to_string().as_bytes()),
+            Some(bundle.to_string()),
+            "a broken output file (SyntaxError in the root) refuses the output"
+        );
+    }
+
+    // EDG-30 (amendment 1): redirects are followed — a code edge whose
+    // target is redirected to a missing `file:` module refuses the output,
+    // citing the FINAL target.
+    #[test]
+    fn fallback_graph_follows_redirects_to_missing_target() {
+        let bundle = "file:///staging/index.bundle.mjs";
+        let from = "file:///staging/old.js";
+        let to = "file:///staging/new.js";
+        let graph = serde_json::json!({
+            "roots": [bundle],
+            "modules": [
+                {
+                    "specifier": bundle,
+                    "local": "/staging/index.bundle.mjs",
+                    "dependencies": [
+                        {"code": {"specifier": from}}
+                    ]
+                }
+            ],
+            "redirects": {from: to}
+        });
+        assert_eq!(
+            first_surviving_fallback_file_dependency(graph.to_string().as_bytes()),
+            Some(to.to_string()),
+            "a redirected code edge to a missing file: module refuses the output"
+        );
+    }
+
+    // EDG-30 (amendment 1): the FIRST problematic specifier in graph order
+    // is cited.
+    #[test]
+    fn fallback_graph_cites_the_first_problem_in_order() {
+        let bundle = "file:///staging/index.bundle.mjs";
+        let graph = serde_json::json!({
+            "roots": [bundle],
+            "modules": [
+                {
+                    "specifier": bundle,
+                    "local": "/staging/index.bundle.mjs",
+                    "dependencies": [
+                        {"code": {"specifier": "file:///staging/two.js"}},
+                        {"code": {"specifier": "file:///staging/one.js"}}
+                    ]
+                }
+            ]
+        });
+        assert_eq!(
+            first_surviving_fallback_file_dependency(graph.to_string().as_bytes()),
+            Some("file:///staging/two.js".to_string())
+        );
+    }
+
+    // EDG-30 (amendment 1): the `deno info` status-error rule — a
+    // non-zero exit that names a `file:` module refuses the output (citing
+    // the specifier); a non-zero exit without a `file:` mention (remote /
+    // `npm:` / `jsr:` or environment) keeps the previous behavior.
+    #[cfg(unix)]
+    #[test]
+    fn fallback_output_status_error_refuses_only_file_causes() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let out = root.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("index.bundle.mjs"), "// bundle\n").unwrap();
+        let output_path = out.join("index.bundle.mjs");
+
+        let file_cause = root.path().join("deno-file-cause");
+        std::fs::write(
+            &file_cause,
+            "#!/bin/sh\nprintf 'error: Module not found \"file:///staging/x.js\" (imported from \"file:///staging/index.bundle.mjs\")\\n' 1>&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&file_cause, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = validate_fallback_output(&file_cause.to_string_lossy(), &output_path)
+            .expect_err("a non-zero deno info naming a file: module refuses the output");
+        assert_eq!(err.code, "DENO_BUNDLE_FALLBACK_GRAPH");
+        assert!(
+            err.message.contains("file:///staging/x.js"),
+            "the failing file: specifier is cited: {err}"
+        );
+
+        let remote_cause = root.path().join("deno-remote-cause");
+        std::fs::write(
+            &remote_cause,
+            "#!/bin/sh\nprintf 'error: Failed to download https://registry.npmjs.org/lib\\n' 1>&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&remote_cause, std::fs::Permissions::from_mode(0o755)).unwrap();
+        validate_fallback_output(&remote_cause.to_string_lossy(), &output_path)
+            .expect("a non-file: deno info failure keeps the previous behavior (served)");
+    }
+
+    // EDG-30: the origin signal — a persistent registry failure produces the
+    // minimal fallback bundle with `cacheable = false`.
+    #[cfg(unix)]
+    #[test]
+    fn bundle_entrypoint_origin_flags_the_fallback_as_uncacheable() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = write_worker_fixture(root.path());
+        let entry = worker.join("index.ts");
+        let fake = write_fake_deno(root.path(), &worker, &entry, 99);
+        let output_dir = root.path().join("out");
+        let bundler = DenoCliBundler::new(fake.to_string_lossy().into_owned());
+
+        let (bundle, cacheable) = bundler
+            .bundle_entrypoint_origin(&worker, &entry, &output_dir)
+            .expect("a persistent esbuild failure keeps the minimal fallback");
+        assert!(
+            !cacheable,
+            "the fallback bundle must be flagged as not cacheable"
+        );
+        assert!(
+            std::fs::read_to_string(Path::new(&bundle.path))
+                .unwrap()
+                .starts_with("// Generated by EdgeR's minimal relative-module bundler fallback."),
+            "the not-cacheable result is the fallback bundle"
+        );
+    }
+
+    // EDG-30: the origin signal — a recovered REAL `deno bundle` output is
+    // flagged `cacheable = true`.
+    #[cfg(unix)]
+    #[test]
+    fn bundle_entrypoint_origin_flags_the_real_bundle_as_cacheable() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = write_worker_fixture(root.path());
+        let entry = worker.join("index.ts");
+        let fake = write_fake_deno(root.path(), &worker, &entry, 1);
+        let output_dir = root.path().join("out");
+        let bundler = DenoCliBundler::new(fake.to_string_lossy().into_owned());
+
+        let (bundle, cacheable) = bundler
+            .bundle_entrypoint_origin(&worker, &entry, &output_dir)
+            .expect("a transient esbuild failure recovers on the single retry");
+        assert!(
+            cacheable,
+            "the real `deno bundle` output must be flagged as cacheable"
+        );
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&bundle.path)).unwrap(),
+            "var recovered = true;\n",
+            "the flagged-cacheable result is the real bundle, not the fallback"
         );
     }
 }

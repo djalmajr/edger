@@ -319,6 +319,32 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   configured limit (the acquisition timeout, the `CONSOLE_BUSY` 503 and the
   login statuses are unchanged).
 
+- The minimal relative-module fallback bundle is never published to the
+  per-version bundle cache (EDG-30): when `deno bundle` fails on a registry
+  error, the fallback output (a single file) is validated with the same
+  mechanism the bundler already uses before `deno bundle` — a `deno info
+  --json` dependency graph of the output file, run from the directory it
+  will be executed in, with the same Deno executable that produced the
+  original error. The real Deno parser catches a relative import left in
+  the output in any form (minified `import{a}from"./x"`, re-export, comment
+  `import(/* c */"./x")`, template `` import(`./x`) ``, escape
+  `import("\x2e/x")` or dynamic `import("./x")`) without flagging method
+  calls (`o.import("./a")`) or template text that merely looks like an
+  import. A correct fallback embeds every relative module, so a `file:`
+  code dependency left in a module REACHABLE from the graph roots BY CODE
+  EDGES that points at a `file:` module different from the output file
+  itself (the graph root) — whether or not it exists or resolves — or a
+  broken output file fails the fallback with `DENO_BUNDLE_FAILED` (the
+  original registry cause plus the first surviving `file:` specifier), so a
+  broken bundle can no longer be cached and fail every request of the
+  version; the rule no longer depends on the directory the graph is
+  inspected in (the staging dir is one level deeper than the per-process
+  dir the bundle is finally materialized in); a fully-resolved fallback
+  serves only the current spawn (per-process, counted `uncached`) and the
+  next spawn retries the real `deno bundle`. Type-only edges never count —
+  a subgraph reachable only by type edges never executes, so its code edges
+  are exempt from the rule — and remote / `npm:` / `jsr:` targets keep the
+  previous behavior.
 - The manifest `cron[]` jobs now follow the default version and track the
   index (EDG-26): instead of a fixed registration list built once at boot,
   the cron scheduler reconciles the desired job set from the `ManifestIndex`
