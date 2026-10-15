@@ -1329,6 +1329,1020 @@ async fn file_routes_gate_on_files_permissions_and_toggle_gates_enable() {
     assert_eq!(status, StatusCode::OK);
 }
 
+// EDG-24: a `release` command runs outside the Deno sandbox as a subprocess
+// of the EdgeR process, so only root may declare it — a non-root install is
+// refused before any write and the command never runs.
+#[tokio::test]
+async fn non_root_install_with_release_is_refused_and_runs_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let proof = root.path().join("release-ran.txt");
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    let (status, created, _) = create_key(app.clone(), &["workers:install"]).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let installer_key = created["rawKey"].as_str().unwrap();
+
+    let package = zip_package(&[
+        (
+            "manifest.yaml",
+            &format!(
+                "name: release-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"touch {}\"\n",
+                proof.display()
+            ),
+        ),
+        ("index.ts", "Deno.serve(() => new Response('ok'));"),
+    ]);
+
+    let (status, denied, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some(installer_key),
+        "application/zip",
+        package,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "unexpected body: {text}");
+    assert_eq!(denied["code"], "RELEASE_REQUIRES_ROOT");
+
+    // a versão não aparece no inventário e o comando do release não rodou:
+    // o arquivo-prova que a command grava não existe.
+    let (status, list, text) = send(
+        app,
+        "GET",
+        "/api/admin/workers",
+        Some("test-root"),
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert!(
+        list["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|worker| worker["name"] != "release-app"),
+        "unexpected body: {text}"
+    );
+    assert!(!proof.exists());
+}
+
+// EDG-24: sem `release` no manifesto, a chave sem root continua instalando
+// (sem regressão do escopo `workers:install`).
+#[tokio::test]
+async fn non_root_install_without_release_still_passes() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    let (status, created, _) = create_key(app.clone(), &["workers:install"]).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let installer_key = created["rawKey"].as_str().unwrap();
+
+    let (status, installed, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/install",
+        Some(installer_key),
+        "application/zip",
+        app_zip("1.0.0", "plain"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    assert_eq!(installed["name"], "zip-app");
+    assert_eq!(installed["release"], "not_configured");
+}
+
+// EDG-24: root declara `release` e o comando roda no install.
+#[tokio::test]
+async fn root_install_with_release_runs_the_command() {
+    let root = tempfile::tempdir().unwrap();
+    let proof = root.path().join("root-release-ran.txt");
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    let package = zip_package(&[
+        (
+            "manifest.yaml",
+            &format!(
+                "name: root-release-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"touch {}\"\n",
+                proof.display()
+            ),
+        ),
+        ("index.ts", "Deno.serve(() => new Response('ok'));"),
+    ]);
+
+    let (status, installed, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        package,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    assert_eq!(installed["release"], "completed");
+    assert!(proof.exists());
+}
+
+// EDG-24: `files:write` não-root não reescreve o manifest da raiz da versão
+// com `release` não vazio — o upload inteiro é recusado antes de gravar
+// qualquer arquivo.
+#[tokio::test]
+async fn non_root_files_upload_with_release_is_refused_and_leaves_disk_untouched() {
+    let root = tempfile::tempdir().unwrap();
+    let proof = root.path().join("upload-release-ran.txt");
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        app_zip("1.0.0", "plain"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    let source = std::path::PathBuf::from(installed["source"].as_str().unwrap());
+    let manifest_path = source.join("manifest.yaml");
+    let manifest_before = fs::read(&manifest_path).unwrap();
+    let entrypoint_before = fs::read(source.join("index.ts")).unwrap();
+
+    let (status, created, _) = create_key(app.clone(), &["files:write"]).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let writer_key = created["rawKey"].as_str().unwrap();
+
+    let upload = zip_package(&[
+        (
+            "manifest.yaml",
+            &format!(
+                "name: zip-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"touch {}\"\n",
+                proof.display()
+            ),
+        ),
+        ("index.ts", "Deno.serve(() => new Response('edited'));"),
+    ]);
+
+    let (status, denied, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/zip-app/files?version=1.0.0",
+        Some(writer_key),
+        "application/zip",
+        upload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "unexpected body: {text}");
+    assert_eq!(denied["code"], "RELEASE_REQUIRES_ROOT");
+
+    // nenhum arquivo foi gravado: manifest e index byte-idênticos e o
+    // comando do `release` do upload não rodou.
+    assert_eq!(fs::read(&manifest_path).unwrap(), manifest_before);
+    assert_eq!(
+        fs::read(source.join("index.ts")).unwrap(),
+        entrypoint_before
+    );
+    assert!(!proof.exists());
+}
+
+// EDG-24: `.edger-release` é reservado para todos (inclusive root): o delete
+// pela API de arquivos recusa com FORBIDDEN e o upload pula a entrada na raiz
+// sem tocar o marcador existente.
+#[tokio::test]
+async fn release_marker_is_reserved_for_files_delete_and_upload() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    // root instala uma versão COM release: o marcador existe no disco.
+    let package = zip_package(&[
+        (
+            "manifest.yaml",
+            "name: marker-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"true\"\n",
+        ),
+        ("index.ts", "Deno.serve(() => new Response('ok'));"),
+    ]);
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        package,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    let source = std::path::PathBuf::from(installed["source"].as_str().unwrap());
+    let marker = source.join(".edger-release");
+    assert!(
+        marker.is_file(),
+        "the release marker must exist after a root install with release"
+    );
+
+    // delete recusa o marcador na raiz da versão (mesmo para root) e ele
+    // continua no disco.
+    let (status, result, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/marker-app/files/delete?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({ "paths": [".edger-release"] })).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(result["deleted"], serde_json::json!([]));
+    assert_eq!(result["errors"][0]["code"], "FORBIDDEN");
+    assert_eq!(result["errors"][0]["message"], "reserved file");
+    assert!(
+        marker.is_file(),
+        "the marker must survive the refused delete"
+    );
+
+    // upload pula a entrada `.edger-release` na raiz: o conteúdo do
+    // marcador existente sobrevive e a entrada comum é gravada.
+    fs::write(&marker, "sentinel\n").unwrap();
+    let (status, _, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/marker-app/files?version=1.0.0",
+        Some("test-root"),
+        "application/zip",
+        zip_package(&[(".edger-release", "shipped\n"), ("extra.txt", "ok")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(
+        fs::read_to_string(&marker).unwrap(),
+        "sentinel\n",
+        "the upload must skip the reserved marker entry, not replace it"
+    );
+    assert!(source.join("extra.txt").is_file());
+}
+
+// EDG-24: o subprocesso de `release` parte de um ambiente limpo — só
+// PATH/HOME/TMPDIR/LANG/LC_ALL do processo + o `env` do manifesto — e nunca
+// vê `ROOT_API_KEY`/`EDGER_ROOT_KEY_FILE`.
+#[tokio::test]
+async fn release_command_runs_with_a_clean_environment() {
+    let root = tempfile::tempdir().unwrap();
+    let env_dump = root.path().join("release-env.txt");
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    // credenciais que o processo de teste carrega e o release não pode ver.
+    // O guard limpa no Drop para uma falha de assertão não vazar para os
+    // demais testes do mesmo binário.
+    struct EnvGuard(&'static str);
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(self.0);
+        }
+    }
+    std::env::set_var("ROOT_API_KEY", "test-secret-root-key");
+    std::env::set_var("EDGER_ROOT_KEY_FILE", "/nonexistent/root-key");
+    let _root_key_guard = EnvGuard("ROOT_API_KEY");
+    let _root_key_file_guard = EnvGuard("EDGER_ROOT_KEY_FILE");
+
+    let package = zip_package(&[
+        (
+            "manifest.yaml",
+            &format!(
+                "name: env-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"env > {}\"\nenv:\n  RELEASE_PROOF_VAR: marker-value\n",
+                env_dump.display()
+            ),
+        ),
+        ("index.ts", "Deno.serve(() => new Response('ok'));"),
+    ]);
+
+    let (status, installed, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        package,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    assert_eq!(installed["release"], "completed");
+
+    let env: std::collections::BTreeMap<String, String> = fs::read_to_string(&env_dump)
+        .unwrap()
+        .lines()
+        .filter_map(|line| {
+            line.split_once('=')
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+        })
+        .collect();
+    assert_eq!(
+        env.get("RELEASE_PROOF_VAR"),
+        Some(&"marker-value".to_string())
+    );
+    assert!(!env.contains_key("ROOT_API_KEY"), "env dump: {env:?}");
+    assert!(
+        !env.contains_key("EDGER_ROOT_KEY_FILE"),
+        "env dump: {env:?}"
+    );
+    // o pass-through do toolchain sobrevive ao ambiente limpo.
+    assert!(env.contains_key("PATH"), "env dump: {env:?}");
+}
+
+// EDG-24 revisão F1: "raiz da versão" é o destino canônico, não a grafia —
+// `path=.` é um alias da raiz e recebe a mesma recusa do upload canônico.
+#[tokio::test]
+async fn non_root_files_upload_to_dot_alias_with_release_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let proof = root.path().join("dot-upload-release-ran.txt");
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        app_zip("1.0.0", "plain"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    let source = std::path::PathBuf::from(installed["source"].as_str().unwrap());
+    let manifest_path = source.join("manifest.yaml");
+    let manifest_before = fs::read(&manifest_path).unwrap();
+    let entrypoint_before = fs::read(source.join("index.ts")).unwrap();
+
+    let (status, created, _) = create_key(app.clone(), &["files:write"]).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let writer_key = created["rawKey"].as_str().unwrap();
+
+    let upload = zip_package(&[
+        (
+            "manifest.yaml",
+            &format!(
+                "name: zip-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"touch {}\"\n",
+                proof.display()
+            ),
+        ),
+        ("index.ts", "Deno.serve(() => new Response('edited'));"),
+    ]);
+
+    // `path=.` resolve para a raiz da versão: mesma recusa, disco intacto.
+    let (status, denied, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/zip-app/files?version=1.0.0&path=.",
+        Some(writer_key),
+        "application/zip",
+        upload.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "unexpected body: {text}");
+    assert_eq!(denied["code"], "RELEASE_REQUIRES_ROOT");
+    assert_eq!(fs::read(&manifest_path).unwrap(), manifest_before);
+    assert_eq!(
+        fs::read(source.join("index.ts")).unwrap(),
+        entrypoint_before
+    );
+    assert!(!proof.exists());
+
+    // o upload do mesmo zip num subcaminho continua permitido: o manifest
+    // lá não é o manifest da raiz da versão.
+    let (status, _payload, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/zip-app/files?version=1.0.0&path=docs",
+        Some(writer_key),
+        "application/zip",
+        upload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+}
+
+// EDG-24 revisão F1: delete do marcador por um alias de caminho (`./`)
+// continua reservado — o pai canônico do alvo é a raiz da versão.
+#[tokio::test]
+async fn dot_alias_delete_of_release_marker_is_refused_per_path() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    let package = zip_package(&[
+        (
+            "manifest.yaml",
+            "name: dot-marker-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"true\"\n",
+        ),
+        ("index.ts", "Deno.serve(() => new Response('ok'));"),
+    ]);
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        package,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    let source = std::path::PathBuf::from(installed["source"].as_str().unwrap());
+    let marker = source.join(".edger-release");
+    assert!(marker.is_file());
+
+    // `./.edger-release` graficamente diferente, canonicamente a raiz:
+    // o lote responde 200 com o erro por caminho FORBIDDEN e o marcador
+    // continua no disco.
+    let (status, result, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/dot-marker-app/files/delete?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({ "paths": ["./.edger-release"] })).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(result["deleted"], serde_json::json!([]));
+    assert_eq!(result["errors"][0]["path"], "./.edger-release");
+    assert_eq!(result["errors"][0]["code"], "FORBIDDEN");
+    assert_eq!(result["errors"][0]["message"], "reserved file");
+    assert!(marker.is_file(), "the marker must survive the alias delete");
+}
+
+// EDG-24 revisão F2: a recusa é monotônica — dois manifests de raiz, em
+// qualquer ordem (e o loader escolhe `manifest.yaml` primeiro), um com
+// `release` recusa o upload inteiro.
+#[tokio::test]
+async fn dual_manifest_upload_with_release_is_refused_in_both_orders() {
+    for (name, manifest_yaml, manifest_yml) in [
+        (
+            "dual-a",
+            Some(
+                "name: dual-a\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"true\"\n",
+            ),
+            None,
+        ),
+        (
+            "dual-b",
+            None,
+            Some(
+                "name: dual-b\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"true\"\n",
+            ),
+        ),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let state = state_with_root_and_keys(root.path().to_path_buf());
+        let app = build_pipeline(state);
+
+        let (status, installed, text) = send(
+            app.clone(),
+            "POST",
+            "/api/admin/workers/install",
+            Some("test-root"),
+            "application/zip",
+            zip_package(&[
+                (
+                    "manifest.yaml",
+                    &format!("name: {name}\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n"),
+                ),
+                ("index.ts", "Deno.serve(() => new Response('ok'));"),
+            ]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+        let source = std::path::PathBuf::from(installed["source"].as_str().unwrap());
+        let manifest_before = fs::read(source.join("manifest.yaml")).unwrap();
+
+        let (status, created, _) = create_key(app.clone(), &["files:write"]).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let writer_key = created["rawKey"].as_str().unwrap();
+
+        let mut files: Vec<(&str, String)> = Vec::new();
+        if let Some(release_manifest) = manifest_yaml {
+            files.push(("manifest.yaml", release_manifest.to_string()));
+            files.push(("manifest.yml", format!("name: {name}\nversion: \"1.0.0\"\nentrypoint: index.ts\n")));
+        } else {
+            files.push(("manifest.yml", manifest_yml.unwrap().to_string()));
+            files.push(("manifest.yaml", format!("name: {name}\nversion: \"1.0.0\"\nentrypoint: index.ts\n")));
+        }
+        let upload = zip_package(&files.iter().map(|(n, c)| (*n, c.as_str())).collect::<Vec<_>>());
+
+        let (status, denied, text) = send(
+            app,
+            "POST",
+            &format!("/api/admin/workers/{name}/files?version=1.0.0"),
+            Some(writer_key),
+            "application/zip",
+            upload,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "unexpected body: {text}");
+        assert_eq!(denied["code"], "RELEASE_REQUIRES_ROOT");
+        assert_eq!(fs::read(source.join("manifest.yaml")).unwrap(), manifest_before);
+    }
+}
+
+// EDG-24 revisão F3: um `.edger-release` embarcado num pacote desembrulhado
+// (subpasta única) não pode suprimir o release da versão nova — o marcador
+// final é o que o EdgeR escreve após rodar (ou ausente, sem release).
+#[tokio::test]
+async fn wrapped_package_release_marker_is_purged_on_install() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    // (a) root + release: o marcador final é o que o EdgeR escreve.
+    let wrapped = zip_package(&[
+        (
+            "wrap/manifest.yaml",
+            "name: wrapped-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"true\"\n",
+        ),
+        ("wrap/index.ts", "Deno.serve(() => new Response('ok'));"),
+        ("wrap/.edger-release", "shipped"),
+    ]);
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        wrapped,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    assert_eq!(installed["release"], "completed");
+    let marker = std::path::Path::new(installed["source"].as_str().unwrap()).join(".edger-release");
+    assert_eq!(
+        fs::read_to_string(&marker).unwrap(),
+        "released\n",
+        "the shipped marker must be purged; the deploy reports completed only when the command really ran"
+    );
+
+    // (b) não-root + release no pacote embrulhado: recusa, sem versão nova.
+    let (status, created, _) = create_key(app.clone(), &["workers:install"]).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let installer_key = created["rawKey"].as_str().unwrap();
+    let wrapped_nonroot = zip_package(&[
+        (
+            "wrap/manifest.yaml",
+            "name: wrapped-nonroot\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"true\"\n",
+        ),
+        ("wrap/index.ts", "Deno.serve(() => new Response('ok'));"),
+        ("wrap/.edger-release", "shipped"),
+    ]);
+    let (status, denied, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some(installer_key),
+        "application/zip",
+        wrapped_nonroot,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "unexpected body: {text}");
+    assert_eq!(denied["code"], "RELEASE_REQUIRES_ROOT");
+
+    // (c) root sem release: o marcador embarcado não fica no disco.
+    let wrapped_plain = zip_package(&[
+        (
+            "wrap/manifest.yaml",
+            "name: wrapped-plain\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n",
+        ),
+        ("wrap/index.ts", "Deno.serve(() => new Response('ok'));"),
+        ("wrap/.edger-release", "shipped"),
+    ]);
+    let (status, installed, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        wrapped_plain,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    assert_eq!(installed["release"], "not_configured");
+    assert!(
+        !std::path::Path::new(installed["source"].as_str().unwrap())
+            .join(".edger-release")
+            .exists(),
+        "a shipped marker without release must not survive the install"
+    );
+}
+
+// EDG-24 revisão G2: nomes de manifesto sem distinção de caixa —
+// `MANIFEST.YAML` e `Manifest.yml` são o manifesto da raiz em filesystem
+// case-insensitive e a recusa de não-root tem que cobri-los.
+#[tokio::test]
+async fn upper_case_manifest_upload_with_release_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let proof = root.path().join("upper-upload-release-ran.txt");
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        app_zip("1.0.0", "plain"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    let source = std::path::PathBuf::from(installed["source"].as_str().unwrap());
+    let manifest_path = source.join("manifest.yaml");
+    let manifest_before = fs::read(&manifest_path).unwrap();
+    let entrypoint_before = fs::read(source.join("index.ts")).unwrap();
+
+    let (status, created, _) = create_key(app.clone(), &["files:write"]).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let writer_key = created["rawKey"].as_str().unwrap();
+
+    // `MANIFEST.YAML` (caixa total) com release: recusa, disco intacto.
+    let upload = zip_package(&[
+        (
+            "MANIFEST.YAML",
+            &format!(
+                "name: zip-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"touch {}\"\n",
+                proof.display()
+            ),
+        ),
+        ("index.ts", "Deno.serve(() => new Response('edited'));"),
+    ]);
+    let (status, denied, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/zip-app/files?version=1.0.0",
+        Some(writer_key),
+        "application/zip",
+        upload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "unexpected body: {text}");
+    assert_eq!(denied["code"], "RELEASE_REQUIRES_ROOT");
+    assert_eq!(fs::read(&manifest_path).unwrap(), manifest_before);
+    assert_eq!(
+        fs::read(source.join("index.ts")).unwrap(),
+        entrypoint_before
+    );
+    assert!(!proof.exists());
+
+    // `Manifest.yml` (caixa mista, outro nome): mesma recusa.
+    let upload = zip_package(&[
+        (
+            "Manifest.yml",
+            &format!(
+                "name: zip-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"touch {}\"\n",
+                proof.display()
+            ),
+        ),
+        ("index.ts", "Deno.serve(() => new Response('edited'));"),
+    ]);
+    let (status, denied, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/zip-app/files?version=1.0.0",
+        Some(writer_key),
+        "application/zip",
+        upload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "unexpected body: {text}");
+    assert_eq!(denied["code"], "RELEASE_REQUIRES_ROOT");
+    assert_eq!(fs::read(&manifest_path).unwrap(), manifest_before);
+    assert_eq!(
+        fs::read(source.join("index.ts")).unwrap(),
+        entrypoint_before
+    );
+    assert!(!proof.exists());
+}
+
+// EDG-24 revisão G2: delete do marcador por variante de caixa (`.EDGER-RELEASE`)
+// é recusado pela regra de NOME (pai canônico + nome reservado), antes do
+// check de existência — em Linux o arquivo com essa caixa nem existe e o
+// marcador canônico continua intacto.
+#[tokio::test]
+async fn upper_case_release_marker_delete_is_refused_per_path() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    let package = zip_package(&[
+        (
+            "manifest.yaml",
+            "name: upper-marker-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"true\"\n",
+        ),
+        ("index.ts", "Deno.serve(() => new Response('ok'));"),
+    ]);
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        package,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    let source = std::path::PathBuf::from(installed["source"].as_str().unwrap());
+    let marker = source.join(".edger-release");
+    assert!(
+        marker.is_file(),
+        "the release marker must exist after a root install with release"
+    );
+
+    // `.EDGER-RELEASE`: variante de caixa do nome reservado. A recusa roda
+    // antes da existência — em filesystem case-sensitive esse arquivo não
+    // existe e o teste prova a regra de nome, não o filesystem.
+    let (status, result, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/upper-marker-app/files/delete?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({ "paths": [".EDGER-RELEASE"] })).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(result["deleted"], serde_json::json!([]));
+    assert_eq!(result["errors"][0]["path"], ".EDGER-RELEASE");
+    assert_eq!(result["errors"][0]["code"], "FORBIDDEN");
+    assert_eq!(result["errors"][0]["message"], "reserved file");
+    assert!(
+        marker.is_file(),
+        "the marker must survive the refused delete"
+    );
+}
+
+// EDG-24 revisão G2: upload com variantes de caixa dos marcadores reservados
+// na raiz — as entradas são puladas (nem o marcador existente é substituído,
+// nem os nomes com caixa diferente chegam a ser criados).
+#[tokio::test]
+async fn upper_case_marker_entries_are_skipped_on_upload() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    let package = zip_package(&[
+        (
+            "manifest.yaml",
+            "name: skip-marker-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"true\"\n",
+        ),
+        ("index.ts", "Deno.serve(() => new Response('ok'));"),
+    ]);
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        package,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    let source = std::path::PathBuf::from(installed["source"].as_str().unwrap());
+    let marker = source.join(".edger-release");
+    fs::write(&marker, "sentinel\n").unwrap();
+
+    // Variantes de caixa dos dois marcadores + um arquivo comum na raiz.
+    let (status, _, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/skip-marker-app/files?version=1.0.0",
+        Some("test-root"),
+        "application/zip",
+        zip_package(&[
+            (".Edger-Release", "variant\n"),
+            (".EDGER-Enabled", "true\n"),
+            ("extra.txt", "ok\n"),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    // Regra de NOME (não de filesystem): em APFS a variante de caixa nem
+    // existe como nome distinto, então o teste compara os nomes exatos da
+    // listagem — se a skip falhar, o nome com caixa diferente aparece aqui
+    // (em Linux, filesystem case-sensitive, a entrada seria criada).
+    let listing: Vec<String> = std::fs::read_dir(source.as_path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        listing.iter().any(|n| n == "extra.txt"),
+        "listing: {listing:?}"
+    );
+    assert!(
+        !listing.iter().any(|n| n == ".Edger-Release"),
+        "listing: {listing:?}"
+    );
+    assert!(
+        !listing.iter().any(|n| n == ".EDGER-Enabled"),
+        "listing: {listing:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&marker).unwrap(),
+        "sentinel\n",
+        "the upload must skip the reserved marker entries, not replace them"
+    );
+}
+
+// EDG-24 emenda 3: alias Unicode do manifesto (`manifeſt.yaml`, long s
+// U+017F — no APFS é o próprio arquivo `manifest.yaml`) — não root:
+// recusa com release E sem release (defesa extra); o alias nunca é gravado.
+#[tokio::test]
+async fn unicode_manifest_alias_upload_by_non_root_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let proof = root.path().join("unicode-upload-release-ran.txt");
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        app_zip("1.0.0", "plain"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    let source = std::path::PathBuf::from(installed["source"].as_str().unwrap());
+    let manifest_path = source.join("manifest.yaml");
+    let manifest_before = fs::read(&manifest_path).unwrap();
+    let entrypoint_before = fs::read(source.join("index.ts")).unwrap();
+
+    let (status, created, _) = create_key(app.clone(), &["files:write"]).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let writer_key = created["rawKey"].as_str().unwrap();
+
+    // (a) `manifeſt.yaml` COM release: recusa.
+    let upload = zip_package(&[
+        (
+            "manife\u{17F}t.yaml",
+            &format!(
+                "name: zip-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"touch {}\"\n",
+                proof.display()
+            ),
+        ),
+        ("index.ts", "Deno.serve(() => new Response('edited'));"),
+    ]);
+    let (status, denied, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/zip-app/files?version=1.0.0",
+        Some(writer_key),
+        "application/zip",
+        upload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "unexpected body: {text}");
+    assert_eq!(denied["code"], "RELEASE_REQUIRES_ROOT");
+
+    // (b) a MESMA entrada SEM release: recusa pela defesa extra — o alias
+    // Unicode do manifesto nunca é gravado por quem não é root.
+    let upload = zip_package(&[
+        (
+            "manife\u{17F}t.yaml",
+            "name: zip-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n",
+        ),
+        ("index.ts", "Deno.serve(() => new Response('edited'));"),
+    ]);
+    let (status, denied, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/zip-app/files?version=1.0.0",
+        Some(writer_key),
+        "application/zip",
+        upload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "unexpected body: {text}");
+    assert_eq!(denied["code"], "RELEASE_REQUIRES_ROOT");
+
+    // Regra de nome (Linux e APFS): sem a entrada de alias na listagem
+    // (nome exato), manifest/entrypoint byte-idênticos e release não rodou.
+    let listing: Vec<String> = std::fs::read_dir(source.as_path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        !listing.iter().any(|n| n == "manife\u{17F}t.yaml"),
+        "listing: {listing:?}"
+    );
+    assert_eq!(fs::read(&manifest_path).unwrap(), manifest_before);
+    assert_eq!(
+        fs::read(source.join("index.ts")).unwrap(),
+        entrypoint_before
+    );
+    assert!(!proof.exists());
+}
+
+// EDG-24 emenda 3: delete do marcador por alias Unicode (`.edger-releaſe`,
+// long s U+017F) é recusado pela regra de nome — em Linux o arquivo com
+// essa grafia nem existe (o check roda antes da existência); no APFS ele
+// É o marcador.
+#[tokio::test]
+async fn unicode_release_marker_delete_is_refused_per_path() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    let package = zip_package(&[
+        (
+            "manifest.yaml",
+            "name: unicode-marker-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"true\"\n",
+        ),
+        ("index.ts", "Deno.serve(() => new Response('ok'));"),
+    ]);
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        package,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    let source = std::path::PathBuf::from(installed["source"].as_str().unwrap());
+    let marker = source.join(".edger-release");
+    assert!(
+        marker.is_file(),
+        "the release marker must exist after a root install with release"
+    );
+
+    let (status, result, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/unicode-marker-app/files/delete?version=1.0.0",
+        Some("test-root"),
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({ "paths": [".edger-relea\u{17F}e"] })).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(result["deleted"], serde_json::json!([]));
+    assert_eq!(result["errors"][0]["path"], ".edger-relea\u{17F}e");
+    assert_eq!(result["errors"][0]["code"], "FORBIDDEN");
+    assert_eq!(result["errors"][0]["message"], "reserved file");
+    assert!(
+        marker.is_file(),
+        "the marker must survive the refused delete"
+    );
+}
+
+// EDG-24 emenda 3: um `.edger-releaſe` (long s) embarcado num pacote
+// embrulhado cai no purge — o marcador final é o que o EdgeR escreve após
+// rodar a command.
+#[tokio::test]
+async fn unicode_marker_in_wrapped_package_is_purged_on_install() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state_with_root_and_keys(root.path().to_path_buf());
+    let app = build_pipeline(state);
+
+    let wrapped = zip_package(&[
+        (
+            "wrap/manifest.yaml",
+            "name: unicode-wrapped-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"true\"\n",
+        ),
+        ("wrap/index.ts", "Deno.serve(() => new Response('ok'));"),
+        ("wrap/.edger-relea\u{17F}e", "shipped\n"),
+    ]);
+    let (status, installed, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        wrapped,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    assert_eq!(installed["release"], "completed");
+    let source = std::path::PathBuf::from(installed["source"].as_str().unwrap());
+    // Regra de nome: a variante embarcada (nome exato) não fica e o
+    // marcador final é o do EdgeR.
+    let listing: Vec<String> = std::fs::read_dir(source.as_path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        !listing.iter().any(|n| n == ".edger-relea\u{17F}e"),
+        "listing: {listing:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(source.join(".edger-release")).unwrap(),
+        "released\n",
+        "the shipped variant must be purged; release: completed only when the command really ran"
+    );
+}
+
 #[tokio::test]
 async fn files_delete_removes_batch_with_partial_errors_and_bumps_revision() {
     let root = tempfile::tempdir().unwrap();
