@@ -430,6 +430,16 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   the plugin base on an owner-less host, and through a weighted selection of
   a protected version.
 
+- Hidden workers no longer leak existence through tenant-gate errors (EDG-29):
+  the EDG-27 route refusal now runs before the tenant gate, so a worker whose
+  final version declares `hosts` (without `nameRoute: true`) answers
+  `404 NOT_FOUND` in the same shape as an unknown worker on the owner-less
+  name route (with or without the `@version` pin), the homepage fallback and
+  a weighted selection of a protected version — even when the tenant gate
+  would deny or the identity is unavailable — and the identify call is never
+  made. The tenant gate still fails closed on the worker's own hosts, and
+  `nameRoute: true` workers still pass through it.
+
 - Worker `release` command (EDG-24): only root may declare it — an install
   by a non-root key (`workers:install`) of a package with a non-empty
   `release`, and a non-root files upload (`files:write`) writing the

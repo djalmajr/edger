@@ -202,6 +202,103 @@ async fn request(
     status
 }
 
+async fn request_with_body(
+    app: Router,
+    path: &str,
+    host: Option<&str>,
+    tenant_header: Option<&str>,
+) -> (StatusCode, String) {
+    let mut req = Request::builder().uri(path);
+    if let Some(host) = host {
+        req = req.header("host", host);
+    }
+    if let Some(tenant_header) = tenant_header {
+        req = req.header("x-tenant-id", tenant_header);
+    }
+    let response = app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn code(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body).unwrap()["code"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// EDG-29: a hidden app must answer with the same error shape as an unknown
+/// worker (same JSON keys); the `message` carries the name, so only the
+/// shape and the `code` are compared.
+fn same_error_format(body: &str, control: &str, label: &str) {
+    let err = serde_json::from_str::<serde_json::Value>(body).unwrap();
+    let ctl = serde_json::from_str::<serde_json::Value>(control).unwrap();
+    let mut keys: Vec<&str> = err
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let mut ctl_keys: Vec<&str> = ctl
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort();
+    ctl_keys.sort();
+    assert_eq!(
+        keys, ctl_keys,
+        "{label}: error shape must match an unknown worker"
+    );
+}
+
+/// EDG-29: a weighted-routing fixture with tenant routing on — the single
+/// version declares `hosts` (protected) and the policy sends 100% of the
+/// traffic to it, so any cohort selects the protected version.
+fn fixture_weighted(
+    root: &std::path::Path,
+    client: Option<TenantIdentityClient>,
+) -> (Router, Recorder) {
+    let dir = root.join("app");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("manifest.yaml"),
+        "name: app\nversion: '1.0.0'\nentrypoint: index.ts\nkind: fetch\nhosts: [acme.example.com]\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("index.ts"),
+        "export default () => new Response('ok')",
+    )
+    .unwrap();
+    let index = load_manifests_from_roots(&[], None, &[root.to_path_buf()]).unwrap();
+    let policy = parse_routing_policy(
+        br#"{"name":"app","tenantAccess":{"mode":"allowlist","tenants":["acme"]},"traffic":{"versions":[{"version":"1.0.0","weight":100}]}}"#,
+    )
+    .unwrap();
+    persist_routing_policy(&index, &policy).unwrap();
+    let server = ServerState::new_unready();
+    server.enable_tenant_routing();
+    server.enable_weighted_routing();
+    if let Some(client) = client {
+        server.set_tenant_identity_client(client);
+    }
+    let recorder = Recorder::default();
+    let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(recorder.clone()));
+    server.mark_ready(pool.clone());
+    (
+        build_pipeline(OrchestratorState {
+            server,
+            pool,
+            index,
+            auth: ControlAuth::with_static_key("root-key"),
+        }),
+        recorder,
+    )
+}
+
 fn header(req: &SerializedRequest, name: &str) -> Option<String> {
     req.headers
         .iter()
@@ -371,5 +468,179 @@ async fn public_dispatch_preserves_visitor_authorization() {
         Some("Bearer app-token".into())
     );
     assert_eq!(header(&requests[0], "x-tenant-id"), Some("acme".into()));
+    task.abort();
+}
+
+// EDG-29: um app que a origem nao alcana (recusa EDG-27 da rota) responde
+// como um worker inexistente — com tenant negado E com identify
+// indisponivel — e o identify NAO e chamado: o guard da rota recusa antes
+// do gate de tenant, entao o gate nunca revela a existencia do app
+// (404/503 de tenant no lugar do 404 de worker inexistente).
+#[tokio::test]
+async fn hidden_worker_answers_unknown_worker_even_when_the_tenant_gate_would_fail() {
+    let root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder) = fixture(root.path(), true, Some(client));
+
+    // (a) tenant negado (identificado fora do allowlist): o pin @version e a
+    // rota por nome num Host sem dono tem a mesma resposta de um worker
+    // inexistente.
+    identity.0.lock().unwrap().1 = "other".into();
+    for (path, unknown) in [
+        ("/app@1.0.0", "/no-such-worker@1.0.0"),
+        ("/app", "/no-such-worker"),
+    ] {
+        let (status, body) =
+            request_with_body(app.clone(), path, Some("gateway.example.com"), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(code(&body), "NOT_FOUND", "{path}");
+        let (unknown_status, unknown_body) =
+            request_with_body(app.clone(), unknown, Some("gateway.example.com"), None).await;
+        assert_eq!(unknown_status, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(status, unknown_status, "{path}");
+        assert_eq!(code(&body), code(&unknown_body), "{path}");
+        same_error_format(&body, &unknown_body, path);
+    }
+
+    // (b) identify indisponivel: o MESMO 404 NOT_FOUND (e nao o 503 do
+    // gate) e a MESMA forma.
+    identity.0.lock().unwrap().0 = StatusCode::SERVICE_UNAVAILABLE;
+    for (path, unknown) in [
+        ("/app@1.0.0", "/no-such-worker@1.0.0"),
+        ("/app", "/no-such-worker"),
+    ] {
+        let (status, body) =
+            request_with_body(app.clone(), path, Some("gateway.example.com"), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(code(&body), "NOT_FOUND", "{path}");
+        let (_unknown_status, unknown_body) =
+            request_with_body(app.clone(), unknown, Some("gateway.example.com"), None).await;
+        same_error_format(&body, &unknown_body, path);
+    }
+
+    // (c) o identify nunca foi chamado: o guard recusa antes do gate.
+    assert_eq!(identity.0.lock().unwrap().2, 0);
+    // E sem dispatch: o worker nunca foi invocado.
+    assert!(recorder.0.lock().unwrap().is_empty());
+    task.abort();
+}
+
+// EDG-29, fallback de homepage: um homepage com hosts (sem nameRoute) tem a
+// mesma resposta de worker inexistente num Host sem dono, com ou sem
+// identify, e sem chamar o identify.
+#[tokio::test]
+async fn hidden_homepage_fallback_never_reaches_the_tenant_gate() {
+    let root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder) = fixture_manifest(
+        root.path(),
+        true,
+        Some(client),
+        "name: app\nversion: '1.0.0'\nentrypoint: index.ts\nkind: fetch\nbase: /\nhosts: [acme.example.com]\n",
+    );
+
+    identity.0.lock().unwrap().1 = "other".into();
+    let (status, body) =
+        request_with_body(app.clone(), "//", Some("gateway.example.com"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(code(&body), "NOT_FOUND");
+
+    identity.0.lock().unwrap().0 = StatusCode::SERVICE_UNAVAILABLE;
+    let (status, body) =
+        request_with_body(app.clone(), "//", Some("gateway.example.com"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(code(&body), "NOT_FOUND");
+
+    assert_eq!(identity.0.lock().unwrap().2, 0);
+    assert!(recorder.0.lock().unwrap().is_empty());
+    task.abort();
+}
+
+// EDG-29, selecao ponderada: a versao escolhida e protegida (hosts sem
+// nameRoute) e a origem e publica sem dono — a resposta e o 404 de worker
+// inexistente com o identify indisponivel (e nao o 503 do gate), e o
+// identify nao e chamado.
+#[tokio::test]
+async fn weighted_selection_of_a_hidden_version_never_reaches_the_tenant_gate() {
+    let root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder) = fixture_weighted(root.path(), Some(client));
+
+    // Identify indisponivel: 404 na forma de worker inexistente, nao 503.
+    identity.0.lock().unwrap().0 = StatusCode::SERVICE_UNAVAILABLE;
+    let (status, body) =
+        request_with_body(app.clone(), "/app/probe", Some("gateway.example.com"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(code(&body), "NOT_FOUND");
+
+    // Tenant negado: o mesmo 404.
+    identity.0.lock().unwrap().0 = StatusCode::OK;
+    identity.0.lock().unwrap().1 = "other".into();
+    let (status, body) =
+        request_with_body(app.clone(), "/app/probe", Some("gateway.example.com"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(code(&body), "NOT_FOUND");
+
+    assert_eq!(identity.0.lock().unwrap().2, 0);
+    assert!(recorder.0.lock().unwrap().is_empty());
+    task.abort();
+}
+
+// EDG-29, comportamento mantido: no proprio host do worker o gate de tenant
+// segue falhando fechado com os proprios erros (404 TENANT_NOT_FOUND / 503
+// TENANT_IDENTITY_UNAVAILABLE) — nao o 404 de worker inexistente.
+#[tokio::test]
+async fn tenant_gate_still_fails_closed_on_the_worker_own_host() {
+    let root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder) = fixture(root.path(), true, Some(client));
+
+    identity.0.lock().unwrap().1 = "other".into();
+    let (status, body) =
+        request_with_body(app.clone(), "/probe", Some("ACME.Example.Com:443"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(code(&body), "TENANT_NOT_FOUND");
+
+    identity.0.lock().unwrap().0 = StatusCode::SERVICE_UNAVAILABLE;
+    let (status, body) =
+        request_with_body(app.clone(), "/probe", Some("ACME.Example.Com:443"), None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(code(&body), "TENANT_IDENTITY_UNAVAILABLE");
+
+    // O worker nunca e invocado quando o gate recusa.
+    assert!(recorder.0.lock().unwrap().is_empty());
+    task.abort();
+}
+
+// EDG-29, comportamento mantido: um worker com `nameRoute: true` segue
+// passando pelo gate de tenant na rota por nome (o reorder nao bypassa o
+// gate): erro do gate, nao o 404 de worker inexistente, e o identify
+// realmente chamado.
+#[tokio::test]
+async fn name_route_opt_in_still_passes_the_tenant_gate() {
+    let root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder) = fixture_manifest(
+        root.path(),
+        true,
+        Some(client),
+        "name: app\nversion: '1.0.0'\nentrypoint: index.ts\nkind: fetch\nhosts: [acme.example.com]\nnameRoute: true\n",
+    );
+
+    identity.0.lock().unwrap().1 = "other".into();
+    let (status, body) =
+        request_with_body(app.clone(), "/app", Some("gateway.example.com"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(code(&body), "TENANT_NOT_FOUND");
+
+    identity.0.lock().unwrap().0 = StatusCode::SERVICE_UNAVAILABLE;
+    let (status, body) =
+        request_with_body(app.clone(), "/app", Some("gateway.example.com"), None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(code(&body), "TENANT_IDENTITY_UNAVAILABLE");
+
+    // O gate de fato rodou (identify chamado) e o worker nao foi invocado.
+    assert!(identity.0.lock().unwrap().2 >= 2);
+    assert!(recorder.0.lock().unwrap().is_empty());
     task.abort();
 }

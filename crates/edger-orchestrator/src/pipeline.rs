@@ -434,9 +434,16 @@ struct CohortInput {
     cookie_header: Option<String>,
 }
 
-/// One `RoutingPolicy` snapshot feeds the tenant gate and, only after it
-/// approves, the weight split. A concurrent PUT cannot change the weights
-/// seen by this request. `edger_cohort` is never copied into `x-tenant-id`.
+/// One `RoutingPolicy` snapshot feeds the weight split and the tenant gate.
+/// A concurrent PUT cannot change the weights seen by this request. The
+/// final version is decided and the EDG-27 route guard applied BEFORE the
+/// tenant gate (EDG-29): an app that cannot be reached on this route
+/// answers `NOT_FOUND` in the shape of an unknown worker even when the
+/// tenant gate would fail, without calling identify, so the gate never
+/// leaks the app's existence. The selection depends only on the cohort
+/// cookie, the policy snapshot, `required_host` and `required_plugin_base`
+/// — never on the tenant — so the reorder keeps every visible behavior.
+/// `edger_cohort` is never copied into `x-tenant-id`.
 /// Cookie bytes are copied before any await so the request is not borrowed
 /// across the tenant lookup.
 async fn prepare_worker(
@@ -458,8 +465,6 @@ async fn prepare_worker(
     } else {
         None
     };
-    let trusted_tenant =
-        tenant_for_worker(state, authority, &worker, allow_internal, policy.as_ref()).await?;
     let (final_worker, cohort_cookie) =
         if version_pinned || allow_internal || !state.server.weighted_routing_enabled() {
             (worker, None)
@@ -484,6 +489,20 @@ async fn prepare_worker(
             (worker, None)
         };
     require_data_plane_route_allowed(&final_worker, allow_internal, required_host.is_some())?;
+    // EDG-29: the tenant gate runs only on a version the route guard already
+    // admitted, after the final version is decided. `tenant_for_worker`
+    // depends on the logical app's policy snapshot, the visitor authority
+    // and the flags — never on the selected version — so nothing about the
+    // gate changes with this order; only the failure that surfaces first
+    // does (a hidden app answers `NOT_FOUND`, not a tenant error).
+    let trusted_tenant = tenant_for_worker(
+        state,
+        authority,
+        &final_worker,
+        allow_internal,
+        policy.as_ref(),
+    )
+    .await?;
     Ok((final_worker, trusted_tenant, cohort_cookie))
 }
 
