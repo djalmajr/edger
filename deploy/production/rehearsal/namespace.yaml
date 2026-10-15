@@ -1,0 +1,7 @@
+# Namespace descartável do ensaio (Fase 0). Apagar no fim:
+#   kubectl delete namespace edger-ensaio
+# (os PVCs local-path não somem com o namespace; apagar os PVs depois).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: edger-ensaio

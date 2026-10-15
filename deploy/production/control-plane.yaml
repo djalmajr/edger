@@ -1,0 +1,89 @@
+# Control plane do EdgeR (cPanel, Admin API, MCP, métricas, saúde) no
+# host edger.djalmajr.dev, servido direto pelo Traefik na 443 do nó (DNS
+# A para o nó, sem proxy Cloudflare), como o edger.djalmajr.dev de hoje.
+#
+# Adendo EDG-27: este IngressRoute encaminha SÓ os caminhos do control
+# plane — não a rota por nome dos apps. Hoje (namespace cinzel) a rota
+# manda tudo para o Service, e `edger.djalmajr.dev/<app>/...` contorna as
+# proteções do ingress de cada app (o `ipAllowList` da Cloudflare do
+# Pinar, as exclusões de `/auth/root-token` e `/_health` do Cinzel).
+#
+# Os caminhos e a origem no código (commit da base deste diretório):
+#
+# | Caminho            | Origem no código                                                        |
+# |--------------------|-------------------------------------------------------------------------|
+# | `/` (307 → cpanel/) | pipeline.rs:59 `.route("/", get(root_redirect))`; Redirect::temporary em pipeline.rs:136 |
+# | `/health`, `/healthz` | pipeline.rs:60-61; reserva em router.rs:138                            |
+# | `/ready`, `/readyz` | pipeline.rs:65-66; reserva em router.rs:139                             |
+# | `/livez`           | pipeline.rs:62                                                          |
+# | `/metrics`, `/metrics/stats` | pipeline.rs:63-64                                           |
+# | `/api` (exato) e `/api/*` | pipeline.rs:74 merge do admin_api (`/api/admin/*`, 1ª rota em admin_api.rs:62); pipeline.rs:70 `/api/mcp`; reserva em router.rs:140 |
+# | `/.well-known*`    | reserva em router.rs:141 (`starts_with("/.well-known")`)                |
+# | `/cpanel`, `/cpanel/...` | worker core `cpanel` (workers/core/cpanel/manifest.yaml:1), rota por nome com base em pipeline.rs:1074 |
+# | `/webide`, `/webide/...` | worker core `webide` (workers/core/webide/manifest.yaml:1), idem   |
+#
+# A regra é estrita a propósito: `Path` exato onde o código trata o
+# caminho como exato e `PathPrefix` só onde o prefixo do código é
+# prefixo de string (`/api/`, `/.well-known`, `/<worker>/`). `PathPrefix(/api)`
+# sozinho, por exemplo, também pegaria `/apifoo`, que no EdgeR é rota de
+# worker, não do control plane.
+#
+# O rate limit limita cada IP de cliente (o Service do Traefik roda com
+# externalTrafficPolicy=Local, então a origem é o endereço real). Atrasa
+# o chute de chaves e floods; as chaves são de 256 bits, então isso é
+# defesa em profundidade, não o controle de acesso.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: edger-admin-ratelimit
+  namespace: edger
+spec:
+  rateLimit:
+    average: 20
+    period: 1s
+    burst: 100
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: edger
+  namespace: edger
+spec:
+  entryPoints: [websecure]
+  routes:
+    - kind: Rule
+      match: >-
+        Host(`edger.djalmajr.dev`) && (
+          Path(`/`) ||
+          Path(`/health`) || Path(`/healthz`) ||
+          Path(`/livez`) ||
+          Path(`/ready`) || Path(`/readyz`) ||
+          Path(`/metrics`) || Path(`/metrics/stats`) ||
+          Path(`/api`) || PathPrefix(`/api/`) ||
+          PathPrefix(`/.well-known`) ||
+          Path(`/cpanel`) || PathPrefix(`/cpanel/`) ||
+          Path(`/webide`) || PathPrefix(`/webide/`)
+        )
+      middlewares:
+        - name: edger-admin-ratelimit
+      services:
+        - name: edger
+          port: 3000
+  tls:
+    secretName: edger-tls
+---
+# TLS para edger.djalmajr.dev (control plane: cPanel, Admin API, MCP
+# remoto, métricas). Mesmo emissor DNS-01 do cinzel-tls; a porta 80
+# fechada do nó não importa.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: edger-tls
+  namespace: edger
+spec:
+  secretName: edger-tls
+  dnsNames:
+    - edger.djalmajr.dev
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-dns

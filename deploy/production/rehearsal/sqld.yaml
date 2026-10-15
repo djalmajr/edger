@@ -1,0 +1,205 @@
+# COPIA de ../sqld.yaml (produção) para o namespace descartável do
+# ensaio: os mesmos objetos (PVC sqld-data, Deployment sqld, Services
+# dos bancos, NetworkPolicy) com o namespace `edger-ensaio` em vez de
+# `edger` — nada mais muda. O kustomize não aceita arquivo de resource
+# fora do diretório do overlay, então a plataforma não "aponta" para o
+# arquivo de produção; a cópia é verificável com:
+#
+#   diff <(sed 's/edger-ensaio/edger/g' rehearsal/sqld.yaml) sqld.yaml
+#
+# Se ../sqld.yaml mudar, regenere a cópia (substituir o namespace) antes
+# do ensaio — o ensaio só é válido com os manifests idênticos ao corte.
+# A API de admin continua em 127.0.0.1:9090 do pod (Secret `sqld-admin`),
+# como em produção.
+# --- conteúdo abaixo: cópia de ../sqld.yaml (produção) ---
+#
+# Um banco (namespace do libsql) por app e ambiente: `cinzel`,
+# `pinar-prd` e `pinar-stg`, cada um com a sua `jwt_key` (criada via API
+# de admin, ver README.md). O namespace `default` nasce vazio — o banco
+# atual do Cinzel vive no PVC antigo `cinzel-sqld-data` e entra no banco
+# `cinzel` pelo restore da janela de corte, sem mover dados agora. Depois
+# do corte e do período de rollback (7 dias), quando nenhum app depender
+# do `default`, ligue `--disable-default-namespace`.
+#
+# Escolha do banco pelo cliente (libsql-server v0.24.32): o header
+# `x-namespace-bin` (base64) tem prioridade; senão vale o PRIMEIRO RÓTULO
+# do Host. Por isso existe um Service por banco, com o nome do banco
+# (http://cinzel.edger.svc.cluster.local:8080 → banco `cinzel`). Um Host
+# sem ponto cai no `default` — nunca use o nome curto do Service como
+# URL (http://cinzel:8080 miraria o `default`).
+#
+# A chave global de JWT (`sqld-jwt`) só autentica o namespace `default`;
+# os bancos com `jwt_key` própria não consultam a global. A API de admin
+# (criar/apagar/configurar bancos) escuta em 127.0.0.1:9090 dentro do
+# pod — fora do alcance da rede do cluster — com a chave do Secret
+# `sqld-admin` (a flag aceita a variável `LIBSQL_ADMIN_AUTH_KEY` no
+# v0.24.32, então a chave não entra na linha de comando do processo).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sqld-data
+  namespace: edger-ensaio
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sqld
+  namespace: edger-ensaio
+  labels:
+    app.kubernetes.io/name: sqld
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sqld
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sqld
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sqld
+          # Tag fixada (a release mais nova do libsql-server na data do
+          # plano EDG-25). O projeto está quase parado; trocar de versão
+          # é uma decisão revisada, não um upgrade de rotina.
+          image: ghcr.io/tursodatabase/libsql-server:v0.24.32
+          command: ["/bin/sqld"]
+          args:
+            - --db-path=/var/lib/sqld/data.sqld
+            - --http-listen-addr=0.0.0.0:8080
+            - --enable-namespaces
+            - --admin-listen-addr=127.0.0.1:9090
+            - --auth-jwt-key-file=/etc/sqld/jwt-public-key
+          env:
+            - name: LIBSQL_ADMIN_AUTH_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sqld-admin
+                  key: admin-auth-key
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/sqld
+            - name: jwt
+              mountPath: /etc/sqld
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: sqld-data
+        - name: jwt
+          secret:
+            secretName: sqld-jwt
+            items:
+              - key: jwt-public-key
+                path: jwt-public-key
+        - name: tmp
+          emptyDir: {}
+---
+# Um Service por banco. O nome é o namespace do libsql; o seletor é o pod
+# do sqld (todos os bancos vivem no mesmo processo). O cliente escolhe o
+# banco pelo primeiro rótulo do Host.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cinzel
+  namespace: edger-ensaio
+spec:
+  selector:
+    app.kubernetes.io/name: sqld
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pinar-prd
+  namespace: edger-ensaio
+spec:
+  selector:
+    app.kubernetes.io/name: sqld
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pinar-stg
+  namespace: edger-ensaio
+spec:
+  selector:
+    app.kubernetes.io/name: sqld
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+# Só os pods do EdgeR (release `edger`, label `app.kubernetes.io/instance`
+# conforme o chart) e os jobs de backup (`app.kubernetes.io/name:
+# sqld-backup`, ver backup/) chegam ao sqld na 8080. `kubectl
+# port-forward` (API de admin e dumps) vai pelo kubelet e não é afetado.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sqld-ingress
+  namespace: edger-ensaio
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sqld
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: edger
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sqld-backup
+      ports:
+        - port: 8080

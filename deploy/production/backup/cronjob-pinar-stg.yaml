@@ -1,0 +1,95 @@
+# Backup do banco `pinar-stg` (Pinar, staging). Um CronJob por banco:
+# horários escalonados (o PVC é compartilhado e o local-path é single
+# writer por nó), retenção e sentinela independentes por banco. A
+# retenção 14 segue o valor fixado pelo plano para o Cinzel — confirmar
+# a retenção do Pinar antes do corte. Pod spec, imagem e labels
+# idênticos nos três bancos; o seletor de rede
+# (`app.kubernetes.io/name: sqld-backup`) e o PVC `sqld-backups` vivem
+# UMA vez no kustomization do pai.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sqld-backup-pinar-stg
+spec:
+  schedule: "50 3 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: sqld-backup
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              # Imagem fixada por digest, a mesma do backup atual do
+              # Cinzel (provada em produção; inclui curl e gzip/busybox).
+              image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+              command: ["/bin/sh", "/scripts/backup.sh"]
+              env:
+                # FQDN do Service: o sqld escolhe o banco pelo primeiro
+                # rótulo do Host (o nome curto `pinar-stg`, sem ponto,
+                # cairia no namespace `default`).
+                - name: SQLD_URL
+                  value: http://pinar-stg.edger.svc.cluster.local:8080
+                - name: BACKUP_DIR
+                  value: /backups
+                - name: KEEP
+                  value: "14"
+                - name: DB_PREFIX
+                  value: pinar-stg
+                # Sem sentinela (o restore do Cinzel é quem confere a
+                # tabela __migrations; o backup do Pinar só confere o
+                # COMMIT final).
+                - name: SENTINEL
+                  value: ""
+                - name: SQLD_AUTH_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: sqld-backup-pinar-stg
+                      key: token
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  cpu: 200m
+                  memory: 64Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+                  readOnly: true
+                - name: backups
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: script
+              configMap:
+                name: sqld-backup-script
+                defaultMode: 0555
+            - name: backups
+              persistentVolumeClaim:
+                claimName: sqld-backups
+            - name: tmp
+              emptyDir: {}

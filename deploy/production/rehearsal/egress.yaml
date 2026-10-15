@@ -1,0 +1,35 @@
+# Ensaio (Fase 0): os pods do namespace `edger-ensaio` não falam com
+# FORA do namespace — nem com o cluster de produção. O PVC de workers
+# copiado carrega versões do Cinzel com o `env` de produção (banco,
+# tokens de email): mesmo que uma delas seja despachada no ensaio, o
+# egress bloqueado impede que ela alcance o banco de produção ou
+# dispare efeito externo. O que passa:
+# - o DNS do cluster (kube-dns em kube-system, 53/UDP e 53/TCP — o
+#   mesmo padrão da política `ci-internet-only` do Cinzel);
+# - os próprios pods do `edger-ensaio` (EdgeR ↔ sqld ↔ backups,
+#   todas as portas), para a plataforma de ensaio funcionar.
+# Com `policyTypes: [Egress]` e `podSelector: {}`, todo tráfego de
+# saída não listado é negado (o ingress não é afetado).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ensaio-egress
+  namespace: edger-ensaio
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector: {}

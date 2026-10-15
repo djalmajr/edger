@@ -1,0 +1,10 @@
+# Namespace genérico da plataforma EdgeR (plano EDG-25). O EdgeR, o sqld
+# compartilhado, os Services dos bancos, os backups e a rota do control
+# plane vivem aqui. Os apps (Cinzel, Pinar e os próximos) não ganham
+# namespace próprio: cada app/ambiente tem um banco (namespace do libsql)
+# no sqld e as suas rotas apontam para o Service `edger:3000` deste
+# namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: edger

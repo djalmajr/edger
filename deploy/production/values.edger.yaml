@@ -1,0 +1,40 @@
+# Release `edger` da plataforma (namespace `edger`), a partir do chart
+# `charts/edger`. Comandos (o chart publicado fixa a imagem por digest
+# `image.digest`; não defina `image.tag` nem `image.digest` aqui — um
+# digest vazio sobrescreveria o do chart e cairia numa tag mutável):
+#
+#   helm upgrade --install edger oci://ghcr.io/djalmajr/charts/edger \
+#     --version 0.3.2-rc.19 -n edger -f deploy/production/values.edger.yaml \
+#     --history-max 5
+#
+# O `--version` deve ser `0.3.2-rc.19` ou mais nova (a primeira com a
+# EDG-24, o `release` de worker só de root). Nada de segredo neste
+# arquivo: a root key sai do Secret existente `edger-root` (chave
+# `root-key`), criado fora do git (ver README.md).
+fullnameOverride: edger
+
+# A rota pública do control plane é o IngressRoute do Traefik em
+# control-plane.yaml (adendo EDG-27); o Ingress nativo do chart fica
+# desligado.
+ingress:
+  enabled: false
+
+rootKey:
+  existingSecret: edger-root
+  secretKey: root-key
+
+userWorkers:
+  persistence:
+    enabled: true
+    storageClass: local-path
+    size: 5Gi
+
+# Recursos da instância multi-app (plano EDG-25): request de 1 Gi e
+# limite de 4 Gi de memória; CPU igual à de hoje (Cinzel).
+resources:
+  requests:
+    cpu: 100m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
