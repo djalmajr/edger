@@ -1,0 +1,21 @@
+# Backup do sqld compartilhado no namespace `edger`: UM CRONJOB POR
+# BANCO (escolha registrada no README.md e no relatório EDG-25): cada
+# banco tem horário, retenção, sentinela e token independentes, e a
+# falha de um dump não bloqueia os demais. O kustomize não permite dois
+# overlays partilharem a base nomeada de um CronJob (o id do recurso é
+# registrado antes do patch renomeá-lo), então o pod spec comum é
+# replicado nos três arquivos e o compartilhado (PVC `sqld-backups` e
+# ConfigMap do script) entra UMA única vez aqui — o hash do
+# configMapGenerator é reescrito nas referências dos três CronJobs.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: edger
+resources:
+  - pvc.yaml
+  - cronjob-cinzel.yaml
+  - cronjob-pinar-prd.yaml
+  - cronjob-pinar-stg.yaml
+configMapGenerator:
+  - name: sqld-backup-script
+    files:
+      - backup.sh

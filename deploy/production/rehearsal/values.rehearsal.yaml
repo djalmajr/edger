@@ -1,0 +1,42 @@
+# Values do `helm install edger` no namespace do ENSAIO (Fase 0):
+#
+#   helm upgrade --install edger oci://ghcr.io/djalmajr/charts/edger \
+#     --version 0.3.2-rc.19 -n edger-ensaio \
+#     -f deploy/production/rehearsal/values.rehearsal.yaml
+#
+# O chart e a versão devem ser os mesmos da janela de corte (o ensaio
+# existe para medir e validar o corte). O conteúdo é o mesmo de
+# ../values.edger.yaml menos o cron (desligado no ensaio) — se mudar um,
+# mude o outro. Os Secrets (`edger-root`, `sqld-jwt`, `sqld-admin`,
+# `sqld-backup-<banco>`, `sqld-jwt-<banco>`) precisam existir em
+# `edger-ensaio` com os MESMOS nomes e TODOS com valores descartáveis:
+# a `edger-root` do ensaio é uma root key NOVA, gerada na hora e apagada
+# com o namespace — NUNCA a real (ela autentica como root na produção).
+# Ver o runbook do ensaio no README.md.
+fullnameOverride: edger
+
+# Cron desligado no ensaio: as versões copiadas do Cinzel carregam jobs
+# agendados de produção; nenhum efeito externo pode rodar no ensaio.
+cron:
+  enabled: false
+
+ingress:
+  enabled: false
+
+rootKey:
+  existingSecret: edger-root
+  secretKey: root-key
+
+userWorkers:
+  persistence:
+    enabled: true
+    storageClass: local-path
+    size: 5Gi
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi

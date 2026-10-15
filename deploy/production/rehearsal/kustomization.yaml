@@ -1,0 +1,47 @@
+# Ensaio (Fase 0 do plano EDG-25): a plataforma inteira — sqld,
+# Services dos bancos, NetworkPolicy de ingress e de EGRESS (nada de
+# tráfego para fora do namespace) e backups — no namespace descartável
+# `edger-ensaio`, SEM IngressRoute nem Certificate (o ensaio roda por
+# port-forward, sem rota pública). O EdgeR em si sai do
+# `helm install edger` com values.rehearsal.yaml (mesmo values da
+# produção, menos o cron, que fica desligado no ensaio).
+#
+# Uso:
+#   kubectl apply -k deploy/production/rehearsal
+#   kubectl delete namespace edger-ensaio   # ao fim (e os PVs local-path)
+#
+# Origem dos objetos:
+# - sqld.yaml aqui é uma cópia de ../sqld.yaml (produção) com o namespace
+#   `edger-ensaio` — o kustomize não aceita arquivo de resource fora do
+#   diretório do overlay (nem `..` nem symlink); a cópia é verificável
+#   pelo diff citado no cabeçalho dela;
+# - ../backup é referenciado pelo diretório (aceito) e o `namespace:`
+#   deste kustomization sobrescreve o `edger` dos manifests;
+# - os patches abaixo trocam só as SQLD_URL dos backups para o FQDN dos
+#   Services no namespace do ensaio (o rótulo inicial do Host continua
+#   sendo o nome do banco);
+# - egress.yaml bloqueia o tráfego de saída dos pods do ensaio para fora
+#   do namespace (só o DNS do cluster e os próprios pods passam) — as
+#   versões copiadas do Cinzel carregam o `env` de produção e não podem
+#   alcançá-lo.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: edger-ensaio
+resources:
+  - namespace.yaml
+  - sqld.yaml
+  - egress.yaml
+  - ../backup
+patches:
+  - path: patch-cronjob-cinzel.yaml
+    target:
+      kind: CronJob
+      name: sqld-backup-cinzel
+  - path: patch-cronjob-pinar-prd.yaml
+    target:
+      kind: CronJob
+      name: sqld-backup-pinar-prd
+  - path: patch-cronjob-pinar-stg.yaml
+    target:
+      kind: CronJob
+      name: sqld-backup-pinar-stg

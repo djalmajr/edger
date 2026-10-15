@@ -1,0 +1,16 @@
+# URL do backup do banco `cinzel` no namespace do ensaio (o rótulo
+# inicial do Host continua sendo `cinzel`).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sqld-backup-cinzel
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: backup
+              env:
+                - name: SQLD_URL
+                  value: http://cinzel.edger-ensaio.svc.cluster.local:8080
