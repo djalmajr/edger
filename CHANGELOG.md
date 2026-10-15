@@ -310,6 +310,11 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Fixed
 
+- Production control-plane route (EDG-25): the IngressRoute rule is a
+  single line, because the cluster's Traefik rejects a rule with line
+  breaks (`invalid rule`), which left `edger.djalmajr.dev` without a
+  route for 44 s during the 2026-10-15 cutover.
+
 - Console hash slots stay held until the end of the calculation (EDG-28):
   the shared Argon2 limit's permit is moved inside the `spawn_blocking`
   closure and released only when the calculation completes, alongside the
