@@ -285,6 +285,61 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Fixed
 
+- The manifest `cron[]` jobs now follow the default version and track the
+  index (EDG-26): instead of a fixed registration list built once at boot,
+  the cron scheduler reconciles the desired job set from the `ManifestIndex`
+  every 5 s (the interval is injectable in `CronSchedulerConfig`), so
+  install, promote, enable, disable and delete take effect within one
+  reconcile interval. Only the version the unversioned route `/<name>/`
+  resolves to — the promoted default pointer, or the highest enabled,
+  non-staged semver when there is no pointer, through the same resolver
+  the pipeline uses — contributes its `cron` entries; enabled rollback
+  versions and staged versions never dispatch. A job is identified by
+  (worker, schedule, path, method) WITHOUT the version, so a promote with
+  the same `cron` entries keeps the running task, and each tick dispatches
+  the unversioned route resolved at tick time. Every dispatch logs one
+  stable info line `cron dispatched` with `worker`, `version` (the plain
+  value of the version the unversioned route resolved at that moment, or
+  `unresolved` when it cannot be resolved), `path`, `method`, the
+  `cron-<uuid>` `request_id` and the response `status` plus `duration_ms`
+  (the dispatch duration in milliseconds); the
+  missing-`ROOT_API_KEY` warning now fires once, when the desired set
+  leaves empty. An unparseable schedule no longer fails the boot: the job
+  is skipped and counted once in `edger_cron_failures_total` until the
+  manifest changes. Each job runs its dispatches sequentially: a job
+  (worker, schedule, path, method) never has more than one dispatch in
+  flight — a dispatch slower than the `@every` interval delays the next
+  tick instead of overlapping it. A removed job (disable, delete, promote)
+  is drained, never aborted: its generation is signaled and stops
+  scheduling, an in-flight dispatch finishes normally, and the generation
+  stays tracked (visible as `draining_job_count`) until it is reaped —
+  reconciliation never waits on a removed task (a slow dispatch cannot
+  block the other workers' cron). All job-task state is owned by the
+  scheduler's supervisor task alone (no shared maps, no handle
+  transfers): every job task is born in the supervisor's `JoinSet` (if
+  the supervisor is dropped or aborted, the `JoinSet` drop aborts the
+  children, so nothing is detached), and each job key keeps a LIST of its
+  live generations — repeated removals only append, the reaping removes
+  the finished ones, and a new generation waits for all still-live
+  generations of its key before its first dispatch (no overlap across
+  repeated removals/re-adds). `active_job_count`/`draining_job_count`
+  read values published by the supervisor. Only the global shutdown may
+  force-stop a task: the supervisor stops admitting jobs, signals every
+  generation (an in-flight dispatch is never aborted mid-flight), lets
+  the in-flight dispatches finish until the grace deadline
+  (`with_shutdown_grace` on `CronSchedulerConfig`, default 5 s), then
+  aborts the stragglers and waits for their end — confirmed through the
+  supervisor's own `JoinSet` — until the abort-wait deadline
+  (`with_shutdown_abort_wait`, default 1 s). The counters change only
+  through the actual reaping (never `store(0)`): after `shutdown` returns,
+  `active_job_count() + draining_job_count()` is the number of tasks
+  still in the `JoinSet`, and a task that does not yield by the deadlines
+  is reported (`cron shutdown incomplete` warn with `remaining=<n>`, the
+  counters keep the count) instead of being declared stopped; if the
+  supervisor itself stalls past the external limit (grace + abort-wait +
+  1 s margin) it is aborted (`cron supervisor did not stop` warn) and its
+  `JoinSet` drop repeats the abort request. `EDGER_CRON_ENABLED=false`
+  still disables everything.
 - Worker bundling retries `deno bundle` once (300 ms) after a transient
   esbuild fetch failure before using the minimal relative-module fallback
   (EDG-14), so a cold cache under load keeps producing the real bundle

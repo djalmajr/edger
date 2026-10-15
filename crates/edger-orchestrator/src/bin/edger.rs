@@ -47,10 +47,10 @@ use edger_orchestrator::observability::{
 };
 use edger_orchestrator::tenant_identity::TenantIdentityClient;
 use edger_orchestrator::{
-    bind_ip_from_env, build_pipeline, collect_cron_registrations, init_tracing_from_env,
-    load_manifests_from_roots, parse_runtime_worker_dirs, port_from_env,
-    prewarm_min_process_workers, run_pending_releases_with_events, serve, ControlAuth,
-    CronScheduler, CronSchedulerConfig, OrchestratorState, ServerConfig, ServerState,
+    bind_ip_from_env, build_pipeline, init_tracing_from_env, load_manifests_from_roots,
+    parse_runtime_worker_dirs, port_from_env, prewarm_min_process_workers,
+    run_pending_releases_with_events, serve, ControlAuth, CronScheduler, CronSchedulerConfig,
+    OrchestratorState, ServerConfig, ServerState,
 };
 use edger_worker::{
     IsolateFactory, LifecycleEventSender, PoolConfig, WorkerLifecycleEvent,
@@ -317,21 +317,28 @@ async fn main() -> anyhow::Result<()> {
         auth,
     };
     let app = build_pipeline(state.clone());
-    let cron_registrations = if env_flag_default_true("EDGER_CRON_ENABLED") {
-        collect_cron_registrations(&state.index)?
+    // EDG-26: the cron scheduler reconciles its jobs from the living index
+    // (only the version the unversioned route resolves to contributes), so
+    // no registration list is collected at boot here anymore.
+    let cron_scheduler = if env_flag_default_true("EDGER_CRON_ENABLED") {
+        Some(
+            CronScheduler::start(
+                CronSchedulerConfig::new(state.auth.root_key_for_internal_clients()),
+                state.index.clone(),
+                app.clone(),
+                state.server.cron_metrics(),
+            )
+            .await,
+        )
     } else {
-        Vec::new()
+        None
     };
-    let cron_scheduler = CronScheduler::start(
-        CronSchedulerConfig::new(state.auth.root_key_for_internal_clients()),
-        cron_registrations,
-        app.clone(),
-        state.server.cron_metrics(),
-    )?;
 
     let serve_result = serve(config, app, shutdown_signal()).await;
     tracing::info!("HTTP server stopped; shutting down cron scheduler and worker pool");
-    cron_scheduler.shutdown().await;
+    if let Some(mut cron_scheduler) = cron_scheduler {
+        cron_scheduler.shutdown().await;
+    }
     // Await the graceful worker drain (beforeunload + waitUntil) before exiting so
     // platform shutdown/scale-down runs the same cleanup as a TTL/idle recycle.
     if let Some(drain) = server.shutdown_pool() {

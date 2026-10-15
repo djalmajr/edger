@@ -78,6 +78,8 @@ rusqlite.workspace = true
 rand = "0.8"
 rsa = { version = "0.9", features = ["pem"] }
 serde_json.workspace = true
-tokio.workspace = true
+# `test-util` exposes `tokio::time::pause`/`advance` for the paused-clock
+# cron reconciliation tests (EDG-26); dev-only, not part of the product graph.
+tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true
 futures-util = { version = "0.3", default-features = false }

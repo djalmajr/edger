@@ -36,7 +36,7 @@ pub use admin_api::router as admin_router;
 pub use api_keys::{ApiKeyService, API_KEY_PREFIX};
 pub use auth::{extract_api_key, ControlAuth, ControlAuthConfig};
 pub use console_auth::{load_seed_password, ConsoleAuthService, LoginLimiter, SESSION_PREFIX};
-pub use cron::{collect_cron_registrations, CronMetrics, CronScheduler, CronSchedulerConfig};
+pub use cron::{CronMetrics, CronScheduler, CronSchedulerConfig};
 pub use deploy::{
     install_worker_from_zip, prewarm_min_process_workers, rescan_workers,
     rescan_workers_and_prewarm, rescan_workers_and_prewarm_with_events, run_pending_releases,
