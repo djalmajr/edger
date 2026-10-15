@@ -92,7 +92,7 @@ kubectl -n edger create secret generic sqld-jwt \
   --from-file=jwt-public-key=./secrets/sqld-jwt-public-key.pem
 
 # chave da API de admin (aleatória, 256 bits)
-openssl rand -hex 32 > ./secrets/sqld-admin-key.txt && chmod 600 ./secrets/sqld-admin-key.txt
+openssl rand -hex 32 | tr -d '\n' > ./secrets/sqld-admin-key.txt && chmod 600 ./secrets/sqld-admin-key.txt
 kubectl -n edger create secret generic sqld-admin \
   --from-file=admin-auth-key=./secrets/sqld-admin-key.txt
 
@@ -105,15 +105,20 @@ kubectl -n edger create secret generic sqld-backup-cinzel \
   --from-file=token=./secrets/sqld-backup-cinzel-token.txt
 ```
 
+Os arquivos usados com `--from-file` não podem terminar em quebra de
+linha, porque ela vai para o Secret e a API de admin do sqld passa a
+recusar a chave (401). Confira com `wc -c` (64 bytes para hex de 32).
+Isso aconteceu no ensaio.
+
 ## Como criar um banco
 
 A API de admin (criar/apagar/configurar bancos) escuta em
 `127.0.0.1:9090` **dentro do pod** — fora do alcance da rede do cluster
 e da NetworkPolicy. Acesso por `kubectl port-forward` (ou `kubectl exec`
-com `curl 127.0.0.1:9090`); o ensaio confirma o caminho que funciona no
-nó (a porta 9090 não é porta de Service nem `containerPort` — o
-port-forward liga no IP do pod, então o listener loopback pode não ser
-alcançado; só o cluster responde).
+com `curl 127.0.0.1:9090`); confirmado no ensaio (2026-10-15):
+`kubectl port-forward pod/<pod-sqld> 9090:9090` alcança o loopback do
+pod, e a autenticação é `Authorization: Basic <chave crua>`
+(`Bearer` dá 401; sem header, 401).
 
 ```sh
 # 1. abre o loopback da API de admin
@@ -144,6 +149,12 @@ curl -fsS -X POST http://127.0.0.1:9090/v1/namespaces/cinzel/create \
 #    (allowNet é a allowlist de egress do Deno persistente; lista
 #    vazia nega rede; sem allowNet vale EDGER_DENO_ALLOW_NET/global)
 ```
+
+O sqld escolhe o banco pelo primeiro rótulo do Host. Por port-forward
+(restore, smoke), mande `Host: <banco>.<namespace>.svc.cluster.local`
+ou o header `x-namespace-bin`. Com `127.0.0.1`, o banco vira `127` e a
+resposta é 404; um Host sem ponto (`localhost`) cai no `default`. Os
+tokens de um banco dão 401 nos outros bancos e no `default`.
 
 Outros endpoints da API de admin (v0.24.32): `GET/POST
 /v1/namespaces/<ns>/config` (trocar a `jwt_key`), `DELETE
@@ -228,15 +239,19 @@ Detalhes:
   Cinzel) para **três** bancos compartilhando — os anexos ficam em
   BLOB. O ensaio mede o tamanho real dos dumps (item do plano); se
   14 × 3 dumps não couberem, crescer o PVC antes do corte.
-- `activeDeadlineSeconds: 600` (o do Cinzel, provado para o banco de
-  266 MB) — o ensaio também confere o tempo do dump.
+- `activeDeadlineSeconds: 1800` e CPU de 1 (limite): no ensaio de
+  2026-10-15, o backup do Cinzel (235 MB de SQL, 105 MB em gzip) levou
+  cerca de 400 s com CPU de 200m, e os backups atuais de produção
+  levam de 5 a 6,5 min. Os 600 s estourariam com o crescimento do
+  banco, e o dump final da janela de corte é esse job.
 
 ## Ensaio (Fase 0)
 
 Namespace descartável `edger-ensaio`, com cópias. Nada de rota pública:
 smoke por `port-forward`. O Cinzel valida o ensaio (`restore-test ok` +
 contagens). **Medir o tempo de cada passo** (a janela de corte é
-estimada em 20–30 min a confirmar aqui) e depois apagar tudo.
+confirmada no ensaio de 2026-10-15 (ver o resultado no fim desta
+seção)) e depois apagar tudo.
 
 Pré-requisitos: chart publicado `0.3.2-rc.19` ou mais nova (a primeira
 com a EDG-24, o `release` de worker só de root — precisa estar no ar
@@ -259,7 +274,7 @@ Cinzel; acesso ao nó (VPS).
    com o namespace na limpeza, passo 11); `sqld-jwt`, `sqld-admin`,
    `sqld-jwt-cinzel`, `sqld-backup-cinzel` — gerados para o ensaio.
    ```sh
-   openssl rand -hex 32 > ./secrets/edger-root-ensaio.txt \
+   openssl rand -hex 32 | tr -d '\n' > ./secrets/edger-root-ensaio.txt \
      && chmod 600 ./secrets/edger-root-ensaio.txt
    kubectl -n edger-ensaio create secret generic edger-root \
      --from-file=root-key=./secrets/edger-root-ensaio.txt
@@ -273,7 +288,7 @@ Cinzel; acesso ao nó (VPS).
      -f deploy/production/rehearsal/values.rehearsal.yaml
    ```
    Esperar o pod pronto (`/ready`).
-4. Copiar o PVC de workers (184 MB) no nó para o `edger-user-workers`
+4. Copiar o PVC de workers (201 MB) no nó para o `edger-user-workers`
    do ensaio (dois PVCs local-path no mesmo nó; a cópia é no
    filesystem do nó, do diretório do PV antigo para o do novo). As
    versões copiadas carregam o `env` de produção (banco, tokens de
@@ -283,14 +298,17 @@ Cinzel; acesso ao nó (VPS).
    copiada.
 5. Criar o banco `cinzel` no sqld de ensaio com a `jwt_key` do ensaio
    (API de admin por port-forward — a seção "Como criar um banco" acima,
-   com `-n edger-ensaio`; **confirmar aqui o caminho do port-forward na
-   9090**, que é o item que só o cluster responde).
+   com `-n edger-ensaio`; o caminho do port-forward na 9090 é
+   confirmado na nota do início dessa seção).
 6. Restore do Cinzel no banco `cinzel` (ferramenta do Cinzel,
    `bun run db:restore` do repositório do Cinzel — procedimento em
    "Restore por banco"): `bun run db:restore -- <dump> --check` no dump
    (`restore-test ok` + contagens por tabela) e depois o restore em
    `http://cinzel.edger-ensaio.svc.cluster.local:8080` com o token do
-   banco. Contagens por tabela: o `--check` dá as contagens do dump
+   banco — o restore é **em lotes** (o `db:restore` do Cinzel manda
+   lotes de até 4 MiB, cada um numa transação; no ensaio, o dump
+   inteiro numa requisição derrubou o sqld por OOM com 512Mi).
+   Contagens por tabela: o `--check` dá as contagens do dump
    (tabela por tabela) e o restore devolve o total
    (`restore ok: N tables, M rows`) — as somas têm de bater.
 7. Reinstalar o worker do Cinzel no EdgeR de ensaio **com o `env` do
@@ -298,7 +316,18 @@ Cinzel; acesso ao nó (VPS).
    (banco `cinzel` do sqld de ensaio) e o token de ensaio — como no
    corte real: instalação staged e **depois** promote (em vez de usar
    uma versão copiada, que carrega o `env` de produção; o smoke e o
-   promote são da versão instalada agora). Os release tools do Cinzel
+   promote são da versão instalada agora). Depois do install staged,
+   **aquecer a versão por pin** (invoke do control plane
+   `/api/admin/workers/<nome>/invoke/<caminho>` com
+   `x-edger-control-authorization: Bearer <root key>` e
+   `x-edger-worker-version: <versão>`) e esperar o bundle antes do
+   promote. Sem isso, as primeiras requisições estouram os 30 s e
+   abrem o circuit breaker. Com o egress fechado do ensaio, o
+   `deno bundle` não baixa o esbuild do npm e o EdgeR guarda um
+   bundle quebrado do fallback (EDG-30); no ensaio, o egress 443 foi
+   aberto por 12 s só para o pod do EdgeR, o bundle quebrado foi
+   apagado, e a versão foi reciclada e aquecida. Os release tools do
+   Cinzel
    (`common.py`, `kv_layout.py`, `t01_snapshot.py`) e os runbooks 10 e
    30 (port-forward em `svc/cinzel-edger`) apontam para o release
    antigo: **testar no ensaio**, porque o primeiro release depois do
@@ -329,10 +358,29 @@ Cinzel; acesso ao nó (VPS).
     e apagar os PVs local-path que sobravem (o namespace não remove
     PVs).
 
+### Resultado do ensaio (2026-10-15)
+
+Tempos: plataforma em 4 s; Secrets em 4 s; helm em 20 s; cópia do PV
+em 2 s (16 s com o EdgeR parado e religado); banco criado em 8 s;
+restore em lotes em 56 s (60 lotes, pico de 309Mi no sqld); install
+staged em 30 s; bundle real em 3,6 s (7,2 MB); promote imediato;
+smoke em cerca de 3 s; limpeza em 87 s; backup em cerca de 400 s com
+CPU de 200m (105 MB).
+
+Validação do Cinzel: 46 tabelas e 14.870 linhas iguais ao `--check`;
+integrity ok; `/_health/ready` 200 em 385 a 405 ms; login real e MCP
+`get_workspace` ok.
+
+Rede: o egress fechado barrou a produção e os hosts externos; o
+ingress do sqld recusou pods sem rótulo; um pod novo com rótulo
+permitido leva cerca de 1 s até a política valer (kube-router), e o
+`backup.sh` já espera o `/health`.
+
 ## Corte (Fase 1)
 
-Janela de 20–30 min de Cinzel fora do ar (confirmada pelo ensaio; o
-tempo conta a partir da quiescência do passo 2).
+Janela de 30 min de Cinzel fora do ar (uns 15 min de trabalho medidos
+no ensaio; o gargalo é o dump final, que usa o job de backup com 1
+CPU); o tempo conta a partir da quiescência do passo 2.
 
 A ordem garante **um único escritor autoritativo em toda a
 transição**: o writer antigo para antes do dump; o sqld antigo só para
@@ -359,13 +407,16 @@ inteiro para.
 5. **Tar do PVC de workers** no nó, com o EdgeR parado e sem deploys
    (nenhuma mutação do volume durante a cópia).
 6. **Dados**:
-   - copiar o conteúdo do PVC de workers (184 MB, mesmo nó) para o
+   - copiar o conteúdo do PVC de workers (201 MB, mesmo nó) para o
      `edger-user-workers` do namespace `edger`;
    - criar o banco `cinzel` no sqld novo com a `jwt_key` real do
      Cinzel (API de admin por port-forward);
    - restore do dump final em `http://cinzel.edger.svc.cluster.local:8080`
-     (procedimento em "Restore por banco") — **sem `--baseline`** e sem
-     `create` com `dump_url` (revisão do Cinzel);
+     (procedimento em "Restore por banco"), **em lotes** (o
+     `db:restore` do Cinzel manda lotes de até 4 MiB, cada um numa
+     transação; no ensaio, o dump inteiro numa requisição derrubou o
+     sqld por OOM com 512Mi) — **sem `--baseline`** e sem `create`
+     com `dump_url` (revisão do Cinzel);
    - contagens por tabela de antes e de depois (anexar à ata da
      janela).
 7. **EdgeR**:
@@ -383,7 +434,11 @@ inteiro para.
      e atualizar o runbook 60), porque o gate `t02_kv_env.py` bloqueia
      divergência entre o OpenBao e o manifesto;
    - **depois** reinstalar com URL e token novos (instalação staged,
-     depois promote);
+     depois promote — antes do promote, **aquecer a versão por pin**:
+     invoke do control plane
+     `/api/admin/workers/<nome>/invoke/<caminho>` com
+     `x-edger-control-authorization: Bearer <root key>` e
+     `x-edger-worker-version: <versão>`, e esperar o bundle);
    - reinstalar também a **versão de rollback** `0.20261013.25586` com a
      URL e o token novos, staged e sem promote. As ~15 versões
      desabilitadas apontam para o banco antigo: ficam desabilitadas e
