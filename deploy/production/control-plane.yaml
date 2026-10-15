@@ -52,18 +52,8 @@ spec:
   entryPoints: [websecure]
   routes:
     - kind: Rule
-      match: >-
-        Host(`edger.djalmajr.dev`) && (
-          Path(`/`) ||
-          Path(`/health`) || Path(`/healthz`) ||
-          Path(`/livez`) ||
-          Path(`/ready`) || Path(`/readyz`) ||
-          Path(`/metrics`) || Path(`/metrics/stats`) ||
-          Path(`/api`) || PathPrefix(`/api/`) ||
-          PathPrefix(`/.well-known`) ||
-          Path(`/cpanel`) || PathPrefix(`/cpanel/`) ||
-          Path(`/webide`) || PathPrefix(`/webide/`)
-        )
+      # o Traefik do k3s não aceita quebra de linha na regra; mantenha numa linha
+      match: Host(`edger.djalmajr.dev`) && (Path(`/`) || Path(`/health`) || Path(`/healthz`) || Path(`/livez`) || Path(`/ready`) || Path(`/readyz`) || Path(`/metrics`) || Path(`/metrics/stats`) || Path(`/api`) || PathPrefix(`/api/`) || PathPrefix(`/.well-known`) || Path(`/cpanel`) || PathPrefix(`/cpanel/`) || Path(`/webide`) || PathPrefix(`/webide/`))
       middlewares:
         - name: edger-admin-ratelimit
       services:

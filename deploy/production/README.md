@@ -409,6 +409,8 @@ inteiro para.
 6. **Dados**:
    - copiar o conteúdo do PVC de workers (201 MB, mesmo nó) para o
      `edger-user-workers` do namespace `edger`;
+   - manter o EdgeR novo em 0 até o passo 4 (sqld antigo parado),
+     porque as versões copiadas apontam para o banco antigo;
    - criar o banco `cinzel` no sqld novo com a `jwt_key` real do
      Cinzel (API de admin por port-forward);
    - restore do dump final em `http://cinzel.edger.svc.cluster.local:8080`
@@ -439,7 +441,10 @@ inteiro para.
      `/api/admin/workers/<nome>/invoke/<caminho>` com
      `x-edger-control-authorization: Bearer <root key>` e
      `x-edger-worker-version: <versão>`, e esperar o bundle);
-   - reinstalar também a **versão de rollback** `0.20261013.25586` com a
+   - reinstalar também, como **versão de rollback**, a versão que
+     for o rollback do Cinzel na hora do corte (no corte de 2026-10-15:
+     `0.20261015.64646`, um build novo do commit do rollback, porque as
+     versões copiadas carregam o env antigo e foram desabilitadas) com a
      URL e o token novos, staged e sem promote. As ~15 versões
      desabilitadas apontam para o banco antigo: ficam desabilitadas e
      **não podem ser reabilitadas sem reinstalação**.
@@ -457,6 +462,32 @@ inteiro para.
    `/issues` autenticado e a chamada MCP `get_workspace`. As sessões
    continuam válidas (`BETTER_AUTH_SECRET` é o mesmo e o banco foi
    copiado). **Anúncio do fim da janela.**
+
+### Resultado do corte (2026-10-15)
+
+- quiescência às 17:44:58Z (cinzel-edger para 0); dump final validado
+  às 17:55:31Z (107 MB em gzip); `cinzel-sqld` antigo para 0 às
+  17:55:52Z; EdgeR novo pronto às 17:56:00Z; promote às 18:04:42Z;
+  rotas novas às 18:05:17Z; smoke público ok às 18:06:29Z. O Cinzel
+  ficou fora do ar cerca de 20 min;
+- cópia do PV: 217 MB em 3 s;
+- restore em lotes: 46 tabelas e 15.150 linhas, com digest por tabela
+  e `integrity_check`. A primeira tentativa falhou na verificação por
+  `RESPONSE_TOO_LARGE`: ler o alvo em páginas de 16 MiB passa do limite
+  de resposta do sqld; com 4 MiB passou. Pico de memória do sqld: uns
+  420Mi anônimos (limite de 1Gi), sem OOM;
+- o EdgeR novo ficou parado entre a cópia do PV e a descida do sqld
+  antigo: as versões copiadas têm o env antigo e escreveriam no banco
+  antigo durante o dump. Depois do restore, o Cinzel instalou builds
+  novos (default e rollback) com o env novo e desabilitou as cópias;
+- a regra multilinha do `control-plane.yaml` foi rejeitada pelo
+  Traefik e o `edger.djalmajr.dev` ficou 44 s sem rota, até o patch
+  para uma linha (a regra do `control-plane.yaml` agora fica numa
+  linha só);
+- os Secrets TLS (`cinzel-tls`, `edger-tls`) foram copiados com as
+  anotações do cert-manager, e os dois Certificates ficaram `Ready`;
+- o namespace `cinzel` (cinzel-edger, cinzel-sqld e PVCs) fica parado
+  até 2026-10-22, para rollback; as rotas antigas estão salvas no VPS.
 
 ## Pós-corte (Fase 2), rollback e restore por banco
 
