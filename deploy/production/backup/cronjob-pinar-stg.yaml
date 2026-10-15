@@ -57,7 +57,7 @@ spec:
                 # tabela __migrations; o backup do Pinar só confere o
                 # COMMIT final).
                 - name: SENTINEL
-                  value: ""
+                  value: d1_migrations
                 - name: SQLD_AUTH_TOKEN
                   valueFrom:
                     secretKeyRef:
