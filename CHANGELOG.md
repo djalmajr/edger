@@ -4,7 +4,9 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.19` (root-only worker
+Toward 0.3.2. Release candidates: `v0.3.2-rc.20` (console hash slot held
+until the calculation ends, tenant gate errors no longer reveal a hidden
+worker, fallback bundle never cached nor served broken); `v0.3.2-rc.19` (root-only worker
 release command, cron follows the default version, owner-less public
 routes hidden for workers with their own hosts, production platform
 manifests, RustSec patches); `v0.3.2-rc.18` (root-only console
@@ -551,6 +553,26 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.20]
+
+- Console hash slots stay held until the Argon2 calculation ends, so a
+  client that disconnects mid-login no longer frees the slot while the
+  calculation keeps running and abandoned logins can no longer exceed the
+  configured limit; the login serialization test checks the observed peak
+  instead of a millisecond margin (EDG-28).
+- With tenant routing on, a worker hidden from owner-less public routes
+  answers like an unknown worker instead of with the tenant gate error, and
+  the identify service is not called for it (EDG-29).
+- When `deno bundle` cannot reach the npm registry, the minimal fallback
+  bundle is never published to the per-version bundle cache, and a fallback
+  that still has a local `file:` code dependency fails with
+  `DENO_BUNDLE_FAILED` (validated with `deno info`) instead of a module that
+  breaks at runtime (EDG-30).
+- Production platform (EDG-25): shared `sqld` limit 1 Gi, backup jobs with
+  1 CPU and an 1800 s deadline, a single-line control-plane route rule, the
+  Pinar backup sentinel, and the rehearsal and cutover results in the
+  runbook.
 
 ## [0.3.2-rc.19]
 
