@@ -129,13 +129,28 @@ fn fixture(
     enabled: bool,
     client: Option<TenantIdentityClient>,
 ) -> (Router, Recorder) {
-    let dir = root.join("app");
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(
-        dir.join("manifest.yaml"),
+    // EDG-27: o app declara `hosts`, então num Host sem dono a rota por nome
+    // responde 404 (a existência não vaza); as sondas de data plane usam o
+    // host próprio (vhost) para chegar ao worker e passar pelo gate de
+    // tenant. A rota por nome segue coberta pelo teste de pin abaixo
+    // (worker sem `hosts`) e pelo teste de interna.
+    fixture_manifest(
+        root,
+        enabled,
+        client,
         "name: app\nversion: '1.0.0'\nentrypoint: index.ts\nkind: fetch\nhosts: [acme.example.com]\n",
     )
-    .unwrap();
+}
+
+fn fixture_manifest(
+    root: &std::path::Path,
+    enabled: bool,
+    client: Option<TenantIdentityClient>,
+    manifest: &str,
+) -> (Router, Recorder) {
+    let dir = root.join("app");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("manifest.yaml"), manifest).unwrap();
     fs::write(
         dir.join("index.ts"),
         "export default () => new Response('ok')",
@@ -198,7 +213,7 @@ fn header(req: &SerializedRequest, name: &str) -> Option<String> {
 async fn flag_off_needs_no_tenancit_and_never_trusts_visitor_tenant_header() {
     let root = tempfile::tempdir().unwrap();
     let (app, recorder) = fixture(root.path(), false, None);
-    let status = request(app, "/app", Some("gateway.example.com"), Some("forged")).await;
+    let status = request(app, "/app", Some("ACME.Example.Com:443"), Some("forged")).await;
     assert_eq!(status, StatusCode::OK);
     let requests = recorder.0.lock().unwrap();
     assert_eq!(requests.len(), 1);
@@ -215,7 +230,7 @@ async fn flag_on_allows_only_identified_tenant_and_rechecks_each_request() {
         request(
             app.clone(),
             "/app",
-            Some("gateway.example.com"),
+            Some("ACME.Example.Com:443"),
             Some("forged")
         )
         .await,
@@ -234,12 +249,18 @@ async fn flag_on_allows_only_identified_tenant_and_rechecks_each_request() {
 
     identity.0.lock().unwrap().1 = "other".into();
     assert_eq!(
-        request(app.clone(), "/app@1.0.0", Some("gateway.example.com"), None).await,
+        request(
+            app.clone(),
+            "/app@1.0.0",
+            Some("ACME.Example.Com:443"),
+            None
+        )
+        .await,
         StatusCode::NOT_FOUND
     );
     identity.0.lock().unwrap().0 = StatusCode::SERVICE_UNAVAILABLE;
     assert_eq!(
-        request(app.clone(), "/app", Some("gateway.example.com"), None).await,
+        request(app.clone(), "/app", Some("ACME.Example.Com:443"), None).await,
         StatusCode::SERVICE_UNAVAILABLE
     );
     assert_eq!(
@@ -256,7 +277,7 @@ async fn missing_identity_client_fails_closed_only_when_flag_is_on() {
     let root = tempfile::tempdir().unwrap();
     let (app, recorder) = fixture(root.path(), true, None);
     assert_eq!(
-        request(app, "/app", Some("gateway.example.com"), None).await,
+        request(app, "/app", Some("ACME.Example.Com:443"), None).await,
         StatusCode::SERVICE_UNAVAILABLE
     );
     assert!(recorder.0.lock().unwrap().is_empty());
@@ -286,6 +307,44 @@ async fn authenticated_internal_cron_can_run_without_a_visitor_domain() {
     assert_eq!(recorder.0.lock().unwrap().len(), 1);
 }
 
+// EDG-27, decisão 4: a cobertura do gate de tenant no ramo `version_pinned`
+// da rota por nome (pin `@version` num Host sem dono) usa um worker SEM
+// `hosts`, para que a sonda passe pelo gate de tenant em vez da recusa
+// EDG-27 — o teste de vhost acima segue cobrindo o app com hosts.
+#[tokio::test]
+async fn version_pinned_name_route_passes_the_tenant_gate_without_hosts() {
+    let root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder) = fixture_manifest(
+        root.path(),
+        true,
+        Some(client),
+        "name: app\nversion: '1.0.0'\nentrypoint: index.ts\nkind: fetch\n",
+    );
+
+    // Tenant identificado no allowlist: o pin pela rota por nome atende e
+    // recebe o `x-tenant-id` verificado.
+    assert_eq!(
+        request(app.clone(), "/app@1.0.0", Some("gateway.example.com"), None).await,
+        StatusCode::OK
+    );
+    {
+        let requests = recorder.0.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(header(&requests[0], "x-tenant-id"), Some("acme".into()));
+    }
+
+    // Tenant fora do allowlist: o pin também falha fechado (404), sem
+    // invocar o worker.
+    identity.0.lock().unwrap().1 = "other".into();
+    assert_eq!(
+        request(app.clone(), "/app@1.0.0", Some("gateway.example.com"), None).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(recorder.0.lock().unwrap().len(), 1);
+    task.abort();
+}
+
 #[tokio::test]
 async fn public_dispatch_preserves_visitor_authorization() {
     let root = tempfile::tempdir().unwrap();
@@ -295,7 +354,7 @@ async fn public_dispatch_preserves_visitor_authorization() {
         .oneshot(
             Request::builder()
                 .uri("/app")
-                .header("host", "gateway.example.com")
+                .header("host", "ACME.Example.Com:443")
                 .header("authorization", "Bearer app-token")
                 .header("x-tenant-id", "forged")
                 .body(Body::empty())

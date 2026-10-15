@@ -3762,9 +3762,11 @@ async fn staged_public_release_stays_pinned_until_promoted_across_rescan_and_res
     let (status, body) = body_of(app.clone(), "/staged-app").await;
     assert_eq!(status, StatusCode::MULTI_STATUS);
     assert_eq!(marker(&body), "public-one");
-    let (status, body) = body_of(app.clone(), "/staged-app@2.0.0").await;
-    assert_eq!(status, StatusCode::MULTI_STATUS);
-    assert_eq!(marker(&body), "public-two");
+    // EDG-27: a versão staged declara hosts, então o pin @version pela rota
+    // por nome num Host sem dono responde 404 (a mesma forma de worker
+    // inexistente); o acesso versionado público segue pelo host próprio.
+    let (status, _body) = body_of(app.clone(), "/staged-app@2.0.0").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(
         body_of(app.clone(), "/staged-plugin/probe").await.0,
         StatusCode::NOT_FOUND,
@@ -3825,8 +3827,8 @@ async fn staged_public_release_stays_pinned_until_promoted_across_rescan_and_res
     ));
     let (_, body) = body_of(restarted.clone(), "/staged-app").await;
     assert_eq!(marker(&body), "public-one", "restart admitted staged v2");
-    let (_, body) = body_of(restarted.clone(), "/staged-app@2.0.0").await;
-    assert_eq!(marker(&body), "public-two");
+    let (status, _body) = body_of(restarted.clone(), "/staged-app@2.0.0").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 
     let (status, promoted, text) = send(
         restarted.clone(),
@@ -3846,11 +3848,14 @@ async fn staged_public_release_stays_pinned_until_promoted_across_rescan_and_res
             .any(|line| line == "staged=true"),
         "promote must clear the durable staged marker"
     );
-    let (_, body) = body_of(restarted.clone(), "/staged-app").await;
-    assert_eq!(marker(&body), "public-two");
-    let (status, body) = body_of(restarted.clone(), "/staged-plugin/probe").await;
-    assert_eq!(status, StatusCode::MULTI_STATUS);
-    assert_eq!(marker(&body), "public-two");
+    // EDG-27: o default promovido declara hosts; a rota por nome num Host
+    // sem dono fica oculta (o vhost abaixo já provou a troca para a v2).
+    let (status, _body) = body_of(restarted.clone(), "/staged-app").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // EDG-27 (F2): a base de plugin do mesmo worker com hosts também fica
+    // oculta num Host sem dono; o vhost logo abaixo prova que a v2 atende.
+    let (status, _body) = body_of(restarted.clone(), "/staged-plugin/probe").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     let promoted_host = restarted
         .clone()
         .oneshot(
@@ -3893,9 +3898,31 @@ async fn staged_public_release_stays_pinned_until_promoted_across_rescan_and_res
         root.path().to_path_buf(),
         Arc::new(EchoFactory),
     ));
-    let (_, body) = body_of(restarted_after_promote, "/staged-app").await;
+    // EDG-27: default promovido declara hosts — a rota por nome responde 404
+    // (se o default ainda fosse a v1, sem hosts, ela responderia 207);
+    // o vhost prova que o default sobreviveu ao restart como v2.
+    let (status, _body) = body_of(restarted_after_promote.clone(), "/staged-app").await;
     assert_eq!(
-        marker(&body),
+        status,
+        StatusCode::NOT_FOUND,
+        "promoted default (with hosts) must hide the name route after restart"
+    );
+    let restarted_host = restarted_after_promote
+        .oneshot(
+            Request::builder()
+                .uri("/probe")
+                .header("host", "staged.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(restarted_host.status(), StatusCode::MULTI_STATUS);
+    let restarted_host_body = axum::body::to_bytes(restarted_host.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        marker(std::str::from_utf8(&restarted_host_body).unwrap()),
         "public-two",
         "promoted default did not survive restart"
     );
