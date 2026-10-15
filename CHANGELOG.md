@@ -4,7 +4,10 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.18` (root-only console
+Toward 0.3.2. Release candidates: `v0.3.2-rc.19` (root-only worker
+release command, cron follows the default version, owner-less public
+routes hidden for workers with their own hosts, production platform
+manifests, RustSec patches); `v0.3.2-rc.18` (root-only console
 sessions and settings, grouped cPanel navigation); `v0.3.2-rc.17` (warmup
 operational event, safe-Rust YAML parser, deno bundle retry); `v0.3.2-rc.16` (version
 enable/disable survives restarts); `v0.3.2-rc.15` (each worker version
@@ -29,6 +32,16 @@ core-worker precedence); `v0.3.2-rc.1` (published and validated on labdev:
 zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Added
+
+- Production platform manifests and runbooks under `deploy/production/`
+  (EDG-25, nothing applied): the `edger` namespace, the chart values
+  (`fullnameOverride: edger`, Secret `edger-root`, 1 Gi request and 4 Gi
+  limit), a shared `sqld` 0.24.32 with namespaces (admin API on loopback
+  behind `LIBSQL_ADMIN_AUTH_KEY`, one Service per database, a
+  NetworkPolicy), one backup CronJob per database, a control-plane
+  IngressRoute limited to the control-plane paths, the `edger-ensaio`
+  rehearsal overlay (DNS-only egress, cron off, throwaway root key) and
+  the cutover and rollback runbooks.
 
 - Console sessions and settings API (root only, all `Cache-Control: no-store`):
   `GET /api/admin/sessions` lists up to 1000 non-expired sessions of active
@@ -448,6 +461,9 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Dependencies
 
+- `rustls` 0.23.46 and `wasmtime`/`wasmtime-wasi` 49.0.3 (lockfile only)
+  for RUSTSEC-2026-0346 to 0349 and RUSTSEC-2026-0352 to 0364.
+
 - `wasmtime` and `wasmtime-wasi` 36 -> 49 (49.0.2) and `wat` 1.261.0: the
   WASI preview1 bindings moved from `wasmtime_wasi::preview1` to
   `wasmtime_wasi::p1`; the sandbox capability configuration, the
@@ -473,6 +489,25 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.19]
+
+- Only root may declare a worker `release` command: a non-root install or
+  files upload that sets it is refused with `403 RELEASE_REQUIRES_ROOT`;
+  `.edger-release` is reserved and purged from packages, reserved names
+  compare by Unicode case folding and the release runs with a clean
+  environment (EDG-24).
+- Cron jobs follow the default version and track the index: the
+  scheduler reconciles every 5 s and dispatches through the unversioned
+  route, so install, promote, enable, disable and delete take effect
+  without a restart; removal never aborts an in-flight dispatch and
+  shutdown reports tasks that do not yield (EDG-26).
+- Workers with their own hosts are not served by owner-less public
+  routes (name route, `@version` pin, homepage fallback, plugin base)
+  unless the manifest sets `nameRoute: true` (EDG-27).
+- Production platform manifests for the `edger` namespace and the shared
+  `sqld` under `deploy/production/` (EDG-25, nothing applied).
+- `rustls` 0.23.46 and `wasmtime` 49.0.3 for RustSec advisories.
 
 ## [0.3.2-rc.18]
 
