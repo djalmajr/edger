@@ -339,6 +339,37 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   button progress state: each button shows progress only for its own
   request.
 
+### Security
+
+- Worker `release` command (EDG-24): only root may declare it — an install
+  by a non-root key (`workers:install`) of a package with a non-empty
+  `release`, and a non-root files upload (`files:write`) writing the
+  version-root `manifest.yaml`/`manifest.yml` with a non-empty `release`,
+  are refused with `403 RELEASE_REQUIRES_ROOT` before any write. The root
+  is decided by the canonical destination (`path=.` and other root aliases
+  are covered), the refusal is monotonic over every root manifest entry
+  (both names, any order) and the upload manifest inspection has an
+  aggregate 1 MiB budget across all root manifests — the sum of the
+  declared sizes is checked before reading any entry and the sum of the
+  bytes actually read is enforced too (`413 PAYLOAD_TOO_LARGE` over it).
+  Reserved and manifest names are compared by Unicode case folding (double
+  fold, upper then lower): `MANIFEST.YAML`/`Manifest.yml` count as the
+  version-root manifest and `.EDGER-RELEASE` — including Unicode aliases
+  such as `manife\u{17F}t.yaml` and `.edger-relea\u{17F}e` (long s) — as the
+  reserved names; a non-root upload never writes a Unicode alias of the
+  manifest name at the version root, even without `release`. The intended
+  production target is Linux (case-sensitive filesystem), where the rule is
+  conservative. The release subprocess now starts from a clean environment
+  (only `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL` plus the manifest `env`)
+  and no longer inherits `ROOT_API_KEY`, `EDGER_*` or any other variable of
+  the EdgeR process environment. `.edger-release` is a reserved
+  EdgeR marker: the files delete answers the batch with a per-path error
+  `code: FORBIDDEN`, message `"reserved file"` (HTTP 200), uploads skip a
+  zip-root entry named like it, and a marker shipped inside a deployed
+  package (including under the single wrapper folder and in case/Unicode
+  variants) is purged before the version routes, so `release: completed`
+  only reports a real run.
+
 ### Dependencies
 
 - `wasmtime` and `wasmtime-wasi` 36 -> 49 (49.0.2) and `wat` 1.261.0: the

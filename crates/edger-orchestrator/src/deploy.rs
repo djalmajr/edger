@@ -123,6 +123,11 @@ pub(crate) fn clear_worker_staged(dir: &Path) -> Result<(), CoreError> {
 pub(crate) const ENABLED_FILE: &str = ".edger-enabled";
 const ENABLED_TRUE_LINE: &str = "enabled=true";
 const ENABLED_FALSE_LINE: &str = "enabled=false";
+/// EDG-24: the release marker is EdgeR state inside the version dir (the
+/// version's `release` command already ran), never package content or user
+/// file content: a name reserved for the marker (the file itself or a temp
+/// name from a concurrent write).
+pub(crate) const RELEASE_FILE: &str = ".edger-release";
 
 /// The operator's last explicit enable/disable choice for a version, if the
 /// version dir carries a marker. `None` = no persisted toggle (the manifest
@@ -211,12 +216,38 @@ pub(crate) fn remove_enabled_marker(dir: &Path) -> Result<(), CoreError> {
     }
 }
 
+// EDG-24 (emenda 3): Unicode case folding for the reserved-name
+// comparison. APFS (macOS) is case-insensitive AND maps Unicode
+// case-equivalent characters onto the same file (long s U+017F
+// identifies the same file as ASCII `s`; Kelvin K U+212A, as `k`), and
+// `to_ascii_lowercase()` does not catch those. Double case folding (upper
+// then lower) normalizes them: `\u{17F}` -> `S` -> `s`. The reserved names
+// are ASCII, and on APFS (which normalizes by NFD, not by compatibility)
+// a sequence matches them only through case folding, so the fold is the
+// exact rule; on Linux it is conservative.
+pub(crate) fn fold_reserved_name(name: &str) -> String {
+    name.chars()
+        .flat_map(char::to_uppercase)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 /// The enabled toggle is operator state, never package content or user file
 /// content: a name reserved for the marker (the file itself or a temp name
-/// from a concurrent write).
+/// from a concurrent write). EDG-24 (G2/G3): the comparison uses Unicode
+/// case folding (see `fold_reserved_name`).
 pub(crate) fn is_enabled_marker_name(file_name: &str) -> bool {
-    file_name == ENABLED_FILE
-        || (file_name.starts_with(".edger-enabled-") && file_name.ends_with(".tmp"))
+    let folded = fold_reserved_name(file_name);
+    folded == ENABLED_FILE || (folded.starts_with(".edger-enabled-") && folded.ends_with(".tmp"))
+}
+
+/// EDG-24: the release marker is operator state (EdgeR ran the version's
+/// `release` command), never package content or user file content: a name
+/// reserved for the marker (the file itself or a temp name from a
+/// concurrent write). Case folding, same rule as the enabled marker.
+pub(crate) fn is_release_marker_name(file_name: &str) -> bool {
+    let folded = fold_reserved_name(file_name);
+    folded == RELEASE_FILE || (folded.starts_with(".edger-release-") && folded.ends_with(".tmp"))
 }
 
 /// EDG-21: drop a shipped toggle from a freshly installed version dir BEFORE
@@ -227,45 +258,119 @@ pub(crate) fn is_enabled_marker_name(file_name: &str) -> bool {
 /// The marker, any marker temp file and a marker directory are removed; a
 /// dir without them is a no-op.
 pub(crate) fn purge_enabled_marker(dir: &Path) -> Result<(), CoreError> {
-    let path = dir.join(ENABLED_FILE);
-    match fs::symlink_metadata(&path) {
-        Ok(metadata) if metadata.is_dir() => {
-            fs::remove_dir_all(&path).map_err(|err| {
-                deploy_io(format!(
-                    "failed to remove shipped enabled marker dir {}: {err}",
-                    path.display()
-                ))
-            })?;
-        }
-        Ok(_) => fs::remove_file(&path).map_err(|err| {
-            deploy_io(format!(
-                "failed to remove shipped enabled marker {}: {err}",
-                path.display()
-            ))
-        })?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(deploy_io(format!(
-                "failed to stat enabled marker {}: {error}",
-                path.display()
-            )));
-        }
-    }
+    // EDG-24 (G2): the name rule is case-insensitive, so the purge sweeps the
+    // dir for ANY case variant — on APFS/Windows a shipped `.EDGER-ENABLED`
+    // IS the marker, and on a case-sensitive filesystem it is a distinct
+    // file that would otherwise survive and act as the marker there.
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.filter_map(Result::ok) {
             let file_name = entry.file_name();
             let Some(file_name) = file_name.to_str() else {
                 continue;
             };
-            if file_name == ENABLED_FILE || !is_enabled_marker_name(file_name) {
+            if !is_enabled_marker_name(file_name) {
                 continue;
             }
-            fs::remove_file(entry.path()).map_err(|err| {
-                deploy_io(format!(
-                    "failed to remove shipped enabled marker temp file {}: {err}",
-                    entry.path().display()
-                ))
-            })?;
+            let path = entry.path();
+            if fold_reserved_name(file_name) == ENABLED_FILE {
+                match fs::symlink_metadata(&path) {
+                    Ok(metadata) if metadata.is_dir() => {
+                        fs::remove_dir_all(&path).map_err(|err| {
+                            deploy_io(format!(
+                                "failed to remove shipped enabled marker dir {}: {err}",
+                                path.display()
+                            ))
+                        })?;
+                    }
+                    Ok(_) => fs::remove_file(&path).map_err(|err| {
+                        deploy_io(format!(
+                            "failed to remove shipped enabled marker {}: {err}",
+                            path.display()
+                        ))
+                    })?,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(deploy_io(format!(
+                            "failed to stat enabled marker {}: {error}",
+                            path.display()
+                        )));
+                    }
+                }
+            } else {
+                // A temp name (`.edger-enabled-*.tmp`) must be a file: a
+                // directory under the reserved name is an error and the
+                // install rolls back.
+                fs::remove_file(&path).map_err(|err| {
+                    deploy_io(format!(
+                        "failed to remove shipped enabled marker temp file {}: {err}",
+                        path.display()
+                    ))
+                })?;
+            }
+        }
+    }
+    if let Ok(directory) = fs::File::open(dir) {
+        let _ = directory.sync_all();
+    }
+    Ok(())
+}
+
+/// EDG-24: drop a shipped release marker from a freshly installed version
+/// dir BEFORE the version can route. A package that carries `.edger-release`
+/// (even nested under the single wrapper folder that `package_root`
+/// unwraps) would otherwise make the release command look already run for
+/// the fresh version: the deploy would report `release: completed` without
+/// executing anything, and a later root-declared release would be skipped.
+/// The marker, any marker temp file and a marker directory are removed; a
+/// dir without them is a no-op.
+pub(crate) fn purge_release_marker(dir: &Path) -> Result<(), CoreError> {
+    // EDG-24 (G2): same case-insensitive sweep as the enabled marker — a
+    // shipped `.EDGER-RELEASE` must not survive on any filesystem.
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let file_name = entry.file_name();
+            let Some(file_name) = file_name.to_str() else {
+                continue;
+            };
+            if !is_release_marker_name(file_name) {
+                continue;
+            }
+            let path = entry.path();
+            if fold_reserved_name(file_name) == RELEASE_FILE {
+                match fs::symlink_metadata(&path) {
+                    Ok(metadata) if metadata.is_dir() => {
+                        fs::remove_dir_all(&path).map_err(|err| {
+                            deploy_io(format!(
+                                "failed to remove shipped release marker dir {}: {err}",
+                                path.display()
+                            ))
+                        })?;
+                    }
+                    Ok(_) => fs::remove_file(&path).map_err(|err| {
+                        deploy_io(format!(
+                            "failed to remove shipped release marker {}: {err}",
+                            path.display()
+                        ))
+                    })?,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(deploy_io(format!(
+                            "failed to stat release marker {}: {error}",
+                            path.display()
+                        )));
+                    }
+                }
+            } else {
+                // A temp name (`.edger-release-*.tmp`) must be a file: a
+                // directory under the reserved name is an error and the
+                // install rolls back.
+                fs::remove_file(&path).map_err(|err| {
+                    deploy_io(format!(
+                        "failed to remove shipped release marker temp file {}: {err}",
+                        path.display()
+                    ))
+                })?;
+            }
         }
     }
     if let Ok(directory) = fs::File::open(dir) {
@@ -503,6 +608,13 @@ pub fn install_worker_from_zip(
         &inspected_package_dir,
         package_name_hint.as_deref(),
     )?;
+    // EDG-24: a non-root principal may not declare a `release` command (it
+    // runs outside the Deno sandbox); read the flag before `inspected_manifest`
+    // moves into the worker ref below.
+    let inspected_release_declared = inspected_manifest
+        .release
+        .as_deref()
+        .is_some_and(|release| !release.trim().is_empty());
     let inspected_worker = create_worker_ref(inspected_package_dir, inspected_manifest)?;
     // Escopo por worker da key, ANTES de qualquer efeito no root de install:
     // o nome definitivo só existe depois de inspecionar o manifest do ZIP.
@@ -510,6 +622,17 @@ pub fn install_worker_from_zip(
         return Err(CoreError::new(
             "FORBIDDEN",
             format!("api key is not scoped to worker: {}", inspected_worker.name),
+        ));
+    }
+    // EDG-24: the `release` command runs outside the Deno sandbox as a
+    // subprocess of the EdgeR process — declaring it is a root-only
+    // privilege. The check happens after the package manifest is read and
+    // before any write to the install root, so a refused package leaves no
+    // staging dir, slot, version dir or index entry.
+    if !principal.is_root && inspected_release_declared {
+        return Err(CoreError::new(
+            "RELEASE_REQUIRES_ROOT",
+            "only root may declare a release command",
         ));
     }
     let core = is_core_name(&inspected_worker.name);
@@ -732,6 +855,14 @@ pub fn install_worker_from_zip(
             let _ = fs::rename(&backup, &target);
             return Err(error);
         }
+        // EDG-24 (F3): o marcador de release é estado do EdgeR — um
+        // `.edger-release` que viaja no pacote (mesmo desembrulhado na raiz
+        // efetiva) não pode suprimir a execução do release da versão nova.
+        if let Err(error) = purge_release_marker(&target) {
+            let _ = fs::remove_dir_all(&target);
+            let _ = fs::rename(&backup, &target);
+            return Err(error);
+        }
         manifest.enabled = Some(false);
         if let Err(error) = index.replace_with_origin(target.clone(), manifest.clone(), info.origin)
         {
@@ -753,6 +884,12 @@ pub fn install_worker_from_zip(
         // pacote não pode ativar a versão antes do release e do health
         // check (nem sobreviver ao boot no ramo cPanel mais antigo).
         if let Err(error) = purge_enabled_marker(&target) {
+            let _ = fs::remove_dir_all(&target);
+            return Err(error);
+        }
+        // EDG-24 (F3): mesmo motivo para o marcador de release — a resposta
+        // `release: completed` tem que corresponder a uma execução real.
+        if let Err(error) = purge_release_marker(&target) {
             let _ = fs::remove_dir_all(&target);
             return Err(error);
         }
@@ -1296,11 +1433,15 @@ fn record_release_event(
 }
 
 /// Runs `config.release_command` once (guarded by a `.edger-release` marker in
-/// `dir`), with the worker's full manifest env (DATABASE_URL etc. — delivered
-/// since server workers receive all declared env). The command is
-/// operator-declared and runs as a trusted subprocess in `dir`. Returns whether
-/// it actually ran. A non-zero exit fails the deploy so a broken migration never
-/// reaches serving.
+/// `dir`). The command is operator-declared (root-only to declare, EDG-24)
+/// and runs as a trusted subprocess of the EdgeR process in `dir`, OUTSIDE
+/// the Deno sandbox: it starts from an empty environment (EDG-24) with only
+/// `PATH`, `HOME`, `TMPDIR`, `LANG` and `LC_ALL` passed through from the
+/// orchestrator process, and the worker's manifest env (`config.env`) on top
+/// (DATABASE_URL etc. — delivered since server workers receive all declared
+/// env). It never sees `ROOT_API_KEY`, `EDGER_ROOT_KEY_FILE` or any other
+/// inherited credential. Returns whether it actually ran. A non-zero exit
+/// fails the deploy so a broken migration never reaches serving.
 async fn run_release(dir: &Path, config: &WorkerConfig) -> Result<bool, CoreError> {
     let Some(command) = config.release_command.as_deref() else {
         return Ok(false);
@@ -1308,16 +1449,22 @@ async fn run_release(dir: &Path, config: &WorkerConfig) -> Result<bool, CoreErro
     if command.trim().is_empty() {
         return Ok(false);
     }
-    let marker = dir.join(".edger-release");
+    let marker = dir.join(RELEASE_FILE);
     if marker.exists() {
         return Ok(false); // already released for this version
     }
 
     let mut cmd = tokio::process::Command::new("sh");
-    cmd.arg("-c")
-        .arg(command)
-        .current_dir(dir)
-        .envs(&config.env) // manifest env overlays the inherited toolchain env (PATH/HOME/...)
+    cmd.arg("-c").arg(command).current_dir(dir).env_clear();
+    // EDG-24: pass through only the toolchain essentials from the
+    // orchestrator process — the release command must not inherit
+    // credentials or other workers' secrets.
+    for var in ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"] {
+        if let Ok(value) = std::env::var(var) {
+            cmd.env(var, value);
+        }
+    }
+    cmd.envs(&config.env) // manifest env on top of the clean inherited env
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1369,7 +1516,7 @@ fn is_core_name(name: &str) -> bool {
 pub(crate) fn extract_zip(
     bytes: &[u8],
     destination: &Path,
-    ignore_root_enabled_marker: bool,
+    ignore_root_markers: bool,
 ) -> Result<(), CoreError> {
     if bytes.len() > MAX_DEPLOY_PACKAGE_BYTES {
         return Err(CoreError::new(
@@ -1406,7 +1553,10 @@ pub(crate) fn extract_zip(
         // EDG-21: the enabled toggle is operator state — a zip-root entry
         // named like the marker (or its temp files) is dropped, never
         // written, so a package or a files upload cannot ship or replace it.
-        if ignore_root_enabled_marker
+        // EDG-24: the release marker is EdgeR state, dropped the same way
+        // (a shipped marker would make the release command look already
+        // run for the fresh version).
+        if ignore_root_markers
             && relative
                 .parent()
                 .map(|parent| parent.as_os_str().is_empty())
@@ -1414,7 +1564,7 @@ pub(crate) fn extract_zip(
             && relative
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(is_enabled_marker_name)
+                .is_some_and(|name| is_enabled_marker_name(name) || is_release_marker_name(name))
         {
             continue;
         }
@@ -1600,7 +1750,7 @@ mod release_tests {
 
         let error = run_release_for_worker(&worker, &events).await.unwrap_err();
         assert_eq!(error.code, "RELEASE_FAILED");
-        assert!(!dir.path().join(".edger-release").exists());
+        assert!(!dir.path().join(RELEASE_FILE).exists());
 
         let page = events.query(crate::observability::OperationalEventQuery {
             worker: Some("bad-observed".into()),
@@ -1635,7 +1785,7 @@ mod release_tests {
 
         assert!(run_release_for_worker(&worker, &events).await.unwrap());
         assert!(!run_release_for_worker(&worker, &events).await.unwrap());
-        assert!(dir.path().join(".edger-release").exists());
+        assert!(dir.path().join(RELEASE_FILE).exists());
 
         let page = events.query(crate::observability::OperationalEventQuery {
             worker: Some("observed".into()),
@@ -1676,7 +1826,7 @@ mod release_tests {
         // First run executes the command and writes the marker.
         assert!(run_release(dir.path(), &config).await.unwrap());
         assert!(dir.path().join("out.txt").exists());
-        assert!(dir.path().join(".edger-release").exists());
+        assert!(dir.path().join(RELEASE_FILE).exists());
 
         // Second run is a no-op (marker present) — once per version.
         assert!(!run_release(dir.path(), &config).await.unwrap());
@@ -1703,7 +1853,7 @@ mod release_tests {
         let config = parse_worker_config(&manifest);
         assert!(run_release(dir.path(), &config).await.is_err());
         // No marker on failure — the deploy must not be considered released.
-        assert!(!dir.path().join(".edger-release").exists());
+        assert!(!dir.path().join(RELEASE_FILE).exists());
     }
 
     #[tokio::test]
@@ -1728,5 +1878,24 @@ mod release_tests {
         drop(guard);
         let slot = claim_worker_mutation_slot(dir.path(), "gate-app", "1.0.0").unwrap();
         drop(slot);
+    }
+
+    // EDG-24 (emenda 3): a dobra de caixa Unicode cobre os alias que o
+    // APFS mapeia para o mesmo arquivo (`ſ` U+017F ≡ `s`, Kelvin
+    // `K` U+212A ≡ `k`) — e nomes ASCII comuns continuam fora da regra.
+    #[test]
+    fn unicode_fold_reserved_name_matches_ascii_reserved_names() {
+        // long s: `manifeſt.yaml` dobra para o manifesto ASCII
+        assert_eq!(fold_reserved_name("manife\u{17F}t.yaml"), "manifest.yaml");
+        // Kelvin K: dobra para o `k` ASCII
+        assert_eq!(fold_reserved_name("\u{212A}"), "k");
+        // marcador de release com long s
+        assert!(is_release_marker_name(".edger-relea\u{17F}e"));
+        // variantes de caixa ASCII continuam cobertas (G2)
+        assert!(is_release_marker_name(".EDGER-RELEASE"));
+        // nomes ASCII comuns continuam falsos
+        assert!(!is_release_marker_name("release-notes.txt"));
+        assert!(!is_enabled_marker_name("manifest.yaml"));
+        assert!(!is_release_marker_name(".edger-release-abc")); // sem o sufixo .tmp
     }
 }

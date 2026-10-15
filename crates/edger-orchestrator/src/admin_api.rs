@@ -15,7 +15,7 @@ use edger_core::{
     principal_can_access_worker, principal_has_permission, require_same_origin, root_principal,
     AdminApiKeysResponse, AdminCatalogItem, AdminCatalogResponse, AdminErrorResponse,
     AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse, ApiKeyPrincipal, CoreError,
-    CreateApiKeyRequest, SerializedRequest, WorkerOrigin, WorkerVisibility,
+    CreateApiKeyRequest, SerializedRequest, WorkerManifest, WorkerOrigin, WorkerVisibility,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -33,7 +33,9 @@ use crate::deploy::{
     install_worker_from_zip, rollback_install, run_worker_release_with_events,
     MAX_DEPLOY_PACKAGE_BYTES,
 };
-use crate::manifest_loader::{clear_persisted_routing_policy, persist_routing_policy};
+use crate::manifest_loader::{
+    clear_persisted_routing_policy, manifest_yaml_options, persist_routing_policy,
+};
 use crate::manifest_loader::{persist_default_version, persist_worker_enabled};
 use crate::operational_log::log_operational_error;
 use crate::pipeline::{OrchestratorState, ADMIN_CONTROL_AUTH_HEADER, ADMIN_WORKER_VERSION_HEADER};
@@ -2166,6 +2168,157 @@ fn resolve_within(base: &std::path::Path, sub_path: &str) -> Result<std::path::P
     Ok(target)
 }
 
+// EDG-24: `release` runs outside the Deno sandbox as a subprocess with the
+// worker's manifest env — declaring it is a root-only privilege. A non-root
+// files upload that writes the version-root `manifest.yaml`/`manifest.yml`
+// with a non-empty `release` is refused before any file is written. The
+// same manifest parser as the rest of the code applies; a manifest that
+// does not parse keeps the current behavior (the upload proceeds and the
+// invalid manifest surfaces at the next index load).
+//
+// EDG-24 review (F2/F4): the refusal is MONOTONIC over every root manifest
+// entry (both names, any order, duplicates) — a later manifest without
+// `release` must not clear an earlier refusal, because the loader picks
+// `manifest.yaml` first regardless of zip entry order. Manifest entries are
+// read under a hard byte cap (`MAX_MANIFEST_BYTES`), checked against the
+// central-directory metadata BEFORE decompressing and enforced on the read
+// itself: a read error or a limit hit refuses the upload — it never
+// silently authorizes it.
+//
+// EDG-24 review (G1): the cap is an AGGREGATE budget for ALL root manifest
+// entries summed — the sum of the declared sizes is checked before reading
+// ANY entry, then the sum of the bytes actually read. A single per-entry
+// cap is not enough: 257 duplicated root `manifest.yaml` entries of ~1 MiB
+// each (reachable even as `entry{n}/../manifest.yaml` — `enclosed_name`
+// normalizes them back to the root) read ~269 MB.
+// EDG-24 review (G2): manifest names are compared case-insensitively (ASCII)
+// — on case-insensitive filesystems `MANIFEST.YAML` IS the version-root
+// manifest.
+const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
+
+/// EDG-24 (G2/G3): the version-root manifest names, compared by Unicode
+/// case folding (see `deploy::fold_reserved_name`) — on case-insensitive
+/// filesystems `MANIFEST.YAML` and the long-s alias `manife\u{17F}t.yaml`
+/// ARE the version-root manifest.
+fn is_root_manifest_name(name: &str) -> bool {
+    let folded = crate::deploy::fold_reserved_name(name);
+    folded == "manifest.yaml" || folded == "manifest.yml"
+}
+
+/// EDG-24 (emenda 3): the extra defense for non-root uploads. A root entry
+/// whose FOLDED name is a manifest name but whose original name is not
+/// exactly `manifest.yaml`/`manifest.yml` in ASCII (a Unicode alias such as
+/// `manife\u{17F}t.yaml`) — refused even without `release`, so a Unicode
+/// alias of the manifest is never written by a non-root key.
+fn uploaded_zip_has_unicode_manifest_alias(zip_bytes: &[u8]) -> Result<bool, CoreError> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
+        .map_err(|err| CoreError::new("DEPLOY_INVALID_PACKAGE", format!("invalid zip: {err}")))?;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).map_err(|err| {
+            CoreError::new(
+                "DEPLOY_INVALID_PACKAGE",
+                format!("invalid zip entry: {err}"),
+            )
+        })?;
+        let Some(relative) = entry.enclosed_name() else {
+            continue;
+        };
+        if relative
+            .parent()
+            .is_some_and(|parent| !parent.as_os_str().is_empty())
+        {
+            continue;
+        }
+        let Some(name) = relative.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !is_root_manifest_name(name) {
+            continue;
+        }
+        if name != "manifest.yaml" && name != "manifest.yml" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn uploaded_manifest_declares_release(zip_bytes: &[u8]) -> Result<bool, CoreError> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
+        .map_err(|err| CoreError::new("DEPLOY_INVALID_PACKAGE", format!("invalid zip: {err}")))?;
+    // G1, pass 1: collect the root manifest candidates (same normalization
+    // as `extract_zip`: `enclosed_name` — escaping entries are left for
+    // `extract_zip` to reject) and their DECLARED sizes.
+    let mut candidates: Vec<(usize, u64)> = Vec::new();
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).map_err(|err| {
+            CoreError::new(
+                "DEPLOY_INVALID_PACKAGE",
+                format!("invalid zip entry: {err}"),
+            )
+        })?;
+        let Some(relative) = entry.enclosed_name() else {
+            continue;
+        };
+        if relative
+            .parent()
+            .is_some_and(|parent| !parent.as_os_str().is_empty())
+        {
+            continue;
+        }
+        let Some(name) = relative.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !is_root_manifest_name(name) {
+            continue;
+        }
+        // F4/G1: the central-directory size is metadata the uploader
+        // controls; the sum over ALL candidates is checked before reading
+        // any entry.
+        candidates.push((index, entry.size()));
+    }
+    let declared_total: u64 = candidates.iter().map(|(_, size)| *size).sum();
+    if declared_total > MAX_MANIFEST_BYTES as u64 {
+        return Err(CoreError::new("PAYLOAD_TOO_LARGE", "manifest too large"));
+    }
+    // G1, pass 2: read each candidate under a per-entry cap (bounds a
+    // single decompression even when the metadata under-reports it) and
+    // enforce the AGGREGATE read budget.
+    let mut declares = false;
+    let mut read_total: u64 = 0;
+    for (index, _) in &candidates {
+        let entry = archive.by_index(*index).map_err(|err| {
+            CoreError::new(
+                "DEPLOY_INVALID_PACKAGE",
+                format!("invalid zip entry: {err}"),
+            )
+        })?;
+        let mut limited = entry.take(MAX_MANIFEST_BYTES as u64 + 1);
+        let mut text = String::new();
+        limited.read_to_string(&mut text).map_err(|err| {
+            CoreError::new(
+                "DEPLOY_INVALID_PACKAGE",
+                format!("failed to read manifest entry: {err}"),
+            )
+        })?;
+        read_total = read_total.saturating_add(text.len() as u64);
+        if read_total > MAX_MANIFEST_BYTES as u64 {
+            return Err(CoreError::new("PAYLOAD_TOO_LARGE", "manifest too large"));
+        }
+        // F2: OR-accumulate — the refusal never clears, whatever comes
+        // after in the archive. A manifest that does not parse keeps the
+        // current behavior.
+        if let Ok(manifest) =
+            serde_saphyr::from_str_with_options::<WorkerManifest>(&text, manifest_yaml_options())
+        {
+            declares |= manifest
+                .release
+                .as_deref()
+                .is_some_and(|release| !release.trim().is_empty());
+        }
+    }
+    Ok(declares)
+}
+
 fn write_worker_files(
     state: &OrchestratorState,
     principal: &ApiKeyPrincipal,
@@ -2207,10 +2360,40 @@ fn write_worker_files(
     std::fs::create_dir_all(&requested)
         .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot create path: {err}")))?;
     let dest = resolve_within(&base, rel)?;
-    // EDG-21: uma extração na raiz da versão nunca escreve o marcador de
-    // toggle (estado de operador) — um upload não pode substituí-lo; em
-    // subcaminhos o nome é arquivo comum e segue para o destino.
-    extract_zip(zip_bytes, &dest, rel.is_empty())?;
+    // EDG-24 review (F1): whether the upload lands on the version root is
+    // decided by the CANONICAL destination (dest == base), not by the path
+    // spelling: `.` and any other alias of the root (a `..` segment is
+    // rejected above, so nothing else normalizes to base) get the root
+    // guards. For those aliases `requested` is the version dir itself, so
+    // the create_dir_all above is a no-op and the refusal below happens
+    // before any file is written.
+    let at_version_root = dest == base;
+    // EDG-24: the `release` command runs outside the Deno sandbox — only
+    // root may declare it, so a non-root upload that writes the version-
+    // root manifest with a non-empty `release` is refused before any file
+    // is written.
+    if !principal.is_root && at_version_root {
+        // EDG-24 (emenda 3): a Unicode alias of the manifest name is
+        // refused on its own — even without `release` — so it is never
+        // written (on APFS it would BE the version-root manifest).
+        if uploaded_zip_has_unicode_manifest_alias(zip_bytes)? {
+            return Err(CoreError::new(
+                "RELEASE_REQUIRES_ROOT",
+                "only root may declare a release command",
+            ));
+        }
+        if uploaded_manifest_declares_release(zip_bytes)? {
+            return Err(CoreError::new(
+                "RELEASE_REQUIRES_ROOT",
+                "only root may declare a release command",
+            ));
+        }
+    }
+    // EDG-21/EDG-24: uma extração na raiz da versão (por qualquer grafia)
+    // nunca escreve os marcadores reservados (estado de operador/EdgeR) —
+    // um upload não pode substituí-los; em subcaminhos o nome é arquivo
+    // comum e segue para o destino.
+    extract_zip(zip_bytes, &dest, at_version_root)?;
     // Arquivos mudaram: a revisão CAS avança, senão um autosave force com a
     // revisão antiga passaria por cima da edição sem conflito.
     let revision = crate::deploy::bump_worker_revision(&base)?;
@@ -2261,6 +2444,20 @@ fn delete_within(base: &std::path::Path, rel: &str) -> Result<(), CoreError> {
             "path escapes the worker directory",
         ));
     }
+    // EDG-21/EDG-24: o nome reservado vale pela regra de NOME — pai canônico
+    // do alvo + nome de marcador — e roda ANTES do check de existência:
+    // numa caixa diferente (`.EDGER-RELEASE`, sem distinção de caixa pela
+    // G2) o alvo pode nem existir no filesystem case-sensitive (Linux) e a
+    // reserva ainda tem que valer; em APFS/Windows é o próprio marcador.
+    if parent == *base && crate::deploy::is_enabled_marker_name(name) {
+        return Err(CoreError::new("FORBIDDEN", "reserved file"));
+    }
+    // EDG-24: o marcador de release é estado do EdgeR (a command de release
+    // da versão já rodou) — apagar pela API de arquivos faria o rescan/boot
+    // rodar a command de novo; vale para todos, inclusive root, só na raiz.
+    if parent == *base && crate::deploy::is_release_marker_name(name) {
+        return Err(CoreError::new("FORBIDDEN", "reserved file"));
+    }
     let target = parent.join(name);
     let metadata = match std::fs::symlink_metadata(&target) {
         Ok(metadata) => metadata,
@@ -2278,13 +2475,6 @@ fn delete_within(base: &std::path::Path, rel: &str) -> Result<(), CoreError> {
         }
     };
     if name == crate::deploy::REVISION_FILE {
-        return Err(CoreError::new("FORBIDDEN", "reserved file"));
-    }
-    // EDG-21: o toggle é estado de operador, nunca conteúdo de usuário —
-    // apagar o marcador pela API de arquivos desfaria o enable/disable
-    // persistido (voltaria ao valor do manifesto no boot) sem
-    // `workers:toggle`; o nome reservado vale só na raiz da versão.
-    if segments.len() == 1 && crate::deploy::is_enabled_marker_name(name) {
         return Err(CoreError::new("FORBIDDEN", "reserved file"));
     }
     if target == *base {
@@ -2859,9 +3049,11 @@ pub(crate) fn map_error_status(err: &CoreError) -> StatusCode {
         | "PROMOTE_INTERNAL_VERSION" => StatusCode::BAD_REQUEST,
         "UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
-        "CSRF_DENIED" | "FORBIDDEN" | "KEY_GRANT_DENIED" | "USER_IMMUTABLE" => {
-            StatusCode::FORBIDDEN
-        }
+        "CSRF_DENIED"
+        | "FORBIDDEN"
+        | "KEY_GRANT_DENIED"
+        | "USER_IMMUTABLE"
+        | "RELEASE_REQUIRES_ROOT" => StatusCode::FORBIDDEN,
         "STATE_EXPORT_IN_PROGRESS" => StatusCode::CONFLICT,
         "CONSOLE_STORE_UNAVAILABLE"
         | "KEYS_STORE_UNAVAILABLE"
@@ -2870,7 +3062,7 @@ pub(crate) fn map_error_status(err: &CoreError) -> StatusCode {
         | "LOCK_ERROR"
         | "CONSOLE_BUSY" => StatusCode::SERVICE_UNAVAILABLE,
         "RATE_LIMITED" => StatusCode::TOO_MANY_REQUESTS,
-        "DOWNLOAD_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
+        "DOWNLOAD_TOO_LARGE" | "PAYLOAD_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
         "USERNAME_TAKEN"
         | "COLLISION"
         | "DEPLOY_REVISION_REQUIRED"
@@ -3059,5 +3251,265 @@ mod api_key_auth_tests {
         );
         assert!(started.elapsed() >= Duration::from_secs(4));
         lock.execute_batch("ROLLBACK").unwrap();
+    }
+}
+
+#[cfg(test)]
+mod upload_release_gate_tests {
+    use super::is_root_manifest_name;
+    use super::uploaded_manifest_declares_release;
+    use super::uploaded_zip_has_unicode_manifest_alias;
+    use std::io::Write;
+
+    fn zip(files: &[(&str, &str)]) -> Vec<u8> {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::SimpleFileOptions::default();
+            for (name, contents) in files {
+                writer.start_file(*name, options).unwrap();
+                writer.write_all(contents.as_bytes()).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
+
+    #[test]
+    fn root_manifest_yaml_with_release_is_detected() {
+        let bytes = zip(&[
+            (
+                "manifest.yaml",
+                "name: app\nversion: \"1.0.0\"\nrelease: \"migrate\"\n",
+            ),
+            ("index.ts", "Deno.serve(() => new Response('ok'))"),
+        ]);
+        assert!(uploaded_manifest_declares_release(&bytes).unwrap());
+    }
+
+    #[test]
+    fn root_manifest_yml_with_release_is_detected() {
+        let bytes = zip(&[("manifest.yml", "name: app\nrelease: migrate")]);
+        assert!(uploaded_manifest_declares_release(&bytes).unwrap());
+    }
+
+    #[test]
+    fn empty_or_blank_release_is_not_declared() {
+        for manifest in [
+            "name: app\nrelease: \"\"\n",
+            "name: app\nrelease: \"   \"\n",
+            "name: app\n",
+        ] {
+            let bytes = zip(&[("manifest.yaml", manifest)]);
+            assert!(
+                !uploaded_manifest_declares_release(&bytes).unwrap(),
+                "manifest {manifest:?} must not count as a release declaration"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_manifest_with_release_is_not_the_version_root_manifest() {
+        let bytes = zip(&[
+            ("sub/manifest.yaml", "name: app\nrelease: migrate\n"),
+            ("manifest.yaml", "name: app\n"),
+        ]);
+        assert!(!uploaded_manifest_declares_release(&bytes).unwrap());
+    }
+
+    #[test]
+    fn a_manifest_that_does_not_parse_keeps_the_current_behavior() {
+        // invalid YAML for WorkerManifest: the check must not fail the upload
+        let bytes = zip(&[("manifest.yaml", "version: [unclosed\nrelease: migrate\n")]);
+        assert!(!uploaded_manifest_declares_release(&bytes).unwrap());
+        // a release field that is not a string does not parse either
+        let bytes = zip(&[("manifest.yaml", "name: app\nrelease:\n  a: b\n")]);
+        assert!(!uploaded_manifest_declares_release(&bytes).unwrap());
+    }
+
+    #[test]
+    fn non_manifest_entries_are_ignored() {
+        let bytes = zip(&[("notes.txt", "release: migrate\n"), ("index.ts", "x")]);
+        assert!(!uploaded_manifest_declares_release(&bytes).unwrap());
+    }
+
+    /// Monta um zip com um `manifest.yaml` único e o tamanho não comprimido
+    /// do diretório central patched para `claimed_size` (F4: o uploader
+    /// controla esse metadado; a recusa tem que olhar o metadado antes de
+    /// descomprimir qualquer coisa).
+    fn zip_with_patched_size(content: &str, claimed_size: u32) -> Vec<u8> {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            writer
+                .start_file("manifest.yaml", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(content.as_bytes()).unwrap();
+            writer.finish().unwrap();
+        }
+        let mut bytes = cursor.into_inner();
+        let central = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+        bytes[central + 24..central + 28].copy_from_slice(&claimed_size.to_le_bytes());
+        bytes
+    }
+
+    // F4: metadado de manifesto acima do limite é recusado ANTES da leitura,
+    // com PAYLOAD_TOO_LARGE (413).
+    #[test]
+    fn manifest_metadata_over_cap_is_refused_before_read() {
+        let bytes = zip_with_patched_size("name: app\n", 2 * 1024 * 1024);
+        let err = uploaded_manifest_declares_release(&bytes).unwrap_err();
+        assert_eq!(err.code, "PAYLOAD_TOO_LARGE");
+        assert_eq!(err.message, "manifest too large");
+        assert_eq!(
+            super::map_error_status(&err),
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    // F4: com metadado honesto (ou subdeclarado dentro do limite), o teto
+    // duro da leitura recusa conteúdo que passa do cap no meio da leitura —
+    // um erro de leitura/limite nunca autoriza o upload a prosseguir.
+    #[test]
+    fn manifest_read_over_cap_is_refused_even_within_metadata_cap() {
+        let content = "x".repeat(super::MAX_MANIFEST_BYTES + 1);
+        let bytes = zip_with_patched_size(&content, super::MAX_MANIFEST_BYTES as u32);
+        let err = uploaded_manifest_declares_release(&bytes).unwrap_err();
+        assert_eq!(err.code, "PAYLOAD_TOO_LARGE");
+        assert_eq!(err.message, "manifest too large");
+    }
+
+    // F4: o limite é `>` — um manifesto com exatamente o cap é lido e
+    // enviado ao parser (aqui ele não faz parse e segue o comportamento
+    // atual), não é recusado como grande demais.
+    #[test]
+    fn manifest_exactly_at_cap_is_not_refused_as_too_large() {
+        let content = "x".repeat(super::MAX_MANIFEST_BYTES);
+        let bytes = zip(&[("manifest.yaml", &content)]);
+        assert!(!uploaded_manifest_declares_release(&bytes).unwrap());
+    }
+
+    /// Monta um zip com várias entradas (nomes duplicados permitidos),
+    /// patchando o tamanho não comprimido de CADA diretório central para
+    /// o `claimed_size` respectivo (G1/F4: o uploader controla esse
+    /// metadado; o orçamento agregado tem que somar os tamanhos declarados
+    /// antes de ler qualquer uma).
+    fn zip_with_patched_sizes(entries: &[(&str, &str, u32)]) -> Vec<u8> {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            for (name, content, _) in entries {
+                writer
+                    .start_file(name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                writer.write_all(content.as_bytes()).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        let mut bytes = cursor.into_inner();
+        let mut central = 0usize;
+        for (_, _, claimed) in entries {
+            // procura a PARTIR do registro atual: cada PK\x01\x02 é um
+            // registro de diretório central, em ordem de entrada.
+            let offset = bytes[central..]
+                .windows(4)
+                .position(|w| w == b"PK\x01\x02")
+                .expect("central directory record");
+            central += offset;
+            bytes[central + 24..central + 28].copy_from_slice(&claimed.to_le_bytes());
+            central += 4;
+        }
+        bytes
+    }
+
+    // G1: manifestos de raiz duplicados cujo TOTAL declarado passa do
+    // orçamento são recusados ANTES de ler qualquer um — o limite por
+    // entrada sozinho não basta (257 entradas de ~1 MiB leriam ~269 MB).
+    // Os nomes `m{n}/../manifest.yaml` são únicos no zip (o writer rejeita
+    // duplicatas exatas) e `enclosed_name` os normaliza de volta para o
+    // `manifest.yaml` da raiz — o mesmo truque que um pacote malicioso usa.
+    #[test]
+    fn aggregate_declared_manifest_budget_is_refused_before_reading() {
+        let kib = 1024u32;
+        let bytes = zip_with_patched_sizes(&[
+            ("m0/../manifest.yaml", "name: app\n", 400 * kib),
+            ("m1/../manifest.yaml", "name: app\n", 400 * kib),
+            ("m2/../manifest.yaml", "name: app\n", 400 * kib),
+        ]);
+        let err = uploaded_manifest_declares_release(&bytes).unwrap_err();
+        assert_eq!(err.code, "PAYLOAD_TOO_LARGE");
+        assert_eq!(err.message, "manifest too large");
+        assert_eq!(
+            super::map_error_status(&err),
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    // G1: o orçamento agregado vale também para os bytes REALMENTE lidos —
+    // metadado subdeclarado dentro do orçamento não autoriza a leitura
+    // somada estourar o teto.
+    #[test]
+    fn aggregate_read_manifest_budget_is_refused_when_metadata_lies() {
+        let half_plus_one = super::MAX_MANIFEST_BYTES / 2 + 1;
+        let content = "x".repeat(half_plus_one);
+        let bytes = zip_with_patched_sizes(&[
+            ("manifest.yaml", &content, 1),
+            ("manifest.yml", &content, 1),
+        ]);
+        let err = uploaded_manifest_declares_release(&bytes).unwrap_err();
+        assert_eq!(err.code, "PAYLOAD_TOO_LARGE");
+        assert_eq!(err.message, "manifest too large");
+    }
+
+    // G1: o orçamento é `>` — candidatos cujo total declarado e lido é
+    // exatamente o cap seguem para o parser (aqui sem release).
+    #[test]
+    fn aggregate_manifest_total_at_cap_is_not_refused() {
+        let bytes = zip_with_patched_sizes(&[
+            ("manifest.yaml", "name: app\n", 512 * 1024),
+            ("manifest.yml", "name: app\n", 512 * 1024),
+        ]);
+        assert!(!uploaded_manifest_declares_release(&bytes).unwrap());
+    }
+
+    // G2: nomes de manifesto sem distinção de caixa — `MANIFEST.YAML` e
+    // `Manifest.yml` são o manifesto da raiz em filesystem case-insensitive
+    // e a recusa tem que cobri-los em todos.
+    #[test]
+    fn manifest_name_case_variants_are_candidates() {
+        let upper = zip(&[(
+            "MANIFEST.YAML",
+            "name: app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"true\"\n",
+        )]);
+        assert!(uploaded_manifest_declares_release(&upper).unwrap());
+        let mixed = zip(&[(
+            "Manifest.yml",
+            "name: app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"true\"\n",
+        )]);
+        assert!(uploaded_manifest_declares_release(&mixed).unwrap());
+    }
+
+    // Emenda 3: o alias Unicode do nome de manifesto é detectado pela
+    // defesa extra (não root) — e um nome ASCII exato não é alias.
+    #[test]
+    fn unicode_manifest_alias_is_detected_by_the_extra_defense() {
+        let alias = zip(&[(
+            "manife\u{17F}t.yaml",
+            "name: app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n",
+        )]);
+        assert!(uploaded_zip_has_unicode_manifest_alias(&alias).unwrap());
+        let ascii = zip(&[(
+            "manifest.yaml",
+            "name: app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n",
+        )]);
+        assert!(!uploaded_zip_has_unicode_manifest_alias(&ascii).unwrap());
+        // o alias também é candidato da detecção de release
+        let alias_release = zip(&[(
+            "manife\u{17F}t.yaml",
+            "name: app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nrelease: \"true\"\n",
+        )]);
+        assert!(uploaded_manifest_declares_release(&alias_release).unwrap());
+        assert!(is_root_manifest_name("manife\u{17F}t.yaml"));
+        assert!(!is_root_manifest_name("notes.yaml"));
     }
 }
