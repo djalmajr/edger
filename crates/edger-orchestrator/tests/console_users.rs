@@ -1276,13 +1276,13 @@ async fn slow_logins_do_not_block_light_routes_and_serialize_under_limit() {
             .with_hash_acquire_timeout(Duration::from_secs(5)),
     );
     service.seed_root_if_empty(Some(STRONG)).unwrap();
-    let app = build_pipeline(state_with_console(service));
+    let app = build_pipeline(state_with_console(service.clone()));
 
-    // Custo de referência: um único login errado (Argon2 real).
-    let started = Instant::now();
+    // Referência: um único login errado já responde 401 antes do burst
+    // (a serialização é provada pelo pico observado, sem margem de
+    // milissegundos).
     let (status, _j) = login(&app, IP_A, "root", "Wrong!Pass1").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    let single = started.elapsed();
 
     // 6 logins errados CONCORRENTES (3 rodadas com o limite de 2) + 3
     // consultas a `/livez` no meio: nenhuma pode esperar por Argon2.
@@ -1299,7 +1299,6 @@ async fn slow_logins_do_not_block_light_routes_and_serialize_under_limit() {
         }
         latencies
     });
-    let started = Instant::now();
     let mut handles = (0..6u8)
         .map(|_| {
             let app = app.clone();
@@ -1313,22 +1312,28 @@ async fn slow_logins_do_not_block_light_routes_and_serialize_under_limit() {
     for handle in handles.drain(..) {
         login_statuses.push(handle.await.unwrap());
     }
-    let total = started.elapsed();
     let livez_latencies = livez_task.await.unwrap();
 
-    // Todos os 6 negados (senha errada) — e a serialização pelo limite
-    // prova que a fila de hashes é bounded: 3 rodadas >= 2x o custo unitário
-    // (sem limite, 6 cores+ executariam tudo em paralelo ~1x).
+    // Todos os 6 negados (senha errada).
     assert!(
         login_statuses
             .iter()
             .all(|status| *status == StatusCode::UNAUTHORIZED),
         "{login_statuses:?}"
     );
+    // A serialização pelo limite, SEM margem de tempo: o pico de hashes
+    // Argon2 simultâneos observado fica DENTRO do teto de 2 (fila sem
+    // limite deixaria os 6 em paralelo: pico > 2) e o limite é exercitado
+    // (pico >= 1). A ocupação exata dos 2 slots é provada de forma
+    // determinística (trabalho controlado + canais) no teste unitário
+    // `two_hash_slots_are_held_deterministically_...` de `console_auth.rs`
+    // — não por sobreposição casual do pool de blocking.
+    let peak = service.max_observed_hash_concurrency();
     assert!(
-        total >= 2 * single,
-        "serialização pelo limite: total={total:?} single={single:?}"
+        peak <= 2,
+        "o limite de 2 hashes simultâneos foi excedido: {peak}"
     );
+    assert!(peak >= 1, "nenhum hash foi medido: {peak}");
     // `/livez` respondeu rápido em todos os pontos (runtime não bloqueou).
     for latency in &livez_latencies {
         assert!(
