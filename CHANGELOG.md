@@ -341,6 +341,27 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Security
 
+- Public owner-less routes hidden for workers with their own hosts (EDG-27):
+  on a host without an owner — including the control-plane host — every
+  public route that does not arrive on the worker's own hosts (the name
+  route `/<name>/…`, with or without an `@version` pin, including staged
+  and rollback versions; the homepage fallback; and the plugin `base`
+  route) answers `404 NOT_FOUND` in the same shape as an unknown worker when
+  the version that will actually receive the dispatch declares `hosts`,
+  unless it opts in with `nameRoute: true` in the manifest — the rule is
+  decided by the finally selected version, so a weighted-routing selection of
+  a protected version is refused, and a protected default does not hide a
+  chosen version that opted in. The refusal happens in dispatch preparation,
+  after the final version selection and before any dispatch, and does not
+  count in the worker's request metrics; the own-host (vhost) routing,
+  workers without `hosts` and internal requests (authenticated control-plane
+  invoke, cron with root Bearer) are unchanged. Closes the bypasses that
+  reached such a worker — around the protections it puts on its own
+  domain's ingress, like a Cloudflare `ipAllowList` — through
+  `https://<control-plane-host>/<name>/…`, through the homepage fallback and
+  the plugin base on an owner-less host, and through a weighted selection of
+  a protected version.
+
 - Worker `release` command (EDG-24): only root may declare it — an install
   by a non-root key (`workers:install`) of a package with a non-empty
   `release`, and a non-root files upload (`files:write`) writing the

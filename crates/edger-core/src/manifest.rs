@@ -179,5 +179,12 @@ pub struct WorkerManifest {
     pub base: Option<String>,
     #[serde(default)]
     pub hosts: Vec<String>,
+    /// Opt-in to keep the name route (`/<name>/…`) open for a worker that
+    /// declares `hosts` (EDG-27). Default `false`: a version that declares
+    /// `hosts` is served only on its own hosts, and the name route answers
+    /// `404 NOT_FOUND` in the same shape as an unknown worker. Has no effect
+    /// when `hosts` is empty.
+    #[serde(default)]
+    pub name_route: bool,
     pub dependencies: Option<Vec<String>>,
 }

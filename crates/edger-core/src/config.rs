@@ -11,6 +11,14 @@ use crate::manifest::{
 pub struct WorkerConfig {
     pub enabled: bool,
     pub visibility: WorkerVisibility,
+    /// Host aliases this version declares for vhost routing (EDG-27),
+    /// filtered to the entries the vhost normalization would keep. A worker
+    /// whose list holds no routable alias behaves like one without `hosts`.
+    pub hosts: Vec<String>,
+    /// Keep the name route (`/<name>/…`) open even when this version declares
+    /// `hosts` (manifest `nameRoute`, default `false`; EDG-27). Has no effect
+    /// when `hosts` is empty.
+    pub name_route: bool,
     /// Worker directory on disk (set by pool at fetch time; pure path metadata).
     pub worker_dir: Option<std::path::PathBuf>,
     pub entrypoint: Option<String>,
@@ -336,6 +344,32 @@ fn normalize_allow_net(hosts: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Host aliases a manifest declares for vhost routing, filtered to the
+/// entries the index's vhost normalization would keep (EDG-27): an entry
+/// that normalizes to empty (blank, or only a port / trailing DNS dot) owns
+/// no host and is dropped, so `hosts: [""]` behaves like no `hosts` at all.
+fn declared_host_aliases(manifest: &WorkerManifest) -> Vec<String> {
+    manifest
+        .hosts
+        .iter()
+        .filter(|host| !normalized_host_is_empty(host.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Emptiness mirror of the vhost alias normalization (the port is stripped
+/// before the trailing DNS dot): `""`, `"."` and `".:443"` own no host.
+fn normalized_host_is_empty(host: &str) -> bool {
+    let trimmed = host.trim();
+    let without_port = match trimmed.rsplit_once(':') {
+        Some((name, port)) if !name.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) => {
+            name
+        }
+        _ => trimmed,
+    };
+    without_port.trim_end_matches('.').is_empty()
+}
+
 /// Normalize manifest into runtime `WorkerConfig`.
 pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
     let kind = infer_execution_kind(manifest);
@@ -430,6 +464,8 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
     WorkerConfig {
         enabled: manifest.enabled.unwrap_or(true),
         visibility: manifest.visibility,
+        hosts: declared_host_aliases(manifest),
+        name_route: manifest.name_route,
         worker_dir: None,
         entrypoint,
         release_command: manifest.release.clone(),

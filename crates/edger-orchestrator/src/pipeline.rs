@@ -460,25 +460,67 @@ async fn prepare_worker(
     };
     let trusted_tenant =
         tenant_for_worker(state, authority, &worker, allow_internal, policy.as_ref()).await?;
-    if version_pinned || allow_internal || !state.server.weighted_routing_enabled() {
-        return Ok((worker, trusted_tenant, None));
+    let (final_worker, cohort_cookie) =
+        if version_pinned || allow_internal || !state.server.weighted_routing_enabled() {
+            (worker, None)
+        } else if policy
+            .as_ref()
+            .is_some_and(|policy| policy.traffic.is_some())
+        {
+            let policy = policy.as_ref().unwrap();
+            let (cohort, minted) = cohort_for_cookie_header(cookie_header.as_deref());
+            let selected = state.index.select_weighted_worker(
+                &worker.name,
+                &cohort,
+                policy,
+                required_host.as_deref(),
+                required_plugin_base.as_deref(),
+            )?;
+            match selected {
+                Some(selected) => (selected, minted.then(|| cohort_set_cookie(&cohort))),
+                None => (worker, None),
+            }
+        } else {
+            (worker, None)
+        };
+    require_data_plane_route_allowed(&final_worker, allow_internal, required_host.is_some())?;
+    Ok((final_worker, trusted_tenant, cohort_cookie))
+}
+
+/// EDG-27: the `hosts`/`nameRoute` rule is decided by the version that will
+/// actually receive the dispatch — the weighted selection may have chosen
+/// another version of the logical app, and a protected default must not
+/// hide a chosen version that opted in (nor may an opted-in default
+/// authorize a chosen version that did not). A version that declares
+/// `hosts` and did not opt in with `nameRoute: true` does not answer a
+/// public request that did not arrive on one of its own hosts: the nominal
+/// route (`/<name>/…`, with or without an `@version` pin), the homepage
+/// fallback and the plugin base on an owner-less Host all answer
+/// `404 NOT_FOUND` in the shape of an unknown worker, so the app's
+/// existence is not leaked and the protections the app puts on its own
+/// domain's ingress cannot be bypassed. A vhost dispatch (the request
+/// arrived on the worker's own host, D6 — marked by `via_owned_host`, the
+/// `required_host` of the resolved route) and internal requests
+/// (`allow_internal`: authenticated control-plane invoke, cron with root
+/// Bearer) keep being served; workers without `hosts` are unaffected. The
+/// refusal happens before any dispatch: no pool slot, no worker
+/// invocation, and nothing counts in the worker's request metrics.
+fn require_data_plane_route_allowed(
+    worker: &WorkerRef,
+    allow_internal: bool,
+    via_owned_host: bool,
+) -> Result<(), CoreError> {
+    if !allow_internal
+        && !via_owned_host
+        && !worker.config.name_route
+        && !worker.config.hosts.is_empty()
+    {
+        return Err(CoreError::new(
+            "NOT_FOUND",
+            format!("worker not found: {}", worker.name),
+        ));
     }
-    let Some(policy) = policy.as_ref().filter(|policy| policy.traffic.is_some()) else {
-        return Ok((worker, trusted_tenant, None));
-    };
-    let (cohort, minted) = cohort_for_cookie_header(cookie_header.as_deref());
-    let Some(selected) = state.index.select_weighted_worker(
-        &worker.name,
-        &cohort,
-        policy,
-        required_host.as_deref(),
-        required_plugin_base.as_deref(),
-    )?
-    else {
-        return Ok((worker, trusted_tenant, None));
-    };
-    let cohort_cookie = minted.then(|| cohort_set_cookie(&cohort));
-    Ok((selected, trusted_tenant, cohort_cookie))
+    Ok(())
 }
 
 fn cookie_header_from(req: &Request<Body>) -> Option<String> {
@@ -1457,5 +1499,51 @@ mod tests {
             .iter()
             .any(|value| value.to_str().unwrap_or("").starts_with("edger_cohort=")));
         assert_eq!(state.index.default_version("app"), None);
+    }
+
+    // EDG-27: the rule is decided by the version that will actually receive
+    // the dispatch, for a public origin that did not arrive on the worker's
+    // own host (nominal, homepage fallback and plugin base share it).
+    fn hosted_ref(name_route: bool, hosts: Vec<&str>) -> WorkerRef {
+        let manifest = WorkerManifest {
+            name: "hosted".into(),
+            version: Some("1.0.0".into()),
+            hosts: hosts.into_iter().map(String::from).collect(),
+            name_route,
+            ..Default::default()
+        };
+        edger_core::create_worker_ref(std::path::PathBuf::from("/w/hosted"), manifest).unwrap()
+    }
+
+    #[test]
+    fn data_plane_route_refused_for_hosted_version_on_foreign_origin() {
+        let worker = hosted_ref(false, vec!["app.example.test"]);
+        let err = require_data_plane_route_allowed(&worker, false, false).unwrap_err();
+        assert_eq!(err.code, "NOT_FOUND");
+        assert_eq!(err.message, "worker not found: hosted");
+    }
+
+    #[test]
+    fn data_plane_route_open_with_opt_in() {
+        let worker = hosted_ref(true, vec!["app.example.test"]);
+        assert!(require_data_plane_route_allowed(&worker, false, false).is_ok());
+    }
+
+    #[test]
+    fn data_plane_route_open_for_internal_dispatch() {
+        let worker = hosted_ref(false, vec!["app.example.test"]);
+        assert!(require_data_plane_route_allowed(&worker, true, false).is_ok());
+    }
+
+    #[test]
+    fn data_plane_route_open_on_own_host() {
+        let worker = hosted_ref(false, vec!["app.example.test"]);
+        assert!(require_data_plane_route_allowed(&worker, false, true).is_ok());
+    }
+
+    #[test]
+    fn data_plane_route_unaffected_without_hosts() {
+        let worker = hosted_ref(false, Vec::new());
+        assert!(require_data_plane_route_allowed(&worker, false, false).is_ok());
     }
 }
