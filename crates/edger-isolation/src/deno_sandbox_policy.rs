@@ -55,14 +55,22 @@ pub(crate) fn select_deno_dir(
     mode: DenoCacheMode,
     env_deno_dir: Option<&str>,
     env_home: Option<&str>,
+    config_cache_root: Option<&Path>,
     env_cache_root: Option<&str>,
 ) -> DenoDirSelection {
     match mode {
         DenoCacheMode::PerWorker => {
-            let root = env_cache_root
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
+            // EDG-32: an explicitly configured root (pool/factory option)
+            // wins over `EDGER_DENO_CACHE_ROOT`, which wins over the shared
+            // `${TMPDIR}/edger-deno-cache` fallback.
+            let root = config_cache_root
+                .map(Path::to_path_buf)
+                .or_else(|| {
+                    env_cache_root
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(PathBuf::from)
+                })
                 .unwrap_or_else(|| std::env::temp_dir().join("edger-deno-cache"));
             let deno_dir = root.join(worker_cache_key(worker_dir));
             DenoDirSelection {
@@ -215,11 +223,13 @@ mod tests {
             DenoCacheMode::PerWorker,
             None,
             None,
+            None,
             Some(root),
         );
         let second = select_deno_dir(
             Path::new("/srv/workers/beta"),
             DenoCacheMode::PerWorker,
+            None,
             None,
             None,
             Some(root),
@@ -228,5 +238,78 @@ mod tests {
         assert_ne!(first.env_dir, second.env_dir);
         assert!(first.env_dir.unwrap().starts_with(root));
         assert!(second.env_dir.unwrap().starts_with(root));
+    }
+
+    // EDG-32: the configured root is the first candidate for the per-worker
+    // cache, ahead of the environment variable.
+    #[test]
+    fn per_worker_deno_dir_prefers_configured_root_over_env() {
+        let configured = Path::new("/tmp/edg32-configured-deno-cache");
+        let selection = select_deno_dir(
+            Path::new("/srv/workers/alpha"),
+            DenoCacheMode::PerWorker,
+            None,
+            None,
+            Some(configured),
+            Some("/tmp/edg32-env-deno-cache"),
+        );
+
+        assert_eq!(
+            selection.env_dir.unwrap(),
+            configured.join(worker_cache_key(Path::new("/srv/workers/alpha")))
+        );
+    }
+
+    // EDG-32: without the configured root the previous rule is kept
+    // (environment variable, then `${TMPDIR}/edger-deno-cache`).
+    #[test]
+    fn per_worker_deno_dir_without_configured_root_keeps_env_then_temp() {
+        let env_root = Path::new("/tmp/edg32-env-deno-cache");
+        let from_env = select_deno_dir(
+            Path::new("/srv/workers/alpha"),
+            DenoCacheMode::PerWorker,
+            None,
+            None,
+            None,
+            Some("/tmp/edg32-env-deno-cache"),
+        );
+        assert_eq!(
+            from_env.env_dir.unwrap(),
+            env_root.join(worker_cache_key(Path::new("/srv/workers/alpha")))
+        );
+
+        let from_temp = select_deno_dir(
+            Path::new("/srv/workers/alpha"),
+            DenoCacheMode::PerWorker,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            from_temp.env_dir.unwrap(),
+            std::env::temp_dir()
+                .join("edger-deno-cache")
+                .join(worker_cache_key(Path::new("/srv/workers/alpha")))
+        );
+    }
+
+    // EDG-32: the configured root only applies to per-worker mode; the shared
+    // mode keeps its own rule (`DENO_DIR`, then the default cache dirs).
+    #[test]
+    fn shared_deno_dir_ignores_configured_root() {
+        let selection = select_deno_dir(
+            Path::new("/srv/workers/alpha"),
+            DenoCacheMode::Shared,
+            Some("/tmp/edg32-shared-deno"),
+            None,
+            Some(Path::new("/tmp/edg32-configured-deno-cache")),
+            Some("/tmp/edg32-env-deno-cache"),
+        );
+
+        assert_eq!(
+            selection.env_dir.as_deref(),
+            Some(Path::new("/tmp/edg32-shared-deno"))
+        );
     }
 }

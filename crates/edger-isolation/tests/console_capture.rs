@@ -21,6 +21,8 @@ fn request() -> SerializedRequest {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn console_flood_is_drained_bounded_and_sanitized_without_blocking_worker() {
     let dir = tempfile::tempdir().unwrap();
+    // EDG-32: keep the per-worker Deno cache inside this test's own tempdir.
+    let deno_cache = tempfile::tempdir().unwrap();
     fs::write(
         dir.path().join("index.ts"),
         r#"
@@ -52,6 +54,7 @@ addEventListener("beforeunload", () => console.error("worker-draining"));
             worker: "console-fixture".into(),
             version: "1.0.0".into(),
         },
+        Some(deno_cache.path()),
     )
     .await
     .unwrap();
@@ -75,6 +78,7 @@ addEventListener("beforeunload", () => console.error("worker-draining"));
             worker: "console-fixture".into(),
             version: "1.0.0".into(),
         },
+        Some(deno_cache.path()),
     )
     .await
     .unwrap();

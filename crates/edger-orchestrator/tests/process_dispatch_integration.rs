@@ -18,7 +18,11 @@ use edger_orchestrator::{
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
 
-struct ProcessFactory;
+struct ProcessFactory {
+    /// EDG-32: per-worker Deno cache root inside the test's own tempdir, so
+    /// nothing lands in the shared `${TMPDIR}/edger-deno-cache`.
+    deno_cache_root: std::path::PathBuf,
+}
 
 impl IsolateFactory for ProcessFactory {
     fn create_isolate(&self, worker_ref: &edger_core::WorkerRef) -> Box<dyn edger_core::Isolate> {
@@ -28,14 +32,22 @@ impl IsolateFactory for ProcessFactory {
             }
             // fetch / routes / spa all go through the persistent process isolate
             // (SPA serving stays pure-Rust inside it).
-            _ => Box::new(DenoProcessIsolate::new()),
+            _ => Box::new(
+                DenoProcessIsolate::new()
+                    .with_per_worker_deno_cache_root(self.deno_cache_root.clone()),
+            ),
         }
     }
 }
 
 fn state(root: std::path::PathBuf) -> OrchestratorState {
     let server = ServerState::new_unready();
-    let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(ProcessFactory));
+    let pool = WorkerPool::with_factory(
+        PoolConfig::default(),
+        Arc::new(ProcessFactory {
+            deno_cache_root: root.join(".edger-test-deno-cache"),
+        }),
+    );
     server.mark_ready(pool.clone());
     OrchestratorState {
         server,

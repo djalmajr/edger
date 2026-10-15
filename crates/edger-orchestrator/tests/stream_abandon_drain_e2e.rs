@@ -74,6 +74,8 @@ struct DrainFactory {
     budget: Arc<StreamDetachBudget>,
     drain_max_bytes: u64,
     drain_max_ms: u64,
+    /// EDG-32: per-worker Deno cache root inside the test's own tempdir.
+    deno_cache_root: std::path::PathBuf,
 }
 
 impl DrainFactory {
@@ -83,6 +85,9 @@ impl DrainFactory {
             budget: Arc::new(StreamDetachBudget::new(1024 * 1024)),
             drain_max_bytes,
             drain_max_ms,
+            // The `state_with_lifecycle` helper always replaces this with the
+            // test's own tempdir root before the pool is built.
+            deno_cache_root: std::env::temp_dir().join("edger-test-deno-cache"),
         }
     }
 }
@@ -95,6 +100,7 @@ impl IsolateFactory for DrainFactory {
             }
             _ => Box::new(
                 DenoProcessIsolate::new()
+                    .with_per_worker_deno_cache_root(self.deno_cache_root.clone())
                     .with_stream_detach(self.detach_max_bytes, Arc::clone(&self.budget))
                     // EDG-9: on consumer loss, drain the abandoned response
                     // (discard-mode to a clean end frame) instead of
@@ -119,6 +125,11 @@ fn state_with_lifecycle(
     tokio::sync::mpsc::Receiver<WorkerLifecycleEvent>,
 ) {
     let server = ServerState::new_unready();
+    // EDG-32: keep the per-worker Deno cache inside the test's own tempdir.
+    let factory = DrainFactory {
+        deno_cache_root: root.join(".edger-test-deno-cache"),
+        ..factory
+    };
     // (EDG-9) The pool's completion wait must mirror the isolates' drain
     // budget: a body dropped before production completed waits up to
     // `drain_max_ms + grace` for the completion signal before recycling —

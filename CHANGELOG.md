@@ -460,6 +460,13 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 - The two console sign-in modes (password and token) no longer share the
   button progress state: each button shows progress only for its own
   request.
+- The per-worker Deno cache no longer accumulates unboundedly in
+  `${TMPDIR}/edger-deno-cache` (EDG-32): the per-worker cache root can now be
+  set explicitly on the process isolate (`DenoProcessIsolate::with_per_worker_deno_cache_root`),
+  taking precedence over `EDGER_DENO_CACHE_ROOT` (without it the previous
+  rule — env var, then the shared temp dir — is unchanged), and every test
+  that spawns real Deno processes in per-worker mode keeps its cache inside
+  its own tempdir instead of the shared one.
 
 ### Security
 

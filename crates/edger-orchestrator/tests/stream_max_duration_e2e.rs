@@ -30,6 +30,8 @@ struct MaxDurationFactory {
     default_duration_ms: u64,
     drain_max_bytes: u64,
     drain_max_ms: u64,
+    /// EDG-32: per-worker Deno cache root inside the test's own tempdir.
+    deno_cache_root: std::path::PathBuf,
 }
 
 impl MaxDurationFactory {
@@ -43,6 +45,9 @@ impl MaxDurationFactory {
             default_duration_ms,
             drain_max_bytes: 8 * 1024 * 1024,
             drain_max_ms: 2_000,
+            // The `state_with_lifecycle` helper always replaces this with the
+            // test's own tempdir root before the pool is built.
+            deno_cache_root: std::env::temp_dir().join("edger-test-deno-cache"),
         }
     }
 }
@@ -55,6 +60,7 @@ impl IsolateFactory for MaxDurationFactory {
             }
             _ => Box::new(
                 DenoProcessIsolate::new()
+                    .with_per_worker_deno_cache_root(self.deno_cache_root.clone())
                     .with_stream_detach(8 * 1024 * 1024, Arc::clone(&self.budget))
                     .with_abandon_drain_limits(self.drain_max_bytes, self.drain_max_ms)
                     .with_stream_max_duration_default_ms(self.default_duration_ms),
@@ -71,6 +77,11 @@ fn state_with_lifecycle(
     tokio::sync::mpsc::Receiver<WorkerLifecycleEvent>,
 ) {
     let server = ServerState::new_unready();
+    // EDG-32: keep the per-worker Deno cache inside the test's own tempdir.
+    let factory = MaxDurationFactory {
+        deno_cache_root: root.join(".edger-test-deno-cache"),
+        ..factory
+    };
     server.set_stream_detach_budget(Arc::clone(&factory.budget));
     let (lifecycle_tx, lifecycle_rx) = tokio::sync::mpsc::channel(64);
     let pool = WorkerPool::with_factory_and_lifecycle_abandon_drain(
