@@ -170,6 +170,12 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Changed
 
+- Production platform (EDG-25): the shared `sqld` memory limit is 1 Gi
+  (request 128 Mi) and the backup jobs get 1 CPU and an 1800 s
+  deadline, sized from the 2026-10-15 rehearsal; the runbook records
+  the rehearsal times, the batched restore, warming a staged version by
+  pin before promote, and secrets written without a trailing newline.
+
 - Worker manifests (`manifest.yaml`/`manifest.yml`) are parsed with
   `serde-saphyr` (safe Rust) instead of `serde_yaml`: `unsafe-libyaml` leaves
   the dependency graph and the `RUSTSEC-2024-0449` advisory ignore is
