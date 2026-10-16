@@ -8,6 +8,8 @@
 //! - `/name`, `/name@ver`, `/@scope/name`, `/@scope/name@ver` -> `Worker`
 //! - `/` or unknown path -> `HomepageFallback` when configured
 
+use std::collections::HashSet;
+
 use edger_core::{CoreError, ExecutionKind, WorkerRef, WorkerVisibility};
 
 use crate::manifest_index_stub::ManifestIndex;
@@ -153,12 +155,32 @@ pub fn resolve_route(
 }
 
 /// Resolve a path while optionally admitting workers marked for trusted
-/// internal/control-plane dispatch only.
+/// internal/control-plane dispatch only. Delegates to the excluding variant
+/// with no base excluded: identical behavior.
 pub(crate) fn resolve_route_with_internal(
+    path: &str,
+    base_href: Option<&str>,
+    index: &ManifestIndex,
+    allow_internal: bool,
+) -> Result<ResolvedRoute, CoreError> {
+    resolve_route_with_internal_excluding(path, base_href, index, allow_internal, &HashSet::new())
+}
+
+/// EDG-31 (emenda 3): resolve the path as if the plugin bases in
+/// `excluded_bases` were not configured. Same path normalization and same
+/// order as `resolve_route_with_internal` — reserved -> plugins -> parser —
+/// with only the plugin lookup skipping the excluded bases (the same order
+/// and the same match rule as `plugin_for_path`). The pipeline uses it
+/// after a plugin alias refuses the request on the origin: the request
+/// takes exactly the route the router answers without that base — the next
+/// matching base, the nominal route, the homepage (or its absence) and the
+/// router's own errors, the `HOMEPAGE` signal included.
+pub(crate) fn resolve_route_with_internal_excluding(
     path: &str,
     _base_href: Option<&str>,
     index: &ManifestIndex,
     allow_internal: bool,
+    excluded_bases: &HashSet<String>,
 ) -> Result<ResolvedRoute, CoreError> {
     let normalized = normalize_path(path);
 
@@ -166,7 +188,8 @@ pub(crate) fn resolve_route_with_internal(
         return Ok(ResolvedRoute::Reserved { kind });
     }
 
-    if let Some((plugin, remainder)) = index.plugin_for_path(&normalized) {
+    if let Some((plugin, remainder)) = index.plugin_for_path_excluding(&normalized, excluded_bases)
+    {
         let worker = index.resolve_plugin_worker(&plugin)?;
         require_data_plane_visibility(&worker, allow_internal)?;
         return Ok(ResolvedRoute::PluginBase {

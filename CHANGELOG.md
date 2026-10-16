@@ -526,6 +526,34 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   made. The tenant gate still fails closed on the worker's own hosts, and
   `nameRoute: true` workers still pass through it.
 
+- Resolution errors no longer reveal a hidden worker on owner-less routes
+  (EDG-31): on a public owner-less origin (name route, `@version` pin,
+  homepage fallback and plugin base), when NO version reachable by a public
+  name/pin route is admitted by the EDG-27 route guard there — every
+  reachable version (enabled and public, including enabled staged, which a
+  pin such as `@latest` reaches) declares `hosts` without `nameRoute: true`,
+  and disabled or internal versions never count — the resolution failures
+  that happened before the guard (a pin to a version that does not exist, a
+  malformed semver pin requirement, and an unavailable weighted selection)
+  answer `404 NOT_FOUND` in the same status, body, `content-type` and
+  `content-length` as an unknown worker of the same name size, with or
+  without tenant routing, without calling identify and without falling back
+  to the default version. The route refusal and the normalized failure on a
+  homepage answer exactly what the absence of that route answers
+  (`no homepage configured`), never the app's real name. On a plugin base
+  the refusal is not imitated: the SAME original path is re-resolved through
+  the router excluding that base and dispatched through the normal flow
+  (weighted selection, route guard and tenant gate of the new route), so the
+  answer is exactly what the router answers without the base — the next
+  matching base, the nominal route, the homepage or its absence, or the
+  router's own errors (the `HOMEPAGE` signal and `PARSE_ERROR` included) —
+  and the hidden app never receives the dispatch. Internal requests (root),
+  the worker's own hosts and `nameRoute: true` versions keep being served by
+  the alias. The detailed errors (`version X not available`,
+  `invalid semver requirement`, `503 application not available`) remain for
+  apps with at least one admitted reachable version (no `hosts`, or
+  `nameRoute: true`), on the worker's own hosts and for internal requests.
+
 - Worker `release` command (EDG-24): only root may declare it — an install
   by a non-root key (`workers:install`) of a package with a non-empty
   `release`, and a non-root files upload (`files:write`) writing the

@@ -2,7 +2,7 @@
 //!
 //! Full multi-dir loading lands in story 07.01.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -467,7 +467,22 @@ impl ManifestIndex {
                     .map(|entry| entry.worker.version.as_str())
                     .collect(),
                 Some(version),
-            )?,
+            )
+            .map_err(|err| {
+                // EDG-31: o pin falhou (versão inexistente, `version X not
+                // available`, ou requisito semver malformado, `PARSE_ERROR`).
+                // Quando a app está escondida na origem pública sem dono
+                // (nenhuma versão alcançável por rota pública seria admitida
+                // pelo guard de rota de data plane ali), a resposta é a de
+                // worker inexistente — qualquer erro detalhado revelaria a
+                // existência do app. Os contextos autorizados (host próprio,
+                // internas) resolvem por `resolve_worker` e mantêm o detalhe.
+                if hidden_on_public_origin_locked(&state, name) {
+                    CoreError::new("NOT_FOUND", format!("worker not found: {name}"))
+                } else {
+                    err
+                }
+            })?,
             None => state
                 .default_versions
                 .get(name)
@@ -497,6 +512,25 @@ impl ManifestIndex {
             })
     }
 
+    /// EDG-31: a app está escondida na origem pública sem dono quando NENHUMA
+    /// versão alcançável por alguma rota pública por nome ou pin seria
+    /// admitida pelo guard de rota de data plane ali. O agregado conta só as
+    /// versões habilitadas e públicas (visibilidade `public`), incluindo as
+    /// staged habilitadas — um pin explícito, inclusive `@latest`, alcança
+    /// uma staged pública. Versões desabilitadas e internas nunca contam:
+    /// nenhuma rota pública as alcança. Se nenhuma versão é alcançável, a
+    /// app também conta como escondida. A decisão vem só do índice (sem I/O
+    /// novo nem chamada ao identify) e reusa a própria regra do guard
+    /// (`admitted_on_public_origin`), então não pode divergir dele. Lock
+    /// envenenado responde "não escondida": o erro detalhado do índice
+    /// quebrado nunca vira 404 de worker inexistente.
+    pub(crate) fn hidden_on_public_origin(&self, name: &str) -> bool {
+        match self.inner.read() {
+            Ok(state) => hidden_on_public_origin_locked(&state, name),
+            Err(_) => false,
+        }
+    }
+
     pub fn resolve_plugin_worker(&self, plugin: &PluginRef) -> Result<WorkerRef, CoreError> {
         let state = self.inner.read().map_err(|_| lock_err())?;
         state
@@ -517,9 +551,23 @@ impl ManifestIndex {
     }
 
     pub fn plugin_for_path(&self, path: &str) -> Option<(PluginRef, String)> {
+        self.plugin_for_path_excluding(path, &HashSet::new())
+    }
+
+    /// EDG-31 (emenda 3): o mesmo lookup de `plugin_for_path` — mesma ordem
+    /// (a base mais longa primeiro) e mesma regra de casamento (caminho
+    /// exato ou prefixo com fronteira `/`) — pulando as bases em
+    /// `excluded_bases`. O pipeline o usa quando um alias de plugin recusa
+    /// a requisição na origem: o caminho original é resolvido de novo como
+    /// se a base recusada não estivesse configurada.
+    pub fn plugin_for_path_excluding(
+        &self,
+        path: &str,
+        excluded_bases: &HashSet<String>,
+    ) -> Option<(PluginRef, String)> {
         let state = self.inner.read().ok()?;
         for plugin in &state.plugins {
-            if !state.plugin_is_enabled(plugin) {
+            if excluded_bases.contains(&plugin.base) || !state.plugin_is_enabled(plugin) {
                 continue;
             }
             if path == plugin.base || path.starts_with(&format!("{}/", plugin.base)) {
@@ -1598,6 +1646,35 @@ fn resolve_semver(available: Vec<&str>, requested: Option<&str>) -> Result<Strin
         "NOT_FOUND",
         format!("version {req} not available"),
     ))
+}
+
+/// EDG-27/EDG-31: o guard de rota de data plane reduzido a uma versão — a
+/// versão seria admitida na origem pública sem dono (pedido sem credencial
+/// interna que não chegou num host do app). Uma versão que declara `hosts`
+/// sem `nameRoute: true` não é admitida ali. É a própria regra do guard
+/// (`pipeline::require_data_plane_route_allowed` usa este predicado), então
+/// a decisão EDG-31 de "escondido na origem" não pode divergir dela.
+pub(crate) fn admitted_on_public_origin(worker: &WorkerRef) -> bool {
+    worker.config.name_route || worker.config.hosts.is_empty()
+}
+
+/// EDG-31 (F1): o agregado "escondido" considera só as versões que alguma
+/// rota pública por nome ou pin consegue alcançar — habilitadas e públicas
+/// (`WorkerVisibility::Public`), incluindo as staged habilitadas (um pin,
+/// inclusive `@latest`, alcança uma staged pública). Desabilitadas e
+/// internas não contam. Sem nenhuma versão alcançável o agregado é vazio e
+/// a app conta como escondida (a resposta equivalente é a de worker
+/// inexistente em todos esses casos).
+fn hidden_on_public_origin_locked(state: &ManifestIndexState, name: &str) -> bool {
+    state.entries.get(name).is_some_and(|entries| {
+        entries
+            .iter()
+            .filter(|entry| {
+                entry.worker.config.enabled
+                    && entry.worker.config.visibility == WorkerVisibility::Public
+            })
+            .all(|entry| !admitted_on_public_origin(&entry.worker))
+    })
 }
 
 fn looks_like_version_req(req: &str) -> bool {
