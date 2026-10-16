@@ -4,7 +4,9 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.20` (console hash slot held
+Toward 0.3.2. Release candidates: `v0.3.2-rc.21` (the worker's
+`request.url` carries the real origin on its own host, resolution errors
+no longer reveal a hidden worker); `v0.3.2-rc.20` (console hash slot held
 until the calculation ends, tenant gate errors no longer reveal a hidden
 worker, fallback bundle never cached nor served broken); `v0.3.2-rc.19` (root-only worker
 release command, cron follows the default version, owner-less public
@@ -613,6 +615,24 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.21]
+
+- When a request reaches a worker through its own host, the fetch, routes
+  and fullstack workers receive `request.url` with the real origin
+  (`<scheme>://<routed host><path and query>`, the scheme from the first
+  `X-Forwarded-Proto` value, `https` or `http`) instead of
+  `http://edger.local`, so an app that compares `Origin` with the origin of
+  `request.url` accepts the browser POST; static SPA and WASM workers and
+  every other route keep the worker-relative URI (EDG-33).
+- On a public owner-less origin, a worker hidden from those routes no longer
+  leaks through resolution errors: a missing or malformed `@version` pin and
+  an unavailable weighted selection answer like an unknown worker, a hidden
+  homepage answers like no homepage, and a plugin base that does not admit
+  the request is resolved again without that base, so the answer is exactly
+  what the router answers without it (EDG-31).
+- Tests that spawn real Deno processes keep their own per-worker Deno cache
+  instead of growing the shared temporary directory (EDG-32).
 
 ## [0.3.2-rc.20]
 
