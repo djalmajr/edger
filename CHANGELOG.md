@@ -4,7 +4,9 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.21` (the worker's
+Toward 0.3.2. Release candidates: `v0.3.2-rc.22` (cron jobs listed with
+their next run, expired API keys no longer authenticate from the cache);
+`v0.3.2-rc.21` (the worker's
 `request.url` carries the real origin on its own host, resolution errors
 no longer reveal a hidden worker); `v0.3.2-rc.20` (console hash slot held
 until the calculation ends, tenant gate errors no longer reveal a hidden
@@ -650,6 +652,19 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.22]
+
+- `GET /api/admin/cron/jobs` (permission `observability:read`, filtered by
+  the key's worker scope) lists the tracked cron jobs with the version the
+  unversioned route resolves now, `state` (`active` or `draining`) and
+  `nextRunAt`, the deadline the job task really sleeps until; `/metrics`
+  gains `edger_cron_jobs{state="active"|"draining"}`, and every job-set
+  change logs one `info` line (`cron job started`, `stopped`, `drained`).
+  Cron log lines escape manifest text, and the manifest validation refuses
+  control characters in `cron[]` `path`, `schedule` and `method` (EDG-34).
+- An API key that expires while cached is rejected on the next request,
+  instead of authenticating for up to 60 s after its `expires_at` (EDG-35).
 
 ## [0.3.2-rc.21]
 
