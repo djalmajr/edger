@@ -2422,9 +2422,27 @@ async fn next_run_is_the_task_sleep_deadline_after_a_slow_dispatch() {
 /// The next minute boundary strictly after `t` (the `* * * * *` fire:
 /// the `cron` crate fires at second 0 of every matching minute).
 fn next_whole_minute(t: DateTime<Utc>) -> DateTime<Utc> {
-    let micros = (t.nanosecond() as i64) / 1_000;
-    t - chrono::Duration::seconds(t.second() as i64) - chrono::Duration::microseconds(micros)
+    t.with_second(0)
+        .and_then(|t| t.with_nanosecond(0))
+        .expect("a valid instant")
         + chrono::Duration::minutes(1)
+}
+
+/// `next_whole_minute` zeroes the WHOLE sub-second remainder (the second
+/// AND the nanosecond part that a nanosecond-resolution Linux clock can
+/// leave behind; macOS clocks resolve only to microseconds) before
+/// stepping to the next minute boundary.
+#[test]
+fn next_whole_minute_drops_the_subsecond_remainder() {
+    let t = Utc.with_ymd_and_hms(2026, 10, 16, 19, 48, 47).unwrap();
+    assert_eq!(
+        next_whole_minute(t + chrono::Duration::nanoseconds(89_470_430)),
+        Utc.with_ymd_and_hms(2026, 10, 16, 19, 49, 0).unwrap()
+    );
+    assert_eq!(
+        next_whole_minute(Utc.with_ymd_and_hms(2026, 10, 16, 19, 48, 0).unwrap()),
+        Utc.with_ymd_and_hms(2026, 10, 16, 19, 49, 0).unwrap()
+    );
 }
 
 /// (EDG-34) For a wall-clock cron, `nextRunAt` is the next matching
