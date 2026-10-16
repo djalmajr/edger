@@ -1,6 +1,7 @@
 //! Tenant availability must be decided before any worker invocation.
 
 use std::fs;
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -226,6 +227,71 @@ fn code(body: &str) -> String {
         .as_str()
         .unwrap()
         .to_string()
+}
+
+fn message(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body).unwrap()["message"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// EDG-31: request completo (status + headers + corpo), para comparar
+/// `content-type` e `content-length` com os de um nome inexistente do mesmo
+/// tamanho.
+async fn request_full(
+    app: Router,
+    path: &str,
+    host: Option<&str>,
+) -> (StatusCode, HeaderMap, String) {
+    let mut req = Request::builder().uri(path);
+    if let Some(host) = host {
+        req = req.header("host", host);
+    }
+    let response = app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (
+        status,
+        headers,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+fn header_opt(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+/// EDG-31: a resposta da origem escondida deve ser indistinguível da de um
+/// nome inexistente do MESMO TAMANHO — mesmo status, `content-type`,
+/// `content-length` e corpo idêntico salvo o nome.
+fn assert_unknown_shape(
+    hidden: &(StatusCode, HeaderMap, String),
+    unknown: &(StatusCode, HeaderMap, String),
+    hidden_name: &str,
+    unknown_name: &str,
+    label: &str,
+) {
+    assert_eq!(hidden.0, unknown.0, "{label}: status");
+    assert_eq!(
+        header_opt(&hidden.1, "content-type"),
+        header_opt(&unknown.1, "content-type"),
+        "{label}: content-type"
+    );
+    assert_eq!(
+        header_opt(&hidden.1, "content-length"),
+        header_opt(&unknown.1, "content-length"),
+        "{label}: content-length"
+    );
+    assert_eq!(
+        hidden.2,
+        unknown.2.replace(unknown_name, hidden_name),
+        "{label}: the hidden origin must be indistinguishable from an unknown worker"
+    );
 }
 
 /// EDG-29: a hidden app must answer with the same error shape as an unknown
@@ -642,5 +708,928 @@ async fn name_route_opt_in_still_passes_the_tenant_gate() {
     // O gate de fato rodou (identify chamado) e o worker nao foi invocado.
     assert!(identity.0.lock().unwrap().2 >= 2);
     assert!(recorder.0.lock().unwrap().is_empty());
+    task.abort();
+}
+
+// EDG-31: pin de versão inexistente num app escondido (hosts sem
+// nameRoute), com o tenant routing LIGADO: a resposta é exatamente a de um
+// worker inexistente do mesmo tamanho de nome e o identify NAO é chamado —
+// a falha acontece na resolução, antes do gate de tenant.
+#[tokio::test]
+async fn hidden_app_pin_failure_answers_unknown_worker_with_tenant_routing_on() {
+    let root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder) = fixture(root.path(), true, Some(client));
+
+    // `app` (3 chars) vs `zzz` (3 chars): content-length idêntica.
+    for (path, unknown) in [
+        ("/app@9.9.9", "/zzz@9.9.9"),
+        ("/app@9.9.9/x", "/zzz@9.9.9/x"),
+    ] {
+        let hidden = request_full(app.clone(), path, Some("gateway.example.com")).await;
+        let unknown_resp = request_full(app.clone(), unknown, Some("gateway.example.com")).await;
+        assert_eq!(hidden.0, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(code(&hidden.2), "NOT_FOUND", "{path}");
+        assert_unknown_shape(&hidden, &unknown_resp, "app", "zzz", path);
+    }
+
+    // O identify nunca foi chamado (a falha é anterior ao gate) e o worker
+    // nunca foi invocado.
+    assert_eq!(identity.0.lock().unwrap().2, 0);
+    assert!(recorder.0.lock().unwrap().is_empty());
+    task.abort();
+}
+
+// EDG-31: a seleção ponderada que falha ANTES do guard (a versão da policy
+// vira staged no disco depois do carregamento) num app escondido, com o
+// tenant routing LIGADO: o 503 da rota indisponível responde como worker
+// inexistente do mesmo tamanho de nome e o identify não é chamado.
+#[tokio::test]
+async fn hidden_app_weighted_failure_answers_unknown_worker_with_tenant_routing_on() {
+    let root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder) = fixture_weighted(root.path(), Some(client));
+
+    // A versão da policy vira staged no disco depois do carregamento: a
+    // seleção falha com ROUTING_UNAVAILABLE antes do guard EDG-27.
+    fs::write(
+        root.path().join("app").join(".edger-revision"),
+        "test-rev\nstaged=true\n",
+    )
+    .unwrap();
+
+    let hidden = request_full(app.clone(), "/app/probe", Some("gateway.example.com")).await;
+    let unknown = request_full(app.clone(), "/zzz/probe", Some("gateway.example.com")).await;
+    assert_eq!(hidden.0, StatusCode::NOT_FOUND);
+    assert_eq!(code(&hidden.2), "NOT_FOUND");
+    assert_unknown_shape(
+        &hidden,
+        &unknown,
+        "app",
+        "zzz",
+        "seleção ponderada indisponível",
+    );
+
+    assert_eq!(identity.0.lock().unwrap().2, 0);
+    assert!(recorder.0.lock().unwrap().is_empty());
+    task.abort();
+}
+
+// EDG-31 (F1/F2): helpers de zip + fixtures de app instalada pelo control
+// plane, para os cenários de versão aberta desabilitada/interna/staged e de
+// alias (base de plugin / homepage) com tenant routing ligado.
+
+fn zip_package(files: &[(&str, &str)]) -> Vec<u8> {
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut cursor);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, contents) in files {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(contents.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    cursor.into_inner()
+}
+
+/// EDG-31: pacote zip do worker `app` com o manifest yaml completo.
+fn app_zip(manifest: &str) -> Vec<u8> {
+    zip_package(&[
+        ("manifest.yaml", manifest),
+        ("index.ts", "export default () => new Response('ok');"),
+    ])
+}
+
+async fn install_zip(app: &Router, manifest: &str, staged: bool) -> (StatusCode, String) {
+    let uri = if staged {
+        "/api/admin/workers/install?staged=true"
+    } else {
+        "/api/admin/workers/install"
+    };
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/zip")
+                .header("authorization", "Bearer root-key")
+                .body(Body::from(app_zip(manifest)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+async fn disable_version(app: &Router, version: &str) -> (StatusCode, String) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/admin/workers/app/disable?version={version}"))
+                .header("authorization", "Bearer root-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// EDG-31 (F1/F2): fixture com tenant routing E routing ponderados ligados;
+/// a app `app` entra por install via zip (versões múltiplas no mesmo bucket).
+fn fixture_zip_root(
+    root: &std::path::Path,
+    client: Option<TenantIdentityClient>,
+) -> (Router, Recorder, edger_orchestrator::ManifestIndex) {
+    let index = load_manifests_from_roots(&[], None, &[root.to_path_buf()]).unwrap();
+    let server = ServerState::new_unready();
+    server.enable_tenant_routing();
+    server.enable_weighted_routing();
+    if let Some(client) = client {
+        server.set_tenant_identity_client(client);
+    }
+    let recorder = Recorder::default();
+    let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(recorder.clone()));
+    server.mark_ready(pool.clone());
+    (
+        build_pipeline(OrchestratorState {
+            server,
+            pool,
+            index: index.clone(),
+            auth: ControlAuth::with_static_key("root-key"),
+        }),
+        recorder,
+        index,
+    )
+}
+
+// EDG-31 (F1): versão aberta DESABILITADA ao lado da versão restrita, com o
+// tenant routing LIGADO: pin inexistente, pin malformado e seleção
+// ponderada indisponível respondem como worker inexistente do mesmo tamanho
+// e o identify NUNCA é chamado.
+#[tokio::test]
+async fn hidden_app_with_disabled_open_version_answers_unknown_worker_with_tenant_routing_on() {
+    let root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder, index) = fixture_zip_root(root.path(), Some(client));
+
+    let (status, body) = install_zip(
+        &app,
+        "name: app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nhosts: [acme.example.com]\n",
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = install_zip(
+        &app,
+        "name: app\nversion: \"2.0.0\"\nentrypoint: index.ts\nkind: fetch\n",
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = disable_version(&app, "2.0.0").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let policy = parse_routing_policy(
+        br#"{"name":"app","tenantAccess":{"mode":"allowlist","tenants":["acme"]},"traffic":{"versions":[{"version":"1.0.0","weight":100}]}}"#,
+    )
+    .unwrap();
+    persist_routing_policy(&index, &policy).unwrap();
+
+    // Pin inexistente e pin malformado (era 400 PARSE_ERROR): iguais ao
+    // inexistente do mesmo tamanho de nome.
+    for (path, unknown) in [("/app@9.9.9", "/zzz@9.9.9"), ("/app@~bad", "/zzz@~bad")] {
+        let hidden = request_full(app.clone(), path, Some("gateway.example.com")).await;
+        let unknown_resp = request_full(app.clone(), unknown, Some("gateway.example.com")).await;
+        assert_eq!(hidden.0, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(code(&hidden.2), "NOT_FOUND", "{path}");
+        assert_unknown_shape(&hidden, &unknown_resp, "app", "zzz", path);
+    }
+
+    // Seleção ponderada indisponível (a versão restrita vira staged no disco
+    // depois do carregamento): igual ao inexistente.
+    fs::write(
+        root.path().join("app").join(".edger-revision"),
+        "test-rev\nstaged=true\n",
+    )
+    .unwrap();
+    let hidden = request_full(app.clone(), "/app/probe", Some("gateway.example.com")).await;
+    let unknown = request_full(app.clone(), "/zzz/probe", Some("gateway.example.com")).await;
+    assert_eq!(hidden.0, StatusCode::NOT_FOUND);
+    assert_eq!(code(&hidden.2), "NOT_FOUND");
+    assert_unknown_shape(
+        &hidden,
+        &unknown,
+        "app",
+        "zzz",
+        "seleção ponderada indisponível com versão aberta desabilitada",
+    );
+
+    // O identify nunca foi chamado e o worker nunca foi invocado.
+    assert_eq!(identity.0.lock().unwrap().2, 0);
+    assert!(recorder.0.lock().unwrap().is_empty());
+    task.abort();
+}
+
+// EDG-31 (F1): versão aberta INTERNA ao lado da versão restrita, com o
+// tenant routing LIGADO: mesma indistinguibilidade do caso desabilitada —
+// a versão interna não é alcançável por rota pública e não conta no
+// agregado.
+#[tokio::test]
+async fn hidden_app_with_internal_open_version_answers_unknown_worker_with_tenant_routing_on() {
+    let root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder, index) = fixture_zip_root(root.path(), Some(client));
+
+    let (status, body) = install_zip(
+        &app,
+        "name: app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nhosts: [acme.example.com]\n",
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = install_zip(
+        &app,
+        "name: app\nversion: \"2.0.0\"\nvisibility: internal\nentrypoint: index.ts\nkind: fetch\n",
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let policy = parse_routing_policy(
+        br#"{"name":"app","tenantAccess":{"mode":"allowlist","tenants":["acme"]},"traffic":{"versions":[{"version":"1.0.0","weight":100}]}}"#,
+    )
+    .unwrap();
+    persist_routing_policy(&index, &policy).unwrap();
+
+    for (path, unknown) in [("/app@9.9.9", "/zzz@9.9.9"), ("/app@~bad", "/zzz@~bad")] {
+        let hidden = request_full(app.clone(), path, Some("gateway.example.com")).await;
+        let unknown_resp = request_full(app.clone(), unknown, Some("gateway.example.com")).await;
+        assert_eq!(hidden.0, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(code(&hidden.2), "NOT_FOUND", "{path}");
+        assert_unknown_shape(&hidden, &unknown_resp, "app", "zzz", path);
+    }
+
+    fs::write(
+        root.path().join("app").join(".edger-revision"),
+        "test-rev\nstaged=true\n",
+    )
+    .unwrap();
+    let hidden = request_full(app.clone(), "/app/probe", Some("gateway.example.com")).await;
+    let unknown = request_full(app.clone(), "/zzz/probe", Some("gateway.example.com")).await;
+    assert_eq!(hidden.0, StatusCode::NOT_FOUND);
+    assert_eq!(code(&hidden.2), "NOT_FOUND");
+    assert_unknown_shape(
+        &hidden,
+        &unknown,
+        "app",
+        "zzz",
+        "seleção ponderada indisponível com versão aberta interna",
+    );
+
+    assert_eq!(identity.0.lock().unwrap().2, 0);
+    assert!(recorder.0.lock().unwrap().is_empty());
+    task.abort();
+}
+
+// EDG-31 (F1), controle: a staged HABILITADA e pública é alcançável por pin
+// (e o pin atende, passando pelo gate de tenant normalmente), então a app
+// NÃO fica escondida: o erro detalhado do pin inexistente é preservado.
+#[tokio::test]
+async fn hidden_app_with_staged_open_version_keeps_the_detailed_errors_with_tenant_routing_on() {
+    let root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder, index) = fixture_zip_root(root.path(), Some(client));
+
+    let (status, body) = install_zip(
+        &app,
+        "name: app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nhosts: [acme.example.com]\n",
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = install_zip(
+        &app,
+        "name: app\nversion: \"2.0.0\"\nentrypoint: index.ts\nkind: fetch\n",
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let policy = parse_routing_policy(
+        br#"{"name":"app","tenantAccess":{"mode":"allowlist","tenants":["acme"]}}"#,
+    )
+    .unwrap();
+    persist_routing_policy(&index, &policy).unwrap();
+
+    // O detalhe é preservado: a app não está escondida.
+    let (status, body) =
+        request_with_body(app.clone(), "/app@9.9.9", Some("gateway.example.com"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(code(&body), "NOT_FOUND");
+    assert_eq!(message(&body), "version 9.9.9 not available");
+
+    // O pin alcança a staged aberta e passa pelo gate de tenant (identify
+    // chamado, tenant no allowlist): a staged continua contando.
+    let (status, _body) =
+        request_with_body(app.clone(), "/app@2.0.0", Some("gateway.example.com"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(identity.0.lock().unwrap().2 >= 1);
+    assert_eq!(recorder.0.lock().unwrap().len(), 1);
+    task.abort();
+}
+
+// EDG-31 (F2): a base de plugin de uma app escondida responde EXATAMENTE o
+// que responderia uma base não configurada no mesmo caminho, com o tenant
+// routing LIGADO — e a mensagem não contém o nome real do app.
+#[tokio::test]
+async fn hidden_app_plugin_base_answers_like_an_unconfigured_base_with_tenant_routing_on() {
+    let root = tempfile::tempdir().unwrap();
+    let absent_root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder, _index) = fixture_zip_root(root.path(), Some(client.clone()));
+    let (absent, _absent_recorder, _absent_index) =
+        fixture_zip_root(absent_root.path(), Some(client));
+
+    // App escondida: nome real `app` (3 chars), alias de plugin `/gw`.
+    let (status, body) = install_zip(
+        &app,
+        "name: app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nbase: /gw\nhosts: [acme.example.com]\n",
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let hidden = request_full(app.clone(), "/gw/probe", Some("gateway.example.com")).await;
+    let absent_resp = request_full(absent.clone(), "/gw/probe", Some("gateway.example.com")).await;
+    assert_eq!(hidden.0, StatusCode::NOT_FOUND);
+    assert_eq!(hidden.0, absent_resp.0);
+    assert_eq!(
+        header_opt(&hidden.1, "content-type"),
+        header_opt(&absent_resp.1, "content-type")
+    );
+    assert_eq!(
+        header_opt(&hidden.1, "content-length"),
+        header_opt(&absent_resp.1, "content-length")
+    );
+    assert_eq!(hidden.2, absent_resp.2);
+    assert!(
+        !message(&hidden.2).contains("app"),
+        "o alias não revela o nome real do app: {}",
+        hidden.2
+    );
+
+    // O identify nunca foi chamado (o guard recusa antes do gate) e nenhum
+    // worker foi invocado.
+    assert_eq!(identity.0.lock().unwrap().2, 0);
+    assert!(recorder.0.lock().unwrap().is_empty());
+    task.abort();
+}
+
+// EDG-31 (F2): a homepage de uma app escondida responde EXATAMENTE o que
+// responderia uma homepage não configurada, com o tenant routing LIGADO —
+// e a mensagem não contém o nome real do app.
+#[tokio::test]
+async fn hidden_app_homepage_fallback_answers_like_an_unconfigured_homepage_with_tenant_routing_on()
+{
+    let root = tempfile::tempdir().unwrap();
+    let absent_root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder, _index) = fixture_zip_root(root.path(), Some(client.clone()));
+    let (absent, _absent_recorder, _absent_index) =
+        fixture_zip_root(absent_root.path(), Some(client));
+
+    // App escondida: nome real `app`, base `/` (homepage).
+    let (status, body) = install_zip(
+        &app,
+        "name: app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nbase: /\nhosts: [acme.example.com]\n",
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let hidden = request_full(app.clone(), "//", Some("gateway.example.com")).await;
+    let absent_resp = request_full(absent.clone(), "//", Some("gateway.example.com")).await;
+    assert_eq!(hidden.0, StatusCode::NOT_FOUND);
+    assert_eq!(hidden.0, absent_resp.0);
+    assert_eq!(
+        header_opt(&hidden.1, "content-type"),
+        header_opt(&absent_resp.1, "content-type")
+    );
+    assert_eq!(
+        header_opt(&hidden.1, "content-length"),
+        header_opt(&absent_resp.1, "content-length")
+    );
+    assert_eq!(hidden.2, absent_resp.2);
+    assert!(
+        !message(&hidden.2).contains("app"),
+        "a homepage não revela o nome real: {}",
+        hidden.2
+    );
+
+    assert_eq!(identity.0.lock().unwrap().2, 0);
+    assert!(recorder.0.lock().unwrap().is_empty());
+    task.abort();
+}
+
+// EDG-31 (F2, emenda 2): a base de plugin composta SÓ pelo escopo (`/@acme`)
+// responde EXATAMENTE o que responderia uma base não configurada no mesmo
+// caminho, com o tenant routing LIGADO — no caminho exato e com barra final
+// o parser do router falha e a ausência devolve o MESMO erro do parser
+// (`400 PARSE_ERROR`, mesmo status, `content-type`, `content-length` e
+// corpo), e no subcaminho responde `worker not found: @acme/<segmento>` —
+// em nenhum caso o nome real do app aparece e o identify não é chamado.
+#[tokio::test]
+async fn hidden_app_scope_only_plugin_base_answers_like_an_unconfigured_base_with_tenant_routing_on(
+) {
+    let root = tempfile::tempdir().unwrap();
+    let absent_root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder, _index) = fixture_zip_root(root.path(), Some(client.clone()));
+    let (absent, _absent_recorder, _absent_index) =
+        fixture_zip_root(absent_root.path(), Some(client));
+
+    // App escondida: nome real `app`, base só de escopo `/@acme`.
+    let (status, body) = install_zip(
+        &app,
+        "name: app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nbase: /@acme\nhosts: [acme.example.com]\n",
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    for path in ["/@acme", "/@acme/", "/@acme/probe/x"] {
+        let hidden = request_full(app.clone(), path, Some("gateway.example.com")).await;
+        let absent_resp = request_full(absent.clone(), path, Some("gateway.example.com")).await;
+        assert_eq!(hidden.0, absent_resp.0, "{path}");
+        assert_eq!(
+            header_opt(&hidden.1, "content-type"),
+            header_opt(&absent_resp.1, "content-type"),
+            "{path}: content-type"
+        );
+        assert_eq!(
+            header_opt(&hidden.1, "content-length"),
+            header_opt(&absent_resp.1, "content-length"),
+            "{path}: content-length"
+        );
+        assert_eq!(hidden.2, absent_resp.2, "{path}");
+        assert!(
+            !hidden.2.contains("app"),
+            "a base só de escopo não revela o nome real do app: {path} {}",
+            hidden.2
+        );
+    }
+
+    // Formas exatas: o caminho exato responde o erro do parser (400) e o
+    // subcaminho responde 404 com o nome montado do próprio caminho.
+    let (status, _headers, body) =
+        request_full(app.clone(), "/@acme", Some("gateway.example.com")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(code(&body), "PARSE_ERROR");
+    let (status, _headers, body) =
+        request_full(app.clone(), "/@acme/probe/x", Some("gateway.example.com")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(code(&body), "NOT_FOUND");
+    assert_eq!(message(&body), "worker not found: @acme/probe");
+
+    // O identify nunca foi chamado (o guard recusa antes do gate) e nenhum
+    // worker foi invocado.
+    assert_eq!(identity.0.lock().unwrap().2, 0);
+    assert!(recorder.0.lock().unwrap().is_empty());
+    task.abort();
+}
+
+// EDG-31 (F2, emenda 2): a seleção ponderada que falha ANTES do guard (a
+// versão da policy vira staged no disco depois do carregamento) numa base de
+// plugin só de escopo (`/@acme`), com o tenant routing LIGADO: a ausência da
+// base é a resposta (o 503 `application not available` nunca aparece) e o
+// identify não é chamado.
+#[tokio::test]
+async fn hidden_app_weighted_failure_with_scope_only_base_answers_like_an_unconfigured_base_with_tenant_routing_on(
+) {
+    let root = tempfile::tempdir().unwrap();
+    let absent_root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, recorder, index) = fixture_zip_root(root.path(), Some(client.clone()));
+    let (absent, _absent_recorder, _absent_index) =
+        fixture_zip_root(absent_root.path(), Some(client));
+
+    // App escondida: nome real `app`, base só de escopo `/@acme`.
+    let (status, body) = install_zip(
+        &app,
+        "name: app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nbase: /@acme\nhosts: [acme.example.com]\n",
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let policy = parse_routing_policy(
+        br#"{"name":"app","tenantAccess":{"mode":"public"},"traffic":{"versions":[{"version":"1.0.0","weight":100}]}}"#,
+    )
+    .unwrap();
+    persist_routing_policy(&index, &policy).unwrap();
+
+    // A versão da policy vira staged no disco depois do carregamento: a
+    // seleção falha com ROUTING_UNAVAILABLE antes do guard EDG-27.
+    fs::write(
+        root.path().join("app").join(".edger-revision"),
+        "test-rev\nstaged=true\n",
+    )
+    .unwrap();
+
+    for path in ["/@acme", "/@acme/", "/@acme/probe/x"] {
+        let hidden = request_full(app.clone(), path, Some("gateway.example.com")).await;
+        let absent_resp = request_full(absent.clone(), path, Some("gateway.example.com")).await;
+        assert_eq!(hidden.0, absent_resp.0, "{path}");
+        assert_eq!(
+            header_opt(&hidden.1, "content-type"),
+            header_opt(&absent_resp.1, "content-type"),
+            "{path}: content-type"
+        );
+        assert_eq!(
+            header_opt(&hidden.1, "content-length"),
+            header_opt(&absent_resp.1, "content-length"),
+            "{path}: content-length"
+        );
+        assert_eq!(hidden.2, absent_resp.2, "{path}");
+        assert!(
+            !hidden.2.contains("app"),
+            "a seleção indisponível não revela o nome real do app: {path} {}",
+            hidden.2
+        );
+    }
+
+    assert_eq!(identity.0.lock().unwrap().2, 0);
+    assert!(recorder.0.lock().unwrap().is_empty());
+    task.abort();
+}
+
+// =====================================================================
+// EDG-31 (emenda 3): equivalência por construção com tenant routing
+// LIGADO
+// =====================================================================
+// A queda do alias escondido (o caminho original é resolvido de novo pelo
+// router excluindo a base e despachado pelo fluxo normal) responde
+// EXATAMENTE o Router sem a configuração daquele plugin — status, todos
+// os headers (com `x-request-id` fixo) e corpo — nos dois gatilhos de
+// recusa (guard e seleção ponderada inelegível), sem dispatch na app
+// escondida e sem identify quando a ausência não alcança o gate.
+
+/// Registra o nome de cada worker despachado: a queda do alias nunca pode
+// despachar a app escondida.
+#[derive(Clone, Default)]
+struct DispatchLog(Arc<Mutex<Vec<String>>>);
+
+/// Isolate que devolve um corpo COM O NOME do worker (distingue quais
+/// workers atenderam); o registro do dispatch acontece em `create_isolate`.
+struct LoggingMarkerIsolate {
+    name: String,
+}
+
+#[derive(Clone)]
+struct LoggingMarkerFactory(DispatchLog);
+
+impl IsolateFactory for LoggingMarkerFactory {
+    fn create_isolate(&self, worker_ref: &WorkerRef) -> Box<dyn Isolate> {
+        self.0 .0.lock().unwrap().push(worker_ref.name.clone());
+        Box::new(LoggingMarkerIsolate {
+            name: worker_ref.name.clone(),
+        })
+    }
+}
+
+#[async_trait]
+impl Isolate for LoggingMarkerIsolate {
+    async fn execute_fetch(
+        &mut self,
+        _req: SerializedRequest,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        Ok(SerializedResponse {
+            status: 200,
+            headers: vec![],
+            body: Some(Bytes::from(
+                serde_json::to_vec(&json!({ "marker": self.name })).unwrap(),
+            )),
+        })
+    }
+
+    async fn execute_routes(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+
+    async fn serve_static_spa(
+        &mut self,
+        _path: &str,
+        _base_href: Option<&str>,
+        _config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        unreachable!("fetch fixture")
+    }
+
+    async fn execute_wasm(
+        &mut self,
+        req: SerializedRequest,
+        config: &WorkerConfig,
+    ) -> Result<SerializedResponse, IsolationError> {
+        self.execute_fetch(req, config).await
+    }
+}
+
+/// Mesma fixture de `fixture_zip_root` (tenant routing e routing ponderados
+// ligados), com a fábrica que registra o nome dos workers despachados.
+fn marker_fixture_zip_root(
+    root: &std::path::Path,
+    client: Option<TenantIdentityClient>,
+) -> (Router, DispatchLog, edger_orchestrator::ManifestIndex) {
+    let index = load_manifests_from_roots(&[], None, &[root.to_path_buf()]).unwrap();
+    let server = ServerState::new_unready();
+    server.enable_tenant_routing();
+    server.enable_weighted_routing();
+    if let Some(client) = client {
+        server.set_tenant_identity_client(client);
+    }
+    let log = DispatchLog::default();
+    let pool = WorkerPool::with_factory(
+        PoolConfig::default(),
+        Arc::new(LoggingMarkerFactory(log.clone())),
+    );
+    server.mark_ready(pool.clone());
+    (
+        build_pipeline(OrchestratorState {
+            server,
+            pool,
+            index: index.clone(),
+            auth: ControlAuth::with_static_key("root-key"),
+        }),
+        log,
+        index,
+    )
+}
+
+/// `request_full` com `x-request-id` FIXO: os headers comparados incluem o
+/// `x-request-id` ecoado pelo middleware.
+async fn request_full_fixed(
+    app: Router,
+    path: &str,
+    host: Option<&str>,
+) -> (StatusCode, HeaderMap, String) {
+    let mut req = Request::builder()
+        .uri(path)
+        .header("x-request-id", "security-review-fixed");
+    if let Some(host) = host {
+        req = req.header("host", host);
+    }
+    let response = app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (
+        status,
+        headers,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+/// A app escondida (`app`, base `base`, `hosts: [acme.example.com]`)
+/// recusa a requisição na origem pública sem dono (trigger `guard` ou
+/// `weighted`); a queda responde EXATAMENTE o Router sem a configuração
+/// daquele plugin em cada `path` (status, todos os headers com `x-request-id`
+/// fixo e corpo), sem dispatch na app escondida e sem identify (a ausência
+/// não alcança o gate em nenhum desses cenários). `extra_manifests` são
+/// instalados nos dois Routers (homepage pública, worker público `gw`…)..
+async fn assert_alias_falls_through_to_absence_tenant_on(
+    label: &str,
+    base: &str,
+    paths: &[&str],
+    weighted: bool,
+    extra_manifests: &[&str],
+) {
+    let root = tempfile::tempdir().unwrap();
+    let absent_root = tempfile::tempdir().unwrap();
+    let (client, identity, task) = start_identify().await;
+    let (app, log, index) = marker_fixture_zip_root(root.path(), Some(client.clone()));
+    let (absent, absent_log, _absent_index) =
+        marker_fixture_zip_root(absent_root.path(), Some(client));
+
+    let (status, body) = install_zip(
+        &app,
+        &format!(
+            "name: app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nbase: {base}\nhosts: [acme.example.com]\n"
+        ),
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    for manifest in extra_manifests {
+        let (status, body) = install_zip(&app, manifest, false).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = install_zip(&absent, manifest, false).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    if weighted {
+        // Gatilho de seleção ponderada inelegível: policy com a versão e a
+        // versão vira staged no disco depois do carregamento — a seleção
+        // falha ANTES do guard numa app escondida.
+        let policy = parse_routing_policy(
+            br#"{"name":"app","tenantAccess":{"mode":"public"},"traffic":{"versions":[{"version":"1.0.0","weight":100}]}}"#,
+        )
+        .unwrap();
+        persist_routing_policy(&index, &policy).unwrap();
+        fs::write(
+            root.path().join("app").join(".edger-revision"),
+            "test-rev\nstaged=true\n",
+        )
+        .unwrap();
+    }
+
+    for path in paths {
+        let hidden = request_full_fixed(app.clone(), path, Some("gateway.example.com")).await;
+        let absent_resp =
+            request_full_fixed(absent.clone(), path, Some("gateway.example.com")).await;
+        assert_eq!(hidden.0, absent_resp.0, "{label} {base} {path}: status");
+        assert_eq!(
+            &hidden.1, &absent_resp.1,
+            "{label} {base} {path}: todos os headers (x-request-id fixo)"
+        );
+        assert_eq!(hidden.2, absent_resp.2, "{label} {base} {path}: corpo");
+    }
+
+    // Zero dispatch na app escondida; o identify nunca é chamado (a
+    // ausência não alcança o gate, e a queda não o alcança mais).
+    assert!(
+        log.0.lock().unwrap().iter().all(|name| name != "app"),
+        "zero dispatch na app escondida: {label} {:?}",
+        log.0.lock().unwrap()
+    );
+    assert!(
+        absent_log
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|name| name != "app"),
+        "o Router de ausência também não despacha a app escondida: {label}"
+    );
+    assert_eq!(
+        identity.0.lock().unwrap().2,
+        0,
+        "{label}: o identify não pode ser chamado quando a ausência não alcança o gate"
+    );
+    task.abort();
+}
+
+// EDG-31 (emenda 3), tenant routing LIGADO, gatilho do guard: as bases
+// `//`, `/@acme`, `/gw` e `/@acme/plugin` coincidem com o Router sem a
+// base (status, todos os headers com `x-request-id` fixo e corpo).
+#[tokio::test]
+async fn hidden_plugin_base_fallthrough_matches_absence_guard_trigger_with_tenant_routing_on() {
+    assert_alias_falls_through_to_absence_tenant_on("slash", "//", &["//", "///"], false, &[])
+        .await;
+    assert_alias_falls_through_to_absence_tenant_on(
+        "scope",
+        "/@acme",
+        &["/@acme", "/@acme/", "/@acme/probe/x"],
+        false,
+        &[],
+    )
+    .await;
+    assert_alias_falls_through_to_absence_tenant_on(
+        "gw",
+        "/gw",
+        &["/gw", "/gw/", "/gw/x"],
+        false,
+        &[],
+    )
+    .await;
+    assert_alias_falls_through_to_absence_tenant_on(
+        "nsp",
+        "/@acme/plugin",
+        &["/@acme/plugin", "/@acme/plugin/probe"],
+        false,
+        &[],
+    )
+    .await;
+}
+
+// EDG-31 (emenda 3), tenant routing LIGADO, gatilho da seleção ponderada
+// inelegível: as mesmas bases e caminhos coincidem com o Router sem a base.
+#[tokio::test]
+async fn hidden_plugin_base_fallthrough_matches_absence_weighted_trigger_with_tenant_routing_on() {
+    assert_alias_falls_through_to_absence_tenant_on("slash-w", "//", &["//", "///"], true, &[])
+        .await;
+    assert_alias_falls_through_to_absence_tenant_on(
+        "scope-w",
+        "/@acme",
+        &["/@acme", "/@acme/", "/@acme/probe/x"],
+        true,
+        &[],
+    )
+    .await;
+    assert_alias_falls_through_to_absence_tenant_on(
+        "gw-w",
+        "/gw",
+        &["/gw", "/gw/", "/gw/x"],
+        true,
+        &[],
+    )
+    .await;
+    assert_alias_falls_through_to_absence_tenant_on(
+        "nsp-w",
+        "/@acme/plugin",
+        &["/@acme/plugin", "/@acme/plugin/probe"],
+        true,
+        &[],
+    )
+    .await;
+}
+
+// EDG-31 (emenda 3), tenant routing LIGADO: COM UMA HOMEPAGE PÚBLICA
+// CONFIGURADA, a queda serve a homepage como a ausência serve (a base só
+// de barras cai no sinal `HOMEPAGE` tratado pelo próprio router), e para
+// `/gw` a homepage só serve se a ausência servir (a ausência responde
+// `worker not found: gw`; a queda responde o mesmo).
+#[tokio::test]
+async fn hidden_plugin_base_fallthrough_to_configured_homepage_with_tenant_routing_on() {
+    let homepage =
+        "name: homepage-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nbase: /\n";
+    assert_alias_falls_through_to_absence_tenant_on(
+        "home-slash",
+        "//",
+        &["//", "///", "/gw"],
+        false,
+        &[homepage],
+    )
+    .await;
+    assert_alias_falls_through_to_absence_tenant_on(
+        "home-slash-w",
+        "//",
+        &["//", "///", "/gw"],
+        true,
+        &[homepage],
+    )
+    .await;
+    assert_alias_falls_through_to_absence_tenant_on("home-gw", "/gw", &["/gw"], false, &[homepage])
+        .await;
+    assert_alias_falls_through_to_absence_tenant_on(
+        "home-gw-w",
+        "/gw",
+        &["/gw"],
+        true,
+        &[homepage],
+    )
+    .await;
+}
+
+// EDG-31 (emenda 3), tenant routing LIGADO: com um worker PÚBLICO chamado
+// `gw` (sem `hosts`), a queda do alias escondido `/gw` despacha para ESSE
+// worker — exatamente como a ausência faz — sem dispatch na app escondida
+// e sem identify.
+#[tokio::test]
+async fn hidden_plugin_base_fallthrough_to_public_worker_gw_with_tenant_routing_on() {
+    let gw = "name: gw\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n";
+    assert_alias_falls_through_to_absence_tenant_on("pubgw", "/gw", &["/gw/x"], false, &[gw]).await;
+    assert_alias_falls_through_to_absence_tenant_on("pubgw-w", "/gw", &["/gw/x"], true, &[gw])
+        .await;
+
+    // Forma explícita: a resposta é o dispatch no worker público `gw` (o
+    // corpo carrega o nome dele).
+    let root = tempfile::tempdir().unwrap();
+    let (client, _identity, task) = start_identify().await;
+    let (app, log, _index) = marker_fixture_zip_root(root.path(), Some(client));
+    let (status, body) = install_zip(
+        &app,
+        "name: app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nbase: /gw\nhosts: [acme.example.com]\n",
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = install_zip(&app, gw, false).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, _headers, body) =
+        request_full_fixed(app.clone(), "/gw/x", Some("gateway.example.com")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a queda despacha no worker público `gw`: {body}"
+    );
+    assert_eq!(body, r#"{"marker":"gw"}"#);
+    assert_eq!(
+        log.0.lock().unwrap().as_slice(),
+        vec!["gw".to_string()],
+        "só o worker público `gw` foi despachado"
+    );
     task.abort();
 }

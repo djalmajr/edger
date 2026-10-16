@@ -1,5 +1,7 @@
 //! Request pipeline — route resolution and pool dispatch.
 
+use std::collections::HashSet;
+
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
@@ -21,7 +23,7 @@ use crate::compression::{
     compression_layer_with_config, compression_request_scope, count_compression_input,
     mark_app_response, mark_worker_without_encoding, weaken_worker_etag,
 };
-use crate::manifest_index_stub::ManifestIndex;
+use crate::manifest_index_stub::{admitted_on_public_origin, ManifestIndex};
 use crate::metrics::{
     cron_metrics_prometheus, metrics_stats_response, pool_metrics_prometheus,
     tenant_routing_metrics_prometheus,
@@ -29,7 +31,8 @@ use crate::metrics::{
 use crate::observability::{OperationalEventInput, OperationalEventLevel, OperationalEventSource};
 use crate::operational_log::log_operational_error;
 use crate::router::{
-    resolve_host_route_with_internal, resolve_route_with_internal, ReservedPath, ResolvedRoute,
+    resolve_host_route_with_internal, resolve_route_with_internal,
+    resolve_route_with_internal_excluding, ReservedPath, ResolvedRoute,
 };
 use crate::routing_policy::{
     cohort_for_cookie_header, cohort_set_cookie, RoutingPolicy, TenantAccess,
@@ -327,107 +330,166 @@ async fn dispatch_resolved_route(
     state: &OrchestratorState,
     req: Request<Body>,
     request_id: String,
-    _path: &str,
+    path: &str,
     route: ResolvedRoute,
     allow_internal: bool,
     route_host: Option<&str>,
 ) -> Result<Response<Body>, CoreError> {
     // Data plane is OPEN (Epic 17): the edger does not authenticate worker
-    // requests. The worker receives the raw request (Authorization intact) and
-    // owns its own auth. Only the control plane (`/api/admin/*`) is gated.
-    match route {
-        ResolvedRoute::Reserved { kind } => handle_reserved(kind),
-        ResolvedRoute::PluginBase { plugin, remainder } => {
-            let worker = state.index.resolve_plugin_worker(&plugin)?;
-            let base = plugin.base.clone();
-            let input = CohortInput {
-                version_pinned: false,
-                required_host: None,
-                required_plugin_base: Some(base.clone()),
-                authority: request_authority(&req),
-                cookie_header: cookie_header_from(&req),
-            };
-            let (worker, trusted_tenant, cohort_cookie) =
-                prepare_worker(state, worker, allow_internal, input).await?;
-            let kind_hint = worker.kind.clone();
-            dispatch_worker(
-                state,
-                req,
-                DispatchParams {
-                    request_id,
-                    worker,
-                    rewritten_path: normalize_rewritten_path(&remainder),
-                    kind_hint: Some(kind_hint),
-                    principal: None,
-                    base_path: Some(base),
-                    trusted_tenant,
-                    cohort_cookie,
-                    owned_host: None,
-                },
-            )
-            .await
-        }
-        ResolvedRoute::HomepageFallback { worker } => {
-            let input = CohortInput {
-                version_pinned: false,
-                required_host: None,
-                required_plugin_base: None,
-                authority: request_authority(&req),
-                cookie_header: cookie_header_from(&req),
-            };
-            let (worker, trusted_tenant, cohort_cookie) =
-                prepare_worker(state, worker, allow_internal, input).await?;
-            dispatch_worker(
-                state,
-                req,
-                DispatchParams {
-                    request_id,
-                    worker,
-                    rewritten_path: "/".into(),
-                    kind_hint: None,
-                    principal: None,
-                    base_path: None,
-                    trusted_tenant,
-                    cohort_cookie,
-                    owned_host: None,
-                },
-            )
-            .await
-        }
-        ResolvedRoute::Worker {
-            worker,
-            rewritten_path,
-            kind_hint,
-            version_pinned,
-        } => {
-            let input = CohortInput {
+    // requests. The worker receives the raw request (Authorization intact)
+    // and owns its own auth. Only the control plane (`/api/admin/*`) is
+    // gated.
+    //
+    // EDG-31 (emenda 3): equivalence by construction. When a plugin alias
+    // refuses the request on this origin, the SAME original path is
+    // re-resolved through the router EXCLUDING the refused base, and the
+    // new route takes this same flow — weighted selection, route guard and
+    // tenant gate included. The answer is exactly what the router would
+    // answer without that base: the next matching base, the nominal route,
+    // the homepage or its absence, the router's own errors. Each loop
+    // iteration excludes one more base and the plugin bases are finite, so
+    // it terminates. `req` is moved only into the final `dispatch_worker`,
+    // after every re-resolution: the body is never consumed before a new
+    // attempt. `route_host` is consumed on the first iteration: a refusal
+    // only happens on an owner-less public origin, so a re-resolved route
+    // never carries the vhost marker.
+    let mut excluded_bases: HashSet<String> = HashSet::new();
+    let mut route_host = route_host;
+    let mut route = route;
+    loop {
+        match route {
+            ResolvedRoute::Reserved { kind } => return handle_reserved(kind),
+            ResolvedRoute::PluginBase { plugin, remainder } => {
+                let worker = state.index.resolve_plugin_worker(&plugin)?;
+                let base = plugin.base.clone();
+                let input = CohortInput {
+                    version_pinned: false,
+                    required_host: None,
+                    required_plugin_base: Some(base.clone()),
+                    authority: request_authority(&req),
+                    cookie_header: cookie_header_from(&req),
+                };
+                let prepared = prepare_worker(state, worker, allow_internal, input).await;
+                match prepared {
+                    Err(PrepareWorkerError::AliasRefusal) => {
+                        // The alias did not admit the request on this
+                        // origin: resolve the same original path again,
+                        // excluding the refused base, and let the new route
+                        // take the normal flow.
+                        excluded_bases.insert(base);
+                        route = resolve_route_with_internal_excluding(
+                            path,
+                            None,
+                            &state.index,
+                            allow_internal,
+                            &excluded_bases,
+                        )?;
+                        continue;
+                    }
+                    Err(PrepareWorkerError::Core(err)) => return Err(err),
+                    Ok((worker, trusted_tenant, cohort_cookie)) => {
+                        let kind_hint = worker.kind.clone();
+                        return dispatch_worker(
+                            state,
+                            req,
+                            DispatchParams {
+                                request_id,
+                                worker,
+                                rewritten_path: normalize_rewritten_path(&remainder),
+                                kind_hint: Some(kind_hint),
+                                principal: None,
+                                base_path: Some(base),
+                                trusted_tenant,
+                                cohort_cookie,
+                                owned_host: None,
+                            },
+                        )
+                        .await;
+                    }
+                }
+            }
+            ResolvedRoute::HomepageFallback { worker } => {
+                let input = CohortInput {
+                    version_pinned: false,
+                    required_host: None,
+                    required_plugin_base: None,
+                    authority: request_authority(&req),
+                    cookie_header: cookie_header_from(&req),
+                };
+                let prepared = prepare_worker(state, worker.clone(), allow_internal, input)
+                    .await
+                    .map_err(|err| match err {
+                        // EDG-31 (F2): the homepage keeps answering exactly
+                        // what an unconfigured homepage would answer.
+                        PrepareWorkerError::AliasRefusal => {
+                            route_absence_error(&worker.name, RouteKind::Homepage)
+                        }
+                        PrepareWorkerError::Core(err) => err,
+                    })?;
+                let (worker, trusted_tenant, cohort_cookie) = prepared;
+                return dispatch_worker(
+                    state,
+                    req,
+                    DispatchParams {
+                        request_id,
+                        worker,
+                        rewritten_path: "/".into(),
+                        kind_hint: None,
+                        principal: None,
+                        base_path: None,
+                        trusted_tenant,
+                        cohort_cookie,
+                        owned_host: None,
+                    },
+                )
+                .await;
+            }
+            ResolvedRoute::Worker {
+                worker,
+                rewritten_path,
+                kind_hint,
                 version_pinned,
-                required_host: route_host.map(str::to_string),
-                required_plugin_base: None,
-                authority: request_authority(&req),
-                cookie_header: cookie_header_from(&req),
-            };
-            let (worker, trusted_tenant, cohort_cookie) =
-                prepare_worker(state, worker, allow_internal, input).await?;
-            dispatch_worker(
-                state,
-                req,
-                DispatchParams {
-                    request_id,
-                    worker,
-                    rewritten_path,
-                    kind_hint: Some(kind_hint),
-                    principal: None,
-                    base_path: None,
-                    trusted_tenant,
-                    cohort_cookie,
-                    // Vhost dispatch (D6): the request arrived on the
-                    // worker's own host, so the wire URI carries the real
-                    // origin (EDG-33).
-                    owned_host: route_host.map(str::to_string),
-                },
-            )
-            .await
+            } => {
+                let owned_host = route_host.take().map(str::to_string);
+                let input = CohortInput {
+                    version_pinned,
+                    required_host: owned_host.clone(),
+                    required_plugin_base: None,
+                    authority: request_authority(&req),
+                    cookie_header: cookie_header_from(&req),
+                };
+                let prepared = prepare_worker(state, worker.clone(), allow_internal, input)
+                    .await
+                    .map_err(|err| match err {
+                        // EDG-31 (F2): the nominal route keeps answering
+                        // exactly what an unknown worker of the requested
+                        // name would answer.
+                        PrepareWorkerError::AliasRefusal => {
+                            route_absence_error(&worker.name, RouteKind::Worker)
+                        }
+                        PrepareWorkerError::Core(err) => err,
+                    })?;
+                let (worker, trusted_tenant, cohort_cookie) = prepared;
+                return dispatch_worker(
+                    state,
+                    req,
+                    DispatchParams {
+                        request_id,
+                        worker,
+                        rewritten_path,
+                        kind_hint: Some(kind_hint),
+                        principal: None,
+                        base_path: None,
+                        trusted_tenant,
+                        cohort_cookie,
+                        // Vhost dispatch (D6): the request arrived on the
+                        // worker's own host, so the wire URI carries the
+                        // real origin (EDG-33).
+                        owned_host,
+                    },
+                )
+                .await;
+            }
         }
     }
 }
@@ -440,13 +502,93 @@ struct CohortInput {
     cookie_header: Option<String>,
 }
 
+/// EDG-31 (F2): the public route an absence-shaped error must imitate. A
+/// plugin base never reaches here (emenda 3): its refusal is the typed
+/// `PrepareWorkerError::AliasRefusal` and the pipeline re-resolves the
+/// original path through the router excluding the base instead of
+/// imitating the absence.
+#[derive(Clone, Copy)]
+enum RouteKind {
+    /// `/<name>/…` with or without an `@version` pin: the absence answers
+    /// `worker not found: <requested name>`, and on this route the resolved
+    /// worker's name is exactly the requested name.
+    Worker,
+    /// Homepage fallback: the absence answers `no homepage configured`.
+    Homepage,
+}
+
+/// EDG-31 (F2): the error the ABSENCE of the route would answer on this
+/// origin — a hidden app's refusal must not reveal more than the absence
+/// does (the app's real name, or a 503 where the absence answers 404):
+/// - name/pin route: `worker not found: <requested name>` (the resolved
+///   worker's name is exactly the requested name on that route);
+/// - homepage fallback: the unconfigured homepage error, same status.
+///
+/// A plugin base never imitates the absence (EDG-31, emenda 3): its
+/// refusal is the typed `PrepareWorkerError::AliasRefusal`, and the
+/// pipeline re-resolves the ORIGINAL path through the router excluding the
+/// base — the answer is whatever the router itself answers without that
+/// base (the next matching base, the nominal route, the homepage or its
+/// absence, the `HOMEPAGE` signal handled by the router, `PARSE_ERROR`…).
+fn route_absence_error(worker_name: &str, route: RouteKind) -> CoreError {
+    match route {
+        RouteKind::Worker => {
+            CoreError::new("NOT_FOUND", format!("worker not found: {worker_name}"))
+        }
+        RouteKind::Homepage => CoreError::new("NOT_FOUND", "no homepage configured"),
+    }
+}
+
+/// EDG-31 (emenda 3): `prepare_worker`'s error split. `AliasRefusal` is
+/// the REFUSAL of a plugin alias — not a client-facing error: the
+/// `PluginBase` arm of `dispatch_resolved_route` re-resolves the ORIGINAL
+/// path through the router excluding the refused base and dispatches
+/// whatever the router answers without it, through the same flow (weighted
+/// selection, route guard and tenant gate of the new route). The `Worker`
+/// and `Homepage` arms convert the refusal back into the absence-shaped
+/// error they always answered (`route_absence_error`), so their responses
+/// do not change. `Core` carries every other preparation error (tenant
+/// gate, policy, version resolution…): unchanged and client-facing. Never
+/// a `CoreError` with an internal code: the refusal signal cannot leak to
+/// the client.
+#[derive(Debug)]
+enum PrepareWorkerError {
+    /// The route guard refused the final version on this owner-less public
+    /// origin (not admitted there), or the weighted selection failed on a
+    /// hidden app — the two cases where the alias does not admit the
+    /// request on the origin.
+    AliasRefusal,
+    /// Every other preparation error, unchanged and client-facing.
+    Core(CoreError),
+}
+
+impl From<CoreError> for PrepareWorkerError {
+    fn from(err: CoreError) -> Self {
+        Self::Core(err)
+    }
+}
+
 /// One `RoutingPolicy` snapshot feeds the weight split and the tenant gate.
 /// A concurrent PUT cannot change the weights seen by this request. The
 /// final version is decided and the EDG-27 route guard applied BEFORE the
 /// tenant gate (EDG-29): an app that cannot be reached on this route
 /// answers `NOT_FOUND` in the shape of an unknown worker even when the
 /// tenant gate would fail, without calling identify, so the gate never
-/// leaks the app's existence. The selection depends only on the cohort
+/// leaks the app's existence. EDG-31 extends the same rule to the
+/// resolution failures that happen before the guard on this path: when the
+/// app is hidden on the owner-less public origin (no version reachable by
+/// a public name/pin route is admitted by the route guard there), a failed
+/// weighted selection answers in the shape of an unknown worker instead of
+/// `ROUTING_UNAVAILABLE` — on the worker's own host and for internal
+/// requests the detailed error stays. EDG-31 (F2): on the nominal and
+/// homepage routes the guard refusal and this normalized failure answer
+/// the SAME response the absence of the route would answer
+/// (`route_absence_error`). EDG-31 (emenda 3): both are surfaced as the
+/// typed `PrepareWorkerError::AliasRefusal` — on a plugin base the pipeline
+/// re-resolves the original path excluding the base and dispatches the
+/// router's answer without it (equivalence by construction); the nominal
+/// and homepage arms convert the refusal back into the absence error, so
+/// their responses do not change. The selection depends only on the cohort
 /// cookie, the policy snapshot, `required_host` and `required_plugin_base`
 /// — never on the tenant — so the reorder keeps every visible behavior.
 /// `edger_cohort` is never copied into `x-tenant-id`.
@@ -457,7 +599,7 @@ async fn prepare_worker(
     worker: WorkerRef,
     allow_internal: bool,
     input: CohortInput,
-) -> Result<(WorkerRef, Option<String>, Option<String>), CoreError> {
+) -> Result<(WorkerRef, Option<String>, Option<String>), PrepareWorkerError> {
     let CohortInput {
         version_pinned,
         required_host,
@@ -480,13 +622,36 @@ async fn prepare_worker(
         {
             let policy = policy.as_ref().unwrap();
             let (cohort, minted) = cohort_for_cookie_header(cookie_header.as_deref());
-            let selected = state.index.select_weighted_worker(
-                &worker.name,
-                &cohort,
-                policy,
-                required_host.as_deref(),
-                required_plugin_base.as_deref(),
-            )?;
+            let selected = state
+                .index
+                .select_weighted_worker(
+                    &worker.name,
+                    &cohort,
+                    policy,
+                    required_host.as_deref(),
+                    required_plugin_base.as_deref(),
+                )
+                .map_err(|err| {
+                    // EDG-31: a seleção ponderada falha ANTES do guard de
+                    // rota. Numa origem pública sem dono, a falha de uma app
+                    // escondida (nenhuma versão alcançável por rota pública
+                    // seria admitida pelo guard ali) é a recusa tipada do
+                    // alias — o 503 `application not available` revelaria a
+                    // existência do app. A recusa vira a resposta da queda
+                    // (a base é excluída e o router resolve o caminho de
+                    // novo) quando a rota é uma base de plugin (emenda 3),
+                    // ou a resposta de ausência nas rotas por nome e
+                    // homepage. Host próprio (`required_host`) e
+                    // requisições internas mantêm o erro detalhado.
+                    if !allow_internal
+                        && required_host.is_none()
+                        && state.index.hidden_on_public_origin(&worker.name)
+                    {
+                        PrepareWorkerError::AliasRefusal
+                    } else {
+                        PrepareWorkerError::Core(err)
+                    }
+                })?;
             match selected {
                 Some(selected) => (selected, minted.then(|| cohort_set_cookie(&cohort))),
                 None => (worker, None),
@@ -520,32 +685,38 @@ async fn prepare_worker(
 /// `hosts` and did not opt in with `nameRoute: true` does not answer a
 /// public request that did not arrive on one of its own hosts: the nominal
 /// route (`/<name>/…`, with or without an `@version` pin), the homepage
-/// fallback and the plugin base on an owner-less Host all answer
-/// `404 NOT_FOUND` in the shape of an unknown worker, so the app's
-/// existence is not leaked and the protections the app puts on its own
-/// domain's ingress cannot be bypassed. A vhost dispatch (the request
-/// arrived on the worker's own host, D6 — marked by `via_owned_host`, the
-/// `required_host` of the resolved route) and internal requests
-/// (`allow_internal`: authenticated control-plane invoke, cron with root
-/// Bearer) keep being served; workers without `hosts` are unaffected. The
-/// refusal happens before any dispatch: no pool slot, no worker
-/// invocation, and nothing counts in the worker's request metrics.
+/// fallback and the plugin base on an owner-less Host all refuse the
+/// request before any dispatch — no pool slot, no worker invocation, and
+/// nothing counts in the worker's request metrics. A vhost dispatch (the
+/// request arrived on the worker's own host, D6 — marked by
+/// `via_owned_host`, the `required_host` of the resolved route) and
+/// internal requests (`allow_internal`: authenticated control-plane invoke,
+/// cron with root Bearer) keep being served; workers without `hosts` are
+/// unaffected. The per-version rule is the shared `admitted_on_public_origin`
+/// predicate (manifest index), which the EDG-31 resolution-error
+/// normalization uses to decide whether the app is hidden on this origin.
+/// EDG-31 (F2/emenda 3): the refusal is the typed
+/// `PrepareWorkerError::AliasRefusal` — never a client-facing error. On a
+/// plugin base the pipeline re-resolves the ORIGINAL path through the
+/// router excluding the base and dispatches whatever the router answers
+/// without it (equivalence by construction, the `HOMEPAGE` signal and the
+/// router's own errors included); on the nominal and homepage routes the
+/// pipeline converts the refusal back into the absence error the route
+/// would answer (`route_absence_error`), so those responses do not change.
 fn require_data_plane_route_allowed(
     worker: &WorkerRef,
     allow_internal: bool,
     via_owned_host: bool,
-) -> Result<(), CoreError> {
-    if !allow_internal
-        && !via_owned_host
-        && !worker.config.name_route
-        && !worker.config.hosts.is_empty()
-    {
-        return Err(CoreError::new(
-            "NOT_FOUND",
-            format!("worker not found: {}", worker.name),
-        ));
+) -> Result<(), PrepareWorkerError> {
+    // A regra por versão vem de `admitted_on_public_origin` (manifest
+    // index): o mesmo predicado decide o EDG-31 "escondido na origem",
+    // então a recusa e a normalização dos erros de resolução não podem
+    // divergir.
+    if allow_internal || via_owned_host || admitted_on_public_origin(worker) {
+        Ok(())
+    } else {
+        Err(PrepareWorkerError::AliasRefusal)
     }
-    Ok(())
 }
 
 fn cookie_header_from(req: &Request<Body>) -> Option<String> {
@@ -1598,9 +1769,14 @@ mod tests {
         assert_eq!(state.index.default_version("app"), None);
     }
 
-    // EDG-27: the rule is decided by the version that will actually receive
-    // the dispatch, for a public origin that did not arrive on the worker's
-    // own host (nominal, homepage fallback and plugin base share it).
+    // EDG-27/EDG-31 (emenda 3): the rule is decided by the version that will
+    // actually receive the dispatch, for a public origin that did not arrive
+    // on the worker's own host (nominal, homepage fallback and plugin base
+    // share it). The refusal is the typed `PrepareWorkerError::AliasRefusal`:
+    // on a plugin base the pipeline re-resolves the original path excluding
+    // the base (the router's own answer is the response), and on the nominal
+    // and homepage routes it is converted into the absence error
+    // (`route_absence_error`).
     fn hosted_ref(name_route: bool, hosts: Vec<&str>) -> WorkerRef {
         let manifest = WorkerManifest {
             name: "hosted".into(),
@@ -1613,11 +1789,43 @@ mod tests {
     }
 
     #[test]
-    fn data_plane_route_refused_for_hosted_version_on_foreign_origin() {
+    fn data_plane_route_refusal_is_the_typed_signal_and_the_nominal_absence_keeps_its_shape() {
         let worker = hosted_ref(false, vec!["app.example.test"]);
         let err = require_data_plane_route_allowed(&worker, false, false).unwrap_err();
-        assert_eq!(err.code, "NOT_FOUND");
-        assert_eq!(err.message, "worker not found: hosted");
+        assert!(
+            matches!(err, PrepareWorkerError::AliasRefusal),
+            "a recusa é o sinal tipado, não um erro client-facing"
+        );
+        // A rota por nome continua respondendo a forma de ausência.
+        let absence = route_absence_error("hosted", RouteKind::Worker);
+        assert_eq!(absence.code, "NOT_FOUND");
+        assert_eq!(absence.message, "worker not found: hosted");
+    }
+
+    #[test]
+    fn data_plane_route_refusal_on_a_plugin_base_is_the_typed_fallthrough_signal() {
+        // EDG-31 (emenda 3): a base de plugin NÃO imita mais a ausência — a
+        // recusa é o sinal tipado `AliasRefusal`, e o pipeline resolve o
+        // caminho original de novo pelo router excluindo a base (a resposta
+        // é a do próprio router sem a base: a próxima base, a rota por
+        // nome, a homepage ou sua ausência, o sinal `HOMEPAGE`,
+        // `PARSE_ERROR`…). A equivalência por construção é coberta pelos
+        // testes de integração (name_route_hosts / tenant_routing).
+        let worker = hosted_ref(false, vec!["app.example.test"]);
+        let err = require_data_plane_route_allowed(&worker, false, false).unwrap_err();
+        assert!(matches!(err, PrepareWorkerError::AliasRefusal));
+    }
+
+    #[test]
+    fn data_plane_route_refusal_on_the_homepage_keeps_the_unconfigured_absence_shape() {
+        // EDG-31 (F2): a homepage responde a mesma mensagem de uma homepage
+        // não configurada — sem o nome real do worker.
+        let worker = hosted_ref(false, vec!["app.example.test"]);
+        let err = require_data_plane_route_allowed(&worker, false, false).unwrap_err();
+        assert!(matches!(err, PrepareWorkerError::AliasRefusal));
+        let absence = route_absence_error("hosted", RouteKind::Homepage);
+        assert_eq!(absence.code, "NOT_FOUND");
+        assert_eq!(absence.message, "no homepage configured");
     }
 
     #[test]
