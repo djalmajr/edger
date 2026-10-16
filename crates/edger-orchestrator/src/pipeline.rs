@@ -362,6 +362,7 @@ async fn dispatch_resolved_route(
                     base_path: Some(base),
                     trusted_tenant,
                     cohort_cookie,
+                    owned_host: None,
                 },
             )
             .await
@@ -388,6 +389,7 @@ async fn dispatch_resolved_route(
                     base_path: None,
                     trusted_tenant,
                     cohort_cookie,
+                    owned_host: None,
                 },
             )
             .await
@@ -419,6 +421,10 @@ async fn dispatch_resolved_route(
                     base_path: None,
                     trusted_tenant,
                     cohort_cookie,
+                    // Vhost dispatch (D6): the request arrived on the
+                    // worker's own host, so the wire URI carries the real
+                    // origin (EDG-33).
+                    owned_host: route_host.map(str::to_string),
                 },
             )
             .await
@@ -613,6 +619,14 @@ struct DispatchParams {
     base_path: Option<String>,
     trusted_tenant: Option<String>,
     cohort_cookie: Option<String>,
+    /// (EDG-33) The routed authority — with the port when the client sent
+    /// one — when the request arrived on the worker's own host (vhost
+    /// routing, D6; the `required_host` of the resolved route): the data
+    /// plane then sends the absolute URI so the worker's `request.url`
+    /// carries the real origin. `None` on every other path (name route,
+    /// `@version` pin, homepage fallback, plugin base on an owner-less
+    /// host, control-plane invoke, cron, health check and warmup).
+    owned_host: Option<String>,
 }
 
 pub(crate) async fn invoke_worker(
@@ -641,6 +655,9 @@ pub(crate) async fn invoke_worker(
             base_path: Some(format!("/{}", name.trim_end_matches('/'))),
             trusted_tenant: None,
             cohort_cookie: None,
+            // Control-plane invoke is not a vhost dispatch: the worker
+            // keeps the relative URI (EDG-33).
+            owned_host: None,
         },
     )
     .await
@@ -683,6 +700,16 @@ async fn dispatch_worker(
         .ok()
         .filter(|values| !values.is_empty())
         .map(|values| values.join(", "));
+    // (EDG-33) Read BEFORE the request is consumed, like the conditional
+    // method above: the first `X-Forwarded-Proto` value chooses the scheme
+    // of the absolute `request.url` on a vhost dispatch (`owned_host`).
+    let forwarded_proto = req
+        .headers()
+        .get_all("x-forwarded-proto")
+        .into_iter()
+        .next()
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let DispatchParams {
         request_id,
         worker,
@@ -692,6 +719,7 @@ async fn dispatch_worker(
         base_path,
         trusted_tenant,
         cohort_cookie,
+        owned_host,
     } = params;
 
     // No request header can assert tenant identity. Only the authenticated
@@ -758,6 +786,33 @@ async fn dispatch_worker(
         format!("{forwarded_prefix}{base_path}")
     };
     serialized.uri = append_query(rewritten_path, query);
+    // (EDG-9) Dispatch telemetry: the worker-relative path WITHOUT its
+    // query string (`rewritten_path` is consumed by `append_query` above),
+    // captured BEFORE the vhost absolutization (EDG-33) so the logged path
+    // stays worker-relative.
+    let dispatch_path = serialized.uri.split('?').next().unwrap_or("").to_string();
+    // (EDG-33) A request that arrived on the worker's own host (vhost
+    // routing) crosses the isolate boundary with the REAL origin: the
+    // routed authority — exactly as it arrived, with the port when the
+    // client sent one — and the scheme from the first `X-Forwarded-Proto`
+    // value. Only the process-backend kinds understand the absolute form:
+    // fetch and routes hand the uri to the worker's `new Request` (the
+    // persistent-process harness and the legacy CLI bridge both pass a
+    // scheme-bearing uri through, so `request.url` carries the real
+    // origin), and the fullstack glue strips the authority before matching
+    // and rewrites the base behind it. Static SPA and WASM read
+    // `SerializedRequest.uri` as a worker-relative path, so the FINAL
+    // worker of those kinds keeps the relative URI and today's behavior.
+    // Every other path (name route, `@version`, homepage, plugin base,
+    // control-plane invoke) keeps the relative URI too; the harness and
+    // the CLI bridge then fill it with their `http://edger.local`
+    // placeholder.
+    if let Some(authority) = owned_host {
+        if worker.kind.uses_process_backend() {
+            serialized.uri =
+                owned_host_uri(&serialized.uri, &authority, forwarded_proto.as_deref());
+        }
+    }
     serialized.base_href = Some(base_href(&public_base_path));
     set_header(&mut serialized.headers, "x-request-id", &request_id);
     set_header(&mut serialized.headers, "x-base", &public_base_path);
@@ -767,9 +822,6 @@ async fn dispatch_worker(
     let retry_request = serialized.clone();
     let retry_kind_hint = kind_hint.clone();
     let request_method = serialized.method.clone();
-    // (EDG-9) Dispatch telemetry: the worker-relative path WITHOUT its
-    // query string (`rewritten_path` is consumed by `append_query` below).
-    let dispatch_path = serialized.uri.split('?').next().unwrap_or("").to_string();
     let first_attempt = state
         .pool
         .fetch_worker_stream(&worker, serialized, kind_hint)
@@ -1182,6 +1234,32 @@ fn base_href(base_path: &str) -> String {
     }
 }
 
+/// (EDG-33) Scheme of the absolute `request.url` on a vhost dispatch:
+/// `https` when the FIRST value of `X-Forwarded-Proto` is `https`
+/// (case-insensitive; repeated header lines are one comma-joined list —
+/// RFC 9110 §5.2 — so the first value is the first comma-separated element
+/// of the first line), `http` in every other case: header absent, empty or
+/// any other value (`http`, `javascript`, ...). Only `http` and `https`
+/// ever reach the worker.
+fn forwarded_scheme(forwarded_proto: Option<&str>) -> &'static str {
+    if forwarded_proto
+        .and_then(|value| value.split(',').next())
+        .is_some_and(|first| first.trim().eq_ignore_ascii_case("https"))
+    {
+        "https"
+    } else {
+        "http"
+    }
+}
+
+/// (EDG-33) The absolute URI sent in `SerializedRequest.uri` when the
+/// request arrived on the worker's own host (vhost routing): the routed
+/// authority (with the port when the client sent one) plus the
+/// worker-relative path and query already assembled for the dispatch.
+fn owned_host_uri(uri: &str, authority: &str, forwarded_proto: Option<&str>) -> String {
+    format!("{}://{authority}{uri}", forwarded_scheme(forwarded_proto))
+}
+
 // Only a proxy of ours sets this header, but the data plane is open: a forged
 // value would otherwise flow verbatim into the <base href> of served HTML.
 // Reject anything that is not a plain absolute path with a tame charset.
@@ -1564,5 +1642,193 @@ mod tests {
     fn data_plane_route_unaffected_without_hosts() {
         let worker = hosted_ref(false, Vec::new());
         assert!(require_data_plane_route_allowed(&worker, false, false).is_ok());
+    }
+
+    // EDG-33: the absolute `request.url` of a vhost dispatch — scheme,
+    // port, query and encoded path.
+    #[test]
+    fn owned_host_uri_uses_https_when_the_first_forwarded_proto_is_https() {
+        assert_eq!(
+            owned_host_uri("/probe?q=1", "app.example", Some("https")),
+            "https://app.example/probe?q=1"
+        );
+        // Case-insensitive.
+        assert_eq!(
+            owned_host_uri("/probe?q=1", "app.example", Some("HTTPS")),
+            "https://app.example/probe?q=1"
+        );
+        // The FIRST value of the list decides; surrounding OWS is ignorable.
+        assert_eq!(
+            owned_host_uri("/probe?q=1", "app.example", Some("https, http")),
+            "https://app.example/probe?q=1"
+        );
+        assert_eq!(
+            owned_host_uri("/probe?q=1", "app.example", Some(" https , http")),
+            "https://app.example/probe?q=1"
+        );
+    }
+
+    #[test]
+    fn owned_host_uri_uses_http_for_any_other_forwarded_proto() {
+        for value in ["http", "javascript", "wss", "http, https", " ", ""] {
+            assert_eq!(
+                owned_host_uri("/probe?q=1", "app.example", Some(value)),
+                "http://app.example/probe?q=1",
+                "value {value:?}"
+            );
+        }
+        // Header absent: http.
+        assert_eq!(
+            owned_host_uri("/probe?q=1", "app.example", None),
+            "http://app.example/probe?q=1"
+        );
+    }
+
+    #[test]
+    fn owned_host_uri_keeps_the_port_and_encoded_path_and_query() {
+        assert_eq!(
+            owned_host_uri(
+                "/a%20b/c%2Fd?x=1&y=%C3%A9",
+                "app.example:8443",
+                Some("https")
+            ),
+            "https://app.example:8443/a%20b/c%2Fd?x=1&y=%C3%A9"
+        );
+        assert_eq!(
+            owned_host_uri("/", "app.example", None),
+            "http://app.example/"
+        );
+        assert_eq!(
+            owned_host_uri("/probe", "app.example:80", Some("javascript")),
+            "http://app.example:80/probe"
+        );
+    }
+
+    // (EDG-33) The real origin crosses the isolate boundary ONLY for the
+    // kinds that understand an absolute `request.url`: the process backend
+    // (fetch, routes, fullstack — the harness and the CLI bridge pass a
+    // scheme-bearing uri through to the worker's `new Request`) and the
+    // fullstack glue, which strips the authority before matching. Static
+    // SPA and WASM read `SerializedRequest.uri` as a worker-relative path
+    // and keep the relative form. This pins the decision set to the core
+    // vocabulary predicate the dispatch gates on.
+    #[test]
+    fn edg33_real_origin_goes_only_to_process_backend_kinds() {
+        assert!(ExecutionKind::FetchHandler.uses_process_backend());
+        assert!(ExecutionKind::RoutesTable.uses_process_backend());
+        assert!(ExecutionKind::Fullstack {
+            adapter: "hono".into()
+        }
+        .uses_process_backend());
+        assert!(!ExecutionKind::StaticSpa { inject_base: true }.uses_process_backend());
+        assert!(!ExecutionKind::StaticSpa { inject_base: false }.uses_process_backend());
+        assert!(!ExecutionKind::WasmModule { entry: None }.uses_process_backend());
+        assert!(!ExecutionKind::WasmModule {
+            entry: Some("a.wasm".into())
+        }
+        .uses_process_backend());
+    }
+
+    fn state_with_hosted_worker_in(
+        dir: std::path::PathBuf,
+        manifest: WorkerManifest,
+    ) -> OrchestratorState {
+        let mut index = ManifestIndex::new();
+        index.insert(dir, manifest).unwrap();
+        let server = ServerState::new_unready();
+        let pool = WorkerPool::with_factory(PoolConfig::default(), Arc::new(StubFactory));
+        server.mark_ready(pool.clone());
+        OrchestratorState {
+            server,
+            pool,
+            index,
+            auth: ControlAuth::with_static_key("test-root"),
+        }
+    }
+
+    // (EDG-33) A static-spa worker served on its OWN host (vhost routing)
+    // keeps the RELATIVE uri: static-spa dispatch never reaches the isolate
+    // — the pool serves it through the Rust-side resolver, which reads
+    // `SerializedRequest.uri` as a worker-relative path — so an existing
+    // asset resolves to its OWN content instead of the absolute vhost uri
+    // falling through to the shell. Real file layout (two small files), no
+    // marker isolate: the isolate would be asserting on a consumer that is
+    // not even in this dispatch path.
+    #[tokio::test]
+    async fn static_spa_on_its_own_host_keeps_the_relative_uri() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            "<html><body>SHELL-MARKER</body></html>",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("app.js"), "console.log(\"ASSET-MARKER\");").unwrap();
+        let state = state_with_hosted_worker_in(
+            dir.path().to_path_buf(),
+            WorkerManifest {
+                name: "site".into(),
+                version: Some("1.0.0".into()),
+                hosts: vec!["site.example.test".into()],
+                kind: Some("static".into()),
+                entrypoint: Some("index.html".into()),
+                ..Default::default()
+            },
+        );
+        let app = build_pipeline(state);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("https://site.example.test/app.js")
+                    .header(auth_header().0, auth_header().1)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes).into_owned();
+        // The existing asset answers with its own content, never the shell:
+        // the resolver only finds `app.js` when the uri is worker-relative.
+        assert_eq!(body, "console.log(\"ASSET-MARKER\");");
+        assert!(!body.contains("SHELL-MARKER"));
+    }
+
+    // (EDG-33) Same decision for WASM: the module keeps the RELATIVE uri.
+    #[tokio::test]
+    async fn wasm_on_its_own_host_keeps_the_relative_uri() {
+        let state = state_with_hosted_worker_in(
+            PathBuf::from("/workers/wapp"),
+            WorkerManifest {
+                name: "wapp".into(),
+                version: Some("1.0.0".into()),
+                hosts: vec!["wapp.example.test".into()],
+                kind: Some("wasm".into()),
+                entrypoint: Some("app.wasm".into()),
+                ..Default::default()
+            },
+        );
+        let app = build_pipeline(state);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("https://wapp.example.test/ping")
+                    .header(auth_header().0, auth_header().1)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes).into_owned();
+        // The marker isolate echoes `wasm:METHOD URI`: the uri must be the
+        // worker-relative one.
+        assert!(body.contains("wasm:GET /ping"), "got: {body}");
+        assert!(!body.contains("wapp.example.test"), "got: {body}");
     }
 }

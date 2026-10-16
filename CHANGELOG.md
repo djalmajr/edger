@@ -468,6 +468,31 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   that spawns real Deno processes in per-worker mode keeps its cache inside
   its own tempdir instead of the shared one.
 
+- The worker's `request.url` carries the real origin on a vhost dispatch
+  (EDG-33): when a request reaches the worker through its own host (the
+  `Host`/authority matched one of the version's `hosts`), the orchestrator
+  sends the ABSOLUTE URI `<scheme>://<routed host><path and query>` on the
+  isolate wire — the routed host is exactly the matched authority (with the
+  port when the client sent one) and the scheme comes from `X-Forwarded-Proto`
+  (`https` when the first value of the list is `https`, case-insensitive;
+  `http` in every other case, including absent or invalid). Only the
+  process-backend kinds receive the absolute form, decided by the FINAL
+  worker's kind: fetch, routes and fullstack — the persistent process
+  harness and the legacy CLI bridge pass a scheme-bearing URI through to
+  the worker's `new Request`, and the fullstack glue inserts the base AFTER
+  the authority (`https://app.example` + `/app` + `/x?q=1`, for the
+  uri-rewriting adapters; hono/lume read the worker-relative `x-base` as
+  today) while asset and
+  base matching still see only the path — so a worker that compares
+  `Origin` with the origin of `request.url` (a common CSRF protection) no
+  longer sees `http://edger.local` and refuses every browser POST, and
+  absolute links are emitted with the real origin. Static SPA and WASM keep
+  the worker-relative URI (their resolvers read the path relative to the
+  worker dir), and every other path keeps the relative URI and the
+  `http://edger.local` placeholder: the name route, the `@version` pin,
+  the homepage fallback, the plugin base on an owner-less host, the
+  authenticated control-plane invoke, cron, health check and warmup.
+
 ### Security
 
 - Public owner-less routes hidden for workers with their own hosts (EDG-27):

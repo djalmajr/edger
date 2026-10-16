@@ -226,7 +226,16 @@ pub fn prepare_fullstack_request(
                 && request_path(&req.uri) == base_path
             {
                 let query = req.uri.split_once('?').map(|(_, query)| query.to_string());
-                req.uri = base_href(&base_path);
+                // (EDG-33) the collapse to the base keeps the authority of
+                // an ABSOLUTE (vhost) uri: `https://app.example/` + base
+                // `/app` becomes `https://app.example/app/`, not `/app/`.
+                let collapsed = match absolute_uri_parts(
+                    req.uri.split_once('?').map_or(&req.uri, |(path, _)| path),
+                ) {
+                    Some((authority, _)) => format!("{authority}{}", base_href(&base_path)),
+                    None => base_href(&base_path),
+                };
+                req.uri = collapsed;
                 if let Some(query) = query {
                     req.uri.push('?');
                     req.uri.push_str(&query);
@@ -427,13 +436,47 @@ fn base_href(base_path: &str) -> String {
     }
 }
 
+/// (EDG-33) Splits an ABSOLUTE uri — the vhost dispatch form
+/// `<scheme>://<authority><path>` — into the authority prefix
+/// (`<scheme>://<authority>`) and the path part. The scheme must sit at
+/// position 0 (the same `hasScheme` rule the harness and the CLI bridge
+/// apply to decide `request.url`), so a worker-relative path that merely
+/// contains `://` later on is not mistaken for an absolute uri. `None` for
+/// the worker-relative form.
+fn absolute_uri_parts(uri: &str) -> Option<(String, &str)> {
+    let (scheme, rest) = uri.split_once("://")?;
+    let scheme_is_url_scheme = scheme
+        .bytes()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'));
+    if !scheme_is_url_scheme {
+        return None;
+    }
+    match rest.find('/') {
+        Some(index) => Some((format!("{scheme}://{}", &rest[..index]), &rest[index..])),
+        None => Some((format!("{scheme}://{rest}"), "/")),
+    }
+}
+
 fn prepend_base_path(uri: &str, base_path: &str) -> String {
     if base_path == "/" {
         return uri.to_string();
     }
-    let (path, query) = uri
+    let (pre_query, query) = uri
         .split_once('?')
         .map_or((uri, None), |(path, query)| (path, Some(query)));
+    // (EDG-33) a vhost dispatch carries an ABSOLUTE uri
+    // (`<scheme>://<authority><path>`): the base is inserted AFTER the
+    // authority, so the worker's `request.url` keeps the real origin.
+    // Every other path carries the worker-relative form and keeps today's
+    // shape.
+    let (authority, path) = match absolute_uri_parts(pre_query) {
+        Some((authority, path)) => (Some(authority), path),
+        None => (None, pre_query),
+    };
     let next_path = if path == base_path || path.starts_with(&format!("{base_path}/")) {
         path.to_string()
     } else if path == "/" || path.is_empty() {
@@ -443,10 +486,14 @@ fn prepend_base_path(uri: &str, base_path: &str) -> String {
     } else {
         format!("{base_path}/{path}")
     };
+    let next = match authority {
+        Some(authority) => format!("{authority}{next_path}"),
+        None => next_path,
+    };
     if let Some(query) = query {
-        format!("{next_path}?{query}")
+        format!("{next}?{query}")
     } else {
-        next_path
+        next
     }
 }
 
@@ -713,6 +760,99 @@ mod tests {
         assert_eq!(req.uri, "/tanstack-demo/about?tab=1");
         assert_eq!(req.base_href.as_deref(), Some("/tanstack-demo/"));
         assert_eq!(config.entrypoint.as_deref(), Some("server/server.js"));
+    }
+
+    // ---- EDG-33: the absolute (vhost) uri form ---------------------------
+
+    #[test]
+    fn prepend_base_path_absolute_uri_keeps_the_authority() {
+        // The amendment's example: fixed non-root base.
+        assert_eq!(
+            prepend_base_path("https://app.example/x?q=1", "/app"),
+            "https://app.example/app/x?q=1"
+        );
+        // Base `/`: the absolute uri passes through unchanged.
+        assert_eq!(
+            prepend_base_path("https://app.example/x?q=1", "/"),
+            "https://app.example/x?q=1"
+        );
+        // Root request with a non-root base: the base lands after the
+        // authority.
+        assert_eq!(
+            prepend_base_path("https://app.example/", "/app"),
+            "https://app.example/app"
+        );
+        // Authority only, no path: same shape.
+        assert_eq!(
+            prepend_base_path("https://app.example", "/app"),
+            "https://app.example/app"
+        );
+        // Already under the base: untouched (query included).
+        assert_eq!(
+            prepend_base_path("https://app.example/app/y?q=1", "/app"),
+            "https://app.example/app/y?q=1"
+        );
+        // A port in the authority is preserved.
+        assert_eq!(
+            prepend_base_path("https://app.example:8443/x", "/app"),
+            "https://app.example:8443/app/x"
+        );
+    }
+
+    #[test]
+    fn prepend_base_path_relative_uri_keeps_today_shape() {
+        // No regression: the worker-relative form is unchanged.
+        assert_eq!(prepend_base_path("/x?q=1", "/app"), "/app/x?q=1");
+        assert_eq!(prepend_base_path("/", "/app"), "/app");
+        assert_eq!(prepend_base_path("/app/y?q=1", "/app"), "/app/y?q=1");
+        assert_eq!(prepend_base_path("/x?q=1", "/"), "/x?q=1");
+        // A relative path that merely contains `://` is NOT an absolute
+        // uri (the scheme must sit at position 0, as in the harness).
+        assert_eq!(
+            prepend_base_path("/files/https://x/y", "/app"),
+            "/app/files/https://x/y"
+        );
+    }
+
+    #[test]
+    fn request_path_absolute_uri_sees_only_the_path() {
+        assert_eq!(request_path("https://app.example/x?q=1"), "/x");
+        assert_eq!(request_path("https://app.example:8443/a/b?c=d"), "/a/b");
+        assert_eq!(request_path("https://app.example"), "/");
+        // Relative unchanged.
+        assert_eq!(request_path("/x?q=1"), "/x");
+        assert_eq!(request_path("/"), "/");
+    }
+
+    #[test]
+    fn fullstack_absolute_uri_keeps_the_origin_through_prepare() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("client")).unwrap();
+        let config = config_from_manifest(
+            root.path(),
+            WorkerManifest {
+                name: "tanstack-demo".into(),
+                adapter: Some("tanstack".into()),
+                base_path: Some("/app".into()),
+                client_dir: Some("client".into()),
+                kind: Some("fullstack".into()),
+                ssr_entrypoint: Some("server/server.js".into()),
+                ..WorkerManifest::default()
+            },
+        );
+
+        // Nested route: the base is inserted after the authority, query
+        // kept.
+        let (request, _) =
+            prepare_fullstack_request(req("https://app.example/x?q=1"), &config).unwrap();
+        assert_eq!(request.uri, "https://app.example/app/x?q=1");
+
+        // Root collapse (sveltekit/tanstack): the authority survives the
+        // collapse to the base, with its trailing slash and the query.
+        let (request, _) =
+            prepare_fullstack_request(req("https://app.example/?tab=1"), &config).unwrap();
+        assert_eq!(request.uri, "https://app.example/app/?tab=1");
+        assert_eq!(request.base_href.as_deref(), Some("/app/"));
     }
 
     #[test]
