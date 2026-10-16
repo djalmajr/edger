@@ -7,6 +7,7 @@
 //! (`tokio::time::pause`/`advance`) so the reconcile interval and the
 //! schedule intervals are exact.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,13 +18,15 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use bytes::Bytes;
+use chrono::{DateTime, TimeZone, Timelike, Utc};
 use edger_core::{
     CronJob, Isolate, IsolationError, SerializedRequest, SerializedResponse, WorkerConfig,
     WorkerManifest, INTERNAL_REQUEST_HEADER,
 };
 use edger_orchestrator::{
-    build_pipeline, ControlAuth, ControlAuthConfig, CronMetrics, CronScheduler,
-    CronSchedulerConfig, ManifestIndex, OrchestratorState, ServerState,
+    build_pipeline, ControlAuth, ControlAuthConfig, CronJobState, CronMetrics, CronScheduler,
+    CronSchedulerConfig, ManifestIndex, OrchestratorState, ServerState, WallClock,
+    JOB_EVENTS_CAPACITY,
 };
 use edger_worker::{IsolateFactory, PoolConfig, WorkerPool};
 use tower::ServiceExt;
@@ -397,6 +400,20 @@ async fn start_harness_factory_at(
     reconcile: Duration,
     root_key: Option<&str>,
 ) -> (CronScheduler, Router, CronMetrics) {
+    // The paused-clock tests run against the VIRTUAL wall (EDG-34 emenda
+    // 2): the civil instant follows the (paused) monotonic clock, so the
+    // deadline → UTC conversion published in the snapshot is deterministic
+    // instead of drifting with the real wall clock.
+    start_harness_factory_at_wall(index, factory, reconcile, root_key, virtual_wall()).await
+}
+
+async fn start_harness_factory_at_wall(
+    index: ManifestIndex,
+    factory: Arc<dyn IsolateFactory>,
+    reconcile: Duration,
+    root_key: Option<&str>,
+    wall: WallClock,
+) -> (CronScheduler, Router, CronMetrics) {
     let auth = match root_key {
         Some(key) => ControlAuth::with_static_key(key),
         None => ControlAuth::new(ControlAuthConfig::default()),
@@ -414,13 +431,73 @@ async fn start_harness_factory_at(
     let index_for_cron = state.index.clone();
     let app = build_pipeline(state);
     let scheduler = CronScheduler::start(
-        CronSchedulerConfig::new(root_key.map(str::to_owned)).with_reconcile_interval(reconcile),
+        CronSchedulerConfig::new(root_key.map(str::to_owned))
+            .with_reconcile_interval(reconcile)
+            .with_wall(wall),
         index_for_cron,
         app.clone(),
         metrics.clone(),
     )
     .await;
     (scheduler, app, metrics)
+}
+
+// ---------------------------------------------------------------------------
+// Injectable wall clock for the paused-clock tests (EDG-34 emenda 2): the
+// civil instant is the UTC captured at creation plus the ELAPSED VIRTUAL
+// time (plus a jump offset a test can apply), so the wall follows the
+// (paused) monotonic clock and a civil wall step is modeled without
+// touching the host clock.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct TestWall {
+    base: DateTime<Utc>,
+    mono0: tokio::time::Instant,
+    offset: Arc<std::sync::Mutex<chrono::Duration>>,
+}
+
+impl TestWall {
+    fn new() -> Self {
+        Self {
+            base: Utc::now(),
+            mono0: tokio::time::Instant::now(),
+            offset: Arc::new(std::sync::Mutex::new(chrono::Duration::zero())),
+        }
+    }
+
+    fn now(&self) -> DateTime<Utc> {
+        let elapsed = tokio::time::Instant::now() - self.mono0;
+        let delta = chrono::Duration::from_std(elapsed).unwrap_or_else(|_| {
+            chrono::Duration::seconds(i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
+        });
+        self.base + delta + *self.offset.lock().expect("test wall offset")
+    }
+
+    /// Apply a civil wall jump (e.g. +120 s) on top of the virtual time.
+    fn jump(&self, by: chrono::Duration) {
+        *self.offset.lock().expect("test wall offset") = by;
+    }
+}
+
+impl std::fmt::Debug for TestWall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TestWall").finish_non_exhaustive()
+    }
+}
+
+/// The `WallClock` the harnesses inject by default: the virtual wall
+/// described above.
+fn virtual_wall() -> WallClock {
+    let wall = Arc::new(TestWall::new());
+    Arc::new(move || wall.now())
+}
+
+/// A `WallClock` over a `TestWall` the test keeps a handle to (to read the
+/// current civil instant or to apply a jump).
+fn test_wall(wall: &Arc<TestWall>) -> WallClock {
+    let wall = Arc::clone(wall);
+    Arc::new(move || wall.now())
 }
 
 /// Promote through the admin route (the operator path).
@@ -1216,7 +1293,7 @@ async fn dispatch_log_reports_unresolved_version_when_the_worker_is_gone() {
         })
         .expect("a 'cron dispatched' event with version=unresolved");
     assert!(
-        line.fields.contains("worker=gone-worker "),
+        line.fields.contains("worker=\"gone-worker\" "),
         "the dispatch line must carry the worker name: {}",
         line.fields
     );
@@ -1374,7 +1451,7 @@ async fn dispatch_log_reports_the_serving_version_after_promote() {
             panic!("no 'cron dispatched' event for {request_id}; captured: {events:?}")
         });
     let expected_prefix = format!(
-        "message=cron dispatched worker=log-worker version=2.0.0 path=/tick method=POST request_id={request_id} status=204 duration_ms="
+        "message=cron dispatched worker=\"log-worker\" version=2.0.0 path=\"/tick\" method=\"POST\" request_id={request_id} status=204 duration_ms="
     );
     let duration_ms = line
         .fields
@@ -2079,4 +2156,1267 @@ async fn shutdown_reports_incomplete_when_a_child_does_not_yield() {
         !alive.load(Ordering::SeqCst),
         "the handler must be finished before the test ends"
     );
+}
+
+// ---------------------------------------------------------------------------
+// (EDG-34) Visibility: the published gauges, the tasks' next-run instants,
+// the draining visibility in the snapshot and the job-set change log lines.
+// ---------------------------------------------------------------------------
+
+/// Read `/metrics` through the pipeline (the root key passes the
+/// `observability:read` gate) and return the body.
+async fn fetch_metrics_text(app: &Router, root_key: &str) -> String {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .header("authorization", format!("Bearer {root_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+/// The next-run published for the first (only) tracked job.
+fn first_next_run(metrics: &CronMetrics) -> Option<DateTime<Utc>> {
+    metrics.jobs().jobs.first().and_then(|job| job.next_run_at)
+}
+
+/// (EDG-34) The published gauges and the snapshot follow the job through
+/// registration, a removal with an in-flight dispatch (draining) and the
+/// reaping: the scheduler counters, the shared `CronMetrics` and the
+/// snapshot agree at every boundary, and `/metrics` renders the same
+/// values.
+#[tokio::test]
+async fn gauges_and_snapshot_follow_register_removal_and_reaping() {
+    tokio::time::pause();
+    let root = tempfile::tempdir().unwrap();
+    let requests = RecordedRequests::default();
+    let in_flight = Arc::new(AtomicBool::new(false));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let current = Arc::new(AtomicUsize::new(0));
+    let mut index = ManifestIndex::new();
+    index.set_roots(vec![root.path().to_path_buf()]);
+    insert_version(
+        &mut index,
+        root.path(),
+        "gauge-worker",
+        "1.0.0",
+        Some(vec![job("@every 100ms", "/tick", None)]),
+        false,
+    );
+
+    // The dispatch (300 ms) outlives the schedule (100 ms), so the removal
+    // can land with a dispatch in flight.
+    let (mut scheduler, app, metrics) = start_harness_slow(
+        index.clone(),
+        requests.clone(),
+        Duration::from_millis(300),
+        in_flight,
+        peak,
+        current,
+        Some("root-secret"),
+    )
+    .await;
+
+    // Registered: one active job, none draining — the scheduler counters,
+    // the shared metrics and the snapshot agree, and `/metrics` renders
+    // them.
+    advance(Duration::from_millis(50)).await;
+    assert_eq!(scheduler.active_job_count(), 1);
+    assert_eq!(scheduler.draining_job_count(), 0);
+    assert_eq!(metrics.active_jobs(), 1);
+    assert_eq!(metrics.draining_jobs(), 0);
+    let snapshot = metrics.jobs();
+    assert_eq!(snapshot.jobs.len(), 1);
+    assert_eq!(snapshot.jobs[0].worker, "gauge-worker");
+    assert_eq!(snapshot.jobs[0].state, CronJobState::Active);
+    let text = fetch_metrics_text(&app, "root-secret").await;
+    assert!(
+        text.contains("edger_cron_jobs{state=\"active\"} 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("edger_cron_jobs{state=\"draining\"} 0"),
+        "{text}"
+    );
+
+    // The first tick fires at +100 and its (300 ms) dispatch runs until
+    // +400: the delete at +160 lands with the dispatch in flight, and the
+    // job drains.
+    advance(Duration::from_millis(160)).await;
+    index.remove_worker("gauge-worker", "1.0.0").unwrap();
+    advance_until(Duration::from_millis(300), || {
+        scheduler.active_job_count() == 0 && scheduler.draining_job_count() == 1
+    })
+    .await;
+
+    // While draining: the snapshot says the same, with `nextRunAt` null.
+    let snapshot = metrics.jobs();
+    assert_eq!(snapshot.jobs.len(), 1);
+    assert_eq!(snapshot.jobs[0].worker, "gauge-worker");
+    assert_eq!(snapshot.jobs[0].state, CronJobState::Draining);
+    assert!(
+        snapshot.jobs[0].next_run_at.is_none(),
+        "a draining job has no next run"
+    );
+    assert_eq!(metrics.active_jobs(), 0);
+    assert_eq!(metrics.draining_jobs(), 1);
+    let text = fetch_metrics_text(&app, "root-secret").await;
+    assert!(
+        text.contains("edger_cron_jobs{state=\"active\"} 0"),
+        "{text}"
+    );
+    assert!(
+        text.contains("edger_cron_jobs{state=\"draining\"} 1"),
+        "{text}"
+    );
+
+    // The in-flight dispatch finishes on its own (+400) and the reaping
+    // empties the set: the job leaves the snapshot and the gauges zero.
+    advance_until(Duration::from_millis(600), || {
+        requests.count() >= 1 && scheduler.draining_job_count() == 0
+    })
+    .await;
+    assert_eq!(scheduler.active_job_count(), 0);
+    assert_eq!(metrics.active_jobs(), 0);
+    assert_eq!(metrics.draining_jobs(), 0);
+    assert!(
+        metrics.jobs().jobs.is_empty(),
+        "reaped job leaves the snapshot"
+    );
+    let text = fetch_metrics_text(&app, "root-secret").await;
+    assert!(
+        text.contains("edger_cron_jobs{state=\"active\"} 0"),
+        "{text}"
+    );
+    assert!(
+        text.contains("edger_cron_jobs{state=\"draining\"} 0"),
+        "{text}"
+    );
+
+    scheduler.shutdown().await;
+}
+
+/// (EDG-34) For `@every`, `nextRunAt` is the instant the TASK will wait
+/// for — the sleep deadline the task itself publishes: after a dispatch
+/// slower than the interval, the next run is (dispatch end) + interval,
+/// not `now + interval` recomputed at query time and not a slot grid.
+#[tokio::test]
+async fn next_run_is_the_task_sleep_deadline_after_a_slow_dispatch() {
+    tokio::time::pause();
+    let root = tempfile::tempdir().unwrap();
+    let requests = RecordedRequests::default();
+    let in_flight = Arc::new(AtomicBool::new(false));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let current = Arc::new(AtomicUsize::new(0));
+    let mut index = ManifestIndex::new();
+    index.set_roots(vec![root.path().to_path_buf()]);
+    insert_version(
+        &mut index,
+        root.path(),
+        "nextrun-worker",
+        "1.0.0",
+        Some(vec![job("@every 100ms", "/tick", None)]),
+        false,
+    );
+
+    // Interval 100 ms; the dispatch takes 300 ms (slower than the
+    // interval). The injected wall follows the (paused) monotonic clock,
+    // so the published deadline → UTC conversion is deterministic.
+    let wall = Arc::new(TestWall::new());
+    let (mut scheduler, _app, metrics) = start_harness_factory_at_wall(
+        index,
+        Arc::new(SlowFactory {
+            requests: requests.clone(),
+            delay: Duration::from_millis(300),
+            in_flight,
+            peak,
+            current,
+        }),
+        RECONCILE,
+        Some("root-secret"),
+        test_wall(&wall),
+    )
+    .await;
+
+    // Reference point for the virtual time (the task's first publish
+    // happens at the scheduler start, virtual 0).
+    let v0 = tokio::time::Instant::now();
+
+    // Let the job task register its first sleep: the snapshot carries the
+    // first deadline (start + interval — the instant the task will wait
+    // for, not a wall guess).
+    advance_until(Duration::from_millis(50), || {
+        first_next_run(&metrics).is_some()
+    })
+    .await;
+    let first = first_next_run(&metrics).expect("first next run");
+    assert_eq!(requests.count(), 0, "no tick may have fired yet");
+    // The first deadline is exactly (scheduler start) + interval, so the
+    // start (the wall anchor) is recovered from it without drift.
+    let interval = chrono::Duration::from_std(Duration::from_millis(100)).unwrap();
+    let anchor = first - interval;
+
+    // The value is the task's own: it does not drift while the task keeps
+    // sleeping (a `now + interval` recomputed at query time would move on
+    // every read — the virtual clock stays paused, so no tick fires).
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(
+        first_next_run(&metrics).expect("second read"),
+        first,
+        "the published next run must be stable while the task sleeps"
+    );
+    // And the deadline is still ahead (the tick fires at it, not before) —
+    // ahead of the CURRENT civil instant from the injected wall, not a
+    // boot-time anchor.
+    assert!(
+        first > wall.now(),
+        "the first deadline must still be in the future: {first}"
+    );
+
+    // The first tick fires at the first deadline and the (300 ms)
+    // dispatch runs; only when it ends does the task compute the next
+    // deadline.
+    advance_until(Duration::from_millis(600), || requests.count() == 1).await;
+    let (v_loop, stamp_elapsed) = {
+        let stamps = requests.stamps.lock().unwrap();
+        (tokio::time::Instant::now() - v0, stamps[0].elapsed())
+    };
+    // The virtual instant of the dispatch end (the stamp is the end of
+    // the isolate's run).
+    let dispatch_end = v_loop - stamp_elapsed;
+    advance(Duration::from_millis(50)).await;
+    let second = first_next_run(&metrics).expect("second next run");
+
+    // The next deadline must be the task's own re-sleep instant: right
+    // after the dispatch end, plus the interval. A `now + interval`
+    // recomputed at query time (read at ≈ dispatch end + 50 ms) or a
+    // slot grid (a flat +interval over the first deadline) would not sit
+    // here.
+    let lower = anchor + dispatch_end + interval;
+    let upper = lower + chrono::Duration::milliseconds(30);
+    assert!(
+        second >= lower && second <= upper,
+        "next run {second} must be the dispatch end ({dispatch_end:?}) + the interval, got window [{lower}, {upper}]"
+    );
+    // And it moved forward by at least the dispatch duration plus the
+    // interval (the `@every` job does not re-slot on a grid).
+    assert!(
+        second - first >= chrono::Duration::from_std(Duration::from_millis(400)).unwrap(),
+        "the next run must move by the real dispatch span plus the interval: {first} -> {second}"
+    );
+    // Exactly one tick fired so far (the next one is the second deadline).
+    assert_eq!(requests.count(), 1);
+
+    scheduler.shutdown().await;
+}
+
+/// The next minute boundary strictly after `t` (the `* * * * *` fire:
+/// the `cron` crate fires at second 0 of every matching minute).
+fn next_whole_minute(t: DateTime<Utc>) -> DateTime<Utc> {
+    t.with_second(0)
+        .and_then(|t| t.with_nanosecond(0))
+        .expect("a valid instant")
+        + chrono::Duration::minutes(1)
+}
+
+/// `next_whole_minute` zeroes the WHOLE sub-second remainder (the second
+/// AND the nanosecond part that a nanosecond-resolution Linux clock can
+/// leave behind; macOS clocks resolve only to microseconds) before
+/// stepping to the next minute boundary.
+#[test]
+fn next_whole_minute_drops_the_subsecond_remainder() {
+    let t = Utc.with_ymd_and_hms(2026, 10, 16, 19, 48, 47).unwrap();
+    assert_eq!(
+        next_whole_minute(t + chrono::Duration::nanoseconds(89_470_430)),
+        Utc.with_ymd_and_hms(2026, 10, 16, 19, 49, 0).unwrap()
+    );
+    assert_eq!(
+        next_whole_minute(Utc.with_ymd_and_hms(2026, 10, 16, 19, 48, 0).unwrap()),
+        Utc.with_ymd_and_hms(2026, 10, 16, 19, 49, 0).unwrap()
+    );
+}
+
+/// (EDG-34) For a wall-clock cron, `nextRunAt` is the next matching
+/// instant of the expression — the same computation the task's delay
+/// derives from (the task commits the MONOTONIC deadline it will wait
+/// for; the conversion to UTC happens at publish time with the current
+/// wall↔monotonic relationship).
+#[tokio::test]
+async fn next_run_matches_the_wall_clock_expression() {
+    tokio::time::pause();
+    let root = tempfile::tempdir().unwrap();
+    let requests = RecordedRequests::default();
+    let mut index = ManifestIndex::new();
+    index.set_roots(vec![root.path().to_path_buf()]);
+    insert_version(
+        &mut index,
+        root.path(),
+        "wallclock-worker",
+        "1.0.0",
+        Some(vec![job("* * * * *", "/tick", None)]),
+        false,
+    );
+
+    // The task reads its civil instant from the injected wall.
+    let wall = Arc::new(TestWall::new());
+    let before = wall.now();
+    let (mut scheduler, _app, metrics) = start_harness_factory_at_wall(
+        index,
+        Arc::new(RecordingFactory {
+            requests: requests.clone(),
+        }),
+        RECONCILE,
+        Some("root-secret"),
+        test_wall(&wall),
+    )
+    .await;
+    advance_until(Duration::from_millis(50), || {
+        first_next_run(&metrics).is_some()
+    })
+    .await;
+    let at = first_next_run(&metrics).expect("the next run of the wall clock job");
+    let after = wall.now();
+
+    // The task computed `next_after` from the injected wall inside
+    // [before, after]: the published instant is the next full minute from
+    // that point.
+    let expected = [next_whole_minute(before), next_whole_minute(after)];
+    assert!(
+        expected.contains(&at),
+        "next run {at} is not the next full minute from before {before} / after {after}"
+    );
+
+    scheduler.shutdown().await;
+}
+
+/// The captured `info` events with the given message for the given worker
+/// since `offset`.
+fn captured_change_lines(
+    sink: &Arc<Mutex<Vec<CapturedEvent>>>,
+    offset: usize,
+    message: &str,
+    worker: &str,
+) -> Vec<String> {
+    let events = sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    events[offset..]
+        .iter()
+        .filter(|event| {
+            // The worker field is logged with Debug escaping (`?worker`,
+            // EDG-34 emenda 2): `worker="name"` in the rendered line.
+            event.fields.contains(&format!("message={message}"))
+                && event.fields.contains(&format!("worker=\"{worker}\""))
+        })
+        .map(|event| event.fields.clone())
+        .collect()
+}
+
+/// (EDG-34) The job-set change lines are `info` and fire once per change:
+/// `cron job started` on registration, `cron job stopped` on the removal
+/// (the drain start), `cron job drained` on the reaping — each with
+/// worker/schedule/path/method and the resolved version (`unresolved` once
+/// the worker no longer resolves) — and an unchanged reconciliation writes
+/// none of them.
+#[tokio::test]
+async fn job_change_lines_are_info_once_per_change() {
+    tokio::time::pause();
+    let sink = capture_sink();
+    let root = tempfile::tempdir().unwrap();
+    let requests = RecordedRequests::default();
+    let in_flight = Arc::new(AtomicBool::new(false));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let current = Arc::new(AtomicUsize::new(0));
+    let mut index = ManifestIndex::new();
+    index.set_roots(vec![root.path().to_path_buf()]);
+    insert_version(
+        &mut index,
+        root.path(),
+        "chg-worker",
+        "1.0.0",
+        Some(vec![job("@every 400ms", "/tick", None)]),
+        false,
+    );
+
+    let captured_before = sink
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .len();
+    let (mut scheduler, _app, _metrics) = start_harness_slow(
+        index.clone(),
+        requests.clone(),
+        Duration::from_millis(100),
+        in_flight,
+        peak,
+        current,
+        Some("root-secret"),
+    )
+    .await;
+
+    // Registration (the boot reconcile) logs `started` exactly once, with
+    // the resolved version.
+    advance_until(Duration::from_millis(200), || {
+        captured_change_lines(&sink, captured_before, "cron job started", "chg-worker").len() == 1
+    })
+    .await;
+    let started =
+        &captured_change_lines(&sink, captured_before, "cron job started", "chg-worker")[0];
+    assert!(started.contains("schedule=\"@every 400ms\""), "{started}");
+    assert!(started.contains("path=\"/tick\""), "{started}");
+    assert!(started.contains("method=\"GET\""), "{started}");
+    assert!(started.contains("version=1.0.0"), "{started}");
+
+    // Two unchanged reconciles (50 ms each) write none of the change
+    // lines.
+    advance(Duration::from_millis(120)).await;
+    assert_eq!(
+        captured_change_lines(&sink, captured_before, "cron job started", "chg-worker").len(),
+        1
+    );
+    assert!(
+        captured_change_lines(&sink, captured_before, "cron job stopped", "chg-worker").is_empty()
+    );
+    assert!(
+        captured_change_lines(&sink, captured_before, "cron job drained", "chg-worker").is_empty()
+    );
+
+    // The first tick fires at +400 and its (100 ms) dispatch runs until
+    // +500; the disable at +450 lands with the dispatch in flight and
+    // starts the drain (`stopped`, once).
+    advance(Duration::from_millis(450)).await;
+    index
+        .set_worker_enabled("chg-worker", Some("1.0.0"), false)
+        .unwrap();
+    advance_until(Duration::from_millis(800), || {
+        captured_change_lines(&sink, captured_before, "cron job stopped", "chg-worker").len() == 1
+    })
+    .await;
+    let stopped =
+        &captured_change_lines(&sink, captured_before, "cron job stopped", "chg-worker")[0];
+    assert!(stopped.contains("schedule=\"@every 400ms\""), "{stopped}");
+    assert!(stopped.contains("path=\"/tick\""), "{stopped}");
+    assert!(stopped.contains("method=\"GET\""), "{stopped}");
+    // The worker no longer resolves (its only version is disabled).
+    assert!(stopped.contains("version=unresolved"), "{stopped}");
+
+    // The in-flight dispatch finishes (+500); the reaping logs `drained`
+    // once and the counters empty.
+    advance_until(Duration::from_millis(1000), || {
+        captured_change_lines(&sink, captured_before, "cron job drained", "chg-worker").len() == 1
+            && scheduler.draining_job_count() == 0
+    })
+    .await;
+    let drained =
+        &captured_change_lines(&sink, captured_before, "cron job drained", "chg-worker")[0];
+    assert!(drained.contains("schedule=\"@every 400ms\""), "{drained}");
+    assert!(drained.contains("path=\"/tick\""), "{drained}");
+    assert!(drained.contains("method=\"GET\""), "{drained}");
+    assert!(drained.contains("version=unresolved"), "{drained}");
+
+    // Two more unchanged reconciles: still exactly one line per change.
+    advance(Duration::from_millis(120)).await;
+    assert_eq!(
+        captured_change_lines(&sink, captured_before, "cron job started", "chg-worker").len(),
+        1
+    );
+    assert_eq!(
+        captured_change_lines(&sink, captured_before, "cron job stopped", "chg-worker").len(),
+        1
+    );
+    assert_eq!(
+        captured_change_lines(&sink, captured_before, "cron job drained", "chg-worker").len(),
+        1
+    );
+
+    scheduler.shutdown().await;
+}
+
+/// (EDG-34) More jobs than the task→supervisor signal channel holds, all
+/// registered in the same reconciliation: at the first publish every task
+/// signals its deadline, the channel (capacity `JOB_EVENTS_CAPACITY`)
+/// fills and `try_send` drops the overflow — and the same happens again
+/// after the tick. The deadline VALUE, however, lives in each task's own
+/// `watch` cell (the supervisor reads it when it builds the snapshot), so
+/// the published list stays complete and a job's published deadline only
+/// ever moves FORWARD — a deadline the task has already replaced never
+/// comes back.
+#[tokio::test]
+async fn full_signal_queue_keeps_the_published_deadlines_correct() {
+    tokio::time::pause();
+    const JOBS: usize = 100;
+    // The flood condition: more simultaneous senders than the bounded
+    // signal channel holds — without this, the test would not exercise a
+    // full queue.
+    const {
+        assert!(
+            JOBS > JOB_EVENTS_CAPACITY,
+            "the test needs more jobs than the signal channel holds"
+        );
+    }
+    let root = tempfile::tempdir().unwrap();
+    let requests = RecordedRequests::default();
+    let in_flight = Arc::new(AtomicBool::new(false));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let current = Arc::new(AtomicUsize::new(0));
+    let mut index = ManifestIndex::new();
+    index.set_roots(vec![root.path().to_path_buf()]);
+    // One cron job per worker, the same `@every` schedule: every task
+    // starts in the same reconciliation and fires on the same virtual
+    // step, and each dispatch runs on its own isolate (no serialization).
+    for i in 0..JOBS {
+        insert_version(
+            &mut index,
+            root.path(),
+            &format!("flood-w{i:03}"),
+            "1.0.0",
+            Some(vec![job("@every 100ms", "/tick", None)]),
+            false,
+        );
+    }
+
+    let (mut scheduler, _app, metrics) = start_harness_slow(
+        index,
+        requests.clone(),
+        Duration::from_millis(0),
+        in_flight,
+        peak,
+        current,
+        Some("root-secret"),
+    )
+    .await;
+
+    // Let every spawned task run its first loop (registering its first
+    // deadline at the scheduler start) before the test advances the
+    // clock: without this, the first `advance` step would jump the clock
+    // while some tasks were still unrun, and their first deadlines would
+    // no longer be whole multiples of the interval.
+    tokio::task::yield_now().await;
+
+    // First publish: every job carries its first deadline (start +
+    // interval); the channel is already full of the D1 signals (more
+    // senders than `JOB_EVENTS_CAPACITY`), the overflow dropped.
+    advance_until(Duration::from_millis(50), || {
+        metrics
+            .jobs()
+            .jobs
+            .iter()
+            .all(|job| job.next_run_at.is_some())
+    })
+    .await;
+    let jobs = metrics.jobs().jobs;
+    assert_eq!(
+        jobs.len(),
+        JOBS,
+        "a full queue never loses a job from the list"
+    );
+    let d1 = jobs[0]
+        .next_run_at
+        .expect("every job carries its first deadline");
+    assert!(
+        jobs.iter().all(|job| job.next_run_at == Some(d1)),
+        "every task sleeps until the same first deadline"
+    );
+
+    // The tick and everything after: sample the published snapshot at
+    // every step. A job's published deadline may ADVANCE (its dispatch
+    // ends and it re-sleeps) but must never fall back to a deadline the
+    // task has already replaced — exactly what a supervisor-side
+    // (recomputed or signal-fed) value could show after a dropped
+    // signal. (The jobs are keyed here by worker; the path is fixed.)
+    let mut last: BTreeMap<String, DateTime<Utc>> =
+        jobs.iter().map(|job| (job.worker.clone(), d1)).collect();
+    let mut advanced = Duration::from_millis(0);
+    loop {
+        tokio::time::advance(Duration::from_millis(10)).await;
+        advanced += Duration::from_millis(10);
+        let jobs = metrics.jobs().jobs;
+        for job in &jobs {
+            let Some(at) = job.next_run_at else {
+                continue; // draining (not expected here) or before its first sleep
+            };
+            // (emenda 2) while the job's dispatch is in flight the
+            // published value is the CURRENT instant (the committed
+            // deadline already fired and the conversion saturates) — it
+            // still only moves forward.
+            let prev = last
+                .get(&job.worker)
+                .expect("every job was tracked since the start");
+            assert!(
+                at >= *prev,
+                "job {} published {at} after {prev}: a replaced deadline came back",
+                job.worker
+            );
+            last.insert(job.worker.clone(), at);
+        }
+        if jobs.iter().all(|job| job.next_run_at > Some(d1)) {
+            break;
+        }
+        if advanced >= Duration::from_millis(3_000) {
+            panic!(
+                "a job never re-slept past its first deadline after {advanced:?} of virtual time"
+            );
+        }
+    }
+
+    // Every job finished its first dispatch and re-slept: the published
+    // value is the task's own fresh deadline, never the replaced D1. (The
+    // loop above can stop while a job's dispatch is still in flight —
+    // the saturated current-wall value already moved past D1 — so drain
+    // the remaining dispatches first.)
+    let mut drained = Duration::from_millis(0);
+    while requests.count() < JOBS {
+        if drained >= Duration::from_secs(2) {
+            panic!(
+                "{}/{} dispatches done after an extra {drained:?} of virtual time",
+                requests.count(),
+                JOBS
+            );
+        }
+        tokio::time::advance(Duration::from_millis(10)).await;
+        drained += Duration::from_millis(10);
+    }
+    let jobs = metrics.jobs().jobs;
+    assert!(
+        jobs.iter().all(|job| job.next_run_at > Some(d1)),
+        "every deadline is the task's own (newer than the replaced one)"
+    );
+    assert!(
+        jobs.iter().all(|job| job.state == CronJobState::Active),
+        "firing jobs stay active"
+    );
+    assert!(requests.count() >= JOBS, "at least one tick per job");
+    assert_eq!(scheduler.active_job_count(), JOBS);
+    assert_eq!(scheduler.draining_job_count(), 0);
+
+    scheduler.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// (EDG-34 emenda 2) The reviewer probes, now permanent: the draining
+// visibility of a removed worker, the snapshot during the shutdown
+// transitions, the `enabled` read-out lifecycle, the civil wall step and
+// the log escaping.
+// ---------------------------------------------------------------------------
+
+/// Read `GET /api/admin/cron/jobs` through the pipeline with the root key
+/// and return (status, json, text).
+async fn admin_cron_jobs(app: &Router, root_key: &str) -> (StatusCode, serde_json::Value, String) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/admin/cron/jobs")
+                .header("authorization", format!("Bearer {root_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json, text)
+}
+
+/// (EDG-34 emenda 2) Without the Bearer root the scheduler still starts
+/// (the jobs dispatch, minus the internal header), but the read-out must
+/// be `false`: `enabled` is `true` only when the scheduler will actually
+/// dispatch — started AND with the root Bearer configured.
+#[tokio::test]
+async fn missing_root_reports_disabled() {
+    tokio::time::pause();
+    let root = tempfile::tempdir().unwrap();
+    let mut index = ManifestIndex::new();
+    index.set_roots(vec![root.path().to_path_buf()]);
+    insert_version(
+        &mut index,
+        root.path(),
+        "enabled-worker",
+        "1.0.0",
+        Some(vec![job("@every 100ms", "/tick", None)]),
+        false,
+    );
+
+    let (mut scheduler, _app, metrics) =
+        start_harness(index, RecordedRequests::default(), None).await;
+    assert!(
+        !metrics.scheduler_enabled(),
+        "the read-out must be false without a root Bearer"
+    );
+    // The job still runs (the pre-existing behavior is untouched).
+    advance_until(Duration::from_millis(200), || {
+        scheduler.active_job_count() == 1
+    })
+    .await;
+
+    scheduler.shutdown().await;
+}
+
+/// (EDG-34 emenda 2) `enabled` is `true` while the scheduler runs and
+/// goes back to `false` when the supervisor ends — here by shutdown (the
+/// same drop guard covers abort and panic): the endpoint and the shared
+/// metrics both report the scheduler as off.
+#[tokio::test]
+async fn shutdown_disables_enabled_flag() {
+    tokio::time::pause();
+    let root = tempfile::tempdir().unwrap();
+    let mut index = ManifestIndex::new();
+    index.set_roots(vec![root.path().to_path_buf()]);
+    insert_version(
+        &mut index,
+        root.path(),
+        "enabled-worker",
+        "1.0.0",
+        Some(vec![job("@every 100ms", "/tick", None)]),
+        false,
+    );
+
+    let (mut scheduler, app, metrics) =
+        start_harness(index, RecordedRequests::default(), Some("root-secret")).await;
+    assert!(
+        metrics.scheduler_enabled(),
+        "a started scheduler with a root Bearer is enabled"
+    );
+    let (_, before, text) = admin_cron_jobs(&app, "root-secret").await;
+    assert_eq!(before["enabled"], true, "{text}");
+
+    scheduler.shutdown().await;
+    assert!(
+        !metrics.scheduler_enabled(),
+        "the read-out must be false once the supervisor ends"
+    );
+    let (status, after, text) = admin_cron_jobs(&app, "root-secret").await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        after["enabled"], false,
+        "the endpoint must report the scheduler off: {text}"
+    );
+    assert!(after["jobs"].as_array().expect("jobs").is_empty(), "{text}");
+}
+
+/// A factory with a different delay per worker name (one fast, one slow
+/// dispatch) and a PER-WORKER in-flight flag, so a shutdown test can hold
+/// BOTH dispatches in flight (a single shared flag would be cleared by the
+/// fast task while the slow one was still running).
+struct SplitFactory {
+    requests: RecordedRequests,
+    fast: Duration,
+    slow: Duration,
+    fast_in_flight: Arc<AtomicBool>,
+    slow_in_flight: Arc<AtomicBool>,
+    peak: Arc<AtomicUsize>,
+    current: Arc<AtomicUsize>,
+}
+
+impl IsolateFactory for SplitFactory {
+    fn create_isolate(&self, worker_ref: &edger_core::WorkerRef) -> Box<dyn Isolate> {
+        let (delay, in_flight) = if worker_ref.name.contains("-slow") {
+            (self.slow, self.slow_in_flight.clone())
+        } else {
+            (self.fast, self.fast_in_flight.clone())
+        };
+        Box::new(SlowIsolate {
+            requests: self.requests.clone(),
+            delay,
+            in_flight,
+            peak: self.peak.clone(),
+            current: self.current.clone(),
+            version: worker_ref.version.clone(),
+        })
+    }
+}
+
+/// (EDG-34 emenda 2) The snapshot follows the shutdown transitions: right
+/// after the supervisor signals the generations, the shared read-out says
+/// `state: draining` with `nextRunAt: null` (the gauges already said so;
+/// the snapshot used to keep `active` until the last task ended), and an
+/// intermediate reap during the grace window removes the reaped job from
+/// the list while the slower one keeps draining — the counters come from
+/// the actual reaping.
+#[tokio::test]
+async fn shutdown_publishes_draining_snapshot_and_intermediate_reaps() {
+    tokio::time::pause();
+    let root = tempfile::tempdir().unwrap();
+    let requests = RecordedRequests::default();
+    let in_flight = Arc::new(AtomicBool::new(false));
+    let slow_in_flight = Arc::new(AtomicBool::new(false));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let current = Arc::new(AtomicUsize::new(0));
+    let mut index = ManifestIndex::new();
+    index.set_roots(vec![root.path().to_path_buf()]);
+    insert_version(
+        &mut index,
+        root.path(),
+        "sd-fast",
+        "1.0.0",
+        Some(vec![job("@every 100ms", "/tick", None)]),
+        false,
+    );
+    insert_version(
+        &mut index,
+        root.path(),
+        "sd-slow",
+        "1.0.0",
+        Some(vec![job("@every 100ms", "/tick", None)]),
+        false,
+    );
+
+    // Both tick at +100: the fast dispatch runs until +400, the slow one
+    // until +700. The shutdown lands while BOTH are in flight, so neither
+    // task can exit (or be reaped) before its dispatch finishes — the
+    // `draining: 2` window is stable, not a sub-step blip.
+    let (mut scheduler, app, metrics) = start_harness_factory_at_wall(
+        index,
+        Arc::new(SplitFactory {
+            requests: requests.clone(),
+            fast: Duration::from_millis(300),
+            slow: Duration::from_millis(600),
+            fast_in_flight: in_flight.clone(),
+            slow_in_flight: slow_in_flight.clone(),
+            peak: peak.clone(),
+            current: current.clone(),
+        }),
+        RECONCILE,
+        Some("root-secret"),
+        virtual_wall(),
+    )
+    .await;
+    advance_until(Duration::from_millis(300), || {
+        in_flight.load(Ordering::SeqCst) && slow_in_flight.load(Ordering::SeqCst)
+    })
+    .await;
+
+    // Start the shutdown (it signals the generations without waiting).
+    let stopping = tokio::spawn(async move { scheduler.shutdown().await });
+
+    // The signal lands: both jobs are draining — the SNAPSHOT and the
+    // endpoint agree with the gauges (this is the window the probe hit
+    // while the snapshot still said `active`).
+    advance_until(Duration::from_millis(200), || metrics.draining_jobs() == 2).await;
+    let snapshot = metrics.jobs();
+    assert_eq!(snapshot.jobs.len(), 2, "both jobs are still tracked");
+    for job in &snapshot.jobs {
+        assert_eq!(job.state, CronJobState::Draining, "{}", job.worker);
+        assert!(job.next_run_at.is_none(), "a draining job has no next run");
+    }
+    let (status, json, text) = admin_cron_jobs(&app, "root-secret").await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    for item in json["jobs"].as_array().expect("jobs") {
+        assert_eq!(item["state"], "draining", "{}", text);
+        assert!(item["nextRunAt"].is_null(), "{}", text);
+    }
+
+    // The fast task (sleeping, no dispatch) exits and is reaped DURING the
+    // grace window: the intermediate reap is visible right away — the job
+    // leaves the snapshot and the gauges drop to one.
+    advance_until(Duration::from_millis(500), || metrics.draining_jobs() == 1).await;
+    let snapshot = metrics.jobs();
+    let names: Vec<_> = snapshot
+        .jobs
+        .iter()
+        .map(|job| job.worker.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["sd-slow"],
+        "the reaped job left the snapshot: {names:?}"
+    );
+    assert_eq!(requests.count(), 1, "one tick done so far (the fast one)");
+    assert!(
+        slow_in_flight.load(Ordering::SeqCst),
+        "the slow dispatch is still in flight"
+    );
+    let (_, json, text) = admin_cron_jobs(&app, "root-secret").await;
+    let jobs = json["jobs"].as_array().expect("jobs");
+    assert_eq!(jobs.len(), 1, "{}", text);
+    assert_eq!(jobs[0]["worker"], "sd-slow", "{}", text);
+    assert_eq!(jobs[0]["state"], "draining", "{}", text);
+
+    // The slow dispatch finishes on its own (+700) inside the grace
+    // window and the last reap empties the counters (no `store(0)`).
+    stopping.await.unwrap();
+    assert_eq!(metrics.active_jobs(), 0);
+    assert_eq!(metrics.draining_jobs(), 0);
+    assert!(metrics.jobs().jobs.is_empty());
+}
+
+/// (EDG-34 emenda 2) A civil wall step of +120 s (NTP / suspend) does not
+/// move the task's MONOTONIC sleep — the tick is still 60 s away in
+/// virtual time — but the deadline → UTC conversion uses the CURRENT
+/// wall↔monotonic relationship: after the jump, the next republish moves
+/// the published instant by +120 s and it is still 60 s in the future
+/// (a boot-time anchor would render it 120 s in the past).
+#[tokio::test]
+async fn next_run_follows_the_current_wall_mapping_after_a_wall_step() {
+    tokio::time::pause();
+    let root = tempfile::tempdir().unwrap();
+    let requests = RecordedRequests::default();
+    let mut index = ManifestIndex::new();
+    index.set_roots(vec![root.path().to_path_buf()]);
+    insert_version(
+        &mut index,
+        root.path(),
+        "walljump-worker",
+        "1.0.0",
+        Some(vec![job("@every 60s", "/tick", None)]),
+        false,
+    );
+
+    let wall = Arc::new(TestWall::new());
+    let (mut scheduler, _app, metrics) = start_harness_factory_at_wall(
+        index,
+        Arc::new(RecordingFactory {
+            requests: requests.clone(),
+        }),
+        RECONCILE,
+        Some("root-secret"),
+        test_wall(&wall),
+    )
+    .await;
+
+    advance_until(Duration::from_millis(50), || {
+        first_next_run(&metrics).is_some()
+    })
+    .await;
+    let before = first_next_run(&metrics).expect("the first deadline");
+
+    // Model the +120 s civil step: the monotonic clock (the task's sleep)
+    // is untouched, only the civil mapping moves.
+    wall.jump(chrono::Duration::seconds(120));
+
+    // The next republish (a reconciliation) converts with the current
+    // mapping: the published instant jumps +120 s.
+    advance_until(Duration::from_millis(200), || {
+        first_next_run(&metrics) > Some(before)
+    })
+    .await;
+    let after = first_next_run(&metrics).expect("the republished deadline");
+    assert_eq!(
+        after - before,
+        chrono::Duration::seconds(120),
+        "the civil step must move the published instant, not the task's deadline"
+    );
+    // ...and it is still 60 s in the future from the CURRENT wall.
+    let ahead = after.signed_duration_since(wall.now());
+    assert!(
+        ahead >= chrono::Duration::seconds(60) - chrono::Duration::milliseconds(150)
+            && ahead <= chrono::Duration::seconds(60) + chrono::Duration::milliseconds(150),
+        "the published next run must still be ~60 s in the future, got {ahead}"
+    );
+    // The tick did not move: no dispatch fired (60 s away in virtual
+    // time).
+    assert_eq!(requests.count(), 0, "the monotonic sleep is unchanged");
+
+    scheduler.shutdown().await;
+}
+
+/// (EDG-34 emenda 2, CWE-117) The cron lines log the manifest-derived
+/// fields with unambiguous Debug escaping (`?field`): a CR/LF embedded in
+/// a value — e.g. a worker NAME, which the `cron[]` manifest validation
+/// does not cover — must stay on ONE physical line in the rendered
+/// output. Rendered through the production `fmt` layer with the same
+/// field structure as the job-set change lines.
+#[test]
+fn cron_log_fields_are_debug_escaped_on_one_physical_line() {
+    use std::io::Write;
+
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+    impl Write for SharedWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let writer_buffer = buffer.clone();
+    let fmt_subscriber = tracing_subscriber::fmt::Subscriber::builder()
+        .with_ansi(false)
+        .with_writer(move || Box::new(SharedWriter(writer_buffer.clone())))
+        .finish();
+
+    // A value with CR/LF on every manifest-derived field (a name that did
+    // not go through the `cron[]` control-character validation).
+    tracing::dispatcher::with_default(&tracing::Dispatch::new(fmt_subscriber), || {
+        tracing::info!(
+            worker = ?"evil\nfake=1",
+            schedule = ?"@every 100\r\nms",
+            path = ?"/ti\nck",
+            method = ?"GE\nT",
+            "cron job started"
+        );
+    });
+
+    let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+    assert_eq!(
+        rendered.lines().count(),
+        1,
+        "a control character must not forge a second physical line: {rendered:?}"
+    );
+    assert!(
+        rendered.contains(r#"worker="evil\nfake=1""#),
+        "the worker must be Debug-escaped: {rendered:?}"
+    );
+    assert!(
+        rendered.contains(r#"path="/ti\nck""#),
+        "the path must be Debug-escaped: {rendered:?}"
+    );
+    assert!(
+        rendered.contains(r#"method="GE\nT""#),
+        "the method must be Debug-escaped: {rendered:?}"
+    );
+
+    // The counter-example that motivated the escaping: the same values
+    // rendered with Display (the old `%field` form) WOULD leak the
+    // newlines into physical lines.
+    let display = format!(
+        "worker={} schedule={} path={} method={}",
+        "evil\nfake=1", "@every 100\r\nms", "/ti\nck", "GE\nT"
+    );
+    assert!(
+        display.lines().count() > 1,
+        "Display rendering leaks the newlines: {display:?}"
+    );
+}
+
+/// (EDG-34 rodada 3, P2) A successor generation waiting for its
+/// predecessor (disable + re-enable with a dispatch in flight) has NOT
+/// committed any sleep: its `nextRunAt` is `null` until its first sleep,
+/// and only then does it carry the real (future) deadline. The
+/// saturation to the current instant applies only to an EXISTING
+/// (already fired) deadline — a `None` cell must stay `null`, not become
+/// a "now" the task never committed.
+#[tokio::test]
+async fn successor_generation_has_no_next_run_until_its_first_sleep() {
+    tokio::time::pause();
+    let root = tempfile::tempdir().unwrap();
+    let requests = RecordedRequests::default();
+    let in_flight = Arc::new(AtomicBool::new(false));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let current = Arc::new(AtomicUsize::new(0));
+    let mut index = ManifestIndex::new();
+    index.set_roots(vec![root.path().to_path_buf()]);
+    insert_version(
+        &mut index,
+        root.path(),
+        "cron-successor",
+        "1.0.0",
+        Some(vec![job("@every 100ms", "/tick", None)]),
+        false,
+    );
+
+    // The dispatch takes 10 s — the in-flight window in which the
+    // disable/re-enable lands.
+    let wall = Arc::new(TestWall::new());
+    let (mut scheduler, app, metrics) = start_harness_factory_at_wall(
+        index.clone(),
+        Arc::new(SlowFactory {
+            requests: requests.clone(),
+            delay: Duration::from_secs(10),
+            in_flight: in_flight.clone(),
+            peak: peak.clone(),
+            current: current.clone(),
+        }),
+        RECONCILE,
+        Some("root-secret"),
+        test_wall(&wall),
+    )
+    .await;
+
+    // The first dispatch (at +100 ms) is in flight.
+    advance_until(Duration::from_millis(300), || {
+        in_flight.load(Ordering::SeqCst)
+    })
+    .await;
+
+    // Disable: the job leaves the desired set and its generation starts
+    // draining (the in-flight dispatch finishes normally).
+    index
+        .set_worker_enabled("cron-successor", Some("1.0.0"), false)
+        .unwrap();
+    advance_until(Duration::from_millis(100), || metrics.draining_jobs() == 1).await;
+
+    // Re-enable: a NEW generation of the same key starts — it waits for
+    // the still-in-flight predecessor before its first dispatch and has
+    // not committed any sleep.
+    index
+        .set_worker_enabled("cron-successor", Some("1.0.0"), true)
+        .unwrap();
+    advance_until(Duration::from_millis(100), || metrics.active_jobs() == 1).await;
+
+    // The ACTIVE job is the successor (its key sorts the draining
+    // generation first, so pick by state, not by position).
+    let active_job = || {
+        metrics
+            .jobs()
+            .jobs
+            .iter()
+            .find(|job| job.state == CronJobState::Active)
+            .cloned()
+    };
+    assert!(
+        active_job()
+            .expect("the successor generation is active")
+            .next_run_at
+            .is_none(),
+        "the waiting successor has not committed any sleep"
+    );
+    // ...and the endpoint shows the same: `null`, not an invented "now".
+    let (status, json, text) = admin_cron_jobs(&app, "root-secret").await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let active = json["jobs"]
+        .as_array()
+        .expect("jobs")
+        .iter()
+        .find(|job| job["state"] == "active")
+        .expect("the active successor is listed");
+    assert!(
+        active["nextRunAt"].is_null(),
+        "the endpoint shows null until the successor's first sleep: {text}"
+    );
+
+    // The predecessor's dispatch ends and the successor commits its first
+    // sleep: the `nextRunAt` becomes the REAL (still-ahead) deadline.
+    advance_until(Duration::from_secs(11), || {
+        active_job()
+            .map(|job| job.next_run_at.is_some())
+            .unwrap_or(false)
+    })
+    .await;
+    let next = active_job()
+        .expect("the successor")
+        .next_run_at
+        .expect("the real deadline");
+    assert!(
+        next > wall.now(),
+        "the committed deadline is a real, still-ahead instant: {next}"
+    );
+
+    scheduler.shutdown().await;
+}
+
+/// (EDG-34 round 4) A `nextRunAt` that FITS a `DateTime<Utc>` but falls
+/// after 9999-12-31T23:59:59.999Z would serialize with an RFC 3339
+/// extended year (`+10000-...`) that some clients cannot parse: the
+/// snapshot publishes `null` there — exactly as when the instant does not
+/// fit a `DateTime<Utc>` at all — while the LAST millisecond of the year
+/// 9999 is still published. The civil wall is parked at the last second
+/// of 9999 (paused clock, deterministic: the published instant is
+/// `base + interval`, independent of when the snapshot is read).
+#[tokio::test]
+async fn next_run_is_null_after_year_9999_and_published_in_9999() {
+    tokio::time::pause();
+    let root = tempfile::tempdir().unwrap();
+    let mut index = ManifestIndex::new();
+    index.set_roots(vec![root.path().to_path_buf()]);
+    // 999 ms ahead of the wall base: still 9999-12-31T23:59:59.999Z (the
+    // last published millisecond of the year). 1_000 ms ahead: the first
+    // instant of the year 10000 (published as `null`).
+    insert_version(
+        &mut index,
+        root.path(),
+        "boundary-9999",
+        "1.0.0",
+        Some(vec![job("@every 999ms", "/tick", None)]),
+        false,
+    );
+    insert_version(
+        &mut index,
+        root.path(),
+        "boundary-10000",
+        "1.0.0",
+        Some(vec![job("@every 1000ms", "/tick", None)]),
+        false,
+    );
+    let base = Utc.with_ymd_and_hms(9999, 12, 31, 23, 59, 59).unwrap();
+    let mono0 = tokio::time::Instant::now();
+    let wall = Arc::new(move || {
+        let elapsed = tokio::time::Instant::now() - mono0;
+        base + chrono::Duration::from_std(elapsed).unwrap_or_else(|_| chrono::Duration::zero())
+    });
+    let requests = RecordedRequests::default();
+    let (mut scheduler, app, metrics) = start_harness_factory_at_wall(
+        index,
+        Arc::new(RecordingFactory {
+            requests: requests.clone(),
+        }),
+        RECONCILE,
+        Some("test-root"),
+        wall,
+    )
+    .await;
+
+    // Wait for the in-year job's deadline to be committed and published
+    // (proof the tasks ran their first iteration), then a few more steps
+    // so the after-year job's commit is flushed into a republish.
+    advance_until(Duration::from_millis(100), || {
+        metrics
+            .jobs()
+            .jobs
+            .iter()
+            .any(|j| j.worker == "boundary-9999" && j.next_run_at.is_some())
+    })
+    .await;
+    for _ in 0..20 {
+        tokio::time::advance(Duration::from_millis(1)).await;
+    }
+
+    // The snapshot: the in-year instant is published, the after-year
+    // instant is `null`.
+    let jobs = metrics.jobs().jobs;
+    let before = jobs
+        .iter()
+        .find(|j| j.worker == "boundary-9999")
+        .expect("the in-year job is tracked");
+    assert_eq!(
+        before.next_run_at,
+        Some(base + chrono::Duration::milliseconds(999)),
+        "the last millisecond of the year 9999 is still published"
+    );
+    let after = jobs
+        .iter()
+        .find(|j| j.worker == "boundary-10000")
+        .expect("the after-year job is tracked");
+    assert_eq!(
+        after.next_run_at, None,
+        "a deadline that fits a DateTime but falls after 9999-12-31T23:59:59.999Z publishes null"
+    );
+
+    // The endpoint renders the same values: the RFC 3339 string with a
+    // four-digit year, and `null` for the after-year job.
+    let (status, body, text) = admin_cron_jobs(&app, "test-root").await;
+    assert_eq!(status, StatusCode::OK);
+    let entry = |worker: &str| -> serde_json::Value {
+        body["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|j| j["worker"] == worker)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    };
+    assert_eq!(
+        entry("boundary-9999")["nextRunAt"],
+        "9999-12-31T23:59:59.999Z",
+        "the endpoint keeps the four-digit year: {text}"
+    );
+    assert!(
+        entry("boundary-10000")["nextRunAt"].is_null(),
+        "the endpoint publishes null for the after-year deadline: {text}"
+    );
+
+    scheduler.shutdown().await;
 }

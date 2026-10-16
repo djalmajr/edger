@@ -322,6 +322,9 @@ Métricas v1:
 * `edger_ephemeral_rejected_total`
 * `edger_cron_executions_total`
 * `edger_cron_failures_total`
+* `edger_cron_jobs{state="active"}` e `edger_cron_jobs{state="draining"}`
+  (gauges; somente contagem, sem labels de worker/path/schedule — as
+  identidades dos jobs ficam na listagem `GET /api/admin/cron/jobs`)
 
 O middleware preserva `x-request-id` quando enviado pelo cliente e gera um UUID
 quando ausente. O mesmo ID é propagado para o worker via header antes do
@@ -531,6 +534,22 @@ gestão de keys.
 | `/api/admin/extensions/{name}/disable`
 | Mutação protegida. Remove extensão ativa de hooks/providers e persiste status
   quando o status store está configurado.
+
+| `GET`
+| `/api/admin/cron/jobs`
+| Lista os jobs rastreados pelo cron scheduler, com a version resolvida em
+  tempo de query (`null` quando não resolve; resolvida no máximo uma vez por
+  nome de worker por requisição), `state` (`active`/`draining`)
+  e `nextRunAt` (RFC 3339 UTC com milissegundos; `null` enquanto draining,
+  antes do primeiro sleep da task, quando o deadline comprometido não é
+  representável e quando o deadline cai depois de 9999-12-31T23:59:59.999Z —
+  ano estendido RFC 3339, que alguns clientes não conseguem fazer o parse).
+  Permission `observability:read`; keys não-root são filtradas pelo mesmo
+  predicado único de nome de worker de `GET /api/admin/workers`, aplicado ao
+  nome de cada job — um job drenando de worker que saiu do índice continua
+  visível (com `version: null`). O corpo também traz `enabled` (scheduler
+  iniciado E com o Bearer root configurado; `false` antes disso e depois que
+  o supervisor termina).
 
 |===
 
@@ -1274,8 +1293,59 @@ Requisitos operacionais:
 * `enabled: false` remove jobs no startup. Reabilitar worker em runtime exige
   reload/restart para registrar jobs no scheduler.
 * Schedules inválidos falham no startup com `CRON_SCHEDULE_INVALID`.
-* `/metrics` expõe `edger_cron_executions_total` e
-  `edger_cron_failures_total`.
+* Os `path`, `schedule` e `method` de `cron[]` não podem conter
+  caracteres de controle (qualquer `char::is_control`): a validação do
+  manifest rejeita com `VALIDATION_ERROR`, para que valores derivados do
+  manifest não forjem linhas físicas na saída de log do scheduler (o
+  NOME do worker não cobre essa validação — o escape é o que mantém as
+  linhas dele físicas). As linhas do scheduler registram esses campos em
+  forma Debug-escaped (`?campo`) e o aviso de job inválido registra o erro
+  em forma Debug-escaped (`?err`), então mesmo um valor que passe por um
+  caminho fora da validação sai em uma linha física só.
+* `/metrics` expõe `edger_cron_executions_total`,
+  `edger_cron_failures_total` e os gauges `edger_cron_jobs{state="active"}` e
+  `edger_cron_jobs{state="draining"}` (somente contagem; sem labels de
+  worker, path ou schedule).
+* `GET /api/admin/cron/jobs` (permission `observability:read`) responde
+  `enabled` (o scheduler está iniciado E com o Bearer root configurado;
+  volta a `false` quando o supervisor termina) e os jobs rastreados
+  ordenados por (worker, schedule, path, method). Cada item traz `worker`,
+  `schedule`, `path`, `method`, a `version` resolvida em tempo de query
+  (`null` quando não resolve — um job drenando de worker removido continua
+  visível até o reap; resolvida no máximo uma vez por nome de worker por
+  requisição, pelo `resolve_default_version` que devolve só a versão, sem
+  clonar o `WorkerRef` inteiro) e `state` (`active` | `draining`) e `nextRunAt` (RFC
+  3339 UTC com milissegundos; `null` enquanto draining, antes do primeiro
+  sleep da task, quando o deadline comprometido não é representável — um
+  intervalo `@every` próximo do maior `Duration` não cabe num `Instant`
+  monotônico nem num `DateTime<Utc>` — e quando o deadline cai depois de
+  9999-12-31T23:59:59.999Z: cabe num `DateTime<Utc>`, mas sairia com ano
+  estendido RFC 3339 (`+10000-...`) que alguns clientes não conseguem fazer
+  o parse; a conversão e o commit do deadline
+  usam aritmética verificada, então um manifest válido nunca dá panic no
+  supervisor compartilhado, e o sleep continua saturando num futuro
+  distante) — o deadline de
+  sleep comprometido pela própria task, guardado como instante MONOTÔNICO
+  na célula `watch` da task e convertido para UTC na publicação com a
+  relação atual entre relógio de parede e monotônico (um salto civil do
+  relógio de parede move o instante publicado, não o deadline da task);
+  durante um dispatch em voo o valor publicado é o instante atual (o
+  deadline vencido satura na conversão). Para `@every`, o deadline real
+  após um dispatch mais lento que o intervalo, adiado e não re-slotado; para
+  cron de parede, o próximo instante que casa com a expressão. O snapshot é
+  republicado também nas transições de shutdown (sinal das gerações e cada
+  reap na janela de grace/abort-wait), então o `draining` e os reaps
+  intermediários são visíveis imediatamente. Keys não-root veem somente jobs
+  de workers dentro do seu escopo (o mesmo predicado único de nome de
+  worker de `GET /api/admin/workers`). Mudanças no set de jobs logam uma
+  linha `info` cada (`cron job started` / `cron job stopped` / `cron job
+  drained`) com worker, schedule, path, method (todos em forma
+  Debug-escaped) e a version resolvida naquele momento (`unresolved` quando
+  não resolve), resolvida no máximo uma vez por nome de worker por passe do
+  supervisor (reconciliação, reap, shutdown) — um memo por passe,
+  descartado no fim do passe — e por requisição do endpoint, então um
+  manifest com muitas entradas `cron[]` custa O(workers distintos) por
+  passe/requisição, não O(jobs²).
 
 No v1, o parser aceita `@every <duration>` para testes/desenvolvimento e cron
 simples de minuto (`* * * * *`, `*/N * * * *` ou minuto fixo). Full cron grammar,

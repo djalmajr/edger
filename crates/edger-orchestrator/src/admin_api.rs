@@ -82,6 +82,7 @@ pub fn router() -> Router<OrchestratorState> {
         .route("/api/admin/workers/{name}/errors", get(worker_errors))
         .route("/api/admin/observability/events", get(observability_events))
         .route("/api/admin/observability/series", get(observability_series))
+        .route("/api/admin/cron/jobs", get(list_cron_jobs))
         .route(
             "/api/admin/observability/events/stream",
             get(observability_events_stream),
@@ -1685,6 +1686,110 @@ async fn observability_series(
         query.bucket_ms.unwrap_or(15_000),
     ))
     .into_response()
+}
+
+/// (EDG-34) The cron jobs the scheduler tracks, for operators who cannot
+/// read the logs. Permission `observability:read` (root passes); the list
+/// is filtered by the key's worker scope — the same single predicate
+/// (`principal_can_access_worker_name`) `list_workers`
+/// (`admin_workers_for_principal`) applies per entry (emenda 2), applied
+/// to each job's NAME rather than to index presence: a removed worker
+/// whose job is still draining stays visible (with `version: null`) for
+/// root and for the keys whose scope covers the name, and hidden from the
+/// rest. Each item carries the job
+/// identity, its `state` (`active`/`draining`), the `version` the
+/// unversioned route resolves to AT QUERY TIME (the same `resolve_worker`
+/// the tick uses; `null` when it does not resolve) and `nextRunAt` (the
+/// wall-clock rendering of the monotonic deadline the task is waiting
+/// for, RFC 3339 UTC; `null` while draining),
+/// ordered by worker, schedule, path and method. `enabled` is `true` only
+/// while the scheduler will actually dispatch — started and with the
+/// Bearer root configured — and goes back to `false` when the supervisor
+/// ends (emenda 2).
+async fn list_cron_jobs(State(state): State<OrchestratorState>, headers: HeaderMap) -> Response {
+    match authenticate(&state, &headers).await.and_then(|principal| {
+        require_permission(&principal, "observability:read")?;
+        Ok(principal)
+    }) {
+        Ok(principal) => {
+            // The same worker-scope choke point `list_workers` applies —
+            // the SINGLE predicate on (principal, full worker name), the
+            // one `admin_workers_for_principal` uses per entry (EDG-34
+            // emenda 2). It is applied to the job's NAME, not to index
+            // presence: a removed worker whose job is still draining keeps
+            // its name in scope and stays visible (with `version: null`),
+            // while a key whose scope does not cover the name sees none
+            // of its jobs.
+            let metrics = state.server.cron_metrics();
+            let jobs = metrics.jobs().jobs;
+            let principal = principal.clone();
+            let jobs = cron_job_entries(
+                jobs,
+                |name| {
+                    crate::manifest_index_stub::ManifestIndex::principal_can_access_worker_name(
+                        &principal, name,
+                    )
+                },
+                |name| state.index.resolve_default_version(name),
+            );
+            Json(json!({
+                "enabled": metrics.scheduler_enabled(),
+                "jobs": jobs,
+            }))
+            .into_response()
+        }
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+/// (EDG-34) The job entries of the `GET /api/admin/cron/jobs` response:
+/// the snapshot jobs that pass `scope_ok` (the key's worker scope, the
+/// same single predicate `list_workers` applies — applied to the job's
+/// NAME, so a removed worker whose job is still draining stays visible)
+/// and, for each, its identity, the `version` the unversioned route
+/// resolves to AT QUERY TIME through `resolve_version` (`null` when it
+/// does not resolve) and `nextRunAt` (the wall-clock rendering of the
+/// monotonic deadline the task is waiting for, RFC 3339 UTC).
+///
+/// (EDG-34 round 4, F1) The version of each worker NAME is resolved at
+/// most ONCE per request: the scope filter runs first (a name out of
+/// scope is never resolved) and the local memo, discarded with this call,
+/// caches the first resolution per name — a manifest with many `cron[]`
+/// entries costs O(distinct workers) per request, not O(jobs²).
+fn cron_job_entries(
+    jobs: Vec<crate::cron::CronJobInfo>,
+    scope_ok: impl Fn(&str) -> bool,
+    resolve_version: impl Fn(&str) -> Option<String>,
+) -> Vec<serde_json::Value> {
+    let mut memo: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    jobs.into_iter()
+        .filter(|job| scope_ok(&job.worker))
+        .map(|job| {
+            // One resolution per worker NAME per request (F1): the memo
+            // entry is only computed (and the name only cloned) on the
+            // first job of the name; every later job of the name reuses it.
+            let version = match memo.get(&job.worker) {
+                Some(cached) => cached.clone(),
+                None => {
+                    let version = resolve_version(&job.worker);
+                    memo.insert(job.worker.clone(), version.clone());
+                    version
+                }
+            };
+            json!({
+                "worker": job.worker,
+                "schedule": job.schedule,
+                "path": job.path,
+                "method": job.method,
+                "version": version,
+                "state": job.state.as_str(),
+                "nextRunAt": job.next_run_at.map(|at| {
+                    at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                }),
+            })
+        })
+        .collect()
 }
 
 async fn observability_events_stream(
@@ -3511,5 +3616,87 @@ mod upload_release_gate_tests {
         assert!(uploaded_manifest_declares_release(&alias_release).unwrap());
         assert!(is_root_manifest_name("manife\u{17F}t.yaml"));
         assert!(!is_root_manifest_name("notes.yaml"));
+    }
+}
+
+#[cfg(test)]
+mod cron_jobs_list_tests {
+    use super::cron_job_entries;
+    use crate::cron::{CronJobInfo, CronJobState};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn job(worker: &str, path: &str) -> CronJobInfo {
+        CronJobInfo {
+            worker: worker.into(),
+            schedule: "@every 1h".into(),
+            path: path.into(),
+            method: "GET".into(),
+            state: CronJobState::Active,
+            next_run_at: None,
+        }
+    }
+
+    /// (EDG-34 round 4, F1) The listing resolves the version of each
+    /// worker name at most ONCE per request: with 2_000 jobs of one
+    /// worker (the F1 shape) the resolver is called once for the name —
+    /// never once per job — and every entry gets the version.
+    #[test]
+    fn cron_job_entries_resolve_each_worker_name_once_per_request() {
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let resolve = move |name: &str| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            (name != "gone").then(|| "1.0.0".to_owned())
+        };
+        let jobs: Vec<CronJobInfo> = (0..2000).map(|i| job("many", &format!("/p{i}"))).collect();
+        let entries = cron_job_entries(jobs, |name| name == "many", resolve);
+        assert_eq!(entries.len(), 2000);
+        assert!(entries.iter().all(|e| e["version"] == "1.0.0"));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "one resolution per NAME per request, not per job"
+        );
+    }
+
+    /// (EDG-34 round 4, F1) The scope filter runs BEFORE the resolution:
+    /// a name out of scope is never resolved at all; and a name in scope
+    /// that does not resolve renders `version: null` from the CACHED
+    /// value (the `None` is memoized like the versions).
+    #[test]
+    fn cron_job_entries_skip_resolution_for_names_out_of_scope() {
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let resolve = move |name: &str| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            (name != "gone").then(|| "1.0.0".to_owned())
+        };
+        let jobs = vec![
+            job("in", "/a"),
+            job("in", "/b"),
+            job("gone", "/a"),
+            job("gone", "/b"),
+        ];
+        let entries = cron_job_entries(jobs, |name| name == "in", resolve);
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|e| e["worker"] == "in"));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the out-of-scope name is never resolved"
+        );
+
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let entries = cron_job_entries(
+            vec![job("gone", "/a"), job("gone", "/b")],
+            |_| true,
+            move |name: &str| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                (name != "gone").then(|| "1.0.0".to_owned())
+            },
+        );
+        assert!(entries.iter().all(|e| e["version"].is_null()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the `None` is cached too");
     }
 }

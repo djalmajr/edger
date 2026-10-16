@@ -178,6 +178,35 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   finishes, so the peak never exceeds the configured `with_hash_concurrency`
   ceiling).
 
+- Cron scheduler visibility (EDG-34):
+  - `GET /api/admin/cron/jobs` (permission `observability:read`) lists the
+    tracked jobs ordered by worker, schedule, path and method, each with
+    `version` (the version the unversioned route resolves now, `null` when
+    it cannot), `state` (`active` or `draining`) and `nextRunAt` (RFC 3339
+    UTC). The key's worker scope filters the list with the same predicate as
+    `GET /api/admin/workers`, applied to the job's worker name, so a
+    draining job of a deleted worker stays visible until it is reaped.
+    `enabled` is `true` only while the scheduler runs with the root Bearer
+    configured.
+  - `nextRunAt` is the deadline the job task actually sleeps until, kept as
+    a monotonic instant and converted to UTC when read, so a wall-clock
+    step moves the published time but not the tick. It is `null` while the
+    job drains, before its first sleep, and when the deadline cannot be
+    represented or falls after year 9999. Time arithmetic is checked, so a
+    huge valid `@every` interval no longer panics the shared supervisor.
+  - `/metrics` gains the count-only gauges
+    `edger_cron_jobs{state="active"|"draining"}`.
+  - Job-set changes log one `info` line each: `cron job started`,
+    `cron job stopped` (drain start) and `cron job drained` (reaped), with
+    the resolved version. Every cron log line writes `worker`, `schedule`,
+    `path`, `method` and errors Debug-escaped, and the manifest validation
+    refuses control characters in `cron[]` `path`, `schedule` and `method`,
+    so manifest text can no longer forge log lines.
+  - The listing and the change lines resolve each worker's version once per
+    request or supervisor pass (`ManifestIndex::resolve_default_version`,
+    no `WorkerRef` clone), so many `cron[]` entries cost linear time
+    instead of quadratic.
+
 ### Changed
 
 - Production platform (EDG-25): the shared `sqld` memory limit is 1 Gi
@@ -313,6 +342,12 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   list of hidden permissions, and the page follows the selected language.
 
 ### Fixed
+
+- Expired API keys no longer authenticate from the cache (EDG-35): a key
+  cached while still valid kept authenticating for up to 60 s after its
+  `expires_at`. `try_authenticate` now re-checks the cached deadline with
+  the store's clock and comparison and drops the expired entry, so the
+  next request is rejected. Revocation stays immediate.
 
 - Production control-plane route (EDG-25): the IngressRoute rule is a
   single line, because the cluster's Traefik rejects a rule with line
