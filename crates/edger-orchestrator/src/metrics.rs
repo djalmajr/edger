@@ -341,6 +341,22 @@ pub fn cron_metrics_prometheus(metrics: &CronMetrics) -> String {
         "Cron job executions that failed dispatch or returned an error status",
         metrics.failures_total(),
     );
+    // (EDG-34) The tracked-job gauges: the counters the scheduler's
+    // supervisor publishes. Count-only by design — no worker, path or
+    // schedule label (the operator sees identities in the admin listing).
+    push_metric_header(
+        &mut out,
+        "edger_cron_jobs",
+        "gauge",
+        "Cron jobs the scheduler currently tracks, by state",
+    );
+    out.push_str("edger_cron_jobs{state=\"active\"} ");
+    out.push_str(&metrics.active_jobs().to_string());
+    out.push('\n');
+    out.push_str("edger_cron_jobs{state=\"draining\"} ");
+    out.push_str(&metrics.draining_jobs().to_string());
+    out.push('\n');
+    out.push('\n');
     out
 }
 
@@ -1070,6 +1086,28 @@ fn push_metric(out: &mut String, name: &str, kind: &str, help: &str, value: u64)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cron_metrics_have_job_gauges_with_only_state_labels() {
+        let metrics = CronMetrics::default();
+        let output = cron_metrics_prometheus(&metrics);
+
+        assert!(output.contains("# TYPE edger_cron_jobs gauge"));
+        assert!(output.contains("edger_cron_jobs{state=\"active\"} 0"));
+        assert!(output.contains("edger_cron_jobs{state=\"draining\"} 0"));
+        assert!(output.contains("edger_cron_executions_total 0"));
+        assert!(output.contains("edger_cron_failures_total 0"));
+        // Count-only: the job gauges carry exactly the `state` label set.
+        for line in output
+            .lines()
+            .filter(|line| line.starts_with("edger_cron_jobs"))
+        {
+            assert!(line.contains("state=\""));
+            assert!(!line.contains("worker="));
+            assert!(!line.contains("path="));
+            assert!(!line.contains("schedule="));
+        }
+    }
 
     #[test]
     fn tenant_routing_counters_have_no_tenant_or_hostname_labels() {

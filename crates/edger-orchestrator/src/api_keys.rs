@@ -487,6 +487,23 @@ impl ApiKeyService {
         if let Ok(cache) = self.cache.read() {
             if let Some((principal, at, generation)) = cache.get(&cache_key) {
                 if *generation == lookup_generation && at.elapsed() < CACHE_TTL {
+                    // (EDG-35) The cached principal must not outlive the
+                    // key's absolute expiration: the store's
+                    // `lookup_by_key` re-checks `expires_at` on every cold
+                    // lookup, but the cache used to serve the entry up to
+                    // the TTL without re-validating the deadline. Same
+                    // clock and same comparison as the store (expired
+                    // when `expires_at < now`); the entry is rejected AND
+                    // removed so the next lookup does not serve it again.
+                    if let Some(expires_at) = principal.expires_at {
+                        if expires_at < now_epoch()? {
+                            drop(cache);
+                            if let Ok(mut cache) = self.cache.write() {
+                                cache.remove(&cache_key);
+                            }
+                            return Ok(None);
+                        }
+                    }
                     let principal = principal.clone();
                     drop(cache);
                     if self.cache_generation.load(Ordering::SeqCst) == lookup_generation {
@@ -899,6 +916,47 @@ mod tests {
             .unwrap();
         service.clear_cache();
         assert!(service.authenticate(&created.raw_key).is_none());
+    }
+
+    /// (EDG-35) A key warmed into the cache before it expires is rejected
+    /// (and its entry removed) once its absolute expiration passes inside
+    /// the 60 s cache TTL — the cache path used to serve the entry up to
+    /// the TTL without re-validating the cached `expires_at` deadline.
+    /// The deadline is the snapshot taken when the entry was cached (the
+    /// store row is immutable for `expires_at`), so the test uses a
+    /// genuinely short-lived key and the real clock.
+    #[test]
+    fn cached_key_is_rejected_and_removed_after_it_expires() {
+        let service = ApiKeyService::in_memory().unwrap();
+        // 1 s lifetime: the deadline passes INSIDE the 60 s cache TTL, so
+        // the warmed entry must be rejected by the re-check.
+        let mut req = request("curta-cache", &["workers:read"]);
+        req.expires_at = Some(now_epoch().unwrap() + 1);
+        let created = service.create(&root_principal(), req).unwrap();
+
+        // Warming: the first authentication (while the key is valid)
+        // caches the principal.
+        let principal = service.authenticate(&created.raw_key).unwrap();
+        assert!(principal.expires_at.is_some());
+
+        // The deadline passes (epoch-second granularity: wait past the
+        // next second boundary, with margin); the entry is still inside
+        // the 60 s cache TTL.
+        std::thread::sleep(std::time::Duration::from_millis(2_500));
+
+        // The warmed entry must be rejected — not served — and the entry
+        // removed so the next lookup does not serve it either.
+        assert!(
+            service
+                .try_authenticate(&created.raw_key)
+                .unwrap()
+                .is_none(),
+            "a warmed entry must not outlive the key's expiration"
+        );
+        assert!(service
+            .try_authenticate(&created.raw_key)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

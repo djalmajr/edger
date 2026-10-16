@@ -48,21 +48,80 @@
 //! tasks still in the `JoinSet`, and a task that does not yield by the
 //! deadlines is reported (`cron shutdown incomplete` warn with the
 //! remaining count) instead of being declared stopped.
+//!
+//! (EDG-34) Read-out publication: the counters and a `CronJobsSnapshot`
+//! (state + next dispatch instant per tracked job) live inside the shared
+//! `CronMetrics` object. The supervisor stays the single writer: it updates
+//! the counters and sends the snapshot through a `watch` channel (everyone
+//! else reads through the receiver — `CronMetrics::jobs`, the admin
+//! endpoint and `/metrics`). Each job task keeps its OWN sleep deadline in
+//! a `watch` cell (the task's next-run, not `now + interval` recomputed
+//! later) that the supervisor reads when it builds a snapshot; the task
+//! additionally signals every new deadline over a bounded task-to-
+//! supervisor channel (`try_send`, one signal per sleep) so the snapshot
+//! is republished promptly — a dropped signal (full queue) only delays the
+//! republish until the next reconciliation, it can never make the snapshot
+//! show a deadline the task has already replaced.
+//!
+//! (EDG-34 emenda 2) The deadline cell holds the MONOTONIC instant the
+//! task will wait for (`tokio::time::Instant`), for both `@every` and
+//! wall-clock schedules. The conversion to a wall-clock instant happens
+//! when the supervisor reads the cell (at snapshot build time), with the
+//! CURRENT wall↔monotonic relationship (`wall_now + (deadline -
+//! mono_now)`, saturating to the current instant when the deadline has
+//! already fired — the snapshot never shows an expired deadline as the
+//! next run). The wall clock is injectable (`CronSchedulerConfig::
+//! with_wall`, default `Utc::now`), so a civil wall adjustment (NTP step,
+//! suspend) is picked up on the next republish without touching the
+//! task's committed monotonic deadline. The snapshot is also republished
+//! during the shutdown transitions (after every generation is signaled and
+//! after each reap during the grace and abort-wait windows), with the
+//! counters coming from the actual reaping. The `enabled` read-out is
+//! `true` only while the scheduler will actually dispatch — started AND
+//! with the Bearer root configured (`CronSchedulerConfig::new(None)` stays
+//! `false`) — and a drop guard in the supervisor flips it back to `false`
+//! when the supervisor ends, by shutdown, abort or panic. Manifest-derived
+//! fields (`worker`, `schedule`, `path`, `method`) are logged with unambiguous
+//! Debug escaping (`?field`) on every cron line, and the manifest
+//! validation rejects control characters in the `cron[]` `path` and
+//! `schedule`.
+//!
+//! The job-set change lines (`cron job started` / `cron job stopped` /
+//! `cron job drained`) are `info`, one line per change (never per
+//! reconciliation), each carrying the version the unversioned route
+//! resolves to at that moment (`unresolved` when it cannot resolve, like
+//! `cron dispatched`).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
+/// An injectable wall clock (EDG-34): returns the current civil instant.
+/// The task sleeps are driven by the monotonic clock
+/// (`tokio::time::Instant`); the wall clock is consulted only at the read
+/// points — the supervisor's deadline→UTC conversion when it builds the
+/// snapshot and a wall-clock schedule's next fire — always with the
+/// CURRENT wall↔monotonic relationship, never a boot-time anchor. The
+/// default is the real civil clock; the paused-clock tests inject a wall
+/// that follows the (virtual) monotonic clock, plus a jump offset.
+pub type WallClock = Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>;
+/// The version resolver of the supervisor's per-pass memo (EDG-34 round
+/// 4, F1): given the index and a worker name, the version the unversioned
+/// route resolves to right now, or `None`. Default:
+/// `ManifestIndex::resolve_default_version`; the paused-clock tests inject
+/// a COUNTING resolver to assert that the supervisor resolves each worker
+/// name at most once per pass — never once per job (F1).
+pub type VersionResolver = Arc<dyn Fn(&ManifestIndex, &str) -> Option<String> + Send + Sync>;
 use edger_core::{
     parse_duration_string_to_ms, CoreError, CronJob, WorkerRef, INTERNAL_REQUEST_HEADER,
 };
 use saffron::Cron;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{Id, JoinHandle, JoinSet};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -82,16 +141,57 @@ const DEFAULT_SHUTDOWN_ABORT_WAIT: Duration = Duration::from_secs(1);
 /// request on the job tasks).
 const SUPERVISOR_SHUTDOWN_MARGIN: Duration = Duration::from_secs(1);
 const DEFAULT_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
+/// Capacity of the task → supervisor next-run SIGNAL channel (EDG-34):
+/// the supervisor wakes on every signal and drains the burst, so the queue
+/// stays near empty in steady state; a full queue drops the signal
+/// (harmless — the deadline itself lives in the task's `watch` cell, which
+/// the supervisor reads at the next snapshot publish).
+pub const JOB_EVENTS_CAPACITY: usize = 64;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct CronMetrics {
     inner: Arc<CronMetricsInner>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct CronMetricsInner {
     executions_total: AtomicU64,
     failures_total: AtomicU64,
+    /// Tracked-job counters (EDG-34): the supervisor (single owner of the
+    /// job tasks) is the only writer; `CronScheduler`, the admin view and
+    /// `/metrics` read the same atomics.
+    active_jobs: Arc<AtomicUsize>,
+    draining_jobs: Arc<AtomicUsize>,
+    /// Whether the scheduler is running (set by `CronScheduler::start`;
+    /// the admin endpoint reports it as `enabled`, EDG-34).
+    scheduler_enabled: AtomicBool,
+    /// Snapshot of the tracked jobs (EDG-34): the supervisor is the only
+    /// sender; every reader uses the receiver (`CronMetrics::jobs`).
+    snapshot_tx: watch::Sender<CronJobsSnapshot>,
+    snapshot_rx: watch::Receiver<CronJobsSnapshot>,
+}
+
+impl Default for CronMetrics {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(CronMetricsInner::default()),
+        }
+    }
+}
+
+impl Default for CronMetricsInner {
+    fn default() -> Self {
+        let (snapshot_tx, snapshot_rx) = watch::channel(CronJobsSnapshot::default());
+        Self {
+            executions_total: AtomicU64::new(0),
+            failures_total: AtomicU64::new(0),
+            active_jobs: Arc::new(AtomicUsize::new(0)),
+            draining_jobs: Arc::new(AtomicUsize::new(0)),
+            scheduler_enabled: AtomicBool::new(false),
+            snapshot_tx,
+            snapshot_rx,
+        }
+    }
 }
 
 impl CronMetrics {
@@ -110,14 +210,123 @@ impl CronMetrics {
     pub fn failures_total(&self) -> u64 {
         self.inner.failures_total.load(Ordering::Relaxed)
     }
+
+    /// Number of jobs actively scheduling dispatches (EDG-34); removed jobs
+    /// that are still draining are counted in [`CronMetrics::draining_jobs`].
+    pub fn active_jobs(&self) -> usize {
+        self.inner.active_jobs.load(Ordering::Relaxed)
+    }
+
+    /// Number of removed jobs whose task is still draining (EDG-34).
+    pub fn draining_jobs(&self) -> usize {
+        self.inner.draining_jobs.load(Ordering::Relaxed)
+    }
+
+    /// Whether the scheduler is running (EDG-34): the admin endpoint
+    /// reports it as `enabled` and answers with an empty list when it is
+    /// off.
+    pub fn scheduler_enabled(&self) -> bool {
+        self.inner.scheduler_enabled.load(Ordering::Relaxed)
+    }
+    /// The current read-only snapshot of the tracked jobs (EDG-34).
+    pub fn jobs(&self) -> CronJobsSnapshot {
+        self.inner.snapshot_rx.borrow().clone()
+    }
+
+    fn set_scheduler_enabled(&self, enabled: bool) {
+        self.inner
+            .scheduler_enabled
+            .store(enabled, Ordering::Relaxed);
+    }
 }
 
-#[derive(Clone, Debug)]
+/// The state of one tracked job in the snapshot and the admin listing
+/// (EDG-34).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CronJobState {
+    /// The job is scheduling dispatches.
+    Active,
+    /// The job left the desired set and is draining: its in-flight
+    /// dispatch finishes normally and it stops scheduling.
+    Draining,
+}
+
+impl CronJobState {
+    /// The value the admin endpoint renders (`"active"` / `"draining"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Draining => "draining",
+        }
+    }
+}
+
+/// One job entry in the snapshot published by the supervisor (EDG-34). The
+/// version is deliberately absent (the job key is versionless): the admin
+/// endpoint resolves the serving version at query time with the same
+/// resolver the tick uses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CronJobInfo {
+    pub worker: String,
+    pub schedule: String,
+    pub path: String,
+    pub method: String,
+    pub state: CronJobState,
+    /// The next dispatch instant the task is waiting for (`null` while
+    /// draining, before the task's first sleep, when the committed
+    /// deadline cannot be represented as a UTC instant, or when the
+    /// deadline falls after 9999-12-31T23:59:59.999Z — an instant that
+    /// still fits a `DateTime<Utc>` but would serialize with an RFC 3339
+    /// extended year that some clients cannot parse, EDG-34 round 4).
+    pub next_run_at: Option<DateTime<Utc>>,
+}
+
+/// The read-only snapshot of the jobs the supervisor tracks (EDG-34),
+/// ordered by worker, schedule, path and method; a key with two generations
+/// (a draining predecessor and a live successor) lists the draining one
+/// first.
+#[derive(Clone, Debug, Default)]
+pub struct CronJobsSnapshot {
+    pub jobs: Vec<CronJobInfo>,
+}
+
+/// Task → supervisor (EDG-34): a signal that a task committed to a new
+/// sleep deadline. The deadline VALUE itself lives in the generation's
+/// `deadline_rx` `watch` cell (written by the task before each sleep, read
+/// by the supervisor when it builds the snapshot); this bounded channel is
+/// only the prompt-wake trigger, so a dropped signal (full queue) degrades
+/// the republish latency — never the value. The signal carries no identity
+/// (the supervisor republishes the whole list from the watch cells).
+#[derive(Clone, Copy, Debug)]
+struct JobEvent;
+
+#[derive(Clone)]
 pub struct CronSchedulerConfig {
     root_api_key: Option<String>,
     reconcile_interval: Duration,
     shutdown_grace: Duration,
     shutdown_abort_wait: Duration,
+    /// The injectable wall clock (EDG-34); default: the real civil clock
+    /// (`Utc::now`).
+    wall: WallClock,
+    /// The injectable version resolver of the supervisor's per-pass memo
+    /// (EDG-34 round 4, F1); default:
+    /// `ManifestIndex::resolve_default_version`.
+    version_resolver: VersionResolver,
+}
+
+impl std::fmt::Debug for CronSchedulerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The root key is never rendered (the wall clock and the version
+        // resolver are `dyn Fn`s and not `Debug` either).
+        f.debug_struct("CronSchedulerConfig")
+            .field("root_api_key", &self.root_api_key.is_some())
+            .field("reconcile_interval", &self.reconcile_interval)
+            .field("shutdown_grace", &self.shutdown_grace)
+            .field("shutdown_abort_wait", &self.shutdown_abort_wait)
+            .field("version_resolver", &true)
+            .finish()
+    }
 }
 
 impl CronSchedulerConfig {
@@ -127,6 +336,8 @@ impl CronSchedulerConfig {
             reconcile_interval: DEFAULT_RECONCILE_INTERVAL,
             shutdown_grace: DEFAULT_SHUTDOWN_GRACE,
             shutdown_abort_wait: DEFAULT_SHUTDOWN_ABORT_WAIT,
+            wall: Arc::new(Utc::now),
+            version_resolver: Arc::new(|index, name| index.resolve_default_version(name)),
         }
     }
 
@@ -148,6 +359,58 @@ impl CronSchedulerConfig {
     pub fn with_shutdown_abort_wait(mut self, shutdown_abort_wait: Duration) -> Self {
         self.shutdown_abort_wait = shutdown_abort_wait;
         self
+    }
+
+    /// The injectable wall clock (EDG-34; default `Utc::now`): the deadline
+    /// → UTC conversion at snapshot build time and a wall-clock schedule's
+    /// next fire read the current instant from it.
+    pub fn with_wall(mut self, wall: WallClock) -> Self {
+        self.wall = wall;
+        self
+    }
+
+    /// The injectable version resolver of the supervisor's per-pass memo
+    /// (EDG-34 round 4, F1; default `ManifestIndex::resolve_default_version`
+    ///): the paused-clock tests inject a counting resolver to assert that
+    /// the supervisor resolves each worker name at most once per pass —
+    /// not once per job.
+    pub fn with_version_resolver(mut self, resolver: VersionResolver) -> Self {
+        self.version_resolver = resolver;
+        self
+    }
+}
+
+/// The per-pass version-resolution memo (EDG-34 round 4, F1): each worker
+/// name is resolved at most ONCE per supervisor pass (reconcile, reap,
+/// shutdown) — the value cached on the first job of the name is reused by
+/// every later job of the same name in the same pass — so a manifest with
+/// many `cron[]` entries costs O(distinct workers) per pass on the shared
+/// supervisor, not O(jobs²). The memo is a local of the pass (the admin
+/// request keeps its own equivalent local) and is discarded with it.
+pub struct VersionMemo {
+    versions: HashMap<String, Option<String>>,
+    resolver: VersionResolver,
+}
+
+impl VersionMemo {
+    pub fn new(resolver: VersionResolver) -> Self {
+        Self {
+            versions: HashMap::new(),
+            resolver,
+        }
+    }
+
+    /// The version of `worker` for this pass: the cached value on a repeat
+    /// (the common case — many jobs, one worker), one resolution through
+    /// the resolver otherwise. A `None` (the worker no longer resolves) is
+    /// cached too: the `unresolved` line of a pass does not re-resolve.
+    pub fn version(&mut self, index: &ManifestIndex, worker: &str) -> Option<String> {
+        if let Some(cached) = self.versions.get(worker) {
+            return cached.clone();
+        }
+        let version = (self.resolver)(index, worker);
+        self.versions.insert(worker.to_string(), version.clone());
+        version
     }
 }
 
@@ -212,7 +475,11 @@ impl CronSchedule {
                 let delta = chrono::Duration::from_std(*interval).map_err(|_| {
                     CoreError::new("CRON_SCHEDULE_INVALID", "cron interval is too large")
                 })?;
-                Ok(now + delta)
+                // Checked: an interval that does not fit the representable
+                // UTC range is an error, not a panic in the supervisor.
+                now.checked_add_signed(delta).ok_or_else(|| {
+                    CoreError::new("CRON_SCHEDULE_INVALID", "cron interval is too large")
+                })
             }
             Self::WallClock { expression, source } => expression
                 .next_after(now)
@@ -247,6 +514,15 @@ struct Generation {
     /// A task created for the same key while this generation is still live
     /// awaits this signal before its first dispatch (identity exclusion).
     done_rx: watch::Receiver<bool>,
+    /// The sleep deadline the task is committed to (EDG-34): the task
+    /// writes `Some(deadline)` before every sleep; the supervisor reads
+    /// this cell (not the signal channel) when it builds the snapshot, so
+    /// a dropped signal can never show a replaced deadline. `None` until
+    /// the task's first sleep. The cell holds the MONOTONIC instant the
+    /// task will wait for (both `@every` and wall-clock schedules); the
+    /// deadline → UTC conversion happens when the supervisor reads the
+    /// cell, with the current wall↔monotonic relationship (emenda 2).
+    deadline_rx: watch::Receiver<Option<tokio::time::Instant>>,
     /// Whether the supervisor already signaled a stop.
     stopped: bool,
 }
@@ -290,10 +566,19 @@ struct JobState {
     root_key_warned: bool,
     active: Arc<AtomicUsize>,
     draining: Arc<AtomicUsize>,
+    /// Task → supervisor next-run signal senders (EDG-34); each task keeps
+    /// a clone, the supervisor is the only reader. The signal only triggers
+    /// a prompt republish — the deadline value itself lives in the
+    /// generation's `deadline_rx`.
+    job_events_tx: mpsc::Sender<JobEvent>,
+    /// The injectable wall clock (EDG-34): the supervisor uses it when it
+    /// converts a task's committed monotonic deadline to the UTC instant
+    /// published in the snapshot.
+    wall: WallClock,
 }
 
 impl JobState {
-    fn new(active: Arc<AtomicUsize>, draining: Arc<AtomicUsize>) -> Self {
+    fn new(metrics: &CronMetrics, job_events_tx: mpsc::Sender<JobEvent>, wall: WallClock) -> Self {
         Self {
             jobs: JoinSet::new(),
             generations: HashMap::new(),
@@ -301,13 +586,21 @@ impl JobState {
             next_id: 0,
             invalid: BTreeSet::new(),
             root_key_warned: false,
-            active,
-            draining,
+            active: metrics.inner.active_jobs.clone(),
+            draining: metrics.inner.draining_jobs.clone(),
+            job_events_tx,
+            wall,
         }
     }
 
     /// Remove the finished generation (and update the counters).
-    fn remove_generation(&mut self, key: &CronJobKey, id: u64) {
+    fn remove_generation(
+        &mut self,
+        key: &CronJobKey,
+        id: u64,
+        index: &ManifestIndex,
+        memo: &mut VersionMemo,
+    ) {
         if let Some(gens) = self.generations.get_mut(key) {
             if let Some(pos) = gens.iter().position(|gen| gen.id == id) {
                 let stopped = gens.remove(pos).stopped;
@@ -319,10 +612,18 @@ impl JobState {
                 } else {
                     self.active.fetch_sub(1, Ordering::Relaxed);
                 }
-                tracing::debug!(
-                    worker = %key.worker,
-                    schedule = %key.schedule,
-                    path = %key.path,
+                // Resolved through the per-pass memo, EAGERLY (before the
+                // event): `tracing` fields are evaluated lazily, only when
+                // the event is dispatched to an interested subscriber —
+                // resolving here keeps the resolution independent of the
+                // log level (EDG-34 round 4, F1).
+                let version = resolved_version(memo, index, &key.worker);
+                tracing::info!(
+                    worker = ?key.worker,
+                    schedule = ?key.schedule,
+                    path = ?key.path,
+                    method = ?key.method,
+                    version = %version,
                     stopped,
                     "cron job drained"
                 );
@@ -334,7 +635,7 @@ impl JobState {
     /// entry — on success AND on failure: a task that finished normally
     /// must not retain its mapping — and drop its generation entry, which
     /// updates the counters.
-    fn reap_result(&mut self, result: ReapOutcome) {
+    fn reap_result(&mut self, result: ReapOutcome, index: &ManifestIndex, memo: &mut VersionMemo) {
         let id = match &result {
             Ok((id, _)) => *id,
             Err(err) => err.id(),
@@ -342,26 +643,29 @@ impl JobState {
         let mapped = self.task_ids.remove(&id);
         match result {
             Ok((_, (key, gen_id))) => {
-                self.remove_generation(&key, gen_id);
+                self.remove_generation(&key, gen_id, index, memo);
             }
             Err(err) => {
                 // Aborted or panicked: the `MarkDone` guard still fired, so
                 // identity exclusion is safe; the mapping (if still
                 // present) names the generation to drop.
                 if let Some((key, gen_id)) = mapped {
-                    self.remove_generation(&key, gen_id);
+                    self.remove_generation(&key, gen_id, index, memo);
                 }
                 if err.is_panic() {
-                    tracing::warn!("cron job task panicked: {err}");
+                    // The `JoinError` Display embeds the panic payload
+                    // unescaped; log it Debug-escaped so no payload text
+                    // can forge a physical log line.
+                    tracing::warn!(error = ?err, "cron job task panicked");
                 }
             }
         }
     }
 
     /// Reap every task that already finished (non-blocking).
-    fn reap_finished(&mut self) {
+    fn reap_finished(&mut self, index: &ManifestIndex, memo: &mut VersionMemo) {
         while let Some(result) = self.jobs.try_join_next_with_id() {
-            self.reap_result(result);
+            self.reap_result(result, index, memo);
         }
     }
 
@@ -373,7 +677,7 @@ impl JobState {
     /// exclusion signal (a successor waits for its predecessors). During
     /// shutdown the `JoinSet` is the completion confirmation, not this
     /// channel, so this pass is not run there.
-    fn reap_by_done(&mut self) {
+    fn reap_by_done(&mut self, index: &ManifestIndex, memo: &mut VersionMemo) {
         let mut done: Vec<(CronJobKey, u64)> = Vec::new();
         for (key, gens) in self.generations.iter() {
             for gen in gens {
@@ -383,7 +687,7 @@ impl JobState {
             }
         }
         for (key, id) in done {
-            self.remove_generation(&key, id);
+            self.remove_generation(&key, id, index, memo);
         }
     }
 
@@ -398,7 +702,12 @@ impl JobState {
     /// each one (it stops scheduling; an in-flight dispatch keeps running)
     /// WITHOUT waiting — reconciliation can never be blocked by a removed
     /// task.
-    fn stop_removed(&mut self, desired: &BTreeMap<CronJobKey, DesiredJob>) {
+    fn stop_removed(
+        &mut self,
+        desired: &BTreeMap<CronJobKey, DesiredJob>,
+        index: &ManifestIndex,
+        memo: &mut VersionMemo,
+    ) {
         for (key, gens) in self.generations.iter_mut() {
             if desired.contains_key(key) {
                 continue;
@@ -411,10 +720,15 @@ impl JobState {
                 let _ = gen.stop_tx.send(true);
                 self.active.fetch_sub(1, Ordering::Relaxed);
                 self.draining.fetch_add(1, Ordering::Relaxed);
-                tracing::debug!(
-                    worker = %key.worker,
-                    schedule = %key.schedule,
-                    path = %key.path,
+                // Eager (see `remove_generation`): the resolution is
+                // independent of the log level (EDG-34 round 4, F1).
+                let version = resolved_version(memo, index, &key.worker);
+                tracing::info!(
+                    worker = ?key.worker,
+                    schedule = ?key.schedule,
+                    path = ?key.path,
+                    method = ?key.method,
+                    version = %version,
                     "cron job stopped"
                 );
             }
@@ -433,6 +747,7 @@ impl JobState {
         index: &ManifestIndex,
         app: &Router,
         metrics: &CronMetrics,
+        memo: &mut VersionMemo,
     ) {
         for (key, job) in desired {
             let has_active = self
@@ -449,6 +764,11 @@ impl JobState {
                 .unwrap_or_default();
             let (stop_tx, stop_rx) = watch::channel(false);
             let (done_tx, done_rx) = watch::channel(false);
+            // The task's committed sleep deadline (EDG-34): the task writes
+            // it before every sleep; the supervisor reads it at snapshot
+            // build time, so the signal channel below is a pure wake
+            // trigger and a dropped signal never corrupts the value.
+            let (deadline_tx, deadline_rx) = watch::channel(None);
             let id = self.next_id;
             self.next_id += 1;
             let handle = self.jobs.spawn(run_job(
@@ -464,6 +784,9 @@ impl JobState {
                 stop_rx,
                 done_tx,
                 predecessors,
+                self.job_events_tx.clone(),
+                deadline_tx,
+                self.wall.clone(),
             ));
             self.task_ids.insert(handle.id(), (key.clone(), id));
             self.generations
@@ -473,17 +796,126 @@ impl JobState {
                     id,
                     stop_tx,
                     done_rx,
+                    deadline_rx,
                     stopped: false,
                 });
             self.active.fetch_add(1, Ordering::Relaxed);
-            tracing::debug!(
-                worker = %key.worker,
-                schedule = %key.schedule,
-                path = %key.path,
-                method = %key.method,
+            // Eager (see `remove_generation`): the resolution is
+            // independent of the log level (EDG-34 round 4, F1).
+            let version = resolved_version(memo, index, &key.worker);
+            tracing::info!(
+                worker = ?key.worker,
+                schedule = ?key.schedule,
+                path = ?key.path,
+                method = ?key.method,
+                version = %version,
                 "cron job started"
             );
         }
+    }
+
+    /// Publish the current job list to the read-only snapshot channel
+    /// (EDG-34): the state of every live generation plus, for the active
+    /// ones, the sleep deadline the task is committed to — read LIVE from
+    /// the generation's `deadline_rx` watch cell (the task's own value,
+    /// never a supervisor-side recompute). Runs in the supervisor (single
+    /// owner of the job tasks); the send never blocks (the receiver lives
+    /// in the process-wide `CronMetrics`).
+    fn publish_snapshot(&self, metrics: &CronMetrics) {
+        let mut jobs = Vec::with_capacity(self.live_gen_count());
+        for (key, gens) in &self.generations {
+            for gen in gens {
+                let state = if gen.stopped {
+                    CronJobState::Draining
+                } else {
+                    CronJobState::Active
+                };
+                // The deadline the task is waiting for (or, while its
+                // dispatch runs, the current instant — the committed
+                // deadline already fired and the conversion saturates to
+                // `now`; the next deadline is committed only after the
+                // dispatch ends). A draining generation stops scheduling:
+                // `null`. A generation that has not committed any deadline
+                // yet — a successor waiting for its predecessor before its
+                // first sleep — is also `null`: the task has not said when
+                // it will dispatch, so the snapshot must not invent one.
+                // The cell holds the MONOTONIC instant the task will wait
+                // for (emenda 2); the conversion to UTC uses the CURRENT
+                // wall↔monotonic relationship (`wall_now + (deadline -
+                // mono_now)`) with checked operations at every step:
+                // saturating to the current instant when the deadline has
+                // already fired, and `null` when a deadline that does not
+                // fit a `DateTime<Utc>` (a `@every` interval near the
+                // largest `Duration`) cannot be represented — the shared
+                // supervisor never panics on a manifest value — or when
+                // the instant falls after the year 9999: it still fits a
+                // `DateTime<Utc>`, but it would serialize with an RFC 3339
+                // extended year (`+10000-...`) that some clients cannot
+                // parse, so it publishes `null` exactly as the
+                // unrepresentable case does (EDG-34 round 4).
+                let next_run_at = if gen.stopped {
+                    None
+                } else {
+                    match *gen.deadline_rx.borrow() {
+                        // No committed deadline yet: `null` until the
+                        // task's first sleep.
+                        None => None,
+                        Some(deadline) => {
+                            let wall_now = (self.wall)();
+                            let mono_now = tokio::time::Instant::now();
+                            match deadline.checked_duration_since(mono_now) {
+                                // The deadline still lies ahead: convert
+                                // it with the current wall↔monotonic
+                                // relationship; `null` when the result
+                                // does not fit a representable UTC
+                                // instant (or lies after the year 9999,
+                                // above).
+                                Some(delta) => chrono::Duration::from_std(delta)
+                                    .ok()
+                                    .and_then(|delta| wall_now.checked_add_signed(delta))
+                                    .filter(|at| at.year() < 10000),
+                                // The committed deadline already fired (a
+                                // dispatch is running or the sleep is
+                                // about to be replaced): the current
+                                // instant — the snapshot never shows an
+                                // expired deadline as the next run.
+                                None => Some(wall_now),
+                            }
+                        }
+                    }
+                };
+                jobs.push(CronJobInfo {
+                    worker: key.worker.clone(),
+                    schedule: key.schedule.clone(),
+                    path: key.path.clone(),
+                    method: key.method.clone(),
+                    state,
+                    next_run_at,
+                });
+            }
+        }
+        // Order: worker, schedule, path, method; a key with two
+        // generations (a draining predecessor and a live successor) lists
+        // the draining one first.
+        jobs.sort_by(|a, b| {
+            (
+                a.worker.as_str(),
+                a.schedule.as_str(),
+                a.path.as_str(),
+                a.method.as_str(),
+            )
+                .cmp(&(
+                    b.worker.as_str(),
+                    b.schedule.as_str(),
+                    b.path.as_str(),
+                    b.method.as_str(),
+                ))
+                .then_with(|| {
+                    i32::from(a.state == CronJobState::Active)
+                        .cmp(&i32::from(b.state == CronJobState::Active))
+                })
+        });
+        let _ = metrics.inner.snapshot_tx.send(CronJobsSnapshot { jobs });
     }
 }
 
@@ -505,6 +937,15 @@ impl CronScheduler {
     /// their jobs running; the supervisor then re-reconciles from the index
     /// every `reconcile_interval`, adding jobs for newly installed/enabled
     /// workers and stopping the ones that left the desired set.
+    ///
+    /// (EDG-34) The tracked-job counters and the job snapshot live inside
+    /// the shared `metrics` object: the supervisor is the single writer
+    /// and every reader — `CronScheduler`, the admin endpoint and
+    /// `/metrics` — sees the same values. The `enabled` read-out is `true`
+    /// only when the scheduler will actually dispatch: started AND with
+    /// the Bearer root configured — `CronSchedulerConfig::new(None)` stays
+    /// `false` (emenda 2); a drop guard in the supervisor flips it back to
+    /// `false` when the supervisor ends, by shutdown, abort or panic.
     pub async fn start(
         config: CronSchedulerConfig,
         index: ManifestIndex,
@@ -513,17 +954,16 @@ impl CronScheduler {
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (ready_tx, ready_rx) = oneshot::channel();
-        let active = Arc::new(AtomicUsize::new(0));
-        let draining = Arc::new(AtomicUsize::new(0));
+        if config.root_api_key.is_some() {
+            metrics.set_scheduler_enabled(true);
+        }
         let supervisor = tokio::spawn(supervise(
             config.clone(),
             index,
             app,
-            metrics,
+            metrics.clone(),
             shutdown_rx,
             ready_tx,
-            active.clone(),
-            draining.clone(),
         ));
         // The supervisor does the first reconciliation before signaling
         // ready, so `start` keeps returning only with the boot jobs running.
@@ -532,8 +972,8 @@ impl CronScheduler {
             shutdown_tx,
             supervisor: Some(supervisor),
             config,
-            active,
-            draining,
+            active: metrics.inner.active_jobs.clone(),
+            draining: metrics.inner.draining_jobs.clone(),
         }
     }
 
@@ -581,6 +1021,19 @@ impl CronScheduler {
     }
 }
 
+/// Flips the `enabled` read-out back to `false` whenever the supervisor
+/// ends (emenda 2) — by shutdown, abort or panic: the guard is dropped
+/// with the supervisor's future on every exit path, so the endpoint never
+/// reports a scheduler that is no longer running. It never touches the
+/// job counters (those come from the actual reaping).
+struct SupervisorEnabledGuard(CronMetrics);
+
+impl Drop for SupervisorEnabledGuard {
+    fn drop(&mut self) {
+        self.0.set_scheduler_enabled(false);
+    }
+}
+
 /// The supervisor: single owner of all job-task state. The first
 /// reconciliation runs before the ready signal (boot workers), then the
 /// loop reaps the finished tasks (non-blocking), re-reconciles on the
@@ -588,8 +1041,10 @@ impl CronScheduler {
 /// deadline or the shutdown signal. Reconciliation, reaping and shutdown
 /// all run here, in sequence, with no shared lock — and the whole pass is
 /// synchronous, so a shutdown signal is only ever observed at the select
-/// boundary, never in the middle of a transfer.
-#[allow(clippy::too_many_arguments)]
+/// boundary, never in the middle of a transfer. (EDG-34) The loop also
+/// collects the tasks' next-run updates (a task-to-supervisor channel the
+/// tasks own) and republishes the read-only snapshot whenever the set or
+/// the next runs can have changed.
 async fn supervise(
     config: CronSchedulerConfig,
     index: ManifestIndex,
@@ -597,24 +1052,56 @@ async fn supervise(
     metrics: CronMetrics,
     mut shutdown_rx: watch::Receiver<bool>,
     ready_tx: oneshot::Sender<()>,
-    active: Arc<AtomicUsize>,
-    draining: Arc<AtomicUsize>,
 ) {
-    let mut state = JobState::new(active, draining);
+    // Task → supervisor next-run updates (EDG-34): the task owns its send
+    // half and the supervisor is the only reader. When every task has
+    // ended the channel closes: the branch below then parks (`pending`)
+    // instead of busy-looping on a permanently-ready `None`.
+    let (job_events_tx, job_events_rx) = mpsc::channel(JOB_EVENTS_CAPACITY);
+    let mut job_events: Option<mpsc::Receiver<JobEvent>> = Some(job_events_rx);
+    let mut state = JobState::new(&metrics, job_events_tx, config.wall.clone());
+    // The `enabled` read-out is owned by the supervisor's lifetime
+    // (emenda 2): dropped when this task ends, by shutdown, abort or
+    // panic.
+    let _enabled_guard = SupervisorEnabledGuard(metrics.clone());
 
-    reconcile_pass(&mut state, &config, &index, &app, &metrics);
+    // The version resolver of the per-pass memos (EDG-34 round 4, F1);
+    // the memos themselves are locals of each pass, so every pass starts
+    // from an empty memo and discards it with the pass.
+    let resolver = config.version_resolver.clone();
+    {
+        let mut memo = VersionMemo::new(resolver.clone());
+        reconcile_pass(&mut state, &config, &index, &app, &metrics, &mut memo);
+    }
+    state.publish_snapshot(&metrics);
     let _ = ready_tx.send(());
 
     let mut next_reconcile = tokio::time::Instant::now() + config.reconcile_interval;
     loop {
-        state.reap_finished();
-        state.reap_by_done();
+        // One memo per pass (EDG-34 round 4, F1): the reaps of this
+        // iteration and the reconcile (when due) share it, so a worker
+        // name is resolved at most once per iteration, however many jobs
+        // of it change.
+        let mut memo = VersionMemo::new(resolver.clone());
+        state.reap_finished(&index, &mut memo);
+        state.reap_by_done(&index, &mut memo);
         // The reconcile deadline is absolute: a wake for a finished task
         // never starves the periodic pass.
         if tokio::time::Instant::now() >= next_reconcile {
-            reconcile_pass(&mut state, &config, &index, &app, &metrics);
+            reconcile_pass(&mut state, &config, &index, &app, &metrics, &mut memo);
             next_reconcile = tokio::time::Instant::now() + config.reconcile_interval;
         }
+        // Drain the next-run signals queued since the last wake (one wake
+        // processes the whole burst; this catches the stragglers). The
+        // signals carry no value (the deadline lives in the generation's
+        // `watch` cell, read by the publish below) — they only mark that a
+        // republish is due.
+        if let Some(rx) = job_events.as_mut() {
+            while rx.try_recv().is_ok() {}
+        }
+        // Reaping, reconciliation or a next-run update may have changed
+        // the set or the next runs: republish the read-only snapshot.
+        state.publish_snapshot(&metrics);
         if state.live_gen_count() == 0 {
             // No live generations: wait for the next reconcile (or the
             // shutdown signal) instead of spinning on the `JoinSet`.
@@ -624,22 +1111,46 @@ async fn supervise(
             }
             continue;
         }
-        // Wait for a finished task, the next deadline or the shutdown
-        // signal; a finished task is reaped HERE (the `join_next` result is
-        // the only place its (key, generation id) is observable). The
-        // `reap_by_done` pass keeps the counters correct even for a
-        // completion the `JoinSet` does not report promptly.
+        // Wait for a finished task, a next-run update, the next deadline or
+        // the shutdown signal; a finished task is reaped HERE (the
+        // `join_next` result is the only place its (key, generation id)
+        // is observable). The `reap_by_done` pass keeps the counters
+        // correct even for a completion the `JoinSet` does not report
+        // promptly.
         let woken = tokio::select! {
             _ = shutdown_rx.changed() => SupervisorWake::Shutdown,
             result = state.jobs.join_next_with_id() => SupervisorWake::Reaped(result),
+            event = async {
+                match job_events.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => SupervisorWake::JobEvent(event),
             _ = tokio::time::sleep_until(next_reconcile) => SupervisorWake::Deadline,
         };
         match woken {
             SupervisorWake::Shutdown => break,
             SupervisorWake::Reaped(result) => {
                 if let Some(result) = result {
-                    state.reap_result(result);
+                    // The reap of one finished task is its own pass: its
+                    // own memo (EDG-34 round 4, F1).
+                    let mut memo = VersionMemo::new(resolver.clone());
+                    state.reap_result(result, &index, &mut memo);
                 }
+                state.publish_snapshot(&metrics);
+            }
+            SupervisorWake::JobEvent(Some(_)) => {
+                // A task committed to a new sleep deadline: republish the
+                // snapshot (the deadline VALUE is read live from the
+                // generation's `watch` cell, so the signal is a pure wake
+                // trigger and is not read).
+                state.publish_snapshot(&metrics);
+            }
+            SupervisorWake::JobEvent(None) => {
+                // Every task has ended: drop the branch so the closed
+                // `recv` (permanently ready with `None`) cannot busy-loop
+                // the select.
+                job_events = None;
             }
             SupervisorWake::Deadline => {}
         }
@@ -650,13 +1161,16 @@ async fn supervise(
     // stragglers and wait for their end — through the `JoinSet` — until the
     // abort-wait deadline; a task that does not yield is reported (`cron
     // shutdown incomplete`) instead of being declared stopped.
-    shutdown_pass(&mut state, &config).await;
+    shutdown_pass(&mut state, &config, &index, &metrics).await;
+    state.publish_snapshot(&metrics);
 }
 
 /// Which event woke the supervisor loop.
 enum SupervisorWake {
     Shutdown,
     Reaped(Option<ReapOutcome>),
+    /// A next-run update from a job task (`None` = the channel closed).
+    JobEvent(Option<JobEvent>),
     Deadline,
 }
 
@@ -673,6 +1187,7 @@ fn reconcile_pass(
     index: &ManifestIndex,
     app: &Router,
     metrics: &CronMetrics,
+    memo: &mut VersionMemo,
 ) {
     let desired = scan_desired_jobs(index, metrics, &mut state.invalid);
 
@@ -683,9 +1198,9 @@ fn reconcile_pass(
         );
     }
 
-    state.reap_finished();
-    state.stop_removed(&desired);
-    state.start_missing(&desired, config, index, app, metrics);
+    state.reap_finished(index, memo);
+    state.stop_removed(&desired, index, memo);
+    state.start_missing(&desired, config, index, app, metrics, memo);
 }
 
 /// The shutdown phase (runs inside the supervisor, after the loop):
@@ -701,7 +1216,16 @@ fn reconcile_pass(
 /// supervisor returns) repeats the abort request on whatever is left. The
 /// `done` channel is NOT used here as proof of completion — it only feeds
 /// the inter-generation exclusion (a successor waits for its predecessors).
-async fn shutdown_pass(state: &mut JobState, config: &CronSchedulerConfig) {
+async fn shutdown_pass(
+    state: &mut JobState,
+    config: &CronSchedulerConfig,
+    index: &ManifestIndex,
+    metrics: &CronMetrics,
+) {
+    // One memo for the WHOLE shutdown pass (EDG-34 round 4, F1): the
+    // reaping of the signaled generations — potentially thousands of jobs
+    // of one worker — resolves each name once, through this single memo.
+    let mut memo = VersionMemo::new(config.version_resolver.clone());
     for gens in state.generations.values_mut() {
         for gen in gens.iter_mut() {
             if gen.stopped {
@@ -713,6 +1237,10 @@ async fn shutdown_pass(state: &mut JobState, config: &CronSchedulerConfig) {
             state.draining.fetch_add(1, Ordering::Relaxed);
         }
     }
+    // Publish the shutdown transition (emenda 2): the counters moved to
+    // `draining` through the actual signaling above, and the snapshot
+    // must say so while the in-flight dispatches are still finishing.
+    state.publish_snapshot(metrics);
 
     // Let the tasks finish until the grace deadline, reaping as we go.
     let grace_deadline = tokio::time::Instant::now() + config.shutdown_grace;
@@ -720,12 +1248,15 @@ async fn shutdown_pass(state: &mut JobState, config: &CronSchedulerConfig) {
         tokio::select! {
             result = state.jobs.join_next_with_id() => {
                 if let Some(result) = result {
-                    state.reap_result(result);
+                    state.reap_result(result, index, &mut memo);
                 }
             }
             _ = tokio::time::sleep_until(grace_deadline) => {}
         }
-        state.reap_finished();
+        state.reap_finished(index, &mut memo);
+        // An intermediate reap is visible right away (emenda 2): the
+        // reaped job leaves the snapshot and the gauges drop.
+        state.publish_snapshot(metrics);
     }
 
     // Abort the tasks that passed the grace deadline and wait for their end
@@ -739,14 +1270,16 @@ async fn shutdown_pass(state: &mut JobState, config: &CronSchedulerConfig) {
         tokio::select! {
             result = state.jobs.join_next_with_id() => {
                 if let Some(result) = result {
-                    state.reap_result(result);
+                    state.reap_result(result, index, &mut memo);
                 }
             }
             _ = tokio::time::sleep_until(abort_deadline) => {}
         }
+        state.publish_snapshot(metrics);
     }
 
-    state.reap_finished();
+    state.reap_finished(index, &mut memo);
+    state.publish_snapshot(metrics);
     let remaining = state.jobs.len();
     if remaining > 0 {
         tracing::warn!(remaining, "cron shutdown incomplete");
@@ -815,12 +1348,15 @@ fn note_invalid(
 ) {
     if invalid.insert(key.clone()) {
         metrics.record_failure();
+        // The error message embeds manifest-derived text (e.g. `invalid
+        // HTTP method: <method>`): log it Debug-escaped (`?err`), so a
+        // control character can never forge a physical log line
+        // (CWE-117).
         tracing::warn!(
-            worker = %worker,
-            path = %path,
-            code = %err.code,
-            "cron schedule is invalid; the job is skipped until the manifest changes: {}",
-            err.message
+            worker = ?worker,
+            path = ?path,
+            error = ?err,
+            "cron job is invalid; the job is skipped until the manifest changes"
         );
     }
 }
@@ -844,6 +1380,9 @@ async fn run_job(
     mut job_stop_rx: watch::Receiver<bool>,
     done_tx: watch::Sender<bool>,
     predecessors: Vec<watch::Receiver<bool>>,
+    events_tx: mpsc::Sender<JobEvent>,
+    deadline_tx: watch::Sender<Option<tokio::time::Instant>>,
+    wall: WallClock,
 ) -> (CronJobKey, u64) {
     // Signals the job's "done" watch whenever the task ends, however it
     // ends (the guard is dropped with the future, including on abort).
@@ -873,19 +1412,55 @@ async fn run_job(
     }
 
     loop {
-        let delay = match task.schedule.delay_after(Utc::now()) {
+        // The injectable wall clock (EDG-34): the delay of a wall-clock
+        // schedule derives from the CURRENT civil instant, never from a
+        // boot-time anchor.
+        let now = (wall)();
+        let delay = match task.schedule.delay_after(now) {
             Ok(delay) => delay,
             Err(err) => {
                 metrics.record_failure();
                 tracing::warn!(
-                    worker = %task.key.worker,
-                    path = %task.key.path,
+                    worker = ?task.key.worker,
+                    path = ?task.key.path,
                     code = %err.code,
                     "cron schedule failed"
                 );
                 break;
             }
         };
+
+        // Publish the instant this sleep will wake (EDG-34): the MONOTONIC
+        // deadline the task is ABOUT to wait for — `mono_now + interval`
+        // for `@every` (a dispatch slower than the interval moves it; it
+        // is never recomputed from the last fire or from query time) and
+        // `mono_now + delay` for the wall clock (the same delay the task
+        // will sleep for, derived from the expression's next matching
+        // instant). The conversion to a wall-clock instant happens when
+        // the supervisor reads the cell, with the current
+        // wall↔monotonic relationship. The addition is CHECKED: an `@every`
+        // interval near the largest `Duration` does not fit an
+        // `Instant` — then the cell is left without a commit (the
+        // snapshot shows `null` for this job's `nextRunAt`) and the sleep
+        // below still saturates to the far future, exactly as before
+        // EDG-34.
+        let at = tokio::time::Instant::now().checked_add(delay);
+        if let Some(at) = at {
+            // The authoritative value: the task's own committed deadline,
+            // in a `watch` cell the supervisor reads when it builds the
+            // snapshot (EDG-34 amendment) — a signal dropped below can
+            // never make the snapshot show a deadline this task has
+            // already replaced.
+            // A failure means the generation's receiver is already gone
+            // (reaped): nothing to inform anymore.
+            let _ = deadline_tx.send(Some(at));
+            // The prompt-wake signal (`try_send`, never await): the
+            // supervisor drains it on every wake; if the bounded queue is
+            // full (supervisor busy or shutting down) the signal is
+            // dropped and the next reconciliation republishes the list —
+            // the deadline above is already safe.
+            let _ = events_tx.try_send(JobEvent);
+        }
 
         tokio::select! {
             _ = job_stop_rx.changed() => {
@@ -897,8 +1472,8 @@ async fn run_job(
                 {
                     metrics.record_failure();
                     tracing::warn!(
-                        worker = %task.key.worker,
-                        path = %task.key.path,
+                        worker = ?task.key.worker,
+                        path = ?task.key.path,
                         code = %err.code,
                         "cron dispatch failed"
                     );
@@ -952,10 +1527,10 @@ async fn dispatch_cron_request(
     let duration_ms = started.elapsed().as_millis() as u64;
 
     tracing::info!(
-        worker = %task.key.worker,
+        worker = ?task.key.worker,
         version = %version,
-        path = %task.key.path,
-        method = %task.key.method,
+        path = ?task.key.path,
+        method = ?task.key.method,
         request_id = %request_id,
         status = response.status().as_u16(),
         duration_ms,
@@ -979,6 +1554,17 @@ fn versionless_route_path(worker: &str, job_path: &str) -> String {
         route.push_str(job_path.trim_start_matches('/'));
     }
     route
+}
+
+/// The version the unversioned route resolves to RIGHT NOW, for the
+/// job-set change log lines (EDG-34): the plain value, `unresolved` when
+/// the worker no longer resolves — the same convention as the `cron
+/// dispatched` line. The value comes through the per-pass memo, so a pass
+/// with many jobs of one worker resolves the name once, not per job
+/// (EDG-34 round 4, F1).
+fn resolved_version(memo: &mut VersionMemo, index: &ManifestIndex, worker: &str) -> String {
+    memo.version(index, worker)
+        .unwrap_or_else(|| "unresolved".to_owned())
 }
 
 fn validate_job(worker: &WorkerRef, job: &CronJob) -> Result<(), CoreError> {
@@ -1220,7 +1806,14 @@ mod tests {
     #[tokio::test]
     async fn successful_reap_releases_task_id() {
         tokio::time::pause();
-        let mut state = JobState::new(Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let metrics = CronMetrics::default();
+        let (events_tx, _events_rx) = mpsc::channel(JOB_EVENTS_CAPACITY);
+        let mut state = JobState::new(&metrics, events_tx, Arc::new(Utc::now));
+        let index = ManifestIndex::new();
+        // The per-pass memo the job-set change lines resolve through
+        // (EDG-34 round 4, F1): the default resolver.
+        let mut memo =
+            VersionMemo::new(Arc::new(|index, name| index.resolve_default_version(name)));
         let key = CronJobKey {
             worker: "probe".into(),
             schedule: "@every 60s".into(),
@@ -1228,7 +1821,7 @@ mod tests {
             method: "GET".into(),
         };
         let desired = BTreeMap::from([(
-            key,
+            key.clone(),
             DesiredJob {
                 schedule: CronSchedule::Every(Duration::from_secs(60)),
             },
@@ -1236,15 +1829,16 @@ mod tests {
         state.start_missing(
             &desired,
             &CronSchedulerConfig::new(Some("test".into())),
-            &ManifestIndex::new(),
+            &index,
             &Router::new(),
-            &CronMetrics::default(),
+            &metrics,
+            &mut memo,
         );
         // Give the spawned task a chance to register its stop subscription.
         tokio::task::yield_now().await;
-        state.stop_removed(&BTreeMap::new());
+        state.stop_removed(&BTreeMap::new(), &index, &mut memo);
         while let Some(result) = state.jobs.join_next_with_id().await {
-            state.reap_result(result);
+            state.reap_result(result, &index, &mut memo);
         }
         assert_eq!(state.live_gen_count(), 0);
         assert_eq!(state.jobs.len(), 0);
@@ -1252,6 +1846,44 @@ mod tests {
             state.task_ids.len(),
             0,
             "finished successful task retained in supervisor task_ids"
+        );
+    }
+
+    /// (EDG-34 round 4, F1) The per-pass memo resolves each worker name
+    /// ONCE, no matter how many jobs of the name flow through the pass:
+    /// the value is cached and the resolver is not called again for the
+    /// name; a `None` (the worker no longer resolves) is cached too. The
+    /// counting resolver is the F1 assertion without a real clock: a pass
+    /// with 2_000 jobs of one worker must resolve the name exactly once.
+    #[test]
+    fn version_memo_resolves_each_worker_name_once_per_pass() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let resolver: VersionResolver = std::sync::Arc::new(move |_index, name| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if name == "absent" {
+                None
+            } else {
+                Some("1.0.0".to_owned())
+            }
+        });
+        let index = ManifestIndex::new();
+        let mut memo = VersionMemo::new(resolver);
+        // Two thousand jobs of one worker (the F1 shape):
+        for _ in 0..2000 {
+            assert_eq!(
+                memo.version(&index, "many"),
+                Some("1.0.0".to_owned()),
+                "every job of the name gets the version"
+            );
+        }
+        // A worker that does not resolve: `None`, and it is cached too.
+        assert_eq!(memo.version(&index, "absent"), None);
+        assert_eq!(memo.version(&index, "absent"), None);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "one resolution per NAME, not per job"
         );
     }
 }

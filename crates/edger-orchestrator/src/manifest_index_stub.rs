@@ -7,9 +7,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use edger_core::{
-    create_worker_ref, principal_can_access_optional_namespace, principal_can_access_worker,
-    AdminWorkerHealthCheckInfo, AdminWorkerInfo, ApiKeyPrincipal, CoreError, CronJob,
-    WorkerHealthCheckMode, WorkerManifest, WorkerOrigin, WorkerRef, WorkerVisibility,
+    create_worker_ref, parse_namespaced_name, principal_can_access_optional_namespace,
+    principal_can_access_worker, AdminWorkerHealthCheckInfo, AdminWorkerInfo, ApiKeyPrincipal,
+    CoreError, CronJob, WorkerHealthCheckMode, WorkerManifest, WorkerOrigin, WorkerRef,
+    WorkerVisibility,
 };
 
 use crate::router::PluginRef;
@@ -383,50 +384,18 @@ impl ManifestIndex {
         version: Option<&str>,
     ) -> Result<WorkerRef, CoreError> {
         let state = self.inner.read().map_err(|_| lock_err())?;
-        let bucket = state
+        let resolved_version = resolve_version_locked(&state, name, version)?;
+        state
             .entries
             .get(name)
-            .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
-        let enabled = bucket
-            .iter()
-            .filter(|entry| entry.worker.config.enabled && (version.is_some() || !entry.staged))
-            .collect::<Vec<_>>();
-        if enabled.is_empty() {
-            return Err(CoreError::new(
-                "NOT_FOUND",
-                format!("worker not found: {name}"),
-            ));
-        }
-
-        let resolved_version = match version {
-            Some(version) => resolve_semver(
-                enabled
+            .and_then(|bucket| {
+                bucket
                     .iter()
-                    .map(|entry| entry.worker.version.as_str())
-                    .collect(),
-                Some(version),
-            )?,
-            None => state
-                .default_versions
-                .get(name)
-                .filter(|version| {
-                    enabled
-                        .iter()
-                        .any(|entry| entry.worker.version == version.as_str())
-                })
-                .cloned()
-                .unwrap_or(resolve_semver(
-                    enabled
-                        .iter()
-                        .map(|entry| entry.worker.version.as_str())
-                        .collect(),
-                    None,
-                )?),
-        };
-
-        enabled
-            .iter()
-            .find(|entry| entry.worker.version == resolved_version)
+                    .filter(|entry| {
+                        entry.worker.config.enabled && (version.is_some() || !entry.staged)
+                    })
+                    .find(|entry| entry.worker.version == resolved_version)
+            })
             .map(|entry| entry.worker.clone())
             .ok_or_else(|| {
                 CoreError::new(
@@ -434,6 +403,24 @@ impl ManifestIndex {
                     format!("worker {name}@{resolved_version} not found"),
                 )
             })
+    }
+
+    /// (EDG-34, round 4, F1) The version the unversioned route `/<name>/`
+    /// resolves to right now — the SAME rule as `resolve_worker(name, None)`
+    /// (the promoted default pointer when it still points to an enabled,
+    /// non-staged version, otherwise the highest enabled, non-staged
+    /// semver) — but it returns ONLY the version value. Callers that need
+    /// the whole `WorkerRef` keep `resolve_worker`; callers that need just
+    /// the version (the cron read-out) avoid cloning the entry — the
+    /// `WorkerRef` carries the worker's `cron[]` list, so resolving once
+    /// per job would cost O(jobs²) in the job count. `None` when the worker
+    /// does not resolve (absent, nothing enabled and non-staged, a version
+    /// that does not parse as semver, or a poisoned lock).
+    pub fn resolve_default_version(&self, name: &str) -> Option<String> {
+        self.inner
+            .read()
+            .ok()
+            .and_then(|state| resolve_version_locked(&state, name, None).ok())
     }
 
     pub fn resolve_public_worker(
@@ -649,12 +636,28 @@ impl ManifestIndex {
         self.admin_workers()
             .into_iter()
             .filter(|worker| {
-                principal_can_access_optional_namespace(principal, worker.namespace.as_deref())
-                    // Escopo de RECURSO da key: este é o choke point — delete,
-                    // promote, invoke e files enxergam via require_visible_worker.
-                    && principal_can_access_worker(principal, &worker.name)
+                // O mesmo choke point de escopo de `GET /api/admin/cron/jobs`
+                // (EDG-34): um worker só aparece para a key quando o
+                // predicado de (namespace + `workers` scope) sobre o nome
+                // completo passa — delete, promote, invoke e files enxergam
+                // via `require_visible_worker`.
+                Self::principal_can_access_worker_name(principal, &worker.name)
             })
             .collect()
+    }
+
+    /// (EDG-34) O predicado único de escopo de um worker pelo nome
+    /// completo: o namespace é derivado do nome (`@scope/name`, como no
+    /// `WorkerRef`) e é combinado com o escopo de `workers` da key — o
+    /// mesmo resultado que `admin_workers_for_principal` aplica por entry.
+    /// Usado também por `GET /api/admin/cron/jobs`, que o aplica ao nome de
+    /// cada job do snapshot: um worker removido com job drenando mantém o
+    /// nome no escopo e continua visível (com `version: null`), sem
+    /// depender da presença no índice.
+    pub fn principal_can_access_worker_name(principal: &ApiKeyPrincipal, name: &str) -> bool {
+        let (namespace, _) = parse_namespaced_name(name);
+        principal_can_access_optional_namespace(principal, namespace.as_deref())
+            && principal_can_access_worker(principal, name)
     }
 
     pub fn worker_refs(&self) -> Vec<WorkerRef> {
@@ -1629,6 +1632,62 @@ fn check_routing_policy_eligibility(
         }
     }
     Ok(())
+}
+
+/// The version rule of `resolve_worker(name, version)` reduced to the
+/// version VALUE (EDG-34 round 4, F1): the bucket's enabled entries
+/// (non-staged ones when no version is requested), then the promoted
+/// default pointer when it still names one of them, otherwise the semver
+/// resolution over them (`pick_highest` for no request). Both
+/// `resolve_worker` (which then clones the matching entry) and
+/// `resolve_default_version` (which returns the value only) run through
+/// this, so the rule cannot drift between the two.
+fn resolve_version_locked(
+    state: &ManifestIndexState,
+    name: &str,
+    version: Option<&str>,
+) -> Result<String, CoreError> {
+    let bucket = state
+        .entries
+        .get(name)
+        .ok_or_else(|| CoreError::new("NOT_FOUND", format!("worker not found: {name}")))?;
+    let enabled = bucket
+        .iter()
+        .filter(|entry| entry.worker.config.enabled && (version.is_some() || !entry.staged))
+        .collect::<Vec<_>>();
+    if enabled.is_empty() {
+        return Err(CoreError::new(
+            "NOT_FOUND",
+            format!("worker not found: {name}"),
+        ));
+    }
+
+    let resolved = match version {
+        Some(version) => resolve_semver(
+            enabled
+                .iter()
+                .map(|entry| entry.worker.version.as_str())
+                .collect(),
+            Some(version),
+        )?,
+        None => state
+            .default_versions
+            .get(name)
+            .filter(|version| {
+                enabled
+                    .iter()
+                    .any(|entry| entry.worker.version == version.as_str())
+            })
+            .cloned()
+            .unwrap_or(resolve_semver(
+                enabled
+                    .iter()
+                    .map(|entry| entry.worker.version.as_str())
+                    .collect(),
+                None,
+            )?),
+    };
+    Ok(resolved)
 }
 
 fn resolve_semver(available: Vec<&str>, requested: Option<&str>) -> Result<String, CoreError> {
