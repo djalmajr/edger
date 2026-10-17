@@ -67,6 +67,11 @@ struct ServerStateInner {
     /// the backend does not run the multiproc detach pipeline — the block
     /// stays absent.
     detach_budget: std::sync::OnceLock<std::sync::Arc<edger_isolation::StreamDetachBudget>>,
+    /// Cofre de segredos de app (EDG-38): registro no boot (uma vez). As
+    /// rotas de admin lêem o valor por aqui; `None` = instância sem
+    /// `EDGER_SECRETS_KEY_FILE` (as rotas respondem 503
+    /// `SECRETS_UNAVAILABLE`).
+    app_secrets: std::sync::OnceLock<std::sync::Arc<crate::app_secrets::AppSecretVault>>,
 }
 
 /// Shared application state for health/readiness and future pipeline wiring.
@@ -92,6 +97,7 @@ impl ServerState {
                 operational_events: crate::observability::OperationalStore::default(),
                 worker_errors: crate::worker_errors::WorkerErrorLog::default(),
                 detach_budget: std::sync::OnceLock::new(),
+                app_secrets: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -115,6 +121,19 @@ impl ServerState {
     /// then omitted).
     pub fn stream_detach_stats(&self) -> Option<edger_isolation::StreamDetachStats> {
         self.inner.detach_budget.get().map(|budget| budget.stats())
+    }
+
+    /// Registra o cofre de segredos de app (EDG-38). Definido no boot, uma
+    /// vez; definir duas vezes é no-op (a primeira chamada vence).
+    pub fn set_app_secrets(&self, vault: std::sync::Arc<crate::app_secrets::AppSecretVault>) {
+        let _ = self.inner.app_secrets.set(vault);
+    }
+
+    /// O cofre de segredos de app, quando registrado no boot (`None` quando
+    /// a instância subiu sem `EDGER_SECRETS_KEY_FILE`). As rotas de admin e
+    /// o resolvedor de injeção no spawn leem por aqui.
+    pub fn app_secrets(&self) -> Option<&std::sync::Arc<crate::app_secrets::AppSecretVault>> {
+        self.inner.app_secrets.get()
     }
 
     pub fn set_tenant_identity_client(&self, client: crate::tenant_identity::TenantIdentityClient) {

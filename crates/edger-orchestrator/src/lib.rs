@@ -7,6 +7,7 @@
 
 pub mod admin_api;
 pub mod api_keys;
+pub mod app_secrets;
 pub mod auth;
 pub mod compression;
 mod conditional;
@@ -34,6 +35,9 @@ pub mod worker_errors;
 
 pub use admin_api::router as admin_router;
 pub use api_keys::{ApiKeyService, API_KEY_PREFIX};
+pub use app_secrets::{
+    load_master_key_file, AppSecretMeta, AppSecretVault, MAX_SECRET_VALUE_BYTES,
+};
 pub use auth::{extract_api_key, ControlAuth, ControlAuthConfig};
 pub use console_auth::{load_seed_password, ConsoleAuthService, LoginLimiter, SESSION_PREFIX};
 pub use cron::{

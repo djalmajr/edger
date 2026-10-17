@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::config::WorkerConfig;
 use crate::execution::{normalize_fullstack_adapter, ExecutionKind, SUPPORTED_FULLSTACK_ADAPTERS};
 use crate::manifest::WorkerManifest;
+use crate::secrets::is_valid_secret_name;
 
 /// Maximum number of `cron[]` entries a worker manifest may declare
 /// (EDG-36); beyond it the manifest validation rejects the manifest.
@@ -444,20 +445,6 @@ fn validate_egress_duration(
 }
 
 /// A secret name (EDG-38): `^[A-Z_][A-Z0-9_]{0,63}$` — 1 to 64 characters.
-fn is_valid_secret_name(name: &str) -> bool {
-    let bytes = name.as_bytes();
-    if bytes.is_empty() || bytes.len() > 64 {
-        return false;
-    }
-    let head = bytes[0];
-    if !(head.is_ascii_uppercase() || head == b'_') {
-        return false;
-    }
-    bytes[1..]
-        .iter()
-        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'_')
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

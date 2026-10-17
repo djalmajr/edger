@@ -60,6 +60,11 @@ jsonwebtoken = "9"
 uuid.workspace = true
 rusqlite.workspace = true
 sha2.workspace = true
+# App secrets vault (EDG-38): ChaCha20-Poly1305 at rest, master key and
+# decrypted value zeroized in memory (zeroize is already a transitive
+# dependency via rustls; promoted to direct here, no new lock entry).
+chacha20poly1305.workspace = true
+zeroize.workspace = true
 semver.workspace = true
 zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 base64 = "0.22"

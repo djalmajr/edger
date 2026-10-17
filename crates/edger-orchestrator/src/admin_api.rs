@@ -8,14 +8,15 @@ use axum::http::header::{
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, delete, get, patch, post};
+use axum::routing::{any, delete, get, patch, post, put};
 use axum::{Json, Router};
 use edger_core::admin::UpdateApiKeyPermissionsRequest;
 use edger_core::{
     principal_can_access_worker, principal_has_permission, require_same_origin, root_principal,
-    AdminApiKeysResponse, AdminCatalogItem, AdminCatalogResponse, AdminErrorResponse,
-    AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse, ApiKeyPrincipal, CoreError,
-    CreateApiKeyRequest, SerializedRequest, WorkerManifest, WorkerOrigin, WorkerVisibility,
+    validate_app_secret_name, AdminApiKeysResponse, AdminCatalogItem, AdminCatalogResponse,
+    AdminErrorResponse, AdminSessionResponse, AdminWorkerInfo, AdminWorkersResponse,
+    ApiKeyPrincipal, CoreError, CreateApiKeyRequest, SerializedRequest, WorkerManifest,
+    WorkerOrigin, WorkerVisibility,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -102,6 +103,14 @@ pub fn router() -> Router<OrchestratorState> {
         .route(
             "/api/admin/workers/{name}/health-check",
             post(run_health_check),
+        )
+        // (EDG-38) Cofre de segredos de app: a listagem NUNCA devolve o
+        // valor (só nomes e datas); o valor é injetado no env do processo
+        // do worker que declara o nome no manifest.
+        .route("/api/admin/workers/{name}/secrets", get(list_app_secrets))
+        .route(
+            "/api/admin/workers/{name}/secrets/{secret}",
+            put(write_app_secret).delete(delete_app_secret),
         )
         .route(
             "/api/admin/workers/{name}/files",
@@ -1387,6 +1396,259 @@ async fn promote_worker(
     }
 }
 
+/// (EDG-38) Cofre de segredos de app: o valor NUNCA sai por estas rotas —
+/// a listagem traz só nomes e datas, e a escrita/leitura do valor acontece
+/// no spawn do processo do worker que declara o nome no manifest. Sem a
+/// chave mestra (`EDGER_SECRETS_KEY_FILE`) o cofre é indisponível: 503
+/// `SECRETS_UNAVAILABLE` (não é 404: o estado é da instância, não do
+/// segredo).
+fn app_secrets_vault(
+    state: &OrchestratorState,
+) -> Result<std::sync::Arc<crate::app_secrets::AppSecretVault>, CoreError> {
+    state.server.app_secrets().cloned().ok_or_else(|| {
+        CoreError::new(
+            "SECRETS_UNAVAILABLE",
+            "the app secrets vault is not configured on this instance (EDGER_SECRETS_KEY_FILE)",
+        )
+    })
+}
+
+/// (EDG-38 emenda 1 / F1) O escopo da chave vale para o `{name}` da rota
+/// com o MESMO predicado único das outras rotas por worker — namespace
+/// (derivado de `@scope/name`) E escopo de `workers` da chave, via
+/// `ManifestIndex::principal_can_access_worker_name`. O worker NÃO precisa
+/// estar instalado: o app grava o segredo antes do install que o declara.
+/// Fora do escopo: 403 (a rota não vira 404 mentiroso sobre workers que
+/// existem mas não são do chamador).
+fn require_secret_worker_scope(principal: &ApiKeyPrincipal, name: &str) -> Result<(), CoreError> {
+    if principal.is_root
+        || crate::manifest_index_stub::ManifestIndex::principal_can_access_worker_name(
+            principal, name,
+        )
+    {
+        Ok(())
+    } else {
+        Err(CoreError::new(
+            "FORBIDDEN",
+            format!("worker scope does not cover: {name}"),
+        ))
+    }
+}
+
+/// (EDG-38 emenda 1 / F5, emenda 2 / R2) O `{name}` das rotas de segredo
+/// passa pela regra de nome de worker do manifest — `name` simples ou
+/// `@scope/name` — sem caracteres de controle, no máximo uma `/` (e só no
+/// formato `@scope/name`), sem segmento `.`/`..` e sem espaço no começo ou
+/// no fim de cada parte. Qualquer outra forma: 400.
+fn validate_secret_route_worker_name(name: &str) -> Result<(), CoreError> {
+    if name.is_empty() || name.chars().any(char::is_control) {
+        return Err(CoreError::new(
+            "VALIDATION_ERROR",
+            "worker name must not be empty or contain control characters",
+        ));
+    }
+    // (R2) cada parte separada por `/`: sem espaço nas bordas e nem `.`
+    // nem `..` — um nome de worker não é um caminho.
+    for part in name.split('/') {
+        if part != part.trim() {
+            return Err(CoreError::new(
+                "VALIDATION_ERROR",
+                "worker name parts must not have leading or trailing spaces",
+            ));
+        }
+        if part == "." || part == ".." {
+            return Err(CoreError::new(
+                "VALIDATION_ERROR",
+                "worker name parts must not be `.` or `..`",
+            ));
+        }
+    }
+    // (R2) no máximo UM `/`, e só no formato `@scope/name` (scope não vazio
+    // a partir do `@`, nome local não vazio e sem `/` — `@acme/a/b` não é
+    // um nome de worker válido).
+    if let Some((scope, local)) = name.split_once('/') {
+        if !scope.starts_with('@')
+            || scope.trim_start_matches('@').is_empty()
+            || local.is_empty()
+            || local.contains('/')
+        {
+            return Err(CoreError::new(
+                "VALIDATION_ERROR",
+                "worker name must be `name` or `@scope/name`",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Evento operacional do cofre (`secret.written` / `secret.deleted`): tem
+/// worker, o NOME do segredo e o id da chave que agiu — NUNCA o valor.
+fn secret_operational_event(
+    kind: &'static str,
+    request_id: Option<String>,
+    principal: &ApiKeyPrincipal,
+    worker: &str,
+    secret: &str,
+) -> crate::observability::OperationalEventInput {
+    crate::observability::OperationalEventInput {
+        source: crate::observability::OperationalEventSource::Orchestrator,
+        kind: kind.into(),
+        level: crate::observability::OperationalEventLevel::Info,
+        namespace: None,
+        worker: Some(worker.to_string()),
+        version: None,
+        process_id: None,
+        request_id,
+        trace_id: None,
+        outcome: Some("ok".into()),
+        status: None,
+        duration_ms: None,
+        timeout_ms: None,
+        code: None,
+        message: Some(format!("{secret} (actor api key id {})", principal.id)),
+        truncated: None,
+        dropped_count: None,
+        method: None,
+        path: None,
+        content_type: None,
+    }
+}
+
+#[derive(Deserialize)]
+struct WriteAppSecretPayload {
+    value: String,
+}
+
+// (F3) o valor de um segredo nunca pode vazar por um log/erro que imprima
+// o payload: a implementação de `Debug` redige.
+impl std::fmt::Debug for WriteAppSecretPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteAppSecretPayload")
+            .field("value", &"<redacted>")
+            .finish()
+    }
+}
+
+async fn write_app_secret(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path((name, secret)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    let result = async {
+        // (F3) autenticar e autorizar ANTES de ler o corpo: um chamador sem
+        // credencial recebe 401 antes de qualquer parse.
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "secrets:write")?;
+        validate_admin_mutation_security("PUT", &headers, &principal)?;
+        validate_secret_route_worker_name(&name)?;
+        require_secret_worker_scope(&principal, &name)?;
+        let vault = app_secrets_vault(&state)?;
+        // (F3) parse manual com mensagem fixa que NUNCA ecoa o corpo:
+        // body malformado, campo ausente ou tipo errado dão o mesmo 400.
+        let payload: WriteAppSecretPayload = serde_json::from_slice(&body).map_err(|_| {
+            CoreError::new("VALIDATION_ERROR", "body must be {\"value\": \"<string>\"}")
+        })?;
+        validate_app_secret_name(&secret)?;
+        if payload.value.is_empty() {
+            return Err(CoreError::new(
+                "VALIDATION_ERROR",
+                "secret value must not be empty",
+            ));
+        }
+        if payload.value.len() > crate::app_secrets::MAX_SECRET_VALUE_BYTES {
+            return Err(CoreError::new(
+                "VALIDATION_ERROR",
+                format!(
+                    "secret value must have at most {} bytes (16 KiB)",
+                    crate::app_secrets::MAX_SECRET_VALUE_BYTES
+                ),
+            ));
+        }
+        vault.set(&name, &secret, &payload.value)?;
+        let request_id = request_id_from_headers(&headers);
+        state
+            .server
+            .operational_events()
+            .record(secret_operational_event(
+                "secret.written",
+                request_id,
+                &principal,
+                &name,
+                &secret,
+            ));
+        // Rotação: o novo valor vale no PRÓXIMO spawn. Para aplicar no
+        // processo rodando agora, o operador usa `POST
+        // /api/admin/workers/{name}/recycle?version=<v>` (EDG-16) — a
+        // escrita NUNCA recicla sozinha.
+        Ok(json!({ "worker": name, "secret": secret, "status": "written" }))
+    }
+    .await;
+    match result {
+        Ok(result) => Json(result).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn list_app_secrets(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "secrets:read")?;
+        validate_secret_route_worker_name(&name)?;
+        require_secret_worker_scope(&principal, &name)?;
+        let vault = app_secrets_vault(&state)?;
+        Ok::<_, CoreError>(json!(vault.list(&name)?))
+    }
+    .await;
+    match result {
+        Ok(result) => Json(result).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
+async fn delete_app_secret(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path((name, secret)): Path<(String, String)>,
+) -> Response {
+    let result = async {
+        let principal = authenticate(&state, &headers).await?;
+        require_permission(&principal, "secrets:write")?;
+        validate_admin_mutation_security("DELETE", &headers, &principal)?;
+        validate_secret_route_worker_name(&name)?;
+        require_secret_worker_scope(&principal, &name)?;
+        let vault = app_secrets_vault(&state)?;
+        validate_app_secret_name(&secret)?;
+        if !vault.delete(&name, &secret)? {
+            return Err(CoreError::new(
+                "NOT_FOUND",
+                format!("secret not found: {secret}"),
+            ));
+        }
+        let request_id = request_id_from_headers(&headers);
+        state
+            .server
+            .operational_events()
+            .record(secret_operational_event(
+                "secret.deleted",
+                request_id,
+                &principal,
+                &name,
+                &secret,
+            ));
+        Ok(json!({ "worker": name, "secret": secret, "status": "deleted" }))
+    }
+    .await;
+    match result {
+        Ok(result) => Json(result).into_response(),
+        Err(err) => admin_error(map_error_status(&err), &err, &headers),
+    }
+}
+
 async fn invoke_worker_root(
     State(state): State<OrchestratorState>,
     Path(name): Path<String>,
@@ -1394,7 +1656,6 @@ async fn invoke_worker_root(
 ) -> Response {
     invoke_worker_route(state, name, "/".into(), req).await
 }
-
 async fn invoke_worker_path(
     State(state): State<OrchestratorState>,
     Path((name, path)): Path<(String, String)>,
@@ -3011,12 +3272,17 @@ async fn state_export_route(
     if let Err(err) = require_root(&state, &headers).await {
         return admin_error(map_error_status(&err), &err, &headers);
     }
-    let export =
-        match crate::state_export::export_state(&state.index, state.auth.key_service(), None).await
-        {
-            Ok(export) => export,
-            Err(err) => return admin_error(map_error_status(&err), &err, &headers),
-        };
+    let export = match crate::state_export::export_state(
+        &state.index,
+        state.auth.key_service(),
+        state.server.app_secrets(),
+        None,
+    )
+    .await
+    {
+        Ok(export) => export,
+        Err(err) => return admin_error(map_error_status(&err), &err, &headers),
+    };
     // Enquanto `export` vive, o ZIP é dono RAII: cancelar aqui (ou com o
     // `File::open` pendendo) ou falhar no open dropa o export e REMOVE o
     // arquivo — sem janela de ZIP órfão.
@@ -3162,6 +3428,7 @@ pub(crate) fn map_error_status(err: &CoreError) -> StatusCode {
         "STATE_EXPORT_IN_PROGRESS" => StatusCode::CONFLICT,
         "CONSOLE_STORE_UNAVAILABLE"
         | "KEYS_STORE_UNAVAILABLE"
+        | "SECRETS_UNAVAILABLE"
         | "STORE_ERROR"
         | "STATE_BUSY"
         | "LOCK_ERROR"
@@ -3183,7 +3450,8 @@ pub(crate) fn map_error_status(err: &CoreError) -> StatusCode {
         | "DEPLOY_HEALTH_CHECK_FAILED"
         | "HEALTH_CHECK_NOT_CONFIGURED"
         | "KEY_REVOKED"
-        | "KEY_NOT_REVOKED" => StatusCode::CONFLICT,
+        | "KEY_NOT_REVOKED"
+        | "SECRETS_LIMIT" => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

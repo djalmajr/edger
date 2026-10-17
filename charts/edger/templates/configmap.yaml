@@ -13,6 +13,12 @@ data:
   # SQLite das api-keys no PVC de user workers (RWO + Recreate = single
   # writer garantido). Backup = snapshot do PVC.
   EDGER_API_KEYS_DB: {{ .Values.apiKeys.dbPath | default (printf "%s/.edger/api-keys.db" .Values.runtime.workerDirs) | quote }}
+  {{- if .Values.appSecrets.enabled }}
+  # Cofre de segredos de app (EDG-38): o banco segue o padrão da api-keys
+  # (PVC RWO de user workers, diretório .edger invisível ao scan). A chave
+  # mestra vem do Secret montado no Deployment (EDGER_SECRETS_KEY_FILE).
+  EDGER_APP_SECRETS_DB: {{ .Values.appSecrets.dbPath | default (printf "%s/.edger/app-secrets.db" .Values.runtime.workerDirs) | quote }}
+  {{- end }}
   EDGER_JS_RUNTIME: {{ .Values.runtime.jsRuntime | quote }}
   # Flags de roteamento independentes, desligadas por padrão; o binário trata
   # "true"/"false"/ausência como opt-in. Com tenantRouting.enabled=true a

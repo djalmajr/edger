@@ -20,6 +20,8 @@ pub const PERMISSION_CATALOG: &[&str] = &[
     "files:delete",
     "observability:read",
     "keys:manage",
+    "secrets:read",
+    "secrets:write",
 ];
 
 /// Anti-escalada da criação/edição de keys: quem concede não dá o que não
@@ -186,9 +188,11 @@ mod tests {
     }
 
     #[test]
-    fn permission_catalog_has_eleven_entries_in_stable_order() {
+    fn permission_catalog_has_thirteen_entries_in_stable_order() {
         // A ordem é contrato: a migração de keys no boot a usa para
         // reordenar, e o espelho do cPanel (api.ts) a repete na tela de keys.
+        // `secrets:read`/`secrets:write` (EDG-38) entram no fim: keys
+        // existentes não as ganham por migração.
         assert_eq!(
             PERMISSION_CATALOG,
             &[
@@ -203,6 +207,8 @@ mod tests {
                 "files:delete",
                 "observability:read",
                 "keys:manage",
+                "secrets:read",
+                "secrets:write",
             ]
         );
     }

@@ -1,6 +1,7 @@
 {{- include "edger.validate" . -}}
 {{- $hasRootKey := or .Values.rootKey.value .Values.rootKey.existingSecret }}
 {{- $tenantEnabled := .Values.tenantRouting.enabled }}
+{{- $appSecretsEnabled := .Values.appSecrets.enabled }}
 {{- $extraEnv := .Values.extraEnv }}
 {{- if kindIs "string" $extraEnv }}
 {{- $parsed := fromYamlArray $extraEnv }}
@@ -58,7 +59,7 @@ spec:
             {{- with .Values.extraEnvFrom }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- if or $hasRootKey .Values.consoleAuth.rootPasswordSecret.name $extraEnv $tenantEnabled (and .Values.otel.enabled .Values.otel.headersSecret.name) }}
+          {{- if or $hasRootKey .Values.consoleAuth.rootPasswordSecret.name $extraEnv $tenantEnabled $appSecretsEnabled (and .Values.otel.enabled .Values.otel.headersSecret.name) }}
           env:
             {{- if $hasRootKey }}
             - name: EDGER_ROOT_KEY_FILE
@@ -80,6 +81,13 @@ spec:
             # entra no pod. Nada de token em env em texto puro.
             - name: EDGER_TENANCIT_TOKEN_FILE
               value: {{ include "edger.tenancitTokenFilePath" . | quote }}
+            {{- end }}
+            {{- if $appSecretsEnabled }}
+            # A chave mestra do cofre vive no Secret montado em caminho
+            # fixo; apenas o path entra no pod. Nada de chave em env em
+            # texto puro.
+            - name: EDGER_SECRETS_KEY_FILE
+              value: {{ include "edger.appSecretsKeyFilePath" . | quote }}
             {{- end }}
             {{- with $extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -115,6 +123,11 @@ spec:
             {{- if $tenantEnabled }}
             - name: tenancit-token
               mountPath: {{ include "edger.tenancitTokenMountPath" . }}
+              readOnly: true
+            {{- end }}
+            {{- if $appSecretsEnabled }}
+            - name: app-secrets-key
+              mountPath: {{ include "edger.appSecretsKeyMountPath" . }}
               readOnly: true
             {{- end }}
           livenessProbe:
@@ -168,4 +181,16 @@ spec:
             items:
               - key: {{ .Values.tenantRouting.tenancit.tokenSecret.key | quote }}
                 path: token
+        {{- end }}
+        {{- if $appSecretsEnabled }}
+        # Secret existente (o chart não o cria); a chave mestra (32 bytes,
+        # base64 ou raw) é projetada como o arquivo fixo lido por
+        # EDGER_SECRETS_KEY_FILE.
+        - name: app-secrets-key
+          secret:
+            secretName: {{ .Values.appSecrets.keySecret.name | quote }}
+            defaultMode: 0400 # (F6) chave mestra: somente leitura para o dono do processo
+            items:
+              - key: {{ .Values.appSecrets.keySecret.key | quote }}
+                path: {{ .Values.appSecrets.keySecret.key | quote }}
         {{- end }}
