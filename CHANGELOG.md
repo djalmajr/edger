@@ -346,6 +346,16 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Fixed
 
+- Size values no longer overflow (EDG-38): a size whose byte value does not
+  fit `u64` (for example `17179869184gb`, 2^34 GiB) panicked the manifest
+  parsing in debug builds and wrapped to a small value in release builds.
+  `parse_size_to_bytes` now uses checked multiplication and the value is
+  invalid, exactly like any other unparseable size: `maxBodySize` falls
+  back to its default (4 MiB) and the new `egress.maxResponseBytes` is
+  rejected at manifest validation (`must be a size such as 100mb`). An
+  `egress.maxResponseBytes` of `0` is also rejected now (`must be greater
+  than 0`).
+
 - Duration values no longer overflow (EDG-36): a duration whose millisecond
   value does not fit `u64` (for example `18446744073709552s` / a bare
   `18446744073709552` seconds, or a `cron` `@every` interval near the same

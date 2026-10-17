@@ -2,8 +2,8 @@
 
 use crate::execution::{normalize_fullstack_adapter, ExecutionKind};
 use crate::manifest::{
-    DenoCacheMode, DurationValue, WorkerHealthCheckMode, WorkerIsolation, WorkerManifest,
-    WorkerVisibility,
+    DenoCacheMode, DurationValue, EgressManifest, WorkerHealthCheckMode, WorkerIsolation,
+    WorkerManifest, WorkerVisibility,
 };
 
 /// Runtime-normalized worker configuration.
@@ -32,6 +32,13 @@ pub struct WorkerConfig {
     pub env_prefix: Vec<String>,
     pub public_env: Vec<String>,
     pub allow_net: Option<Vec<String>>,
+    /// Egress guard settings (EDG-38): present only when the manifest
+    /// declares `egress.enabled: true`; every default is resolved here, so
+    /// the guard (S2) never sees an unset field.
+    pub egress: Option<EgressSettings>,
+    /// App secret names (EDG-38), from the manifest `secrets`; the values
+    /// are injected from the EdgeR vault into the worker's `env` at spawn.
+    pub secrets: Vec<String>,
     pub ttl_ms: u64,
     /// Optional maximum response-stream body duration; `Some(0)` disables it.
     pub stream_max_duration_ms: Option<u64>,
@@ -81,6 +88,30 @@ pub struct WorkerHealthCheckConfig {
     pub method: String,
     pub mode: WorkerHealthCheckMode,
     pub timeout_ms: u64,
+}
+
+/// Normalized egress guard settings (EDG-38), present in the `WorkerConfig`
+/// only when the manifest declares `egress.enabled: true`. With `egress`
+/// absent or `enabled: false` the field is `None` and every other egress
+/// manifest field is ignored. Invalid values are rejected earlier by the
+/// manifest validation; the fallbacks below only apply when a field is
+/// simply absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EgressSettings {
+    /// Destination ports allowed by the guard.
+    pub ports: Vec<u16>,
+    /// Time to establish the outbound connection.
+    pub connect_timeout_ms: u64,
+    /// Time until the response headers arrive.
+    pub headers_timeout_ms: u64,
+    /// Time without body bytes before the guard cuts the stream (SSE).
+    pub idle_timeout_ms: u64,
+    /// Total time for the whole response, head to end.
+    pub total_timeout_ms: u64,
+    /// Response body cap in bytes.
+    pub max_response_bytes: u64,
+    /// Simultaneous outbound calls per worker version.
+    pub max_concurrent: u32,
 }
 
 /// Normalized opt-in process warmup (EDG-15).
@@ -153,7 +184,10 @@ pub fn parse_duration_string_to_ms(input: &str) -> Option<u64> {
     }
 }
 
-/// Parse size string like `10mb` to bytes (Buntime `parseSizeToBytes`).
+/// Parse size string like `10mb` to bytes (Buntime `parseSizeToBytes`). A
+/// value whose byte form does not fit `u64` yields `None` (invalid), not a
+/// wrapped value or a panic (EDG-38, same treatment as the EDG-36
+/// durations).
 pub fn parse_size_to_bytes(input: &str) -> Option<u64> {
     let input = input.trim().to_ascii_lowercase();
     if input.is_empty() {
@@ -171,7 +205,9 @@ pub fn parse_size_to_bytes(input: &str) -> Option<u64> {
     for (suffix, mult) in UNITS {
         if let Some(num) = input.strip_suffix(suffix) {
             let n: u64 = num.trim().parse().ok()?;
-            return Some(n * mult);
+            // (EDG-38) checked: a size whose byte form does not fit `u64`
+            // is invalid (`None`), not a wrap (release) or a panic (debug).
+            return n.checked_mul(mult);
         }
     }
     None
@@ -336,6 +372,60 @@ const DEFAULT_CIRCUIT_BREAKER_FAILURES: u32 = 3;
 const DEFAULT_CIRCUIT_BREAKER_COOLDOWN_MS: u64 = 30_000;
 /// Default request body cap when a worker manifest does not override it.
 pub const DEFAULT_MAX_BODY_BYTES: u64 = 4 * 1024 * 1024;
+
+// Egress guard defaults (EDG-38): HTTPS only; connect 5 s; headers and idle
+// 30 s; total 5 min; 100 MiB response cap; 8 concurrent calls per worker
+// version.
+pub const DEFAULT_EGRESS_PORTS: [u16; 1] = [443];
+pub const DEFAULT_EGRESS_CONNECT_TIMEOUT_MS: u64 = 5_000;
+pub const DEFAULT_EGRESS_HEADERS_TIMEOUT_MS: u64 = 30_000;
+pub const DEFAULT_EGRESS_IDLE_TIMEOUT_MS: u64 = 30_000;
+pub const DEFAULT_EGRESS_TOTAL_TIMEOUT_MS: u64 = 300_000;
+pub const DEFAULT_EGRESS_MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
+pub const DEFAULT_EGRESS_MAX_CONCURRENT: u32 = 8;
+
+/// Normalize the manifest `egress` field: `Some` only when
+/// `enabled: true`; absent fields resolve to the guard defaults (invalid
+/// values are rejected by the manifest validation before this runs).
+fn normalize_egress(manifest: &EgressManifest) -> Option<EgressSettings> {
+    if !manifest.enabled.unwrap_or(false) {
+        return None;
+    }
+    Some(EgressSettings {
+        ports: manifest
+            .ports
+            .clone()
+            .unwrap_or_else(|| DEFAULT_EGRESS_PORTS.to_vec()),
+        connect_timeout_ms: manifest
+            .connect_timeout
+            .as_deref()
+            .and_then(parse_duration_string_to_ms)
+            .unwrap_or(DEFAULT_EGRESS_CONNECT_TIMEOUT_MS),
+        headers_timeout_ms: manifest
+            .headers_timeout
+            .as_deref()
+            .and_then(parse_duration_string_to_ms)
+            .unwrap_or(DEFAULT_EGRESS_HEADERS_TIMEOUT_MS),
+        idle_timeout_ms: manifest
+            .idle_timeout
+            .as_deref()
+            .and_then(parse_duration_string_to_ms)
+            .unwrap_or(DEFAULT_EGRESS_IDLE_TIMEOUT_MS),
+        total_timeout_ms: manifest
+            .total_timeout
+            .as_deref()
+            .and_then(parse_duration_string_to_ms)
+            .unwrap_or(DEFAULT_EGRESS_TOTAL_TIMEOUT_MS),
+        max_response_bytes: manifest
+            .max_response_bytes
+            .as_deref()
+            .and_then(parse_size_to_bytes)
+            .unwrap_or(DEFAULT_EGRESS_MAX_RESPONSE_BYTES),
+        max_concurrent: manifest
+            .max_concurrent
+            .unwrap_or(DEFAULT_EGRESS_MAX_CONCURRENT),
+    })
+}
 
 pub fn effective_max_body_size_bytes(config: &WorkerConfig) -> u64 {
     config.max_body_size_bytes.unwrap_or(DEFAULT_MAX_BODY_BYTES)
@@ -513,6 +603,8 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
             .as_deref()
             .map(normalize_allow_net)
             .or_else(|| manifest.allow_net.as_ref().map(|_| Vec::new())),
+        egress: manifest.egress.as_ref().and_then(normalize_egress),
+        secrets: manifest.secrets.clone().unwrap_or_default(),
         ttl_ms,
         stream_max_duration_ms,
         timeout_ms,
@@ -600,5 +692,166 @@ mod tests {
         let edge = u64::MAX / 1000;
         let boundary = DurationValue::Number(serde_json::Number::from(edge));
         assert_eq!(parse_duration_to_ms(&boundary), Some(edge * 1000));
+    }
+
+    // --- (EDG-38) egress and secrets normalization ----------------------------------------------------
+
+    fn egress_manifest(egress: crate::manifest::EgressManifest) -> WorkerManifest {
+        WorkerManifest {
+            name: "egress-normalize".into(),
+            version: Some("1.0.0".into()),
+            entrypoint: Some("index.ts".into()),
+            allow_net: Some(vec!["api.example.test:443".into()]),
+            egress: Some(egress),
+            ..Default::default()
+        }
+    }
+
+    /// (EDG-38) `egress.enabled: true` with no other field resolves every
+    /// value to the guard defaults; `enabled: false` and an absent `egress`
+    /// both normalize to `None`.
+    #[test]
+    fn egress_enabled_normalizes_to_the_defaults() {
+        let config = parse_worker_config(&egress_manifest(crate::manifest::EgressManifest {
+            enabled: Some(true),
+            ..Default::default()
+        }));
+        assert_eq!(
+            config.egress,
+            Some(EgressSettings {
+                ports: vec![443],
+                connect_timeout_ms: 5_000,
+                headers_timeout_ms: 30_000,
+                idle_timeout_ms: 30_000,
+                total_timeout_ms: 300_000,
+                max_response_bytes: 100 * 1024 * 1024,
+                max_concurrent: 8,
+            })
+        );
+
+        let disabled = parse_worker_config(&egress_manifest(crate::manifest::EgressManifest {
+            enabled: Some(false),
+            ports: Some(vec![8443]),
+            connect_timeout: Some("1s".into()),
+            max_concurrent: Some(1),
+            ..Default::default()
+        }));
+        assert_eq!(disabled.egress, None, "enabled: false ignores the rest");
+
+        let absent = parse_worker_config(&WorkerManifest {
+            name: "plain".into(),
+            ..Default::default()
+        });
+        assert_eq!(absent.egress, None);
+    }
+
+    /// (EDG-38) the present egress fields override the defaults.
+    #[test]
+    fn egress_present_fields_override_the_defaults() {
+        let config = parse_worker_config(&egress_manifest(crate::manifest::EgressManifest {
+            enabled: Some(true),
+            ports: Some(vec![443, 8443]),
+            connect_timeout: Some("10s".into()),
+            headers_timeout: Some("1m".into()),
+            idle_timeout: Some("45s".into()),
+            total_timeout: Some("10m".into()),
+            max_response_bytes: Some("1gb".into()),
+            max_concurrent: Some(16),
+        }));
+        assert_eq!(
+            config.egress,
+            Some(EgressSettings {
+                ports: vec![443, 8443],
+                connect_timeout_ms: 10_000,
+                headers_timeout_ms: 60_000,
+                idle_timeout_ms: 45_000,
+                total_timeout_ms: 600_000,
+                max_response_bytes: 1024 * 1024 * 1024,
+                max_concurrent: 16,
+            })
+        );
+    }
+
+    /// (EDG-38) `secrets` normalize to the `WorkerConfig` list (empty when
+    /// absent).
+    #[test]
+    fn secrets_normalize_into_the_config() {
+        let config = parse_worker_config(&WorkerManifest {
+            name: "secrets-normalize".into(),
+            secrets: Some(vec!["BYOK_MASTER_KEY".into(), "OTHER".into()]),
+            ..Default::default()
+        });
+        assert_eq!(config.secrets, vec!["BYOK_MASTER_KEY", "OTHER"]);
+        assert_eq!(
+            parse_worker_config(&WorkerManifest::default()).secrets,
+            Vec::<String>::new()
+        );
+    }
+
+    /// (EDG-38) a manifest without `egress` and without `secrets` normalizes
+    /// to the same `WorkerConfig` as before this slice: the new fields are
+    /// `None` / empty and every pre-existing field keeps its value.
+    #[test]
+    fn a_manifest_without_egress_and_secrets_is_unchanged() {
+        let manifest: WorkerManifest = serde_saphyr::from_str_with_options(
+            r#"
+name: legacy
+version: "1.0.0"
+entrypoint: index.ts
+timeout: 45s
+idleTimeout: 90s
+maxBodySize: 8mb
+ttl: 5m
+env:
+  PLAIN: keep
+"#,
+            serde_saphyr::options! {
+                strict_booleans: true,
+                merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+                duplicate_keys: serde_saphyr::DuplicateKeyPolicy::LastWins,
+                with_snippet: false,
+            },
+        )
+        .expect("the yaml parses");
+        let config = parse_worker_config(&manifest);
+        assert_eq!(config.egress, None);
+        assert_eq!(config.secrets, Vec::<String>::new());
+        // Spot-check that the pre-existing normalization is untouched.
+        assert!(config.enabled);
+        assert_eq!(config.ttl_ms, 300_000);
+        assert_eq!(config.timeout_ms, 45_000);
+        assert_eq!(config.idle_timeout_ms, 90_000);
+        assert_eq!(config.max_body_size_bytes, Some(8 * 1024 * 1024));
+        assert_eq!(config.env.get("PLAIN"), Some(&"keep".into()));
+        assert_eq!(config.allow_net, None);
+    }
+
+    /// (EDG-38) a size whose byte form does not fit `u64` is `None`
+    /// (checked multiplication), not a panic (debug) or a wrap (release);
+    /// the largest value that still fits per unit parses.
+    #[test]
+    fn a_size_above_u64_is_none() {
+        assert_eq!(
+            parse_size_to_bytes("17179869184gb"),
+            None,
+            "2^34 * 2^30 overflows u64"
+        );
+        assert_eq!(parse_size_to_bytes("17592186044417mb"), None);
+        assert_eq!(parse_size_to_bytes("18014398509481985kb"), None);
+        // The largest values that still fit, per unit and bare.
+        assert_eq!(
+            parse_size_to_bytes("17179869183gb"),
+            Some(17179869183 * 1024 * 1024 * 1024)
+        );
+        assert_eq!(
+            parse_size_to_bytes("17592186044415mb"),
+            Some(17592186044415 * 1024 * 1024)
+        );
+        assert_eq!(
+            parse_size_to_bytes("18014398509481983kb"),
+            Some(18014398509481983 * 1024)
+        );
+        assert_eq!(parse_size_to_bytes("18446744073709551615"), Some(u64::MAX));
+        assert_eq!(parse_size_to_bytes("18446744073709551615b"), Some(u64::MAX));
     }
 }
