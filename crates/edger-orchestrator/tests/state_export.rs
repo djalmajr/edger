@@ -231,7 +231,7 @@ async fn state_export_zip_has_state_and_excludes_internals() {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(body)).unwrap();
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).unwrap();
-            let name = file.name().to_string();
+            let name = file.name().unwrap().into_owned();
             if file.is_dir() {
                 continue;
             }

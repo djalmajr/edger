@@ -3472,16 +3472,23 @@ mod upload_release_gate_tests {
         );
     }
 
-    // F4: com metadado honesto (ou subdeclarado dentro do limite), o teto
-    // duro da leitura recusa conteúdo que passa do cap no meio da leitura —
-    // um erro de leitura/limite nunca autoriza o upload a prosseguir.
+    // F4: com metadado subdeclarado dentro do limite, conteúdo que passa do
+    // cap é recusado no meio da leitura — um erro de leitura/limite nunca
+    // autoriza o upload a prosseguir. Desde o zip 9.0.1 (zip-rs/zip2#1022)
+    // a própria leitura falha ao passar do tamanho declarado, então a
+    // recusa chega como pacote inválido antes do teto duro do EdgeR, que
+    // fica como defesa em profundidade.
     #[test]
     fn manifest_read_over_cap_is_refused_even_within_metadata_cap() {
         let content = "x".repeat(super::MAX_MANIFEST_BYTES + 1);
         let bytes = zip_with_patched_size(&content, super::MAX_MANIFEST_BYTES as u32);
         let err = uploaded_manifest_declares_release(&bytes).unwrap_err();
-        assert_eq!(err.code, "PAYLOAD_TOO_LARGE");
-        assert_eq!(err.message, "manifest too large");
+        assert_eq!(err.code, "DEPLOY_INVALID_PACKAGE");
+        assert!(
+            err.message.starts_with("failed to read manifest entry:"),
+            "{}",
+            err.message
+        );
     }
 
     // F4: o limite é `>` — um manifesto com exatamente o cap é lido e
@@ -3552,7 +3559,9 @@ mod upload_release_gate_tests {
 
     // G1: o orçamento agregado vale também para os bytes REALMENTE lidos —
     // metadado subdeclarado dentro do orçamento não autoriza a leitura
-    // somada estourar o teto.
+    // somada estourar o teto. Desde o zip 9.0.1 (zip-rs/zip2#1022) a
+    // leitura do primeiro candidato já falha ao passar do 1 byte declarado,
+    // então a recusa chega como pacote inválido antes do orçamento somado.
     #[test]
     fn aggregate_read_manifest_budget_is_refused_when_metadata_lies() {
         let half_plus_one = super::MAX_MANIFEST_BYTES / 2 + 1;
@@ -3562,8 +3571,12 @@ mod upload_release_gate_tests {
             ("manifest.yml", &content, 1),
         ]);
         let err = uploaded_manifest_declares_release(&bytes).unwrap_err();
-        assert_eq!(err.code, "PAYLOAD_TOO_LARGE");
-        assert_eq!(err.message, "manifest too large");
+        assert_eq!(err.code, "DEPLOY_INVALID_PACKAGE");
+        assert!(
+            err.message.starts_with("failed to read manifest entry:"),
+            "{}",
+            err.message
+        );
     }
 
     // G1: o orçamento é `>` — candidatos cujo total declarado e lido é

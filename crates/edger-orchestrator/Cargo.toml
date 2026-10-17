@@ -61,7 +61,7 @@ uuid.workspace = true
 rusqlite.workspace = true
 sha2.workspace = true
 semver.workspace = true
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tempfile = "3"
@@ -72,7 +72,7 @@ base64 = "0.22"
 # in Cargo.lock (brotli via tower-http compression-br, flate2 via zip/deflate).
 brotli = "9"
 flate2 = "1"
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "multiproc"] }
 rusqlite.workspace = true
 rand = "0.8"

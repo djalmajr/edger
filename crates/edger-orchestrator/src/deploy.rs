@@ -1547,7 +1547,10 @@ pub(crate) fn extract_zip(
         let Some(relative) = entry.enclosed_name() else {
             return Err(CoreError::new(
                 "DEPLOY_PATH_DENIED",
-                format!("zip entry escapes package root: {}", entry.name()),
+                format!(
+                    "zip entry escapes package root: {}",
+                    String::from_utf8_lossy(entry.name_raw())
+                ),
             ));
         };
         // EDG-21: the enabled toggle is operator state — a zip-root entry
