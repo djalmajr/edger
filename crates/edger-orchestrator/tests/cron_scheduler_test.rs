@@ -634,7 +634,7 @@ async fn promote_switches_serving_version_without_duplicate_dispatch() {
     tokio::time::pause();
     let root = tempfile::tempdir().unwrap();
     let requests = RecordedRequests::default();
-    let cron = || Some(vec![job("@every 100ms", "/tick", Some("POST"))]);
+    let cron = || Some(vec![job("@every 1s", "/tick", Some("POST"))]);
 
     let mut index = ManifestIndex::new();
     index.set_roots(vec![root.path().to_path_buf()]);
@@ -659,16 +659,17 @@ async fn promote_switches_serving_version_without_duplicate_dispatch() {
     let (mut scheduler, app, metrics) =
         start_harness(index, requests.clone(), Some("root-secret")).await;
 
-    advance_until(Duration::from_millis(500), || requests.count() == 2).await;
+    advance_until(Duration::from_secs(5), || requests.count() == 2).await;
     assert_eq!(requests.count_for("1.0.0"), 2);
     assert_eq!(requests.count_for("2.0.0"), 0);
     assert_eq!(metrics.failures_total(), 0);
 
     promote(&app, "cron-worker", "2.0.0").await;
 
-    // Ticks 3..6 (at +300/+400/+500/+600ms) all hit 2.0.0. If the promote
-    // duplicated the job, the per-version counts below would not hold.
-    advance_until(Duration::from_millis(640), || requests.count() == 6).await;
+    // Ticks 3..6 (at +3000/+4000/+5000/+6000ms) all hit 2.0.0. If the
+    // promote duplicated the job, the per-version counts below would not
+    // hold.
+    advance_until(Duration::from_millis(6400), || requests.count() == 6).await;
     assert_eq!(requests.count(), 6);
     assert_eq!(requests.count_for("1.0.0"), 2);
     assert_eq!(requests.count_for("2.0.0"), 4);
@@ -677,10 +678,10 @@ async fn promote_switches_serving_version_without_duplicate_dispatch() {
     // A version-keyed job would restart on the promote: the phase reset
     // adds an extra gap between the last pre-promote tick and the first
     // post-promote one, stretching the span between the first and the
-    // sixth tick past 5 intervals (measured 640ms vs 600ms).
+    // sixth tick past 5 intervals (measured 6400ms vs 6000ms).
     let span = requests.span().expect("six ticks recorded");
     assert!(
-        span <= Duration::from_millis(620),
+        span <= Duration::from_millis(6200),
         "the job must keep its phase across the promote: tick span {span:?}"
     );
 
@@ -704,7 +705,7 @@ async fn staged_and_enabled_rollback_versions_do_not_receive_ticks() {
     tokio::time::pause();
     let root = tempfile::tempdir().unwrap();
     let requests = RecordedRequests::default();
-    let cron = || Some(vec![job("@every 100ms", "/tick", Some("POST"))]);
+    let cron = || Some(vec![job("@every 1s", "/tick", Some("POST"))]);
 
     let mut index = ManifestIndex::new();
     index.set_roots(vec![root.path().to_path_buf()]);
@@ -747,7 +748,7 @@ async fn staged_and_enabled_rollback_versions_do_not_receive_ticks() {
         start_harness(index, requests.clone(), Some("root-secret")).await;
     promote(&app, "cron-worker", "3.0.0").await;
 
-    advance_until(Duration::from_millis(600), || requests.count() == 3).await;
+    advance_until(Duration::from_secs(6), || requests.count() == 3).await;
     assert_eq!(requests.count_for("3.0.0"), 3);
     assert_eq!(
         requests.count_for("2.0.0"),
@@ -792,7 +793,7 @@ async fn worker_installed_after_start_gets_cron_within_one_reconcile_interval() 
         root.path(),
         "cron-worker",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", Some("POST"))]),
+        Some(vec![job("@every 1s", "/tick", Some("POST"))]),
         false,
     );
 
@@ -808,7 +809,7 @@ async fn worker_installed_after_start_gets_cron_within_one_reconcile_interval() 
         "the job was not scheduled within one reconcile interval: {:?}",
         installed_at.elapsed()
     );
-    advance_until(Duration::from_millis(200), || requests.count() >= 1).await;
+    advance_until(Duration::from_millis(2000), || requests.count() >= 1).await;
     assert_eq!(requests.count_for("1.0.0"), 1);
 
     scheduler.shutdown().await;
@@ -828,13 +829,13 @@ async fn deleted_worker_stops_cron_within_one_reconcile_interval() {
         root.path(),
         "cron-worker",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", Some("POST"))]),
+        Some(vec![job("@every 1s", "/tick", Some("POST"))]),
         false,
     );
 
     let (mut scheduler, _app, _metrics) =
         start_harness(index.clone(), requests.clone(), Some("root-secret")).await;
-    advance_until(Duration::from_millis(500), || requests.count() == 2).await;
+    advance_until(Duration::from_secs(5), || requests.count() == 2).await;
     assert_eq!(scheduler.active_job_count(), 1);
 
     index.remove_worker("cron-worker", "1.0.0").unwrap();
@@ -849,7 +850,7 @@ async fn deleted_worker_stops_cron_within_one_reconcile_interval() {
     );
 
     let count = requests.count();
-    advance(Duration::from_millis(300)).await;
+    advance(Duration::from_secs(3)).await;
     assert_eq!(
         requests.count(),
         count,
@@ -873,13 +874,13 @@ async fn disabled_worker_stops_cron_within_one_reconcile_interval() {
         root.path(),
         "cron-worker",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", Some("POST"))]),
+        Some(vec![job("@every 1s", "/tick", Some("POST"))]),
         false,
     );
 
     let (mut scheduler, _app, _metrics) =
         start_harness(index.clone(), requests.clone(), Some("root-secret")).await;
-    advance_until(Duration::from_millis(500), || requests.count() == 2).await;
+    advance_until(Duration::from_secs(5), || requests.count() == 2).await;
     assert_eq!(scheduler.active_job_count(), 1);
 
     index
@@ -896,7 +897,7 @@ async fn disabled_worker_stops_cron_within_one_reconcile_interval() {
     );
 
     let count = requests.count();
-    advance(Duration::from_millis(300)).await;
+    advance(Duration::from_secs(3)).await;
     assert_eq!(
         requests.count(),
         count,
@@ -918,8 +919,8 @@ async fn slow_dispatches_are_sequential_and_in_flight_dispatch_finishes_on_stop(
     let in_flight = Arc::new(AtomicBool::new(false));
     let peak = Arc::new(AtomicUsize::new(0));
     let current = Arc::new(AtomicUsize::new(0));
-    // The worker takes 150ms while the schedule interval is 100ms.
-    let delay = Duration::from_millis(150);
+    // The worker takes 1500 ms while the schedule interval is 1 s.
+    let delay = Duration::from_millis(1500);
 
     let mut index = ManifestIndex::new();
     index.set_roots(vec![root.path().to_path_buf()]);
@@ -928,7 +929,7 @@ async fn slow_dispatches_are_sequential_and_in_flight_dispatch_finishes_on_stop(
         root.path(),
         "slow-worker",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", Some("POST"))]),
+        Some(vec![job("@every 1s", "/tick", Some("POST"))]),
         false,
     );
 
@@ -944,9 +945,9 @@ async fn slow_dispatches_are_sequential_and_in_flight_dispatch_finishes_on_stop(
     .await;
 
     // Two dispatches of the slow worker: if a job could overlap its own
-    // dispatch, the second (due at +100ms) would start while the first is
-    // still in flight and the peak would be 2.
-    advance_until(Duration::from_millis(800), || requests.count() >= 2).await;
+    // dispatch, the second (due at +2000 ms) would start while the first
+    // is still in flight and the peak would be 2.
+    advance_until(Duration::from_secs(8), || requests.count() >= 2).await;
     assert!(requests.count() >= 2);
     assert_eq!(
         peak.load(Ordering::SeqCst),
@@ -956,10 +957,7 @@ async fn slow_dispatches_are_sequential_and_in_flight_dispatch_finishes_on_stop(
 
     // Stop the job while a dispatch is in flight: it must finish normally
     // (recorded), and nothing is scheduled after the stop.
-    advance_until(Duration::from_millis(1500), || {
-        in_flight.load(Ordering::SeqCst)
-    })
-    .await;
+    advance_until(Duration::from_secs(15), || in_flight.load(Ordering::SeqCst)).await;
     let before_stop = requests.count();
     index
         .set_worker_enabled("slow-worker", Some("1.0.0"), false)
@@ -968,7 +966,7 @@ async fn slow_dispatches_are_sequential_and_in_flight_dispatch_finishes_on_stop(
         scheduler.active_job_count() == 0
     })
     .await;
-    advance_until(Duration::from_millis(500), || {
+    advance_until(Duration::from_secs(5), || {
         !in_flight.load(Ordering::SeqCst) && requests.count() == before_stop + 1
     })
     .await;
@@ -979,7 +977,7 @@ async fn slow_dispatches_are_sequential_and_in_flight_dispatch_finishes_on_stop(
     );
 
     let settled = requests.count();
-    advance(Duration::from_millis(400)).await;
+    advance(Duration::from_secs(4)).await;
     assert_eq!(
         requests.count(),
         settled,
@@ -1003,7 +1001,7 @@ async fn promote_to_version_without_cron_stops_the_job() {
         root.path(),
         "cron-worker",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", Some("POST"))]),
+        Some(vec![job("@every 1s", "/tick", Some("POST"))]),
         false,
     );
     insert_version(&mut index, root.path(), "cron-worker", "2.0.0", None, false);
@@ -1013,7 +1011,7 @@ async fn promote_to_version_without_cron_stops_the_job() {
     // 1.0.0 serves before the swap; without the pointer the highest semver
     // (2.0.0, no cron) would already be resolved and the job would not start.
     promote(&app, "cron-worker", "1.0.0").await;
-    advance_until(Duration::from_millis(500), || requests.count() == 2).await;
+    advance_until(Duration::from_secs(5), || requests.count() == 2).await;
     assert_eq!(scheduler.active_job_count(), 1);
 
     promote(&app, "cron-worker", "2.0.0").await;
@@ -1023,7 +1021,7 @@ async fn promote_to_version_without_cron_stops_the_job() {
     .await;
 
     let count = requests.count();
-    advance(Duration::from_millis(300)).await;
+    advance(Duration::from_secs(3)).await;
     assert_eq!(
         requests.count(),
         count,
@@ -1047,7 +1045,7 @@ async fn promote_to_version_with_different_cron_swaps_the_job_set() {
         root.path(),
         "cron-worker",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", Some("POST"))]),
+        Some(vec![job("@every 1s", "/tick", Some("POST"))]),
         false,
     );
     insert_version(
@@ -1055,7 +1053,7 @@ async fn promote_to_version_with_different_cron_swaps_the_job_set() {
         root.path(),
         "cron-worker",
         "2.0.0",
-        Some(vec![job("@every 150ms", "/other", None)]),
+        Some(vec![job("@every 2s", "/other", None)]),
         false,
     );
 
@@ -1064,7 +1062,7 @@ async fn promote_to_version_with_different_cron_swaps_the_job_set() {
     // 1.0.0 is the version that serves before the swap (without a pointer
     // the highest semver would already resolve 2.0.0).
     promote(&app, "cron-worker", "1.0.0").await;
-    advance_until(Duration::from_millis(500), || {
+    advance_until(Duration::from_secs(5), || {
         requests.count_for_path("/tick") == 2
     })
     .await;
@@ -1072,9 +1070,9 @@ async fn promote_to_version_with_different_cron_swaps_the_job_set() {
 
     promote(&app, "cron-worker", "2.0.0").await;
 
-    // The /tick job stops; the /other job starts at its own 150ms phase
-    // (reconcile at ~+250ms, first tick at ~+400ms).
-    advance_until(Duration::from_millis(600), || {
+    // The /tick job stops; the /other job starts at its own 2 s phase
+    // (reconcile at ~+2050 ms, first tick at ~+4050 ms).
+    advance_until(Duration::from_secs(6), || {
         requests.count_for_path("/other") >= 1
     })
     .await;
@@ -1093,7 +1091,7 @@ async fn promote_to_version_with_different_cron_swaps_the_job_set() {
     );
 
     // A second /other interval passes; the /tick job does not come back.
-    advance_until(Duration::from_millis(600), || {
+    advance_until(Duration::from_secs(6), || {
         requests.count_for_path("/other") >= 2
     })
     .await;
@@ -1117,13 +1115,13 @@ async fn cron_dispatch_uses_unversioned_route_and_counts_execution() {
         root.path(),
         "cron-worker",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", Some("POST"))]),
+        Some(vec![job("@every 1s", "/tick", Some("POST"))]),
         false,
     );
 
     let (mut scheduler, app, metrics) =
         start_harness(index, requests.clone(), Some("root-secret")).await;
-    advance_until(Duration::from_millis(500), || requests.count() == 1).await;
+    advance_until(Duration::from_secs(5), || requests.count() == 1).await;
 
     let metrics_response = app
         .clone()
@@ -1175,7 +1173,7 @@ async fn cron_shutdown_stops_all_jobs() {
             root.path(),
             name,
             "1.0.0",
-            Some(vec![job("@every 100ms", "/tick", Some("POST"))]),
+            Some(vec![job("@every 1s", "/tick", Some("POST"))]),
             false,
         );
     }
@@ -1183,12 +1181,12 @@ async fn cron_shutdown_stops_all_jobs() {
     let (mut scheduler, _app, _metrics) =
         start_harness(index, requests.clone(), Some("root-secret")).await;
     assert_eq!(scheduler.active_job_count(), 2);
-    advance_until(Duration::from_millis(600), || requests.count() >= 2).await;
+    advance_until(Duration::from_secs(6), || requests.count() >= 2).await;
     let before = requests.count();
     assert!(before >= 2);
 
     scheduler.shutdown().await;
-    advance(Duration::from_millis(500)).await;
+    advance(Duration::from_secs(5)).await;
     assert_eq!(requests.count(), before, "no ticks after shutdown");
 }
 
@@ -1229,9 +1227,10 @@ async fn invalid_schedule_is_skipped_and_counted_once() {
 /// A worker that disappears between the tick and the next reconciliation:
 /// the dispatch still runs, the pipeline answers 404, and the log line
 /// reports the plain marker `version=unresolved` (no `Option` formatting).
-/// The cadences (120 ms schedule, 200 ms reconcile) put the first tick
-/// (~+130 ms, after the +100 ms delete) strictly before the first periodic
-/// reconciliation (~+200 ms), which then stops the job.
+/// The cadences (1 s schedule, 2.5 s reconcile) put the delete (right
+/// after the first tick, ~+1000 ms) and the second tick (~+2000 ms)
+/// strictly before the first periodic reconciliation (~+2500 ms), which
+/// then stops the job.
 #[tokio::test]
 async fn dispatch_log_reports_unresolved_version_when_the_worker_is_gone() {
     tokio::time::pause();
@@ -1246,7 +1245,7 @@ async fn dispatch_log_reports_unresolved_version_when_the_worker_is_gone() {
         root.path(),
         "gone-worker",
         "1.0.0",
-        Some(vec![job("@every 120ms", "/tick", Some("POST"))]),
+        Some(vec![job("@every 1s", "/tick", Some("POST"))]),
         false,
     );
 
@@ -1257,22 +1256,21 @@ async fn dispatch_log_reports_unresolved_version_when_the_worker_is_gone() {
     let (mut scheduler, _app, _metrics) = start_harness_reconcile(
         index.clone(),
         requests.clone(),
-        Duration::from_millis(200),
+        Duration::from_millis(2500),
         Some("root-secret"),
     )
     .await;
 
-    // Step to +100ms in 10 ms increments so the job task registers its
-    // first sleep early (the first tick is still pending; the first
-    // periodic reconciliation lands only at ~+200ms, after the delete).
-    for _ in 0..10 {
-        tokio::time::advance(Duration::from_millis(10)).await;
-    }
+    // The first tick (~+1000 ms) resolves the worker normally; the delete
+    // lands right after it and before the first periodic reconciliation
+    // (~+2500 ms), so the second tick (~+2000 ms) dispatches against a
+    // worker that no longer resolves.
+    advance_until(Duration::from_secs(2), || requests.count() >= 1).await;
     index.remove_worker("gone-worker", "1.0.0").unwrap();
 
     // The pending tick dispatches against a worker that no longer resolves:
     // the line reports the plain `unresolved` marker and the pipeline 404.
-    advance_until(Duration::from_millis(1000), || {
+    advance_until(Duration::from_secs(2), || {
         let events = sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         events[captured_before..].iter().any(|event| {
             event.fields.contains("message=cron dispatched")
@@ -1327,7 +1325,7 @@ async fn no_root_key_dispatches_without_auth_headers_and_warns_once() {
         root.path(),
         "cron-worker",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", Some("POST"))]),
+        Some(vec![job("@every 1s", "/tick", Some("POST"))]),
         false,
     );
 
@@ -1336,7 +1334,7 @@ async fn no_root_key_dispatches_without_auth_headers_and_warns_once() {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .len();
     let (mut scheduler, _app, metrics) = start_harness(index, requests.clone(), None).await;
-    advance_until(Duration::from_millis(500), || requests.count() == 1).await;
+    advance_until(Duration::from_secs(5), || requests.count() == 1).await;
     scheduler.shutdown().await;
     advance(Duration::from_millis(150)).await;
 
@@ -1376,7 +1374,7 @@ async fn dispatch_log_reports_the_serving_version_after_promote() {
     let sink = capture_sink();
     let root = tempfile::tempdir().unwrap();
     let requests = RecordedRequests::default();
-    let cron = || Some(vec![job("@every 100ms", "/tick", Some("POST"))]);
+    let cron = || Some(vec![job("@every 1s", "/tick", Some("POST"))]);
 
     let mut index = ManifestIndex::new();
     index.set_roots(vec![root.path().to_path_buf()]);
@@ -1401,20 +1399,14 @@ async fn dispatch_log_reports_the_serving_version_after_promote() {
         start_harness(index, requests.clone(), Some("root-secret")).await;
     // 1.0.0 serves first; the log lines before the swap report 1.0.0.
     promote(&app, "log-worker", "1.0.0").await;
-    advance_until(Duration::from_millis(300), || {
-        requests.count_for("1.0.0") >= 1
-    })
-    .await;
+    advance_until(Duration::from_secs(3), || requests.count_for("1.0.0") >= 1).await;
 
     // The promote to 2.0.0: the log line of the NEXT tick must report the
     // NEW version, correlated through the same cron-<uuid> request id.
     promote(&app, "log-worker", "2.0.0").await;
 
     // A tick served by 2.0.0; the request id correlates the log line.
-    advance_until(Duration::from_millis(600), || {
-        requests.count_for("2.0.0") >= 1
-    })
-    .await;
+    advance_until(Duration::from_secs(6), || requests.count_for("2.0.0") >= 1).await;
     let tick = requests.last_for("2.0.0").expect("a 2.0.0 tick");
     let request_id = &tick.request_id;
     assert!(request_id.starts_with("cron-"));
@@ -1526,7 +1518,7 @@ async fn removed_job_in_flight_dispatch_finishes_after_removal() {
         root.path(),
         "long-job",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
     let started = Arc::new(AtomicUsize::new(0));
@@ -1551,7 +1543,7 @@ async fn removed_job_in_flight_dispatch_finishes_after_removal() {
         CronMetrics::default(),
     )
     .await;
-    advance_until(Duration::from_secs(1), || {
+    advance_until(Duration::from_secs(2), || {
         started.load(Ordering::SeqCst) > 0
     })
     .await;
@@ -1578,7 +1570,7 @@ async fn removed_job_in_flight_dispatch_finishes_after_removal() {
     );
 
     // The drained task is reaped by a later reconciliation pass.
-    advance_until(Duration::from_secs(1), || {
+    advance_until(Duration::from_secs(2), || {
         scheduler.draining_job_count() == 0
     })
     .await;
@@ -1601,7 +1593,7 @@ async fn removed_job_does_not_block_other_workers_reconcile() {
         root.path(),
         "old-job",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
     let started = Arc::new(AtomicUsize::new(0));
@@ -1622,7 +1614,7 @@ async fn removed_job_does_not_block_other_workers_reconcile() {
         CronMetrics::default(),
     )
     .await;
-    advance_until(Duration::from_secs(1), || {
+    advance_until(Duration::from_secs(2), || {
         started.load(Ordering::SeqCst) > 0
     })
     .await;
@@ -1638,7 +1630,7 @@ async fn removed_job_does_not_block_other_workers_reconcile() {
         root.path(),
         "new-job",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
     advance(Duration::from_millis(200)).await;
@@ -1673,7 +1665,7 @@ async fn shutdown_does_not_leave_removed_jobs_dispatches_detached() {
             root.path(),
             name,
             "1.0.0",
-            Some(vec![job("@every 100ms", "/tick", None)]),
+            Some(vec![job("@every 1s", "/tick", None)]),
             false,
         );
     }
@@ -1699,7 +1691,7 @@ async fn shutdown_does_not_leave_removed_jobs_dispatches_detached() {
         CronMetrics::default(),
     )
     .await;
-    advance_until(Duration::from_secs(1), || {
+    advance_until(Duration::from_secs(2), || {
         started.load(Ordering::SeqCst) == 2
     })
     .await;
@@ -1745,7 +1737,7 @@ async fn fast_readd_of_same_key_does_not_overlap() {
         root.path(),
         "readd-job",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
     let calls = Arc::new(AtomicUsize::new(0));
@@ -1784,7 +1776,7 @@ async fn fast_readd_of_same_key_does_not_overlap() {
         CronMetrics::default(),
     )
     .await;
-    advance_until(Duration::from_secs(1), || calls.load(Ordering::SeqCst) > 0).await;
+    advance_until(Duration::from_secs(2), || calls.load(Ordering::SeqCst) > 0).await;
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     // Remove and re-add the job between two reconciliation passes; the old
@@ -1808,11 +1800,11 @@ async fn fast_readd_of_same_key_does_not_overlap() {
         "the new task dispatched while the old one was still draining"
     );
 
-    // Give a non-waiting (defective) new task time to tick (~+300ms) while
-    // the old dispatch is still held, then release it.
-    advance(Duration::from_millis(80)).await;
+    // Give a non-waiting (defective) new task time to tick (~+2100 ms)
+    // while the old dispatch is still held, then release it.
+    advance(Duration::from_millis(1200)).await;
     release_tx.send(true).unwrap();
-    advance_until(Duration::from_secs(1), || calls.load(Ordering::SeqCst) > 1).await;
+    advance_until(Duration::from_secs(2), || calls.load(Ordering::SeqCst) > 1).await;
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert!(
         !overlapped.load(Ordering::SeqCst),
@@ -1847,7 +1839,7 @@ async fn review_second_remove_readd_preserves_exclusion() {
         root.path(),
         "churn-job",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
     let calls = Arc::new(AtomicUsize::new(0));
@@ -1884,7 +1876,7 @@ async fn review_second_remove_readd_preserves_exclusion() {
         CronMetrics::default(),
     )
     .await;
-    advance_until(Duration::from_secs(1), || calls.load(Ordering::SeqCst) == 1).await;
+    advance_until(Duration::from_secs(2), || calls.load(Ordering::SeqCst) == 1).await;
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     // Two remove/re-add cycles while the original dispatch is still held:
@@ -1901,9 +1893,15 @@ async fn review_second_remove_readd_preserves_exclusion() {
         advance(Duration::from_millis(200)).await;
     }
 
+    // Allow a defective successor to reach its first tick while the oldest is held.
+    advance(Duration::from_millis(1200)).await;
+
     // Release the original dispatch and let the waiting generations tick.
     release_tx.send(true).unwrap();
-    advance(Duration::from_millis(200)).await;
+    // The waiting successor must actually run after the release (it is
+    // not permanently blocked): at least one new-generation dispatch
+    // after the held one.
+    advance_until(Duration::from_secs(3), || calls.load(Ordering::SeqCst) >= 2).await;
     scheduler.shutdown().await;
     assert!(
         !overlap.load(Ordering::SeqCst),
@@ -1922,7 +1920,7 @@ async fn review_second_remove_preserves_shutdown_ownership() {
         root.path(),
         "churn-shutdown",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
     let calls = Arc::new(AtomicUsize::new(0));
@@ -1946,7 +1944,7 @@ async fn review_second_remove_preserves_shutdown_ownership() {
         CronMetrics::default(),
     )
     .await;
-    advance_until(Duration::from_secs(1), || calls.load(Ordering::SeqCst) == 1).await;
+    advance_until(Duration::from_secs(2), || calls.load(Ordering::SeqCst) == 1).await;
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     // Remove, re-add, remove again: the original (still draining) must stay
@@ -1992,7 +1990,7 @@ async fn shutdown_during_active_reconcile_leaves_no_dispatch_and_zero_counters()
         root.path(),
         "reconcile-job",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
     let started = Arc::new(AtomicUsize::new(0));
@@ -2018,7 +2016,7 @@ async fn shutdown_during_active_reconcile_leaves_no_dispatch_and_zero_counters()
     .await;
 
     // The job is admitted and its (20 s) dispatch is in flight.
-    advance_until(Duration::from_secs(1), || {
+    advance_until(Duration::from_secs(2), || {
         started.load(Ordering::SeqCst) == 1
     })
     .await;
@@ -2065,7 +2063,7 @@ async fn shutdown_reports_incomplete_when_a_child_does_not_yield() {
         root.path(),
         "blocked-poll",
         "1.0.0",
-        Some(vec![job("@every 10ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
     let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
@@ -2108,7 +2106,7 @@ async fn shutdown_reports_incomplete_when_a_child_does_not_yield() {
         CronMetrics::default(),
     )
     .await;
-    tokio::time::timeout(Duration::from_secs(2), started.notified())
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
         .await
         .unwrap();
 
@@ -2209,16 +2207,16 @@ async fn gauges_and_snapshot_follow_register_removal_and_reaping() {
         root.path(),
         "gauge-worker",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
 
-    // The dispatch (300 ms) outlives the schedule (100 ms), so the removal
+    // The dispatch (3000 ms) outlives the schedule (1 s), so the removal
     // can land with a dispatch in flight.
     let (mut scheduler, app, metrics) = start_harness_slow(
         index.clone(),
         requests.clone(),
-        Duration::from_millis(300),
+        Duration::from_millis(3000),
         in_flight,
         peak,
         current,
@@ -2248,10 +2246,10 @@ async fn gauges_and_snapshot_follow_register_removal_and_reaping() {
         "{text}"
     );
 
-    // The first tick fires at +100 and its (300 ms) dispatch runs until
-    // +400: the delete at +160 lands with the dispatch in flight, and the
-    // job drains.
-    advance(Duration::from_millis(160)).await;
+    // The first tick fires at +1000 and its (3000 ms) dispatch runs until
+    // +4000: the delete at +1600 lands with the dispatch in flight, and
+    // the job drains.
+    advance(Duration::from_millis(1600)).await;
     index.remove_worker("gauge-worker", "1.0.0").unwrap();
     advance_until(Duration::from_millis(300), || {
         scheduler.active_job_count() == 0 && scheduler.draining_job_count() == 1
@@ -2279,9 +2277,9 @@ async fn gauges_and_snapshot_follow_register_removal_and_reaping() {
         "{text}"
     );
 
-    // The in-flight dispatch finishes on its own (+400) and the reaping
+    // The in-flight dispatch finishes on its own (+4000) and the reaping
     // empties the set: the job leaves the snapshot and the gauges zero.
-    advance_until(Duration::from_millis(600), || {
+    advance_until(Duration::from_secs(3), || {
         requests.count() >= 1 && scheduler.draining_job_count() == 0
     })
     .await;
@@ -2324,19 +2322,19 @@ async fn next_run_is_the_task_sleep_deadline_after_a_slow_dispatch() {
         root.path(),
         "nextrun-worker",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
 
-    // Interval 100 ms; the dispatch takes 300 ms (slower than the
-    // interval). The injected wall follows the (paused) monotonic clock,
-    // so the published deadline → UTC conversion is deterministic.
+    // Interval 1 s; the dispatch takes 3 s (slower than the interval).
+    // The injected wall follows the (paused) monotonic clock, so the
+    // published deadline → UTC conversion is deterministic.
     let wall = Arc::new(TestWall::new());
     let (mut scheduler, _app, metrics) = start_harness_factory_at_wall(
         index,
         Arc::new(SlowFactory {
             requests: requests.clone(),
-            delay: Duration::from_millis(300),
+            delay: Duration::from_secs(3),
             in_flight,
             peak,
             current,
@@ -2362,7 +2360,7 @@ async fn next_run_is_the_task_sleep_deadline_after_a_slow_dispatch() {
     assert_eq!(requests.count(), 0, "no tick may have fired yet");
     // The first deadline is exactly (scheduler start) + interval, so the
     // start (the wall anchor) is recovered from it without drift.
-    let interval = chrono::Duration::from_std(Duration::from_millis(100)).unwrap();
+    let interval = chrono::Duration::from_std(Duration::from_secs(1)).unwrap();
     let anchor = first - interval;
 
     // The value is the task's own: it does not drift while the task keeps
@@ -2382,10 +2380,10 @@ async fn next_run_is_the_task_sleep_deadline_after_a_slow_dispatch() {
         "the first deadline must still be in the future: {first}"
     );
 
-    // The first tick fires at the first deadline and the (300 ms)
+    // The first tick fires at the first deadline and the (3 s)
     // dispatch runs; only when it ends does the task compute the next
     // deadline.
-    advance_until(Duration::from_millis(600), || requests.count() == 1).await;
+    advance_until(Duration::from_secs(6), || requests.count() == 1).await;
     let (v_loop, stamp_elapsed) = {
         let stamps = requests.stamps.lock().unwrap();
         (tokio::time::Instant::now() - v0, stamps[0].elapsed())
@@ -2410,7 +2408,7 @@ async fn next_run_is_the_task_sleep_deadline_after_a_slow_dispatch() {
     // And it moved forward by at least the dispatch duration plus the
     // interval (the `@every` job does not re-slot on a grid).
     assert!(
-        second - first >= chrono::Duration::from_std(Duration::from_millis(400)).unwrap(),
+        second - first >= chrono::Duration::from_std(Duration::from_millis(4000)).unwrap(),
         "the next run must move by the real dispatch span plus the interval: {first} -> {second}"
     );
     // Exactly one tick fired so far (the next one is the second deadline).
@@ -2541,7 +2539,7 @@ async fn job_change_lines_are_info_once_per_change() {
         root.path(),
         "chg-worker",
         "1.0.0",
-        Some(vec![job("@every 400ms", "/tick", None)]),
+        Some(vec![job("@every 2s", "/tick", None)]),
         false,
     );
 
@@ -2568,7 +2566,7 @@ async fn job_change_lines_are_info_once_per_change() {
     .await;
     let started =
         &captured_change_lines(&sink, captured_before, "cron job started", "chg-worker")[0];
-    assert!(started.contains("schedule=\"@every 400ms\""), "{started}");
+    assert!(started.contains("schedule=\"@every 2s\""), "{started}");
     assert!(started.contains("path=\"/tick\""), "{started}");
     assert!(started.contains("method=\"GET\""), "{started}");
     assert!(started.contains("version=1.0.0"), "{started}");
@@ -2587,10 +2585,10 @@ async fn job_change_lines_are_info_once_per_change() {
         captured_change_lines(&sink, captured_before, "cron job drained", "chg-worker").is_empty()
     );
 
-    // The first tick fires at +400 and its (100 ms) dispatch runs until
-    // +500; the disable at +450 lands with the dispatch in flight and
+    // The first tick fires at +2000 and its (100 ms) dispatch runs until
+    // +2100; the disable at +2050 lands with the dispatch in flight and
     // starts the drain (`stopped`, once).
-    advance(Duration::from_millis(450)).await;
+    advance(Duration::from_millis(2050)).await;
     index
         .set_worker_enabled("chg-worker", Some("1.0.0"), false)
         .unwrap();
@@ -2600,7 +2598,7 @@ async fn job_change_lines_are_info_once_per_change() {
     .await;
     let stopped =
         &captured_change_lines(&sink, captured_before, "cron job stopped", "chg-worker")[0];
-    assert!(stopped.contains("schedule=\"@every 400ms\""), "{stopped}");
+    assert!(stopped.contains("schedule=\"@every 2s\""), "{stopped}");
     assert!(stopped.contains("path=\"/tick\""), "{stopped}");
     assert!(stopped.contains("method=\"GET\""), "{stopped}");
     // The worker no longer resolves (its only version is disabled).
@@ -2615,7 +2613,7 @@ async fn job_change_lines_are_info_once_per_change() {
     .await;
     let drained =
         &captured_change_lines(&sink, captured_before, "cron job drained", "chg-worker")[0];
-    assert!(drained.contains("schedule=\"@every 400ms\""), "{drained}");
+    assert!(drained.contains("schedule=\"@every 2s\""), "{drained}");
     assert!(drained.contains("path=\"/tick\""), "{drained}");
     assert!(drained.contains("method=\"GET\""), "{drained}");
     assert!(drained.contains("version=unresolved"), "{drained}");
@@ -2676,7 +2674,7 @@ async fn full_signal_queue_keeps_the_published_deadlines_correct() {
             root.path(),
             &format!("flood-w{i:03}"),
             "1.0.0",
-            Some(vec![job("@every 100ms", "/tick", None)]),
+            Some(vec![job("@every 1s", "/tick", None)]),
             false,
         );
     }
@@ -2758,7 +2756,7 @@ async fn full_signal_queue_keeps_the_published_deadlines_correct() {
         if jobs.iter().all(|job| job.next_run_at > Some(d1)) {
             break;
         }
-        if advanced >= Duration::from_millis(3_000) {
+        if advanced >= Duration::from_secs(30) {
             panic!(
                 "a job never re-slept past its first deadline after {advanced:?} of virtual time"
             );
@@ -2772,7 +2770,7 @@ async fn full_signal_queue_keeps_the_published_deadlines_correct() {
     // the remaining dispatches first.)
     let mut drained = Duration::from_millis(0);
     while requests.count() < JOBS {
-        if drained >= Duration::from_secs(2) {
+        if drained >= Duration::from_secs(20) {
             panic!(
                 "{}/{} dispatches done after an extra {drained:?} of virtual time",
                 requests.count(),
@@ -2843,7 +2841,7 @@ async fn missing_root_reports_disabled() {
         root.path(),
         "enabled-worker",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
 
@@ -2854,10 +2852,7 @@ async fn missing_root_reports_disabled() {
         "the read-out must be false without a root Bearer"
     );
     // The job still runs (the pre-existing behavior is untouched).
-    advance_until(Duration::from_millis(200), || {
-        scheduler.active_job_count() == 1
-    })
-    .await;
+    advance_until(Duration::from_secs(2), || scheduler.active_job_count() == 1).await;
 
     scheduler.shutdown().await;
 }
@@ -2877,7 +2872,7 @@ async fn shutdown_disables_enabled_flag() {
         root.path(),
         "enabled-worker",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
 
@@ -2959,7 +2954,7 @@ async fn shutdown_publishes_draining_snapshot_and_intermediate_reaps() {
         root.path(),
         "sd-fast",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
     insert_version(
@@ -2967,20 +2962,21 @@ async fn shutdown_publishes_draining_snapshot_and_intermediate_reaps() {
         root.path(),
         "sd-slow",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
 
-    // Both tick at +100: the fast dispatch runs until +400, the slow one
-    // until +700. The shutdown lands while BOTH are in flight, so neither
-    // task can exit (or be reaped) before its dispatch finishes — the
-    // `draining: 2` window is stable, not a sub-step blip.
+    // Both tick at +1000: the fast dispatch runs until +3000, the slow
+    // one until +5500 (inside the 5 s shutdown grace). The shutdown lands
+    // while BOTH are in flight, so neither task can exit (or be reaped)
+    // before its dispatch finishes — the `draining: 2` window is stable,
+    // not a sub-step blip.
     let (mut scheduler, app, metrics) = start_harness_factory_at_wall(
         index,
         Arc::new(SplitFactory {
             requests: requests.clone(),
-            fast: Duration::from_millis(300),
-            slow: Duration::from_millis(600),
+            fast: Duration::from_millis(2000),
+            slow: Duration::from_millis(4500),
             fast_in_flight: in_flight.clone(),
             slow_in_flight: slow_in_flight.clone(),
             peak: peak.clone(),
@@ -2991,7 +2987,7 @@ async fn shutdown_publishes_draining_snapshot_and_intermediate_reaps() {
         virtual_wall(),
     )
     .await;
-    advance_until(Duration::from_millis(300), || {
+    advance_until(Duration::from_secs(3), || {
         in_flight.load(Ordering::SeqCst) && slow_in_flight.load(Ordering::SeqCst)
     })
     .await;
@@ -3019,7 +3015,7 @@ async fn shutdown_publishes_draining_snapshot_and_intermediate_reaps() {
     // The fast task (sleeping, no dispatch) exits and is reaped DURING the
     // grace window: the intermediate reap is visible right away — the job
     // leaves the snapshot and the gauges drop to one.
-    advance_until(Duration::from_millis(500), || metrics.draining_jobs() == 1).await;
+    advance_until(Duration::from_millis(3500), || metrics.draining_jobs() == 1).await;
     let snapshot = metrics.jobs();
     let names: Vec<_> = snapshot
         .jobs
@@ -3042,7 +3038,7 @@ async fn shutdown_publishes_draining_snapshot_and_intermediate_reaps() {
     assert_eq!(jobs[0]["worker"], "sd-slow", "{}", text);
     assert_eq!(jobs[0]["state"], "draining", "{}", text);
 
-    // The slow dispatch finishes on its own (+700) inside the grace
+    // The slow dispatch finishes on its own (+5500) inside the grace
     // window and the last reap empties the counters (no `store(0)`).
     stopping.await.unwrap();
     assert_eq!(metrics.active_jobs(), 0);
@@ -3214,7 +3210,7 @@ async fn successor_generation_has_no_next_run_until_its_first_sleep() {
         root.path(),
         "cron-successor",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick", None)]),
+        Some(vec![job("@every 1s", "/tick", None)]),
         false,
     );
 
@@ -3236,11 +3232,8 @@ async fn successor_generation_has_no_next_run_until_its_first_sleep() {
     )
     .await;
 
-    // The first dispatch (at +100 ms) is in flight.
-    advance_until(Duration::from_millis(300), || {
-        in_flight.load(Ordering::SeqCst)
-    })
-    .await;
+    // The first dispatch (at +1000 ms) is in flight.
+    advance_until(Duration::from_secs(3), || in_flight.load(Ordering::SeqCst)).await;
 
     // Disable: the job leaves the desired set and its generation starts
     // draining (the in-flight dispatch finishes normally).
@@ -3322,15 +3315,15 @@ async fn next_run_is_null_after_year_9999_and_published_in_9999() {
     let root = tempfile::tempdir().unwrap();
     let mut index = ManifestIndex::new();
     index.set_roots(vec![root.path().to_path_buf()]);
-    // 999 ms ahead of the wall base: still 9999-12-31T23:59:59.999Z (the
-    // last published millisecond of the year). 1_000 ms ahead: the first
+    // 1000 ms ahead of the wall base: 9999-12-31T23:59:59.999Z (the last
+    // published millisecond of the year). 1001 ms ahead: the first
     // instant of the year 10000 (published as `null`).
     insert_version(
         &mut index,
         root.path(),
         "boundary-9999",
         "1.0.0",
-        Some(vec![job("@every 999ms", "/tick", None)]),
+        Some(vec![job("@every 1000ms", "/tick", None)]),
         false,
     );
     insert_version(
@@ -3338,10 +3331,11 @@ async fn next_run_is_null_after_year_9999_and_published_in_9999() {
         root.path(),
         "boundary-10000",
         "1.0.0",
-        Some(vec![job("@every 1000ms", "/tick", None)]),
+        Some(vec![job("@every 1001ms", "/tick", None)]),
         false,
     );
-    let base = Utc.with_ymd_and_hms(9999, 12, 31, 23, 59, 59).unwrap();
+    let base = Utc.with_ymd_and_hms(9999, 12, 31, 23, 59, 58).unwrap()
+        + chrono::Duration::milliseconds(999);
     let mono0 = tokio::time::Instant::now();
     let wall = Arc::new(move || {
         let elapsed = tokio::time::Instant::now() - mono0;
@@ -3383,7 +3377,7 @@ async fn next_run_is_null_after_year_9999_and_published_in_9999() {
         .expect("the in-year job is tracked");
     assert_eq!(
         before.next_run_at,
-        Some(base + chrono::Duration::milliseconds(999)),
+        Some(base + chrono::Duration::milliseconds(1000)),
         "the last millisecond of the year 9999 is still published"
     );
     let after = jobs

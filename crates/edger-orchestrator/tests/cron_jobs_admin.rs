@@ -593,14 +593,14 @@ async fn version_follows_promote_without_restarting_the_task() {
         root.path(),
         "cron-w-v",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick")]),
+        Some(vec![job("@every 1s", "/tick")]),
     );
     insert_version(
         &mut index,
         root.path(),
         "cron-w-v",
         "2.0.0",
-        Some(vec![job("@every 100ms", "/tick")]),
+        Some(vec![job("@every 1s", "/tick")]),
     );
     let (scheduler, app) = app_with(index, true).await;
 
@@ -663,7 +663,7 @@ async fn removed_worker_draining_job_visible_to_root_and_scoped_key() {
         root.path(),
         "cron-del",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick")]),
+        Some(vec![job("@every 1s", "/tick")]),
     );
 
     let in_flight = Arc::new(AtomicBool::new(false));
@@ -679,10 +679,10 @@ async fn removed_worker_draining_job_visible_to_root_and_scoped_key() {
     )
     .await;
 
-    // Ticks fire at +100 (until +600) and +600 (until +1100): wait until
-    // the second dispatch is in flight — the removal then lands with a
-    // dispatch running (the probe window).
-    advance_until(Duration::from_millis(1_500), || {
+    // Ticks fire at +1000 (until +1500) and +2500 (until +3000): wait
+    // until the second dispatch is in flight — the removal then lands with
+    // a dispatch running (the probe window).
+    advance_until(Duration::from_millis(15_000), || {
         in_flight.load(Ordering::SeqCst) && done.load(Ordering::SeqCst) >= 1
     })
     .await;
@@ -775,7 +775,7 @@ async fn warmed_expired_key_gets_401_at_the_endpoint() {
         root.path(),
         "cron-exp",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick")]),
+        Some(vec![job("@every 1s", "/tick")]),
     );
     let (_scheduler, app) = app_with(index, false).await;
 
@@ -834,13 +834,13 @@ async fn large_valid_interval_does_not_stop_other_cron_jobs() {
         root.path(),
         "cron-large-healthy",
         "1.0.0",
-        Some(vec![job("@every 100ms", "/tick")]),
+        Some(vec![job("@every 1s", "/tick")]),
     );
     let (scheduler, app, metrics) =
         app_with_factory(index.clone(), Arc::new(OkFactory), true).await;
 
     // The healthy job has fired at least once.
-    advance_until(Duration::from_secs(1), || metrics.executions_total() > 0).await;
+    advance_until(Duration::from_secs(2), || metrics.executions_total() > 0).await;
     let before = metrics.executions_total();
 
     // The enormous interval is a VALID manifest value (it parses to a
@@ -855,7 +855,7 @@ async fn large_valid_interval_does_not_stop_other_cron_jobs() {
     // Let several reconciliation passes (and the huge job's task commit
     // window) run.
     for _ in 0..30 {
-        tokio::time::advance(Duration::from_millis(10)).await;
+        tokio::time::advance(Duration::from_millis(100)).await;
         tokio::task::yield_now().await;
     }
 
@@ -1018,25 +1018,39 @@ async fn newline_method_is_refused_and_scheduler_lines_stay_on_one_physical_line
 }
 
 /// (EDG-34 round 4, F1) The supervisor resolves the version ONCE per
-/// worker NAME per pass — not once per job: with 2_000 jobs of one worker
-/// the counting resolver sees ONE call for the registration pass (the
-/// 2_000 `cron job started` lines of the boot reconcile) and ONE call for
-/// the shutdown pass (the 2_000 `cron job drained` lines of the reaping,
-/// which runs through the shutdown's single memo) — whatever the job
-/// count. Paused clock; the assertion is the exact call count, not a
-/// real-clock time limit. (A pass with no job-set change logs no line and
-/// resolves nothing: the memo is only consulted by the change lines.)
+/// worker NAME per pass — not once per job: with 63 workers carrying 32
+/// jobs each (2016 jobs — a single manifest is capped at 32 `cron[]`
+/// entries, EDG-36) the counting resolver sees ONE call PER WORKER NAME
+/// for the registration pass (the 2016 `cron job started` lines of the
+/// boot reconcile) and one more per name for the shutdown pass (the 2016
+/// `cron job drained` lines of the reaping, which runs through the
+/// shutdown's single memo) — never once per job. With ONE job per worker
+/// the job count would equal the name count and the test could not tell a
+/// per-name resolution from a per-job one. Paused clock; the assertion is
+/// the exact call count, not a real-clock time limit. (A pass with no
+/// job-set change logs no line and resolves nothing: the memo is only
+/// consulted by the change lines.)
 #[tokio::test]
 async fn supervisor_resolves_the_version_once_per_worker_name_per_pass() {
     tokio::time::pause();
     let root = tempfile::tempdir().unwrap();
     let mut index = ManifestIndex::new();
     index.set_roots(vec![root.path().to_path_buf()]);
-    const JOBS: usize = 2000;
-    let jobs: Vec<CronJob> = (0..JOBS)
-        .map(|i| job("@every 1h", &format!("/p{i}")))
-        .collect();
-    insert_version(&mut index, root.path(), "cron-w-f1", "1.0.0", Some(jobs));
+    const WORKERS: usize = 63;
+    const PER_WORKER: usize = 32;
+    const JOBS: usize = WORKERS * PER_WORKER; // 2016
+    for i in 0..WORKERS {
+        let jobs: Vec<CronJob> = (0..PER_WORKER)
+            .map(|j| job("@every 1h", &format!("/p{j}")))
+            .collect();
+        insert_version(
+            &mut index,
+            root.path(),
+            &format!("cron-w-f1-{i:02}"),
+            "1.0.0",
+            Some(jobs),
+        );
+    }
     let calls = Arc::new(AtomicUsize::new(0));
     let counting = calls.clone();
     // The job-set change lines resolve their version EAGERLY (before the
@@ -1053,22 +1067,23 @@ async fn supervisor_resolves_the_version_once_per_worker_name_per_pass() {
     )
     .await;
     let mut scheduler = scheduler.expect("the scheduler starts");
-    // The registration pass logged 2_000 `cron job started` lines for the
-    // single worker name: it resolved the name ONCE, not once per job, and
-    // tracks all 2_000 generations.
+    // The registration pass logged 2016 `cron job started` lines for the
+    // 63 worker names: it resolved each name ONCE (not once per job), and
+    // tracks all 2016 generations.
     assert_eq!(metrics.active_jobs(), JOBS);
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        1,
-        "the registration pass resolves the worker name once, not per job"
+        WORKERS,
+        "the registration pass resolves each worker name once, not per job"
     );
-    // The shutdown pass signals and reaps the 2_000 generations through
-    // its own single memo: 2_000 `cron job drained` lines, one resolution.
+    // The shutdown pass signals and reaps the 2016 generations through
+    // its own single memo: 2016 `cron job drained` lines, one resolution
+    // per worker name.
     scheduler.shutdown().await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        2,
-        "the shutdown reaping pass resolves the worker name once, not per job"
+        WORKERS * 2,
+        "the shutdown reaping pass resolves each worker name once, not per job"
     );
     assert_eq!(
         metrics.active_jobs() + metrics.draining_jobs(),

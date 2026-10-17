@@ -8,6 +8,15 @@ use crate::config::WorkerConfig;
 use crate::execution::{normalize_fullstack_adapter, ExecutionKind, SUPPORTED_FULLSTACK_ADAPTERS};
 use crate::manifest::WorkerManifest;
 
+/// Maximum number of `cron[]` entries a worker manifest may declare
+/// (EDG-36); beyond it the manifest validation rejects the manifest.
+pub const MAX_CRON_ENTRIES: usize = 32;
+/// Minimum `@every` interval a worker manifest may declare (EDG-36, ms):
+/// below it the manifest validation rejects the schedule, and the
+/// scheduler's own parser treats it as an invalid schedule (defense in
+/// depth for indexes built before the limit).
+pub const MIN_CRON_EVERY_MS: u64 = 1_000;
+
 /// Resolved worker identity (namespaced + semver).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkerRef {
@@ -113,6 +122,15 @@ pub fn validate_worker_manifest(manifest: &WorkerManifest) -> Result<(), crate::
     }
 
     if let Some(cron) = manifest.cron.as_deref() {
+        // (EDG-36) `cron[]` is bounded: beyond `MAX_CRON_ENTRIES` entries
+        // the manifest is rejected as a whole (field `manifest.cron`), so
+        // the scheduler's job set and the admin read-out stay finite.
+        if cron.len() > MAX_CRON_ENTRIES {
+            return Err(crate::error::CoreError::validation(
+                "manifest.cron",
+                format!("cron must have at most {MAX_CRON_ENTRIES} entries"),
+            ));
+        }
         // (EDG-34 emenda 2, CWE-117) control characters in a `cron[]`
         // `path`, `schedule` or `method` could forge physical log lines in
         // the scheduler's log output (the cron lines log these fields):
@@ -140,6 +158,21 @@ pub fn validate_worker_manifest(manifest: &WorkerManifest) -> Result<(), crate::
                     &format!("manifest.cron[{position}].method"),
                     "cron method must not contain control characters",
                 ));
+            }
+            // (EDG-36) an `@every` interval below the 1 s minimum is
+            // rejected by field. An `@every` the duration parser does not
+            // accept (including one that overflows, EDG-36) is NOT
+            // rejected here: the scheduler skips it with a `warn`, as
+            // before.
+            if let Some(duration) = entry.schedule.trim().strip_prefix("@every ") {
+                if let Some(ms) = crate::config::parse_duration_string_to_ms(duration) {
+                    if ms < MIN_CRON_EVERY_MS {
+                        return Err(crate::error::CoreError::validation(
+                            &format!("manifest.cron[{position}].schedule"),
+                            "cron @every interval must be at least 1s",
+                        ));
+                    }
+                }
             }
         }
     }
@@ -240,7 +273,7 @@ mod tests {
     #[test]
     fn cron_path_with_a_newline_is_rejected() {
         let err =
-            validate_worker_manifest(&manifest_with_cron("@every 100ms", "/ti\nck")).unwrap_err();
+            validate_worker_manifest(&manifest_with_cron("@every 1s", "/ti\nck")).unwrap_err();
         assert_eq!(err.code, "VALIDATION_ERROR");
         assert!(
             err.message.contains("manifest.cron[0].path"),
@@ -264,17 +297,17 @@ mod tests {
         );
     }
 
-    /// Clean cron fields keep passing the manifest validation.
+    /// Clean cron fields keep passing the manifest validation. (EDG-36:
+    /// the `@every` interval is at least 1 s — a sub-second value is
+    /// rejected by its own rule, which is covered below.)
     #[test]
     fn cron_clean_fields_pass_validation() {
-        assert!(validate_worker_manifest(&manifest_with_cron("@every 100ms", "/tick")).is_ok());
+        assert!(validate_worker_manifest(&manifest_with_cron("@every 1s", "/tick")).is_ok());
         assert!(validate_worker_manifest(&manifest_with_cron("0 9 * * 1", "/reports")).is_ok());
-        assert!(validate_worker_manifest(&manifest_with_cron_method(
-            "@every 100ms",
-            "/tick",
-            "GET"
-        ))
-        .is_ok());
+        assert!(
+            validate_worker_manifest(&manifest_with_cron_method("@every 1s", "/tick", "GET"))
+                .is_ok()
+        );
     }
 
     /// (EDG-34 rodada 3, CWE-117) a `cron[]` method with an embedded
@@ -285,13 +318,90 @@ mod tests {
     #[test]
     fn cron_method_with_a_newline_is_rejected() {
         let err =
-            validate_worker_manifest(&manifest_with_cron_method("@every 100ms", "/tick", "GE\nT"))
+            validate_worker_manifest(&manifest_with_cron_method("@every 1s", "/tick", "GE\nT"))
                 .unwrap_err();
         assert_eq!(err.code, "VALIDATION_ERROR");
         assert!(
             err.message.contains("manifest.cron[0].method"),
             "the error names the offending field: {}",
             err.message
+        );
+    }
+
+    fn manifest_with_cron_entries(n: usize) -> WorkerManifest {
+        WorkerManifest {
+            name: "cron-test".into(),
+            version: Some("1.0.0".into()),
+            entrypoint: Some("index.ts".into()),
+            cron: Some(
+                (0..n)
+                    .map(|i| CronJob {
+                        schedule: "@every 1h".into(),
+                        path: format!("/p{i}"),
+                        method: None,
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    /// (EDG-36) `cron[]` is capped at `MAX_CRON_ENTRIES` entries: exactly
+    /// 32 passes, 33 is rejected on the whole-array field.
+    #[test]
+    fn cron_entries_are_capped_at_max() {
+        assert!(validate_worker_manifest(&manifest_with_cron_entries(MAX_CRON_ENTRIES)).is_ok());
+        let err = validate_worker_manifest(&manifest_with_cron_entries(MAX_CRON_ENTRIES + 1))
+            .unwrap_err();
+        assert_eq!(err.code, "VALIDATION_ERROR");
+        assert!(
+            err.message.contains("manifest.cron"),
+            "the error names the offending field: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("cron must have at most 32 entries"),
+            "the message states the limit: {}",
+            err.message
+        );
+    }
+
+    /// (EDG-36) an `@every` interval below 1 s is rejected by field; the
+    /// 1 s boundary passes in every accepted spelling.
+    #[test]
+    fn cron_every_below_one_second_is_rejected() {
+        let err =
+            validate_worker_manifest(&manifest_with_cron("@every 999ms", "/tick")).unwrap_err();
+        assert_eq!(err.code, "VALIDATION_ERROR");
+        assert!(
+            err.message.contains("manifest.cron[0].schedule"),
+            "the error names the offending field: {}",
+            err.message
+        );
+        assert!(
+            err.message
+                .contains("cron @every interval must be at least 1s"),
+            "the message states the minimum: {}",
+            err.message
+        );
+        for schedule in ["@every 1s", "@every 1000ms", "@every 1"] {
+            assert!(
+                validate_worker_manifest(&manifest_with_cron(schedule, "/tick")).is_ok(),
+                "the boundary schedule must pass: {schedule}"
+            );
+        }
+    }
+
+    /// (EDG-36) an `@every` whose millisecond value overflows `u64` does
+    /// not panic and is NOT rejected by the manifest validation: the
+    /// duration parser answers `None`, and the scheduler skips such a job
+    /// with a `warn`, exactly as before.
+    #[test]
+    fn cron_every_overflowing_u64_is_not_rejected_by_validation() {
+        assert!(
+            validate_worker_manifest(&manifest_with_cron("@every 18446744073709552s", "/tick"))
+                .is_ok(),
+            "an unparseable @every keeps the pre-EDG-36 behavior (scheduler warn, not a rejection)"
         );
     }
 }

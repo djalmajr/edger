@@ -119,6 +119,7 @@ pub type WallClock = Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>;
 pub type VersionResolver = Arc<dyn Fn(&ManifestIndex, &str) -> Option<String> + Send + Sync>;
 use edger_core::{
     parse_duration_string_to_ms, CoreError, CronJob, WorkerRef, INTERNAL_REQUEST_HEADER,
+    MIN_CRON_EVERY_MS,
 };
 use saffron::Cron;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -438,7 +439,10 @@ impl CronSchedule {
             let Some(ms) = parse_duration_string_to_ms(duration) else {
                 return Err(invalid_schedule(schedule));
             };
-            if ms == 0 {
+            // (EDG-36) defense in depth: the manifest validation already
+            // rejects a sub-1 s `@every` (and a `0` interval), but an
+            // index built before the limit must not schedule one either.
+            if ms < MIN_CRON_EVERY_MS {
                 return Err(invalid_schedule(schedule));
             }
             return Ok(Self::Every(Duration::from_millis(ms)));
@@ -1699,11 +1703,37 @@ mod tests {
 
     #[test]
     fn schedule_parser_accepts_every_interval() {
-        let schedule = CronSchedule::parse("@every 50ms").unwrap();
+        let schedule = CronSchedule::parse("@every 1s").unwrap();
 
         assert!(matches!(
             schedule,
-            CronSchedule::Every(d) if d == Duration::from_millis(50)
+            CronSchedule::Every(d) if d == Duration::from_millis(1000)
+        ));
+    }
+
+    /// (EDG-36) an `@every` interval below the 1 s minimum is an invalid
+    /// schedule (the `0` interval keeps being invalid too), including an
+    /// `@every` the duration parser does not accept (an overflow no longer
+    /// wraps or panics — EDG-36).
+    #[test]
+    fn schedule_parser_rejects_every_below_the_one_second_minimum() {
+        for schedule in [
+            "@every 0s",
+            "@every 50ms",
+            "@every 999ms",
+            "@every 18446744073709552s",
+        ] {
+            let err = CronSchedule::parse(schedule).unwrap_err();
+            assert_eq!(err.code, "CRON_SCHEDULE_INVALID");
+            assert!(
+                err.message.contains(schedule),
+                "the message names the schedule: {schedule}"
+            );
+        }
+        let boundary = CronSchedule::parse("@every 1000ms").unwrap();
+        assert!(matches!(
+            boundary,
+            CronSchedule::Every(d) if d == Duration::from_millis(1000)
         ));
     }
 

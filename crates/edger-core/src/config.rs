@@ -114,30 +114,41 @@ pub enum FullstackBasePath {
 /// (the field's default applies).
 pub fn parse_duration_to_ms(value: &DurationValue) -> Option<u64> {
     match value {
-        DurationValue::Number(n) => n.as_u64().map(|s| s * 1000),
+        // (EDG-36) checked: a value whose millisecond form does not fit
+        // `u64` is invalid (`None`), not a wrap (release) or a panic (debug).
+        DurationValue::Number(n) => n.as_u64().and_then(|secs| secs.checked_mul(1000)),
         DurationValue::String(s) => parse_duration_string_to_ms(s),
         _ => None,
     }
 }
 
-/// Parse duration text like `30s`, `5m`, `1h` to milliseconds.
+/// Parse duration text like `30s`, `5m`, `1h` to milliseconds. A value whose
+/// millisecond form does not fit `u64` yields `None` (invalid), not a
+/// wrapped value or a panic (EDG-36).
 pub fn parse_duration_string_to_ms(input: &str) -> Option<u64> {
     let input = input.trim();
     if input.is_empty() {
         return None;
     }
     if let Ok(secs) = input.parse::<u64>() {
-        return Some(secs * 1000);
+        return secs.checked_mul(1000);
     }
     if let Some(stripped) = input.strip_suffix("ms") {
         return stripped.parse().ok();
     }
     let (num_part, unit) = input.split_at(input.len().saturating_sub(1));
     let num: u64 = num_part.parse().ok()?;
+    // (EDG-36) every multiplication is checked: an overflow yields `None`
+    // (the field's default applies), never a wrap or a panic.
     match unit {
-        "s" => Some(num * 1000),
-        "m" => Some(num * 60 * 1000),
-        "h" => Some(num * 60 * 60 * 1000),
+        "s" => num.checked_mul(1000),
+        "m" => num
+            .checked_mul(60)
+            .and_then(|minutes| minutes.checked_mul(1000)),
+        "h" => num
+            .checked_mul(60)
+            .and_then(|hours| hours.checked_mul(60))
+            .and_then(|minutes| minutes.checked_mul(1000)),
         _ => None,
     }
 }
@@ -532,5 +543,62 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
         cron: manifest.cron.clone().unwrap_or_default(),
         kind: Some(kind),
         fullstack,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// (EDG-36) a duration string whose millisecond value overflows `u64`
+    /// is invalid (`None`) — not a panic (debug) nor a wrapped value
+    /// (release). Each input overflows on its own unit path.
+    #[test]
+    fn duration_strings_beyond_u64_millis_are_invalid() {
+        // 18446744073709552 s (and bare seconds) = u64::MAX / 1000 + 1 s:
+        // `secs * 1000` overflows.
+        assert_eq!(parse_duration_string_to_ms("18446744073709552s"), None);
+        assert_eq!(parse_duration_string_to_ms("18446744073709552"), None);
+        // 307445734561826 * 60 already overflows `u64` (the `m` path).
+        assert_eq!(parse_duration_string_to_ms("307445734561826m"), None);
+        // 5124095576030432 * 60 overflows on the first `h` step.
+        assert_eq!(parse_duration_string_to_ms("5124095576030432h"), None);
+    }
+
+    /// (EDG-36) the boundary values that still fit keep parsing to the
+    /// exact millisecond value (no off-by-one at the `u64` edge).
+    #[test]
+    fn duration_strings_at_the_u64_boundary_still_parse() {
+        let secs = u64::MAX / 1000;
+        let expected = secs * 1000;
+        assert_eq!(
+            parse_duration_string_to_ms(&format!("{secs}s")),
+            Some(expected)
+        );
+        assert_eq!(
+            parse_duration_string_to_ms(&format!("{secs}")),
+            Some(expected)
+        );
+        let minutes = u64::MAX / 60 / 1000;
+        assert_eq!(
+            parse_duration_string_to_ms(&format!("{minutes}m")),
+            Some(minutes * 60 * 1000)
+        );
+        let hours = u64::MAX / 60 / 60 / 1000;
+        assert_eq!(
+            parse_duration_string_to_ms(&format!("{hours}h")),
+            Some(hours * 60 * 60 * 1000)
+        );
+    }
+
+    /// (EDG-36) the `DurationValue::Number` seconds form is checked too:
+    /// `u64::MAX / 1000 + 1` seconds is invalid; the boundary fits.
+    #[test]
+    fn duration_numbers_beyond_u64_millis_are_invalid() {
+        let overflow = DurationValue::Number(serde_json::Number::from(u64::MAX / 1000 + 1));
+        assert_eq!(parse_duration_to_ms(&overflow), None);
+        let edge = u64::MAX / 1000;
+        let boundary = DurationValue::Number(serde_json::Number::from(edge));
+        assert_eq!(parse_duration_to_ms(&boundary), Some(edge * 1000));
     }
 }
