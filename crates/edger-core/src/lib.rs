@@ -59,6 +59,7 @@ pub use wire::{
 };
 pub use worker_ref::{
     create_worker_ref, parse_namespaced_name, validate_worker_manifest, WorkerRef,
+    MAX_CRON_ENTRIES, MIN_CRON_EVERY_MS,
 };
 
 /// Crate identity marker for module layout tests.

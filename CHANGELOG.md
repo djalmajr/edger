@@ -346,6 +346,32 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Fixed
 
+- Duration values no longer overflow (EDG-36): a duration whose millisecond
+  value does not fit `u64` (for example `18446744073709552s` / a bare
+  `18446744073709552` seconds, or a `cron` `@every` interval near the same
+  magnitude) panicked the cron supervisor in debug builds and wrapped to a
+  small value (384 ms) in release builds. The parser now uses checked
+  multiplication and the value is invalid, exactly like any other
+  unparseable duration (the field's default applies, or the `@every` job is
+  skipped with a `warn`). It covers `ttl`, `streamTimeout` and `@every`
+  (every duration field going through the checked parser).
+
+- Manifest `cron[]` limits (EDG-36): at most 32 `cron[]` entries per
+  manifest (`cron must have at most 32 entries`) and an `@every` interval of
+  at least 1 s (`cron @every interval must be at least 1s`), rejected at
+  manifest validation — so the install, the boot index load and the rescan
+  refuse a manifest that crosses either limit; the scheduler also treats a
+  sub-1 s `@every` as an invalid schedule (defense in depth). An `@every`
+  the duration parser does not accept is still not rejected at validation;
+  the scheduler skips it with a `warn`, as before. Before upgrading, check
+  that no version the scanner admits crosses either limit: an invalid
+  manifest in an admitted version (an enabled version, a version disabled
+  only by the persisted `.edger-enabled` marker, or an admitted rollback
+  version) aborts the whole `edger` process at boot (the index is never
+  built), and a rescan answers 400 without changing the index. A version
+  whose own manifest says `enabled: false` (without a marker saying
+  `enabled=true`) is skipped before validation and cannot block the boot.
+
 - Expired API keys no longer authenticate from the cache (EDG-35): a key
   cached while still valid kept authenticating for up to 60 s after its
   `expires_at`. `try_authenticate` now re-checks the cached deadline with
