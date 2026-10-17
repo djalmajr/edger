@@ -4,7 +4,8 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.22` (cron jobs listed with
+Toward 0.3.2. Release candidates: `v0.3.2-rc.23` (`zip` 9.0.4);
+`v0.3.2-rc.22` (cron jobs listed with
 their next run, expired API keys no longer authenticate from the cache);
 `v0.3.2-rc.21` (the worker's
 `request.url` carries the real origin on its own host, resolution errors
@@ -668,6 +669,15 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.23]
+
+- `zip` 8.6.0 -> 9.0.4 (RUSTSEC-2026-0367 to 0369). The new version
+  refuses more malformed packages: an entry that holds more bytes than
+  its declared size (a manifest entry past the manifest cap is now
+  `400 DEPLOY_INVALID_PACKAGE` instead of `413 PAYLOAD_TOO_LARGE`) and an
+  entry name with a separator inside a Windows verbatim path component
+  (`DEPLOY_PATH_DENIED`).
 
 ## [0.3.2-rc.22]
 
