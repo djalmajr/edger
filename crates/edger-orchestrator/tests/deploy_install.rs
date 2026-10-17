@@ -1099,14 +1099,20 @@ async fn worker_files_listing_and_zip_hide_edge_r_bundle_artifacts() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(body)).unwrap();
-    let names: Vec<&str> = archive.file_names().collect();
+    let names: Vec<String> = archive
+        .file_names()
+        .map(|name| name.unwrap().into_owned())
+        .collect();
     for kept in [
         "manifest.yaml",
         "index.html",
         ".well-known/a.txt",
         "src/visible.txt",
     ] {
-        assert!(names.contains(&kept), "missing from the zip: {kept}");
+        assert!(
+            names.iter().any(|name| name == kept),
+            "missing from the zip: {kept}"
+        );
     }
     assert!(
         names.iter().all(|name| !name.starts_with(".edger-")),

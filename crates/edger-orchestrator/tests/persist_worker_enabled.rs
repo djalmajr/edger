@@ -374,7 +374,7 @@ async fn state_export_carries_the_persisted_toggle_and_import_applies_it() {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(body.clone())).unwrap();
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).unwrap();
-            let name = file.name().to_string();
+            let name = file.name().unwrap().into_owned();
             if file.is_dir() {
                 continue;
             }
@@ -406,7 +406,7 @@ async fn state_export_carries_the_persisted_toggle_and_import_applies_it() {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(body.clone())).unwrap();
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).unwrap();
-            let name = file.name().to_string();
+            let name = file.name().unwrap().into_owned();
             if file.is_dir() {
                 continue;
             }

@@ -624,6 +624,22 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Dependencies
 
+- `zip` 8.6.0 -> 9.0.4 for RUSTSEC-2026-0367, RUSTSEC-2026-0368 and
+  RUSTSEC-2026-0369. Those advisories cover `ZipArchive::extract()` and
+  `ZipStreamReader::extract()`, which EdgeR does not call: the install
+  and the files upload extract entry by entry through `enclosed_name`,
+  write plain files and apply no Unix mode and no symlink from the zip.
+  The new major also validates more, so some malformed packages that
+  were accepted before are now refused, among them:
+  - an entry that holds more bytes than its declared uncompressed size
+    (zip 9.0.1). A manifest entry that under-declares its size and goes
+    past the manifest cap is now `400 DEPLOY_INVALID_PACKAGE`
+    (`failed to read manifest entry: ...`) instead of
+    `413 PAYLOAD_TOO_LARGE`; during extraction the same read fails as
+    `DEPLOY_IO`;
+  - an entry name with a separator inside a Windows verbatim path
+    component (zip 9.0.4), now refused as `DEPLOY_PATH_DENIED`.
+
 - `rustls` 0.23.46 and `wasmtime`/`wasmtime-wasi` 49.0.3 (lockfile only)
   for RUSTSEC-2026-0346 to 0349 and RUSTSEC-2026-0352 to 0364.
 
