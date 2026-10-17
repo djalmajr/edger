@@ -12,6 +12,7 @@ pub mod admin;
 pub mod api_key_store;
 pub mod auth;
 pub mod config;
+pub mod egress;
 pub mod error;
 pub mod execution;
 pub mod isolate;
@@ -33,15 +34,16 @@ pub use auth::{extract_api_key_from_pairs, HeaderPairs};
 pub use config::{
     effective_max_body_size_bytes, effective_max_body_size_bytes_usize, infer_execution_kind,
     parse_duration_string_to_ms, parse_duration_to_ms, parse_size_to_bytes, parse_worker_config,
-    FullstackBasePath, FullstackConfig, WorkerConfig, WorkerHealthCheckConfig, WorkerWarmupConfig,
-    DEFAULT_MAX_BODY_BYTES,
+    EgressSettings, FullstackBasePath, FullstackConfig, WorkerConfig, WorkerHealthCheckConfig,
+    WorkerWarmupConfig, DEFAULT_MAX_BODY_BYTES,
 };
+pub use egress::{classify_egress_ip, parse_egress_host, EgressBlock, EgressCidr, EgressHost};
 pub use error::{CoreError, IsolationError};
 pub use execution::{normalize_fullstack_adapter, ExecutionKind, SUPPORTED_FULLSTACK_ADAPTERS};
 pub use isolate::{Isolate, TerminationOutcome, TerminationReport};
 pub use manifest::{
-    CronJob, DenoCacheMode, DurationValue, WorkerHealthCheck, WorkerHealthCheckMode,
-    WorkerIsolation, WorkerManifest, WorkerVisibility, WorkerWarmup,
+    CronJob, DenoCacheMode, DurationValue, EgressManifest, WorkerHealthCheck,
+    WorkerHealthCheckMode, WorkerIsolation, WorkerManifest, WorkerVisibility, WorkerWarmup,
 };
 pub use principal::{
     principal_can_access_namespace, principal_can_access_worker, root_principal, ApiKeyPrincipal,

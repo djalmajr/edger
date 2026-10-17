@@ -82,6 +82,35 @@ pub struct WorkerWarmup {
     pub timeout: Option<String>,
 }
 
+/// Opt-in egress guard policy (EDG-38): the worker reaches user-chosen
+/// hosts only through the EdgeR egress guard. Present only with
+/// `enabled: true` in the normalized config; with `enabled: false` (or
+/// absent) every other field is ignored.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EgressManifest {
+    /// Switch the guard on for this worker. `true` requires `allowNet` to be
+    /// declared (it may be empty).
+    pub enabled: Option<bool>,
+    /// Destination ports allowed by the guard (default `[443]` — HTTPS).
+    pub ports: Option<Vec<u16>>,
+    /// Time to establish the outbound connection (duration string, same
+    /// format as `ttl`; default `5s`).
+    pub connect_timeout: Option<String>,
+    /// Time until the response headers arrive (default `30s`).
+    pub headers_timeout: Option<String>,
+    /// Time without body bytes before the guard cuts the stream (default
+    /// `30s` — the SSE case).
+    pub idle_timeout: Option<String>,
+    /// Total time for the whole response, head to end (default `5m`).
+    pub total_timeout: Option<String>,
+    /// Response body cap, in the `maxBodySize` size format (default
+    /// `100mb` = 100 MiB).
+    pub max_response_bytes: Option<String>,
+    /// Simultaneous outbound calls per worker version (default `8`).
+    pub max_concurrent: Option<u32>,
+}
+
 /// Raw value of a duration manifest field (`ttl`, `streamTimeout`,
 /// `shutdownGrace`, `cooldown`, `queueTimeout`).
 ///
@@ -134,6 +163,13 @@ pub struct WorkerManifest {
     pub public_env: Vec<String>,
     #[serde(default, alias = "allow_net")]
     pub allow_net: Option<Vec<String>>,
+    /// Opt-in egress guard policy (EDG-38); `None` or `enabled: false`
+    /// leaves the worker exactly as before.
+    pub egress: Option<EgressManifest>,
+    /// App secret names (EDG-38): the values live in the EdgeR vault, never
+    /// in the manifest; the names are injected into the worker's `env` at
+    /// spawn.
+    pub secrets: Option<Vec<String>>,
     pub ttl: Option<DurationValue>,
     pub stream_timeout: Option<DurationValue>,
     pub timeout: Option<String>,
