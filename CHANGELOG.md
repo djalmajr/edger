@@ -535,6 +535,16 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Security
 
+- Package extraction could write outside its staging directory in
+  0.3.2-rc.22 and earlier: `zip` 8.6.0 turned an entry name with a Windows
+  verbatim prefix into a relative path with `..`, which escaped the
+  destination on Unix. A key with `workers:install` or `files:write`, even
+  one scoped to a single worker, could write anywhere the EdgeR process can
+  write: other workers, the API key database and the core worker overlays.
+  Fixed in 0.3.2-rc.23 by `zip` 9.0.4, which refuses those names as
+  `DEPLOY_PATH_DENIED`. Upgrade, and review the keys that hold those
+  permissions.
+
 - Public owner-less routes hidden for workers with their own hosts (EDG-27):
   on a host without an owner — including the control-plane host — every
   public route that does not arrive on the worker's own hosts (the name
@@ -678,6 +688,10 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   `400 DEPLOY_INVALID_PACKAGE` instead of `413 PAYLOAD_TOO_LARGE`) and an
   entry name with a separator inside a Windows verbatim path component
   (`DEPLOY_PATH_DENIED`).
+- Security: package extraction (worker install and files upload) no
+  longer writes outside its staging directory for an entry name with a
+  Windows verbatim prefix, which 0.3.2-rc.22 and earlier accepted (see
+  Security under `[Unreleased]`).
 
 ## [0.3.2-rc.22]
 
