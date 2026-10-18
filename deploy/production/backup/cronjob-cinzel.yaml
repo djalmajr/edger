@@ -1,7 +1,7 @@
 # Backup do banco `cinzel` (Cinzel, produção). Um CronJob por banco:
 # horários escalonados (o PVC é compartilhado e o local-path é single
 # writer por nó), retenção e sentinela independentes por banco. Pod
-# spec, imagem e labels idênticos nos três bancos — a base comum é
+# spec, imagem e labels idênticos em todos os bancos — a base comum é
 # intencional (o kustomize não permite dois overlays partilharem a base
 # nomeada de um CronJob), então o seletor de rede
 # (`app.kubernetes.io/name: sqld-backup`) e o PVC `sqld-backups` vivem
