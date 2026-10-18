@@ -101,6 +101,10 @@ zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "multiproc"] }
 rusqlite.workspace = true
 rand = "0.8"
+# Runtime-generated test CA and server certificate for the egress guard tests
+# (EDG-38 S2a): no key material is committed. `ring` is the provider already in
+# the graph; the default `aws_lc_rs` backend is left off.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 rsa = { version = "0.9", features = ["pem"] }
 serde_json.workspace = true
 # `test-util` exposes `tokio::time::pause`/`advance` for the paused-clock

@@ -1,6 +1,6 @@
 //! Egress guard end-to-end tests (EDG-38, S2a).
 //!
-//! A real TLS upstream on `127.0.0.1` (self-signed test CA, embedded below),
+//! A real TLS upstream on `127.0.0.1` (a test CA and server certificate generated at runtime),
 //! a Unix-socket guard service, and a REAL `hyper` HTTP/1.1 client on the
 //! worker side (so a cut body is observed the way an app's HTTP client
 //! observes it: a body error, never a raw-socket guess). Only the hostile
@@ -32,7 +32,6 @@ use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use base64::Engine as _;
 use bytes::Bytes;
 use edger_core::config::EgressSettings;
 use edger_core::egress::EgressCidr;
@@ -48,6 +47,10 @@ use hyper::body::Incoming;
 use hyper::header::{HeaderMap, HeaderName, HeaderValue};
 use hyper::Request;
 use hyper_util::rt::TokioIo;
+use rcgen::{
+    BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+    KeyUsagePurpose, SanType,
+};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert, ServerConfig};
 use rustls::sign::CertifiedKey;
@@ -59,37 +62,53 @@ use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 use tracing_subscriber::fmt::MakeWriter;
 
-/// Self-signed test CA (CN=edger-egress-test; SANs: IP 127.0.0.1,
-/// DNS rebind.test / a.local / b.local), valid until 2036.
-const CERT_PEM: &str = "-----BEGIN CERTIFICATE-----
-MIIB3TCCAYSgAwIBAgIUYu8r8U1BMUJi2a+Cph5dG0cPI6IwCgYIKoZIzj0EAwIw
-HDEaMBgGA1UEAwwRZWRnZXItZWdyZXNzLXRlc3QwHhcNMjYxMDE3MjI1NjUwWhcN
-MzYxMDE0MjI1NjUwWjAcMRowGAYDVQQDDBFlZGdlci1lZ3Jlc3MtdGVzdDBZMBMG
-ByqGSM49AgEGCCqGSM49AwEHA0IABKibkHCPXi1SI6HUIMdubL9OjFmHnp/GbTO0
-O6ELNxS+IkHSTtKfRXatIKAq6GyHaRrX8l7fEfry/Hipn3pwMRyjgaMwgaAwHQYD
-VR0OBBYEFClLzbEIuA1DuXebZaDKTTLX7+wqMB8GA1UdIwQYMBaAFClLzbEIuA1D
-uXebZaDKTTLX7+wqMC4GA1UdEQQnMCWHBH8AAAGCC3JlYmluZC50ZXN0ggdhLmxv
-Y2FsggdiLmxvY2FsMAwGA1UdEwEB/wQCMAAwCwYDVR0PBAQDAgeAMBMGA1UdJQQM
-MAoGCCsGAQUFBwMBMAoGCCqGSM49BAMCA0cAMEQCIBL4WbVTKwSeVnGFX+gJZ/Dl
-GM7libyowaNFhbKuS11oAiA9cbpCEib73CKv5A8hrLTj7IhyOedrIGn2gwk7ZZ1v
-ug==
------END CERTIFICATE-----";
+/// The test PKI, generated once per test process (no key material is
+/// committed): a CA (CN=edger-egress-test) that the guard trusts as its only
+/// root, and a server certificate it signs (CA:FALSE, digitalSignature,
+/// serverAuth; SANs: IP 127.0.0.1, DNS rebind.test / a.local / b.local).
+struct TestPki {
+    ca_der: Vec<u8>,
+    server_der: Vec<u8>,
+    server_key_der: Vec<u8>,
+}
 
-const KEY_PEM: &str = "-----BEGIN EC PRIVATE KEY-----
-MHcCAQEEIOZ8IsUxUaphqdKvTyM0Lw7eoPwlP+ERrSfVhWh5+EdAoAoGCCqGSM49
-AwEHoUQDQgAEqJuQcI9eLVIjodQgx25sv06MWYeen8ZtM7Q7oQs3FL4iQdJO0p9F
-dq0goCrobIdpGtfyXt8R+vL8eKmfenAxHA==
------END EC PRIVATE KEY-----";
+fn test_pki() -> &'static TestPki {
+    static PKI: OnceLock<TestPki> = OnceLock::new();
+    PKI.get_or_init(|| {
+        let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(DnType::CommonName, "edger-egress-test");
+        ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        let ca_key = KeyPair::generate().unwrap();
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let issuer = Issuer::new(ca_params, ca_key);
 
-/// The pki-types constructors take raw DER, so decode the PEM base64 body.
-fn pem_to_der(pem: &str) -> Vec<u8> {
-    let b64: String = pem
-        .lines()
-        .filter(|l| !l.starts_with("-----") && !l.trim().is_empty())
-        .collect();
-    base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .unwrap()
+        let mut server_params = CertificateParams::new(vec![
+            "rebind.test".to_string(),
+            "a.local".to_string(),
+            "b.local".to_string(),
+        ])
+        .unwrap();
+        server_params
+            .subject_alt_names
+            .push(SanType::IpAddress(IpAddr::from([127, 0, 0, 1])));
+        server_params.is_ca = IsCa::ExplicitNoCa;
+        server_params
+            .distinguished_name
+            .push(DnType::CommonName, "edger-egress-test-server");
+        server_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        let server_key = KeyPair::generate().unwrap();
+        let server_cert = server_params.signed_by(&server_key, &issuer).unwrap();
+
+        TestPki {
+            ca_der: ca_cert.der().to_vec(),
+            server_der: server_cert.der().to_vec(),
+            server_key_der: server_key.serialize_der(),
+        }
+    })
 }
 
 /// The longest any single wait in these tests may take; a hit means the
@@ -179,12 +198,14 @@ impl ResolvesServerCert for SniRecorder {
 async fn spawn_upstream() -> Upstream {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let key = PrivateKeyDer::try_from(pem_to_der(KEY_PEM)).unwrap();
-    // ring is the single provider in this graph; name it directly for the
-    // server-side key construction (no process-default install needed).
-    let provider = rustls::crypto::ring::default_provider();
+    let pki = test_pki();
+    let key = PrivateKeyDer::try_from(pki.server_key_der.clone()).unwrap();
+    // Name the ring provider directly (no process-default install): with the
+    // `otel` feature the graph also carries aws-lc-rs and rustls cannot pick
+    // one on its own.
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
     let certified_key = CertifiedKey::from_der(
-        vec![CertificateDer::from(pem_to_der(CERT_PEM))],
+        vec![CertificateDer::from(pki.server_der.clone())],
         key,
         &provider,
     )
@@ -194,7 +215,9 @@ async fn spawn_upstream() -> Upstream {
         key: Arc::new(certified_key),
         snis: snis.clone(),
     };
-    let server_config = ServerConfig::builder()
+    let server_config = ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
         .with_no_client_auth()
         .with_cert_resolver(Arc::new(recorder));
     let acceptor = Arc::new(TlsAcceptor::from(Arc::new(server_config)));
@@ -635,7 +658,7 @@ async fn spawn_guard(
 ) -> Harness {
     let mut roots = RootCertStore::empty();
     roots
-        .add(CertificateDer::from(pem_to_der(CERT_PEM)))
+        .add(CertificateDer::from(test_pki().ca_der.clone()))
         .unwrap();
     let allow_cidrs = if allow_localhost {
         vec![EgressCidr::parse("127.0.0.1").unwrap()]
