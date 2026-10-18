@@ -14,6 +14,7 @@ mod conditional;
 pub mod console_auth;
 pub mod cron;
 pub mod deploy;
+pub mod egress_guard;
 pub mod manifest_index_stub;
 pub mod manifest_loader;
 pub mod mcp_http;
@@ -49,12 +50,16 @@ pub use deploy::{
     rescan_workers_and_prewarm, rescan_workers_and_prewarm_with_events, run_pending_releases,
     run_pending_releases_with_events, InstalledWorker, RescanReport, MAX_DEPLOY_PACKAGE_BYTES,
 };
+pub use egress_guard::{
+    EgressGuard, EgressGuardConfig, EgressOutcome, EgressResolver, EgressWorkerContext,
+    SystemEgressResolver, EGRESS_GUARD_HOST, MAX_REDIRECTS,
+};
 pub use manifest_index_stub::{ManifestEntry, ManifestIndex};
 pub use manifest_loader::{
     clear_persisted_routing_policy, load_manifests_from_dirs, load_manifests_from_roots,
     parse_runtime_worker_dirs, persist_routing_policy,
 };
-pub use metrics::pool_metrics_prometheus;
+pub use metrics::{egress_metrics_prometheus, pool_metrics_prometheus, EgressMetrics};
 pub use oidc::{JwksSource, OidcConfig, OidcDiscovery, OidcError, OidcValidator};
 pub use pipeline::{build_pipeline, OrchestratorState};
 pub use router::{
