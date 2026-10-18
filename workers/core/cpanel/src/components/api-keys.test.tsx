@@ -252,12 +252,12 @@ describe("PermissionBadges", () => {
     const box = screen.getByTestId("width-box");
     const list = container.querySelector<HTMLElement>("[data-permission-badges]")!;
     await waitFor(() =>
-      expect(list.querySelector('[aria-label^="8 hidden permissions:"]')).toBeTruthy(),
+      expect(list.querySelector('[aria-label^="10 hidden permissions:"]')).toBeTruthy(),
     );
     const narrowItems = [...list.querySelectorAll<HTMLElement>("[role=listitem]")];
     expect(narrowItems).toHaveLength(4);
     expect(narrowItems.at(-1)?.getAttribute("aria-label")).toContain(
-      "8 hidden permissions: workers:promote, workers:toggle",
+      "10 hidden permissions: workers:promote, workers:toggle",
     );
     expect(narrowItems.at(-1)?.title).toContain("observability:read, keys:manage");
     expect(new Set(narrowItems.map((item) => item.dataset.line)).size).toBeLessThanOrEqual(2);
@@ -338,11 +338,11 @@ describe("ApiKeys permission editing", () => {
       "[data-permission-badges]",
     )!;
     const hiddenBadge = permissionList.querySelector<HTMLElement>(
-      '[aria-label^="8 permissões ocultas:"]',
+      '[aria-label^="10 permissões ocultas:"]',
     );
-    expect(hiddenBadge?.textContent).toBe("+8");
+    expect(hiddenBadge?.textContent).toBe("+10");
     expect(hiddenBadge?.getAttribute("aria-label")).toBe(
-      `8 permissões ocultas: ${permissions.slice(3).join(", ")}`,
+      `10 permissões ocultas: ${permissions.slice(3).join(", ")}`,
     );
     expect(permissionList.getAttribute("aria-label")).toBe(
       `Permissões: ${permissions.join(", ")}`,
