@@ -29,24 +29,35 @@ pub(crate) fn deno_network_permission_args(
     }
 }
 
+/// `--allow-net` for a persistent process: the manifest/env hosts plus the
+/// dispatch socket. With `guard_socket` (EDG-38: the version has
+/// `egress.enabled`) the guard socket and the never-resolving guard host
+/// (port 80, the scheme of the guard URL) are added too: Deno checks a
+/// proxy call against the DESTINATION host, not the proxy.
 #[cfg(feature = "multiproc")]
 pub(crate) fn deno_network_permission_args_with_uds(
     manifest_allow_net: Option<&[String]>,
     env_allow_net: Option<&str>,
     socket_path: &Path,
+    guard_socket: Option<&Path>,
 ) -> Vec<String> {
     let args = deno_network_permission_args(manifest_allow_net, env_allow_net);
     if args.iter().any(|arg| arg == "--allow-net") {
         return args;
     }
 
-    let socket_permission = format!("unix:{}", socket_path.display());
+    let mut permissions = vec![format!("unix:{}", socket_path.display())];
+    if let Some(guard_socket) = guard_socket {
+        permissions.push(format!("unix:{}", guard_socket.display()));
+        permissions.push(format!("{}:80", crate::egress::EGRESS_GUARD_HOST));
+    }
+    let permissions = permissions.join(",");
     match args
         .first()
         .and_then(|arg| arg.strip_prefix("--allow-net="))
     {
-        Some(hosts) => vec![format!("--allow-net={hosts},{socket_permission}")],
-        None => vec![format!("--allow-net={socket_permission}")],
+        Some(hosts) => vec![format!("--allow-net={hosts},{permissions}")],
+        None => vec![format!("--allow-net={permissions}")],
     }
 }
 
@@ -202,15 +213,83 @@ mod tests {
         let socket = Path::new("/tmp/edger/worker.sock");
 
         assert_eq!(
-            deno_network_permission_args_with_uds(Some(&["collector:4318".into()]), None, socket,),
+            deno_network_permission_args_with_uds(
+                Some(&["collector:4318".into()]),
+                None,
+                socket,
+                None
+            ),
             vec!["--allow-net=collector:4318,unix:/tmp/edger/worker.sock"]
         );
         assert_eq!(
-            deno_network_permission_args_with_uds(Some(&[]), None, socket),
+            deno_network_permission_args_with_uds(Some(&[]), None, socket, None),
             vec!["--allow-net=unix:/tmp/edger/worker.sock"]
         );
         assert_eq!(
-            deno_network_permission_args_with_uds(None, None, socket),
+            deno_network_permission_args_with_uds(None, None, socket, None),
+            vec!["--allow-net"]
+        );
+    }
+
+    /// (EDG-38) with the egress guard the guard socket and the fake host
+    /// join the dispatch socket and the manifest hosts; the manifest hosts
+    /// are untouched and nothing else is added.
+    #[cfg(feature = "multiproc")]
+    #[test]
+    fn spawn_args_add_the_guard_socket_and_host_with_egress() {
+        let socket = Path::new("/tmp/edger/w.sock");
+        let guard = Path::new("/tmp/edger/guard.sock");
+
+        assert_eq!(
+            deno_network_permission_args_with_uds(
+                Some(&["ai-gateway.vercel.sh:443".into()]),
+                None,
+                socket,
+                Some(guard)
+            ),
+            vec![
+                "--allow-net=ai-gateway.vercel.sh:443,unix:/tmp/edger/w.sock,unix:/tmp/edger/guard.sock,edger-egress.invalid:80"
+            ]
+        );
+        // `allowNet: []` (declared, empty): only the two sockets and the host.
+        assert_eq!(
+            deno_network_permission_args_with_uds(Some(&[]), None, socket, Some(guard)),
+            vec![
+                "--allow-net=unix:/tmp/edger/w.sock,unix:/tmp/edger/guard.sock,edger-egress.invalid:80"
+            ]
+        );
+    }
+
+    /// (EDG-38) without the guard socket nothing changes: no guard entry
+    /// appears, whatever the manifest hosts are.
+    #[cfg(feature = "multiproc")]
+    #[test]
+    fn spawn_args_without_egress_never_mention_the_guard() {
+        let socket = Path::new("/tmp/edger/w.sock");
+        for allow_net in [
+            Some(vec!["collector:4318".to_string()]),
+            Some(Vec::new()),
+            None,
+        ] {
+            let args =
+                deno_network_permission_args_with_uds(allow_net.as_deref(), None, socket, None);
+            assert!(
+                args.iter()
+                    .all(|arg| !arg.contains("guard.sock") && !arg.contains("edger-egress")),
+                "{args:?}"
+            );
+        }
+    }
+
+    /// (EDG-38) an open network (`--allow-net` without hosts) already allows
+    /// the guard; the arg stays bare.
+    #[cfg(feature = "multiproc")]
+    #[test]
+    fn spawn_args_keep_an_open_network_bare_with_egress() {
+        let socket = Path::new("/tmp/edger/w.sock");
+        let guard = Path::new("/tmp/edger/guard.sock");
+        assert_eq!(
+            deno_network_permission_args_with_uds(None, None, socket, Some(guard)),
             vec!["--allow-net"]
         );
     }

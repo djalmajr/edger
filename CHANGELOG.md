@@ -40,6 +40,66 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Added
 
+- Egress guard for user-chosen hosts (EDG-38): an app that must call a host
+  the user picked (Pinar's BYOK) cannot put that host in `allowNet` without
+  also letting the worker leave through it directly, so the EdgeR serves the
+  call itself. Manifest: `egress: {enabled, ports (default [443]; HTTPS
+  only), connectTimeout (5s), headersTimeout (30s), idleTimeout (30s),
+  totalTimeout (5m), maxResponseBytes (100mb), maxConcurrent (8)}`; with
+  `enabled: true` the manifest must declare `allowNet` (it may be `[]`).
+  Each Deno process of such a version gets its own Unix socket
+  `guard.sock` in its workdir, the `--allow-net` of that process gains
+  `unix:<guard.sock>` and `edger-egress.invalid:80` (the manifest `allowNet`
+  is untouched), and the env gains `EDGER_EGRESS_SOCKET` (the socket path)
+  and `EDGER_EGRESS_HOST` (`edger-egress.invalid`, a host that never
+  resolves). The variables exist only while the socket is live: with no
+  guard service, a failed bind or `EDGER_JS_RUNTIME=bridge` neither the
+  socket nor the variables appear, one `warn` per worker and version is
+  logged and the worker starts normally (a manifest `env` or a secret named
+  like the two variables is dropped, in the persistent process runtime and in
+  the bridge alike, so the presence of the socket cannot be faked). The task
+  serving a socket ends with its process (recycle, TTL, LRU,
+  shutdown) and the socket disappears with the workdir; a staged version gets
+  the guard like any other (the spawn does not look at the default pointer).
+  Contract: the app calls `fetch("http://" + EDGER_EGRESS_HOST + "/")` through
+  `Deno.createHttpClient({ proxy: { transport: "unix", path:
+  EDGER_EGRESS_SOCKET } })` with the destination in the `x-edger-egress-url`
+  header; method, headers (the user's `Authorization` included) and body
+  (up to 8 MiB) go through, the response (status, headers, streaming body,
+  SSE included) comes back as the destination sent it. The guard resolves the
+  name, classifies EVERY resolved IP (private, loopback, link-local, CGNAT,
+  cloud metadata, cluster, node, documentation, reserved; IPv4 and IPv6,
+  mapped and odd notations), dials the classified IP only (no second
+  resolution), follows up to 5 redirects revalidating each hop and dropping
+  `Authorization`/`Cookie` on a cross-origin hop. A refusal carries
+  `x-edger-egress-error: <code>` and a JSON `{"error","message"}` body:
+  `EGRESS_BAD_TARGET` 400, `EGRESS_PORT_BLOCKED` 403, `EGRESS_HOST_BLOCKED`
+  403, `EGRESS_DNS_ERROR` 502, `EGRESS_UPSTREAM_ERROR` 502,
+  `EGRESS_TOO_MANY_REDIRECTS` 502, `EGRESS_RESPONSE_TOO_LARGE` 502,
+  `EGRESS_TIMEOUT` 504, `EGRESS_LIMIT` 429 (`maxConcurrent` is per worker
+  version, shared by its processes, no queue), `EGRESS_REQUEST_TOO_LARGE`
+  413. A cut after the response head (body over `maxResponseBytes`,
+  `idleTimeout`, `totalTimeout`, the destination dropping) ends the stream
+  with an error, never a silent truncation. Each call records one
+  `worker.egress` operational event (worker, version, process id, outcome,
+  status, duration, code; destination host and port, connected IP, bytes and
+  redirect count ride the `message`) and never a header (name or value), a
+  body or a query string; the per-worker counters
+  `edger_egress_requests_total{worker,outcome}` and
+  `edger_egress_response_bytes_total{worker}` appear at `/metrics` once a
+  guard is configured (no guard, no line). Operator variables:
+  `EDGER_EGRESS_BLOCK_CIDRS`
+  (comma list of extra CIDRs to refuse; empty keeps the k3s pod and service
+  ranges `10.42.0.0/16`, `10.43.0.0/16`), `EDGER_NODE_IP` (the node IP, also
+  refused) and, for local development ONLY, `EDGER_EGRESS_ALLOW_CIDRS` (CIDRs
+  the classification would refuse, such as `127.0.0.0/8`; empty by default,
+  a `warn` at the first use, never set it in production). The Helm chart sets
+  `EDGER_NODE_IP` from the downward API (`status.hostIP`) and has an optional
+  `egress.blockCidrs` list that becomes `EDGER_EGRESS_BLOCK_CIDRS`; the dev
+  variable is not exposed. The bridge fallback (`EDGER_JS_RUNTIME=bridge`)
+  and wasm workers have no guard. Details and the reasoning:
+  `planning/edger/docs/egress-byok.md`.
+
 - App secrets vault (EDG-38): apps store secrets (e.g. Pinar's
   `BYOK_MASTER_KEY`) encrypted at rest in a dedicated SQLite store
   (`app_secrets(worker, name, nonce, ciphertext, created_at, updated_at)`),

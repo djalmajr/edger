@@ -13,5 +13,6 @@ indicadas em cada arquivo.
 | `performance-baselines.md` | Epic 07 story 07.07 |
 | `shell-protocol.md` | Epic 07 story 07.02 |
 | `wasm-abi.md` | Epic 07 story 07.05 |
+| `egress-byok.md` | EDG-38 (Cinzel) |
 
 Spike de embedding: `epics/03-isolacao-execucao/spike.md` (story 03.01).

@@ -74,11 +74,15 @@
 //! with a line break) is answered 400 by `hyper` and closed before the
 //! service sees it, so it records no event.
 //!
-//! S2a ships the service standalone: `serve` runs on a caller-supplied
-//! [`tokio::net::UnixListener`] and is NOT wired to the worker spawn. The
-//! spawn integration (socket creation, `EDGER_EGRESS_SOCKET` /
-//! `EDGER_EGRESS_HOST` injection, the `unix:` `--allow-net` entry, the
-//! `/metrics` wiring of `egress_metrics_prometheus`) is S2b.
+//! `serve` runs on a caller-supplied [`tokio::net::UnixListener`]. The
+//! persistent process backend (`edger-isolation`, EDG-38 S2b) creates one
+//! listener per worker process with `egress.enabled`, injects
+//! `EDGER_EGRESS_SOCKET` / `EDGER_EGRESS_HOST`, adds the `unix:` and host
+//! `--allow-net` entries and hands the listener to this service through
+//! [`edger_isolation::EgressListenerSink`], which [`EgressGuard`] implements:
+//! the task of a process ends with the process. The boot registers
+//! [`EgressGuard::metrics`] in the `ServerState`, and both `/metrics`
+//! renderers append `egress_metrics_prometheus` while a guard is registered.
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -125,8 +129,9 @@ use crate::observability::{
     OperationalEventInput, OperationalEventLevel, OperationalEventSource, OperationalStore,
 };
 
-/// The fake host the worker dials; it never resolves.
-pub const EGRESS_GUARD_HOST: &str = "edger-egress.invalid";
+/// The fake host the worker dials; it never resolves. Owned by the process
+/// backend (it also grants the host in the worker's `--allow-net`).
+pub const EGRESS_GUARD_HOST: &str = edger_isolation::EGRESS_GUARD_HOST;
 
 /// The destination URL header of the guard protocol.
 pub const EGRESS_URL_HEADER: &str = "x-edger-egress-url";
@@ -451,6 +456,40 @@ pub struct EgressWorkerContext {
 
 type VersionKey = (String, String);
 
+/// The process backend hands each worker process's guard listener over
+/// here; the returned future is the `serve` of that listener, aborted by the
+/// backend when the process ends.
+impl edger_isolation::EgressListenerSink for EgressGuard {
+    fn serve(
+        &self,
+        listener: tokio::net::UnixListener,
+        context: edger_isolation::EgressListenerContext,
+    ) -> edger_isolation::EgressServeFuture {
+        let guard = self.clone();
+        Box::pin(async move {
+            let edger_isolation::EgressListenerContext {
+                worker,
+                version,
+                namespace,
+                process_id,
+                settings,
+            } = context;
+            guard
+                .serve(
+                    listener,
+                    EgressWorkerContext {
+                        worker,
+                        version,
+                        namespace,
+                        process_id,
+                    },
+                    settings,
+                )
+                .await;
+        })
+    }
+}
+
 /// The body type of every answer the worker's `hyper` serves: a boxed body
 /// whose error is a cut after the head.
 type EgressBody = UnsyncBoxBody<Bytes, CutError>;
@@ -501,7 +540,8 @@ impl EgressGuard {
     }
 
     /// The shared metrics (rendered at `/metrics` by
-    /// `egress_metrics_prometheus`, wired by S2b).
+    /// `egress_metrics_prometheus`; the boot registers them with
+    /// `ServerState::set_egress_metrics`).
     pub fn metrics(&self) -> &EgressMetrics {
         &self.reporter.metrics
     }

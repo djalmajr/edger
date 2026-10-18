@@ -7,8 +7,11 @@
 pub mod backend;
 #[cfg(any(test, feature = "multiproc"))]
 mod deno_sandbox_policy;
+#[cfg(feature = "multiproc")]
+pub mod egress;
 pub mod error;
 pub mod fullstack;
+pub mod guard_env;
 pub mod isolate;
 pub mod kinds;
 pub mod limits;
@@ -51,6 +54,13 @@ pub use wire::{decode_frame, encode_frame, validate_request};
 
 #[cfg(feature = "deno")]
 pub use deno::{DenoFacade, DenoIsolate};
+
+#[cfg(feature = "multiproc")]
+pub use egress::{
+    warn_egress_unavailable_once, EgressListenerContext, EgressListenerSink, EgressServeFuture,
+    EGRESS_GUARD_HOST,
+};
+pub use guard_env::{is_reserved_guard_env, EGRESS_HOST_ENV, EGRESS_SOCKET_ENV};
 
 #[cfg(feature = "multiproc")]
 pub use multiproc::{

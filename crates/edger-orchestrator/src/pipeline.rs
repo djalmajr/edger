@@ -185,6 +185,9 @@ async fn metrics_handler(
     if let Some(stats) = state.server.stream_detach_stats() {
         body.push_str(&crate::metrics::stream_detach_metrics_prometheus(&stats));
     }
+    if let Some(egress) = state.server.egress_metrics_prometheus() {
+        body.push_str(&egress);
+    }
     (
         [(
             header::CONTENT_TYPE,
