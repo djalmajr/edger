@@ -64,6 +64,16 @@ appSecrets:
     # Chave do Secret que contém a chave mestra (32 bytes, base64 ou raw).
     key: "master-key"
 
+# Guarda de saída (EDG-38): workers com `egress.enabled` no manifest alcançam
+# hosts HTTPS escolhidos pelo usuário só pelo guarda do EdgeR, que recusa IPs
+# internos. O IP do nó vem sozinho do downward API (EDGER_NODE_IP) e também é
+# recusado. blockCidrs (opcional) lista CIDRs extras a recusar; vazio mantém o
+# padrão do binário (as faixas de pod e serviço do k3s, 10.42.0.0/16 e
+# 10.43.0.0/16). Vira EDGER_EGRESS_BLOCK_CIDRS (separados por vírgula).
+# EDGER_EGRESS_ALLOW_CIDRS é só de desenvolvimento local e não é exposto aqui.
+egress:
+  blockCidrs: []
+
 runtime:
   workerDirs: "/app/workers"
   jsRuntime: "process"

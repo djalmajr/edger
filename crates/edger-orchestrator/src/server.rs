@@ -72,6 +72,10 @@ struct ServerStateInner {
     /// `EDGER_SECRETS_KEY_FILE` (as rotas respondem 503
     /// `SECRETS_UNAVAILABLE`).
     app_secrets: std::sync::OnceLock<std::sync::Arc<crate::app_secrets::AppSecretVault>>,
+    /// Contadores do guarda de saída (EDG-38): registro no boot (uma vez).
+    /// `None` = nenhum guarda configurado; o `/metrics` sai sem as linhas
+    /// `edger_egress_*`.
+    egress_metrics: std::sync::OnceLock<crate::metrics::EgressMetrics>,
 }
 
 /// Shared application state for health/readiness and future pipeline wiring.
@@ -98,6 +102,7 @@ impl ServerState {
                 worker_errors: crate::worker_errors::WorkerErrorLog::default(),
                 detach_budget: std::sync::OnceLock::new(),
                 app_secrets: std::sync::OnceLock::new(),
+                egress_metrics: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -121,6 +126,23 @@ impl ServerState {
     /// then omitted).
     pub fn stream_detach_stats(&self) -> Option<edger_isolation::StreamDetachStats> {
         self.inner.detach_budget.get().map(|budget| budget.stats())
+    }
+
+    /// Registra os contadores do guarda de saída (EDG-38), para o `/metrics`
+    /// (`edger_egress_*`). Definido no boot, uma vez; definir duas vezes é
+    /// no-op (a primeira chamada vence).
+    pub fn set_egress_metrics(&self, metrics: crate::metrics::EgressMetrics) {
+        let _ = self.inner.egress_metrics.set(metrics);
+    }
+
+    /// As linhas Prometheus do guarda de saída, ou `None` quando nenhum
+    /// guarda foi registrado (o `/metrics` fica como era, sem linha do
+    /// guarda). Os dois renderizadores do `/metrics` leem por aqui.
+    pub fn egress_metrics_prometheus(&self) -> Option<String> {
+        self.inner
+            .egress_metrics
+            .get()
+            .map(crate::metrics::egress_metrics_prometheus)
     }
 
     /// Registra o cofre de segredos de app (EDG-38). Definido no boot, uma
@@ -269,6 +291,9 @@ async fn metrics(State(state): State<ServerState>) -> impl IntoResponse {
     ));
     if let Some(stats) = state.stream_detach_stats() {
         body.push_str(&stream_detach_metrics_prometheus(&stats));
+    }
+    if let Some(egress) = state.egress_metrics_prometheus() {
+        body.push_str(&egress);
     }
     (
         [(

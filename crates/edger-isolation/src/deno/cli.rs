@@ -296,8 +296,14 @@ fn inject_manifest_env(
 ) {
     // Trusted server context: inject all operator-declared env. Browser exposure is
     // gated separately by the publicEnv allowlist (static_spa.rs).
+    // EDGER_EGRESS_SOCKET / EDGER_EGRESS_HOST are reserved (EDG-38, the
+    // `guard_env` filter shared with the persistent process runtime): the
+    // bridge has no egress guard, so a manifest `env` can never make the
+    // guard look present.
     for (key, value) in manifest_env {
-        command.env(key, value);
+        if !crate::guard_env::is_reserved_guard_env(key) {
+            command.env(key, value);
+        }
     }
 }
 
@@ -801,6 +807,41 @@ mod tests {
         .unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.body, Some(b"ok".to_vec()));
+    }
+
+    /// (EDG-38) the bridge has no egress guard: a manifest `env` naming the
+    /// guard variables (any case) is dropped, the other names are injected.
+    #[test]
+    fn bridge_manifest_env_drops_the_reserved_guard_names() {
+        let manifest_env = std::collections::HashMap::from([
+            (
+                "EDGER_EGRESS_SOCKET".to_string(),
+                "/tmp/forged.sock".to_string(),
+            ),
+            (
+                "edger_egress_host".to_string(),
+                "forged.example".to_string(),
+            ),
+            ("DATABASE_URL".to_string(), "postgres://db".to_string()),
+        ]);
+        let mut command = Command::new("true");
+        inject_manifest_env(&mut command, &manifest_env);
+        let injected: std::collections::BTreeMap<String, String> = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                Some((
+                    key.to_string_lossy().into_owned(),
+                    value?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+        assert_eq!(
+            injected,
+            std::collections::BTreeMap::from([(
+                "DATABASE_URL".to_string(),
+                "postgres://db".to_string()
+            )])
+        );
     }
 
     #[test]

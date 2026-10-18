@@ -82,6 +82,11 @@ struct RuntimeIsolateFactory {
     /// daqui — `None` = cofre indisponível (nada é injetado; um warn por
     /// worker e nome).
     app_secret_resolver: Option<Arc<dyn edger_core::AppSecretResolver>>,
+    /// (EDG-38) Egress guard: ONE service for the whole `edger` process
+    /// (the per-version concurrency limit and the metrics are shared by all
+    /// the processes of a version). The process backend hands it one
+    /// listener per worker process of a version with `egress.enabled`.
+    egress_sink: Arc<dyn edger_isolation::EgressListenerSink>,
 }
 
 /// `EDGER_STREAM_DETACH_MAX_BYTES` default: 8 MiB per-response buffered tail.
@@ -110,6 +115,7 @@ impl RuntimeIsolateFactory {
     fn from_env(
         console_sender: Option<ConsoleLogSender>,
         app_secrets: Option<Arc<edger_orchestrator::app_secrets::AppSecretVault>>,
+        egress_sink: Arc<dyn edger_isolation::EgressListenerSink>,
     ) -> Self {
         let js_uses_process = std::env::var("EDGER_JS_RUNTIME")
             .map(|value| !value.trim().eq_ignore_ascii_case("bridge"))
@@ -147,6 +153,7 @@ impl RuntimeIsolateFactory {
             stream_max_duration_ms,
             app_secret_resolver: app_secrets
                 .map(|vault| -> Arc<dyn edger_core::AppSecretResolver> { vault }),
+            egress_sink,
         }
     }
 }
@@ -154,9 +161,18 @@ impl RuntimeIsolateFactory {
 impl IsolateFactory for RuntimeIsolateFactory {
     fn create_isolate(&self, worker_ref: &edger_core::WorkerRef) -> Box<dyn edger_core::Isolate> {
         match worker_ref.kind {
-            ExecutionKind::WasmModule { .. } => Box::new(WasmIsolate::new(
-                WasiConfig::from_worker_config(&worker_ref.config),
-            )),
+            ExecutionKind::WasmModule { .. } => {
+                if worker_ref.config.egress.is_some() {
+                    edger_isolation::warn_egress_unavailable_once(
+                        &worker_ref.name,
+                        &worker_ref.version,
+                        "wasm workers have no egress guard (only the persistent process runtime serves it)",
+                    );
+                }
+                Box::new(WasmIsolate::new(WasiConfig::from_worker_config(
+                    &worker_ref.config,
+                )))
+            }
             _ if self.js_uses_process => {
                 let isolate = match self.console_sender.as_ref() {
                     Some(sender) => DenoProcessIsolate::with_console(
@@ -178,6 +194,15 @@ impl IsolateFactory for RuntimeIsolateFactory {
                     }
                     None => isolate,
                 };
+                // (EDG-38) guarda de saída: o socket, as permissões e as
+                // variáveis só existem quando o backend consegue abrir o
+                // listener daquele processo.
+                let isolate = isolate.with_egress(
+                    Arc::clone(&self.egress_sink),
+                    worker_ref.name.clone(),
+                    worker_ref.version.clone(),
+                    worker_ref.namespace.clone(),
+                );
                 Box::new(
                     isolate
                         .with_stream_detach(
@@ -208,6 +233,15 @@ impl IsolateFactory for RuntimeIsolateFactory {
                             "app secret is not injected in bridge mode (EDGER_JS_RUNTIME=bridge): the worker will see the variable as absent; secrets are injected by the process backend only"
                         );
                     }
+                }
+                // (EDG-38) o guarda de saída também é só do backend de
+                // processo: no bridge nem o socket nem as variáveis existem.
+                if worker_ref.config.egress.is_some() {
+                    edger_isolation::warn_egress_unavailable_once(
+                        &worker_ref.name,
+                        &worker_ref.version,
+                        "EDGER_JS_RUNTIME=bridge has no egress guard (only the persistent process runtime serves it)",
+                    );
                 }
                 Box::new(DenoIsolate::new(DenoFacade::new()))
             }
@@ -312,7 +346,18 @@ async fn main() -> anyhow::Result<()> {
     // observes it; the pool adds its small grace on top). `0` in either
     // limit disables the drain AND the pool's relay wait (immediate
     // recycle, `socket_poisoned` sub-cause).
-    let isolate_factory = RuntimeIsolateFactory::from_env(console_sender, app_secrets);
+    // (EDG-38) Guarda de saída: UMA instância por processo `edger`, com a
+    // configuração de operador lida uma vez (`EDGER_EGRESS_BLOCK_CIDRS`,
+    // `EDGER_NODE_IP`, `EDGER_EGRESS_ALLOW_CIDRS` só de dev) e os eventos
+    // `worker.egress` no store operacional do servidor.
+    let egress_guard = edger_orchestrator::egress_guard::EgressGuard::new(
+        edger_orchestrator::egress_guard::EgressGuardConfig::from_env(),
+    )
+    .with_event_store(server.operational_events());
+    // Os contadores `edger_egress_*` saem no `/metrics`.
+    server.set_egress_metrics(egress_guard.metrics().clone());
+    let isolate_factory =
+        RuntimeIsolateFactory::from_env(console_sender, app_secrets, Arc::new(egress_guard));
     // Only the multiproc backend wires the detach pipeline into the isolates
     // (and therefore feeds the shared budget's counters). With the legacy
     // bridge backend there is no budget snapshot to expose, so the

@@ -59,8 +59,21 @@ spec:
             {{- with .Values.extraEnvFrom }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- if or $hasRootKey .Values.consoleAuth.rootPasswordSecret.name $extraEnv $tenantEnabled $appSecretsEnabled (and .Values.otel.enabled .Values.otel.headersSecret.name) }}
           env:
+            # (EDG-38) IP do nó (downward API): o guarda de saída o recusa
+            # como destino, junto das faixas de pod/serviço.
+            - name: EDGER_NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            {{- with .Values.egress.blockCidrs }}
+            # (EDG-38) faixas extras recusadas pelo guarda de saída (CIDRs
+            # separados por vírgula). Vazio mantém o padrão do binário.
+            # EDGER_EGRESS_ALLOW_CIDRS é só de desenvolvimento e NÃO existe
+            # no chart.
+            - name: EDGER_EGRESS_BLOCK_CIDRS
+              value: {{ join "," . | quote }}
+            {{- end }}
             {{- if $hasRootKey }}
             - name: EDGER_ROOT_KEY_FILE
               value: {{ include "edger.rootKeyFilePath" . | quote }}
@@ -92,7 +105,6 @@ spec:
             {{- with $extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:

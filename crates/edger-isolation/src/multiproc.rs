@@ -36,6 +36,11 @@ use crate::deno_bundle::{
 use crate::deno_sandbox_policy::{
     deno_network_permission_args_with_uds, read_allowlist, select_deno_dir,
 };
+use crate::egress::{
+    warn_egress_unavailable_once, EgressBinding, EgressListenerContext, EgressListenerSink,
+    EgressSpawn, EgressTask, EGRESS_GUARD_HOST, EGRESS_HOST_ENV, EGRESS_SOCKET_ENV,
+};
+use crate::guard_env::is_reserved_guard_env;
 
 const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
 pub const CONSOLE_LINE_MAX_BYTES: usize = 4 * 1024;
@@ -822,6 +827,10 @@ pub struct DenoWorkerProcess {
     _console_tasks: Vec<tokio::task::JoinHandle<()>>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     process_id: String,
+    // (EDG-38) The egress guard service of THIS process: aborted when the
+    // process is dropped (recycle, TTL, LRU, shutdown), which closes the
+    // listener; the socket file goes away with the workdir.
+    _egress_task: Option<EgressTask>,
 }
 
 impl DenoWorkerProcess {
@@ -848,6 +857,7 @@ impl DenoWorkerProcess {
             None,
             deno_cache_root,
             DenoCacheMode::default(),
+            None,
             None,
             None,
             None,
@@ -882,6 +892,7 @@ impl DenoWorkerProcess {
             None,
             None,
             None,
+            None,
         )
         .await
     }
@@ -913,6 +924,7 @@ impl DenoWorkerProcess {
             None,
             Some(console_sender),
             Some(console_context),
+            None,
         )
         .await
     }
@@ -932,6 +944,7 @@ impl DenoWorkerProcess {
         caps: Option<crate::limits::ResourceLimits>,
         console_sender: Option<ConsoleLogSender>,
         console_context: Option<ConsoleLogContext>,
+        egress: Option<EgressSpawn>,
     ) -> Result<Self, IsolationError> {
         let worker_dir = worker_dir.canonicalize().map_err(|err| {
             IsolationError::new("UDS_WORKER_DIR", format!("invalid worker_dir: {err}"))
@@ -962,6 +975,27 @@ impl DenoWorkerProcess {
         let listener = UnixListener::bind(&socket_path).map_err(|err| {
             IsolationError::new("UDS_BIND", format!("bind {}: {err}", socket_path.display()))
         })?;
+
+        // (EDG-38) The egress guard socket lives in the same workdir (the
+        // process already has read and write there). The socket, the
+        // permissions and the env vars exist together or not at all: a bind
+        // failure leaves the worker without any of them (one warn per worker
+        // and version) and the worker still starts.
+        let guard_socket_path = workdir.path().join("guard.sock");
+        let guard = egress.and_then(|egress| match UnixListener::bind(&guard_socket_path) {
+            Ok(guard_listener) => Some((egress, guard_listener)),
+            Err(err) => {
+                warn_egress_unavailable_once(
+                    &egress.context.worker,
+                    &egress.context.version,
+                    &format!(
+                        "the guard socket could not be bound ({}): {err}",
+                        guard_socket_path.display()
+                    ),
+                );
+                None
+            }
+        });
 
         let deno_dir = select_deno_dir(
             &worker_dir,
@@ -1012,6 +1046,7 @@ impl DenoWorkerProcess {
             allow_net,
             std::env::var("EDGER_DENO_ALLOW_NET").ok().as_deref(),
             &socket_path,
+            guard.as_ref().map(|_| guard_socket_path.as_path()),
         ) {
             command.arg(arg);
         }
@@ -1025,6 +1060,11 @@ impl DenoWorkerProcess {
         }
         inject_runtime_env(&mut command, deno_dir.env_dir.as_deref());
         inject_manifest_env(&mut command, env);
+        if guard.is_some() {
+            command
+                .env(EGRESS_SOCKET_ENV, &guard_socket_path)
+                .env(EGRESS_HOST_ENV, EGRESS_GUARD_HOST);
+        }
         if let Some(config_path) = deno_config_path(&worker_dir) {
             command.arg("--config").arg(config_path);
         }
@@ -1052,6 +1092,13 @@ impl DenoWorkerProcess {
             child.id().unwrap_or_default(),
             PROCESS_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
+        // (EDG-38) Start the guard service now that the process id exists.
+        // The task is owned by this local until the process struct takes it:
+        // any spawn failure below drops (aborts) it with the listener.
+        let egress_task = guard.map(|(mut egress, guard_listener)| {
+            egress.context.process_id = process_id.clone();
+            EgressTask::spawn(egress.sink.serve(guard_listener, egress.context))
+        });
         let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(20)));
         let mut console_tasks = Vec::new();
         if let Some(stderr) = child.stderr.take() {
@@ -1104,6 +1151,7 @@ impl DenoWorkerProcess {
             _console_tasks: console_tasks,
             stderr_tail,
             process_id,
+            _egress_task: egress_task,
         };
 
         let ready_bytes = match tokio::time::timeout(
@@ -2891,8 +2939,12 @@ fn inject_manifest_env(
     // manifest env (DATABASE_URL, API keys, ...). Secrets never reach the browser —
     // that path is gated separately by the publicEnv allowlist (static_spa.rs).
     // DENO_DIR is reserved for the runtime cache dir and set by inject_runtime_env.
+    // EDGER_EGRESS_SOCKET / EDGER_EGRESS_HOST are reserved (EDG-38, the
+    // `guard_env` filter every Deno backend shares): the spawn alone sets
+    // them, and only while the guard socket is live, so a manifest `env` or
+    // a secret can never fake the guard's presence.
     for (key, value) in manifest_env {
-        if !key.eq_ignore_ascii_case("DENO_DIR") {
+        if !key.eq_ignore_ascii_case("DENO_DIR") && !is_reserved_guard_env(key) {
             command.env(key, value);
         }
     }
@@ -2928,6 +2980,12 @@ pub struct DenoProcessIsolate {
     /// = vault not wired in: declared secrets are not injected (one warn
     /// per worker and name) and the worker still starts.
     app_secrets: Option<(String, std::sync::Arc<dyn edger_core::AppSecretResolver>)>,
+    /// Egress guard (EDG-38): the sink that serves each process's guard
+    /// listener plus the identity of the worker version this isolate runs.
+    /// `None` = no guard service wired in: a version with `egress.enabled`
+    /// starts without the socket and the variables (one warn per worker and
+    /// version).
+    egress: Option<EgressBinding>,
 }
 
 impl DenoProcessIsolate {
@@ -2961,6 +3019,27 @@ impl DenoProcessIsolate {
         resolver: std::sync::Arc<dyn edger_core::AppSecretResolver>,
     ) -> Self {
         self.app_secrets = Some((worker.into(), resolver));
+        self
+    }
+
+    /// (EDG-38) Wire the egress guard service in: each process of a version
+    /// with `egress.enabled` gets its own guard socket, served by `sink`.
+    /// `worker`, `version` and `namespace` come from the `WorkerRef` the
+    /// factory receives at isolate creation (the `WorkerConfig` does not
+    /// carry them).
+    pub fn with_egress(
+        mut self,
+        sink: std::sync::Arc<dyn EgressListenerSink>,
+        worker: impl Into<String>,
+        version: impl Into<String>,
+        namespace: Option<String>,
+    ) -> Self {
+        self.egress = Some(EgressBinding {
+            sink,
+            worker: worker.into(),
+            version: version.into(),
+            namespace,
+        });
         self
     }
 
@@ -3058,6 +3137,35 @@ impl DenoProcessIsolate {
             }
             let env: &std::collections::HashMap<String, String> =
                 secret_env.as_ref().map_or(&config.env, |env| env);
+            // (EDG-38) The guard is armed only for a version with
+            // `egress.enabled` AND a wired-in service; the spawn does not
+            // look at whether the version is the default (a staged version
+            // gets it too).
+            let egress = match (&config.egress, &self.egress) {
+                (Some(settings), Some(binding)) => Some(EgressSpawn {
+                    sink: Arc::clone(&binding.sink),
+                    context: EgressListenerContext {
+                        worker: binding.worker.clone(),
+                        version: binding.version.clone(),
+                        namespace: binding.namespace.clone(),
+                        process_id: String::new(),
+                        settings: settings.clone(),
+                    },
+                }),
+                (Some(_), None) => {
+                    let (worker, version) = self
+                        .console_context
+                        .as_ref()
+                        .map_or(("", ""), |ctx| (ctx.worker.as_str(), ctx.version.as_str()));
+                    warn_egress_unavailable_once(
+                        worker,
+                        version,
+                        "the egress guard service is not wired into this process backend",
+                    );
+                    None
+                }
+                _ => None,
+            };
             let process = DenoWorkerProcess::spawn_with_policy(
                 worker_dir,
                 config.entrypoint.as_deref(),
@@ -3082,6 +3190,7 @@ impl DenoProcessIsolate {
                 Some(limits.clone()),
                 self.console_sender.clone(),
                 self.console_context.clone(),
+                egress,
             )
             .await?;
             self.process = Some(process);
@@ -4610,6 +4719,7 @@ mod stream_detach_tests {
             _console_tasks: Vec::new(),
             stderr_tail: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             process_id: "test-classified-terminate".into(),
+            _egress_task: None,
         };
         let isolate = DenoProcessIsolate {
             process: Some(process),
@@ -4621,6 +4731,7 @@ mod stream_detach_tests {
             detach: None,
             deno_cache_root: None,
             app_secrets: None,
+            egress: None,
         };
         (isolate, stream_b)
     }
@@ -4746,6 +4857,7 @@ mod stream_detach_tests {
             _console_tasks: Vec::new(),
             stderr_tail: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             process_id: "test-idle-socket".into(),
+            _egress_task: None,
         };
         let isolate = DenoProcessIsolate {
             process: Some(process),
@@ -4757,6 +4869,7 @@ mod stream_detach_tests {
             detach: None,
             deno_cache_root: None,
             app_secrets: None,
+            egress: None,
         };
         (isolate, stream_b)
     }
