@@ -9,7 +9,7 @@ spec:
   resources:
     requests:
       # Tamanho herdado do backup do Cinzel (1 banco). Este PVC é
-      # COMPARTILHADO pelos 3 bancos (retenção 14 cada), e os anexos ficam
+      # COMPARTILHADO por todos os bancos (retenção 14 cada), e os anexos ficam
       # em BLOB — o ensaio (Fase 0) mede o tamanho real dos dumps e a
       # janela de corte confirma se o PVC precisa crescer antes do corte.
       storage: 2Gi

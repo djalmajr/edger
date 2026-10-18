@@ -1,7 +1,7 @@
 # Plataforma de produção do EdgeR (`deploy/production/`)
 
 A instância do EdgeR sai do namespace `cinzel` para o namespace genérico
-`edger` e passa a servir vários apps (Cinzel, Pinar prd/stg e os
+`edger` e passa a servir vários apps (Cinzel, Pinar e os
 próximos) com **um sqld compartilhado**: um banco (namespace do libsql)
 por app e ambiente. Aprovado no plano
 `plano-edger-namespace-sqld-20261014.md` (revisado pelo Cinzel em
@@ -26,8 +26,8 @@ corte, num PR deles (revisão do Cinzel, item 8).
 |---|---|---|
 | EdgeR | release `edger`, `fullnameOverride: edger`, Service `edger:3000`, PVC `edger-user-workers` (local-path, 5Gi) | chart `charts/edger`, `rc.19` ou mais nova (com a EDG-24); request 1 Gi / limite 4 Gi de memória |
 | sqld | Deployment `sqld`, PVC `sqld-data` (local-path, 5Gi), `--enable-namespaces`, admin em `127.0.0.1:9090` com `--admin-auth-key` (via `LIBSQL_ADMIN_AUTH_KEY`), `--auth-jwt-key-file` (chave global só para o `default`) | 1 réplica, `Recreate`, tag `v0.24.32` fixada |
-| Bancos | namespaces do libsql `cinzel`, `pinar-prd`, `pinar-stg`, cada um com `jwt_key` própria | o `default` nasce vazio; depois do corte e dos 7 dias de rollback, `--disable-default-namespace` |
-| Hosts dos bancos | Services `cinzel`, `pinar-prd`, `pinar-stg` no namespace `edger`, todos com o seletor do pod `sqld`, porta 8080 | o cliente escolhe o banco pelo **primeiro rótulo do Host**: `http://cinzel.edger.svc.cluster.local:8080` → banco `cinzel`. Host sem ponto cai no `default` — nunca use o nome curto do Service como URL |
+| Bancos | namespaces do libsql `cinzel` e `pinar-prd`, cada um com `jwt_key` própria | o `default` nasce vazio; depois do corte e dos 7 dias de rollback, `--disable-default-namespace` |
+| Hosts dos bancos | Services `cinzel` e `pinar-prd` no namespace `edger`, todos com o seletor do pod `sqld`, porta 8080 | o cliente escolhe o banco pelo **primeiro rótulo do Host**: `http://cinzel.edger.svc.cluster.local:8080` → banco `cinzel`. Host sem ponto cai no `default` — nunca use o nome curto do Service como URL |
 | NetworkPolicy | `sqld-ingress`: entrada na 8080 só dos pods do EdgeR (`app.kubernetes.io/instance: edger`) e dos jobs de backup (`app.kubernetes.io/name: sqld-backup`) | `kubectl port-forward` vai pelo kubelet e não é afetado |
 | Backup | um CronJob por banco (`sqld-backup-<banco>`), retenção/sentinela/token por banco, PVC `sqld-backups` compartilhado | restaurar um banco **não** para o EdgeR: só o app afetado sai do ar, com o worker desabilitado |
 | Rotas e TLS | IngressRoute `edger` (`edger.djalmajr.dev`, **só control plane** — adendo EDG-27), Middleware `edger-admin-ratelimit`, Certificate `edger-tls` (`letsencrypt-dns`), tudo em `edger` | as rotas dos apps (`cinzel.app`, `pinar.dev`, …) vivem nos repositórios dos apps e também são aplicadas em `edger` (o Traefik não tem `allowCrossNamespace`) |
@@ -43,14 +43,12 @@ corte, num PR deles (revisão do Cinzel, item 8).
 | sqld | Deployment | `sqld` | `sqld.yaml` |
 | Service do banco `cinzel` | Service | `cinzel` | `sqld.yaml` |
 | Service do banco `pinar-prd` | Service | `pinar-prd` | `sqld.yaml` |
-| Service do banco `pinar-stg` | Service | `pinar-stg` | `sqld.yaml` |
 | Entrada no sqld | NetworkPolicy | `sqld-ingress` | `sqld.yaml` |
 | Saída do ensaio | NetworkPolicy (egress) | `ensaio-egress` | `rehearsal/egress.yaml` |
 | PVC dos backups | PersistentVolumeClaim | `sqld-backups` | `backup/pvc.yaml` |
 | Script de backup | ConfigMap (gerado) | `sqld-backup-script-<hash>` | `backup/backup.sh` + `backup/kustomization.yaml` |
 | Backup do banco `cinzel` | CronJob | `sqld-backup-cinzel` | `backup/cronjob-cinzel.yaml` |
 | Backup do banco `pinar-prd` | CronJob | `sqld-backup-pinar-prd` | `backup/cronjob-pinar-prd.yaml` |
-| Backup do banco `pinar-stg` | CronJob | `sqld-backup-pinar-stg` | `backup/cronjob-pinar-stg.yaml` |
 | Rate limit do admin | Middleware (traefik.io/v1alpha1) | `edger-admin-ratelimit` | `control-plane.yaml` |
 | Rota do control plane | IngressRoute (traefik.io/v1alpha1) | `edger` | `control-plane.yaml` |
 | Certificado do control plane | Certificate (cert-manager.io/v1) | `edger-tls` | `control-plane.yaml` |
@@ -96,7 +94,7 @@ openssl rand -hex 32 | tr -d '\n' > ./secrets/sqld-admin-key.txt && chmod 600 ./
 kubectl -n edger create secret generic sqld-admin \
   --from-file=admin-auth-key=./secrets/sqld-admin-key.txt
 
-# por banco (cinzel, pinar-prd, pinar-stg):
+# por banco (cinzel, pinar-prd):
 # chave pública do par do banco (a PRIVADA fica no app — nunca aqui)
 kubectl -n edger create secret generic sqld-jwt-cinzel \
   --from-file=jwt-public-key=./secrets/jwt-cinzel-public-key.pem
@@ -137,8 +135,8 @@ curl -fsS -X POST http://127.0.0.1:9090/v1/namespaces/cinzel/create \
   -H 'Content-Type: application/json' \
   --data @./secrets/jwt-cinzel-create.json
 
-# 3. o Service do banco já está em sqld.yaml para cinzel, pinar-prd e
-#    pinar-stg; um banco novo ganha a cópia do Service com o nome do
+# 3. o Service do banco já está em sqld.yaml para cinzel e
+#    pinar-prd; um banco novo ganha a cópia do Service com o nome do
 #    banco (mesmo seletor, porta 8080) e a linha do NetworkPolicy não
 #    muda
 
@@ -207,7 +205,7 @@ banco, ou um job que percorre a lista). Razões:
   (`<banco>-*.sql.gz`), `SENTINEL` (opcional) e o Secret do token;
 - a falha de um dump não bloqueia os demais bancos;
 - horários e limites (`activeDeadlineSeconds`, history) independentes;
-- um job único que percorre a lista concentraria os três tokens num pod
+- um job único que percorre a lista concentraria os tokens de todos os bancos num pod
   só e precisaria de retry por banco no script — mais acoplado.
 
 Detalhes:
@@ -216,9 +214,9 @@ Detalhes:
   primeiro rótulo do Host; o nome curto `cinzel` (sem ponto) cairia no
   namespace `default` e o backup dumperia o banco errado.
 - **Horários escalonados** (03:30 cinzel — slot atual do Cinzel; 03:40
-  pinar-prd; 03:50 pinar-stg, UTC): o PVC `sqld-backups` é
+  pinar-prd, UTC): o PVC `sqld-backups` é
   compartilhado e o local-path é single writer por nó; o escalonado
-  evita três jobs escrevendo no mesmo volume ao mesmo tempo.
+  evita dois jobs escrevendo no mesmo volume ao mesmo tempo.
 - **Retenção**: 14 dumps por banco (o plano fixa 14 para o Cinzel; os
   Pinar seguem o mesmo valor por coerência — **confirmar com o Pinar
   antes do corte**).
@@ -234,11 +232,11 @@ Detalhes:
   antes do patch renomeá-la e rejeita dois overlays partilhando a mesma
   base nomeada), e o compartilhado (PVC + ConfigMap do script) entra
   UMA vez em `backup/kustomization.yaml` — o hash do
-  `configMapGenerator` é reescrito nas referências dos três CronJobs.
+  `configMapGenerator` é reescrito nas referências de todos os CronJobs.
 - **Espace do PVC**: `sqld-backups` nasce com 2Gi (o valor do backup do
-  Cinzel) para **três** bancos compartilhando — os anexos ficam em
+  Cinzel) para todos os bancos compartilhando — os anexos ficam em
   BLOB. O ensaio mede o tamanho real dos dumps (item do plano); se
-  14 × 3 dumps não couberem, crescer o PVC antes do corte.
+  14 dumps por banco não couberem, crescer o PVC antes do corte.
 - `activeDeadlineSeconds: 1800` e CPU de 1 (limite): no ensaio de
   2026-10-15, o backup do Cinzel (235 MB de SQL, 105 MB em gzip) levou
   cerca de 400 s com CPU de 200m, e os backups atuais de produção
@@ -621,6 +619,16 @@ de qualquer restore (final do backup, ensaio, janela).
 6. **Escopo do EdgeR**: chave de API com escopo do app (padrão
    `pinar*` do Pinar — só com a EDG-24 já publicada; a EDG-25 não
    altera esse mecanismo).
+
+## Bancos removidos
+
+- `pinar-stg` (staging do Pinar), em 2026-10-18: o worker, o namespace do
+  libsql, o Service `pinar-stg`, o CronJob `sqld-backup-pinar-stg` e os
+  Secrets `sqld-backup-pinar-stg` e `sqld-jwt-pinar-stg` saíram do cluster,
+  e os manifests saíram deste diretório. O dump final e o arquivo dos
+  workers ficaram em `/root/backups/` no nó
+  (`pinar-stg-20261018T144434Z.sql.gz` e
+  `pinar-stg-workers-final-20261018T144433Z.tgz`).
 
 ## O que fica fora deste diretório
 

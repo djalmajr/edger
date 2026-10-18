@@ -13,8 +13,8 @@
 # como em produção.
 # --- conteúdo abaixo: cópia de ../sqld.yaml (produção) ---
 #
-# Um banco (namespace do libsql) por app e ambiente: `cinzel`,
-# `pinar-prd` e `pinar-stg`, cada um com a sua `jwt_key` (criada via API
+# Um banco (namespace do libsql) por app e ambiente: `cinzel` e
+# `pinar-prd`, cada um com a sua `jwt_key` (criada via API
 # de admin, ver README.md). O namespace `default` nasce vazio — o banco
 # atual do Cinzel vive no PVC antigo `cinzel-sqld-data` e entra no banco
 # `cinzel` pelo restore da janela de corte, sem mover dados agora. Depois
@@ -157,19 +157,6 @@ apiVersion: v1
 kind: Service
 metadata:
   name: pinar-prd
-  namespace: edger-ensaio
-spec:
-  selector:
-    app.kubernetes.io/name: sqld
-  ports:
-    - name: http
-      port: 8080
-      targetPort: http
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: pinar-stg
   namespace: edger-ensaio
 spec:
   selector:

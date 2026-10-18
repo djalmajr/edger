@@ -41,7 +41,3 @@ patches:
     target:
       kind: CronJob
       name: sqld-backup-pinar-prd
-  - path: patch-cronjob-pinar-stg.yaml
-    target:
-      kind: CronJob
-      name: sqld-backup-pinar-stg

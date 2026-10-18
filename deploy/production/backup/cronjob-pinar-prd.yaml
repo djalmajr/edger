@@ -3,7 +3,7 @@
 # writer por nó), retenção e sentinela independentes por banco. A
 # retenção 14 segue o valor fixado pelo plano para o Cinzel — confirmar
 # a retenção do Pinar antes do corte. Pod spec, imagem e labels
-# idênticos nos três bancos; o seletor de rede
+# idênticos em todos os bancos; o seletor de rede
 # (`app.kubernetes.io/name: sqld-backup`) e o PVC `sqld-backups` vivem
 # UMA vez no kustomization do pai.
 apiVersion: batch/v1
