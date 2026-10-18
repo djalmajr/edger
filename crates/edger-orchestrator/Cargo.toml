@@ -84,12 +84,12 @@ chacha20poly1305.workspace = true
 zeroize.workspace = true
 semver.workspace = true
 zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
-base64 = "0.22"
+base64 = "0.23"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tempfile = "3"
 
 [dev-dependencies]
-base64 = "0.22"
+base64 = "0.23"
 # Raw HTTP/1.1 parsing in the egress guard test upstream (EDG-38 S2a); already
 # in Cargo.lock (transitive via hyper).
 httparse = "1"
