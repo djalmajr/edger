@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use edger_isolation::StreamDetachStats;
@@ -494,6 +494,110 @@ pub fn compression_metrics_prometheus(metrics: &CompressionMetrics) -> String {
     out.push_str("edger_http_compression_bytes_out_total{encoding=\"gzip\"} ");
     out.push_str(&metrics.gzip_bytes_out().to_string());
     out.push('\n');
+    out.push('\n');
+    out
+}
+
+/// Per-worker egress guard counters (EDG-38): the request totals by outcome
+/// (`ok` / `blocked` / `error` / `timeout` / `limit`, the same labels as the
+/// `worker.egress` operational event outcome) and the upstream response body
+/// bytes forwarded to the worker, for the life of the `edger` process.
+/// Cloned handles share the same counters, like `HttpMetrics`.
+#[derive(Clone, Debug, Default)]
+pub struct EgressMetrics {
+    inner: Arc<EgressMetricsInner>,
+}
+
+#[derive(Debug, Default)]
+struct EgressMetricsInner {
+    workers: Mutex<BTreeMap<String, EgressWorkerCounters>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct EgressWorkerCounters {
+    ok: u64,
+    blocked: u64,
+    error: u64,
+    timeout: u64,
+    limit: u64,
+    response_bytes: u64,
+}
+
+impl EgressMetrics {
+    /// Record one finished egress call (exactly once per request): the
+    /// outcome label and the forwarded body bytes (zero for refusals).
+    pub fn record(&self, worker: &str, outcome: &str, response_bytes: u64) {
+        let mut guard = self
+            .inner
+            .workers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let entry = guard.entry(worker.to_string()).or_default();
+        match outcome {
+            "ok" => entry.ok = entry.ok.saturating_add(1),
+            "blocked" => entry.blocked = entry.blocked.saturating_add(1),
+            "error" => entry.error = entry.error.saturating_add(1),
+            "timeout" => entry.timeout = entry.timeout.saturating_add(1),
+            "limit" => entry.limit = entry.limit.saturating_add(1),
+            _ => {}
+        }
+        entry.response_bytes = entry.response_bytes.saturating_add(response_bytes);
+    }
+
+    fn snapshot(&self) -> Vec<(String, EgressWorkerCounters)> {
+        let guard = self
+            .inner
+            .workers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+}
+
+/// Prometheus rendering of the egress counters:
+/// `edger_egress_requests_total{worker,outcome}` and
+/// `edger_egress_response_bytes_total{worker}`. A worker appears after its
+/// first egress call (all five outcome labels are emitted for it).
+pub fn egress_metrics_prometheus(metrics: &EgressMetrics) -> String {
+    let mut out = String::new();
+    push_metric_header(
+        &mut out,
+        "edger_egress_requests_total",
+        "counter",
+        "Egress guard requests by worker and outcome: ok = a destination response was forwarded (any HTTP status), blocked = the guard's policy refused the request before dialing, error = an upstream or protocol failure, timeout = a guard timeout, limit = the per-version concurrency limit",
+    );
+    let workers = metrics.snapshot();
+    for (worker, counters) in &workers {
+        for (label, value) in [
+            ("ok", counters.ok),
+            ("blocked", counters.blocked),
+            ("error", counters.error),
+            ("timeout", counters.timeout),
+            ("limit", counters.limit),
+        ] {
+            out.push_str("edger_egress_requests_total{worker=\"");
+            out.push_str(&escape_label_value(worker));
+            out.push_str("\",outcome=\"");
+            out.push_str(label);
+            out.push_str("\"} ");
+            out.push_str(&value.to_string());
+            out.push('\n');
+        }
+    }
+    out.push('\n');
+    push_metric_header(
+        &mut out,
+        "edger_egress_response_bytes_total",
+        "counter",
+        "Upstream response body bytes the egress guard streamed to the worker, by worker",
+    );
+    for (worker, counters) in &workers {
+        out.push_str("edger_egress_response_bytes_total{worker=\"");
+        out.push_str(&escape_label_value(worker));
+        out.push_str("\"} ");
+        out.push_str(&counters.response_bytes.to_string());
+        out.push('\n');
+    }
     out.push('\n');
     out
 }

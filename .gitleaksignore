@@ -1,2 +1,4 @@
 # Public development fixture documented in Story 17.02. It is not a live key.
 e899be5a811576d9a54aa8820144a0e8cb8536ce:planning/edger/epics/17-edger-minimalista/02-data-plane-aberto.md:curl-auth-header:41
+# Test-only TLS key of the EDG-38 S2a PR commit, replaced by runtime generation; never a live key.
+78937f7acdc3890e9d85a887618d30ee68ba657b:crates/edger-orchestrator/tests/egress_guard.rs:private-key:78

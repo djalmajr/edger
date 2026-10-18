@@ -56,6 +56,23 @@ tower-http.workspace = true
 http-body = "1"
 http.workspace = true
 hyper.workspace = true
+# Egress guard (EDG-38 S2a): HTTP/1.1 framing on both sides through hyper
+# (server over the worker's Unix socket, client over the pinned-IP TLS
+# stream) and outbound TLS pinned to the resolved IP with the hostname's SNI.
+# `hyper-util` (tokio IO adapter), `http-body-util`, `rustls`, `tokio-rustls`,
+# `url` and `webpki-roots` are already in Cargo.lock (transitive via
+# axum/reqwest); promoted to direct dependencies.
+http-body-util = "0.1"
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+# Provider-free: the process-level CryptoProvider comes from the graph
+# (ring, via reqwest's rustls-tls); enabling a second provider here would
+# make rustls's auto-detection panic. The `ring` feature is the SAME provider
+# already in the graph (it is rustls's default); making it direct keeps the
+# tests able to name `rustls::crypto::ring::RingProvider` explicitly.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "logging", "ring"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "logging"] }
+url = "2"
+webpki-roots = "1"
 jsonwebtoken = "9"
 uuid.workspace = true
 rusqlite.workspace = true
@@ -73,6 +90,9 @@ tempfile = "3"
 
 [dev-dependencies]
 base64 = "0.22"
+# Raw HTTP/1.1 parsing in the egress guard test upstream (EDG-38 S2a); already
+# in Cargo.lock (transitive via hyper).
+httparse = "1"
 # Decoding in the compression tests (EDG-2/EDG-3): the versions are already
 # in Cargo.lock (brotli via tower-http compression-br, flate2 via zip/deflate).
 brotli = "9"
@@ -81,6 +101,10 @@ zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 edger-isolation = { path = "../edger-isolation", features = ["deno", "wasm", "multiproc"] }
 rusqlite.workspace = true
 rand = "0.8"
+# Runtime-generated test CA and server certificate for the egress guard tests
+# (EDG-38 S2a): no key material is committed. `ring` is the provider already in
+# the graph; the default `aws_lc_rs` backend is left off.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 rsa = { version = "0.9", features = ["pem"] }
 serde_json.workspace = true
 # `test-util` exposes `tokio::time::pause`/`advance` for the paused-clock
