@@ -43,6 +43,27 @@ ingress:
 apiKeys:
   dbPath: ""
 
+# Cofre de segredos de app (EDG-38): workers declaran `secrets:` no manifest
+# e o EdgeR injeta os valores no env do processo do worker (o valor nunca
+# aparece em manifest, publicEnv, logs ou eventos). Opt-in, desligado por
+# padrão: com enabled=false nenhum campo é lido e o binário segue sem cofre
+# (as rotas /api/admin/workers/{name}/secrets respondem 503 e a injeção não
+# acontece). Com enabled=true o chart exige um Secret EXISTENTE com a chave
+# mestra (32 bytes, base64 ou raw) — montado read-only em caminho fixo
+# (EDGER_SECRETS_KEY_FILE). A chave nunca entra no ConfigMap, nos values da
+# release ou nos logs. dbPath: vazio = derivado de runtime.workerDirs
+# (<workerDirs>/.edger/app-secrets.db), ao lado da api-keys.db no mesmo PVC
+# RWO.
+appSecrets:
+  enabled: false
+  dbPath: ""
+  keySecret:
+    # Nome do Secret existente no namespace; o chart nunca o cria nem
+    # armazena a chave mestra.
+    name: ""
+    # Chave do Secret que contém a chave mestra (32 bytes, base64 ou raw).
+    key: "master-key"
+
 runtime:
   workerDirs: "/app/workers"
   jsRuntime: "process"

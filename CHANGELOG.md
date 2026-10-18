@@ -40,6 +40,43 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Added
 
+- App secrets vault (EDG-38): apps store secrets (e.g. Pinar's
+  `BYOK_MASTER_KEY`) encrypted at rest in a dedicated SQLite store
+  (`app_secrets(worker, name, nonce, ciphertext, created_at, updated_at)`),
+  ChaCha20-Poly1305 with a random nonce per write and AAD =
+  `worker || 0x00 || name` (a ciphertext copied to another worker/name pair
+  does not decrypt). Admin routes: `PUT /api/admin/workers/{name}/secrets/{secret}`
+  (`{"value"}`; non-empty, at most 16 KiB, name follows the manifest rule,
+  the worker does NOT need to be installed), `GET /api/admin/workers/{name}/secrets`
+  (names and dates only — there is no route that returns the value) and
+  `DELETE /api/admin/workers/{name}/secrets/{secret}`. New catalog
+  permissions `secrets:read` (list) and `secrets:write` (write and delete),
+  under the existing anti-escalation and the per-worker scope of the API key;
+  root covers every worker. Workers declare names in `secrets:` and the
+  process backend injects each resolved value into the env of the spawned
+  worker process only (never in `WorkerConfig.env` or `publicEnv`); a
+  declared-but-absent secret logs one warn per worker and name and the
+  worker starts normally; a record that fails to decrypt (wrong or rotated
+  master key) fails closed — the secret is not injected and the error log
+  never carries the value. Master key: 32 bytes from `EDGER_SECRETS_KEY_FILE`
+  (base64 or raw), store in `EDGER_APP_SECRETS_DB` (default
+  `<first worker dir>/.edger/app-secrets.db`). Without the key file the
+  instance still boots: the vault is unavailable, the routes answer 503
+  `SECRETS_UNAVAILABLE`, nothing is injected and a warn is logged at boot.
+  A repeated `PUT` takes effect at the next spawn; apply immediately with
+  `POST /api/admin/workers/{name}/recycle?version=<v>` (the write never
+  recycles on its own). Operational events `secret.written` and
+  `secret.deleted` carry worker, secret name and acting API key id — never
+  the value. The state export ships a consistent encrypted copy as
+  `app-secrets.db` (the master key itself is never exported). The Helm
+  chart gains an opt-in `appSecrets` block (`enabled`, `dbPath`,
+  `keySecret: {name, key}`) that mounts an existing Secret with the master
+  key read-only and sets `EDGER_SECRETS_KEY_FILE`; the bridge fallback
+  (`EDGER_JS_RUNTIME=bridge`) does not inject and logs a warn per declared
+  secret. Security-model note: anyone who can install a worker version can
+  read the secrets injected into that worker through its process env — the
+  value is protected by the deploy permission, not by `secrets:read`.
+
 - Production platform manifests and runbooks under `deploy/production/`
   (EDG-25, nothing applied): the `edger` namespace, the chart values
   (`fullnameOverride: edger`, Secret `edger-root`, 1 Gi request and 4 Gi

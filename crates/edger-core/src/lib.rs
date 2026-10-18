@@ -19,6 +19,7 @@ pub mod isolate;
 pub mod manifest;
 pub mod mcp;
 pub mod principal;
+pub mod secrets;
 pub mod security;
 pub mod wire;
 pub mod worker_ref;
@@ -48,6 +49,7 @@ pub use manifest::{
 pub use principal::{
     principal_can_access_namespace, principal_can_access_worker, root_principal, ApiKeyPrincipal,
 };
+pub use secrets::{is_valid_secret_name, validate_app_secret_name, AppSecretResolver};
 pub use security::{
     is_mutating_method, is_sensitive_env_key, principal_can_access_optional_namespace,
     principal_has_permission, require_same_origin, validate_key_grant, INTERNAL_REQUEST_HEADER,

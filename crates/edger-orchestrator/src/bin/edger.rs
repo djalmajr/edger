@@ -26,6 +26,14 @@
 //! - `EDGER_COMPRESSION_MIN_BYTES` — minimum compressible body size (default 1024)
 //! - `EDGER_COMPRESSION_LEVEL` — `default` (default) | `fastest` | `best` | integer
 //!   (`best` is brotli quality 11 — expensive for dynamic/streaming bodies)
+//! - `EDGER_APP_SECRETS_DB` — SQLite do cofre de segredos de app (EDG-38;
+//!   default `<primeiro diretório de workers>/.edger/app-secrets.db`) — o
+//!   valor dos segredos fica cifrado (ChaCha20-Poly1305) com a chave mestra
+//!   abaixo e é injetado só no env do processo do worker que declara o nome
+//! - `EDGER_SECRETS_KEY_FILE` — chave mestra do cofre de segredos (EDG-38):
+//!   32 bytes em base64 ou crus. Sem ela o cofre fica INDISPONÍVEL: as rotas
+//!   de segredos respondem 503 `SECRETS_UNAVAILABLE`, nada é injetado e um
+//!   `warn` sai no boot
 //! - `EDGER_STREAM_MAX_DURATION_MS` — total response-stream duration limit in
 //!   milliseconds (default `300000`; `0` disables; manifest `streamTimeout`
 //!   overrides this value)
@@ -69,6 +77,11 @@ struct RuntimeIsolateFactory {
     abandon_drain_max_bytes: u64,
     abandon_drain_max_ms: u64,
     stream_max_duration_ms: u64,
+    /// (EDG-38) Cofre de segredos de app: quando presente, o backend de
+    /// processo injeta no spawn cada nome de `config.secrets` resolvido
+    /// daqui — `None` = cofre indisponível (nada é injetado; um warn por
+    /// worker e nome).
+    app_secret_resolver: Option<Arc<dyn edger_core::AppSecretResolver>>,
 }
 
 /// `EDGER_STREAM_DETACH_MAX_BYTES` default: 8 MiB per-response buffered tail.
@@ -94,7 +107,10 @@ fn stream_detach_env(name: &str, default: u64) -> u64 {
 }
 
 impl RuntimeIsolateFactory {
-    fn from_env(console_sender: Option<ConsoleLogSender>) -> Self {
+    fn from_env(
+        console_sender: Option<ConsoleLogSender>,
+        app_secrets: Option<Arc<edger_orchestrator::app_secrets::AppSecretVault>>,
+    ) -> Self {
         let js_uses_process = std::env::var("EDGER_JS_RUNTIME")
             .map(|value| !value.trim().eq_ignore_ascii_case("bridge"))
             .unwrap_or(true);
@@ -129,6 +145,8 @@ impl RuntimeIsolateFactory {
             abandon_drain_max_bytes,
             abandon_drain_max_ms,
             stream_max_duration_ms,
+            app_secret_resolver: app_secrets
+                .map(|vault| -> Arc<dyn edger_core::AppSecretResolver> { vault }),
         }
     }
 }
@@ -151,6 +169,15 @@ impl IsolateFactory for RuntimeIsolateFactory {
                     ),
                     None => DenoProcessIsolate::new(),
                 };
+                // (EDG-38) segredos de app: resolvidos do cofre e injetados
+                // só no env do processo Deno, no spawn (o nome do worker vem
+                // do `WorkerRef` — o `WorkerConfig` não o carrega).
+                let isolate = match &self.app_secret_resolver {
+                    Some(resolver) => {
+                        isolate.with_app_secrets(worker_ref.name.clone(), Arc::clone(resolver))
+                    }
+                    None => isolate,
+                };
                 Box::new(
                     isolate
                         .with_stream_detach(
@@ -167,7 +194,23 @@ impl IsolateFactory for RuntimeIsolateFactory {
                         .with_stream_max_duration_default_ms(self.stream_max_duration_ms),
                 )
             }
-            _ => Box::new(DenoIsolate::new(DenoFacade::new())),
+            _ => {
+                // (EDG-38) modo bridge (legacy emergency fallback): a
+                // injeção de segredos de app acontece no backend de
+                // processo; aqui o valor NÃO chega ao worker. Um warn por
+                // nome declarado, para o operador saber que a variável
+                // aparecerá ausente.
+                if self.app_secret_resolver.is_some() {
+                    for name in &worker_ref.config.secrets {
+                        tracing::warn!(
+                            worker = %worker_ref.name,
+                            secret = %name,
+                            "app secret is not injected in bridge mode (EDGER_JS_RUNTIME=bridge): the worker will see the variable as absent; secrets are injected by the process backend only"
+                        );
+                    }
+                }
+                Box::new(DenoIsolate::new(DenoFacade::new()))
+            }
         }
     }
 }
@@ -192,13 +235,84 @@ async fn main() -> anyhow::Result<()> {
     }
     let console_sender = start_console_capture(&server);
     let lifecycle_sender = start_lifecycle_capture(&server);
+    // Cofre de segredos de app (EDG-38): chave mestra de
+    // `EDGER_SECRETS_KEY_FILE` (32 bytes em base64 ou crus) + banco em
+    // `EDGER_APP_SECRETS_DB` (default `<primeiro diretório de workers>/.edger/
+    // app-secrets.db`). Sem a chave o cofre fica INDISPONÍVEL: as rotas
+    // respondem 503 `SECRETS_UNAVAILABLE`, nada é injetado e sai um `warn` no
+    // boot. Falha de open do store também falha fechada (warn, instância
+    // segue servindo) — o valor nunca vai para o log.
+    let worker_dirs = worker_dirs_from_env();
+    let app_secrets: Option<std::sync::Arc<edger_orchestrator::app_secrets::AppSecretVault>> = {
+        let db_path = std::env::var("EDGER_APP_SECRETS_DB")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                worker_dirs
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| PathBuf::from("workers/examples"))
+                    .join(".edger/app-secrets.db")
+            });
+        if let Some(parent) = db_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            // (F6) o diretório `.edger/` do cofre, quando criado pelo EdgeR,
+            // nasce 0700: só o dono do processo lê o caminho do banco.
+            #[cfg(unix)]
+            let parent_pre_existed = parent.exists();
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                tracing::warn!(path = %parent.display(), error = %err, "app secrets dir not creatable");
+            }
+            #[cfg(unix)]
+            if !parent_pre_existed {
+                use std::os::unix::fs::PermissionsExt;
+                if let Err(err) =
+                    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                {
+                    tracing::warn!(path = %parent.display(), error = %err, "app secrets dir mode 0700 not settable");
+                }
+            }
+        }
+        match non_empty_env("EDGER_SECRETS_KEY_FILE").map(PathBuf::from) {
+            None => {
+                tracing::warn!("app secrets vault is unavailable: EDGER_SECRETS_KEY_FILE is not set; the admin routes answer 503 SECRETS_UNAVAILABLE and no secret is injected");
+                None
+            }
+            Some(key_path) => {
+                match edger_orchestrator::app_secrets::load_master_key_file(&key_path) {
+                    Err(err) => {
+                        tracing::warn!(path = %key_path.display(), code = %err.code, "app secrets vault unavailable: {err}");
+                        None
+                    }
+                    Ok(key) => {
+                        match edger_orchestrator::app_secrets::AppSecretVault::open(&db_path, key) {
+                            Ok(vault) => {
+                                tracing::info!(path = %db_path.display(), "app secrets vault ready");
+                                Some(std::sync::Arc::new(vault))
+                            }
+                            Err(err) => {
+                                tracing::warn!(path = %db_path.display(), code = %err.code, "app secrets vault unavailable: {err}");
+                                None
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    if let Some(vault) = &app_secrets {
+        server.set_app_secrets(std::sync::Arc::clone(vault));
+    }
     // EDG-9: the pool's completion wait must mirror the isolates'
     // `EDGER_STREAM_ABANDON_DRAIN_MAX_MS` (the drain's own deadline is
     // measured from the consumer loss, which happens before the body's drop
     // observes it; the pool adds its small grace on top). `0` in either
     // limit disables the drain AND the pool's relay wait (immediate
     // recycle, `socket_poisoned` sub-cause).
-    let isolate_factory = RuntimeIsolateFactory::from_env(console_sender);
+    let isolate_factory = RuntimeIsolateFactory::from_env(console_sender, app_secrets);
     // Only the multiproc backend wires the detach pipeline into the isolates
     // (and therefore feeds the shared budget's counters). With the legacy
     // bridge backend there is no budget snapshot to expose, so the
@@ -217,7 +331,6 @@ async fn main() -> anyhow::Result<()> {
         abandon_drain,
     );
     server.mark_ready(pool.clone());
-    let worker_dirs = worker_dirs_from_env();
     let core_worker_dir = core_worker_dir_from_env();
     let core_overlay_dir = core_overlay_dir_from_env();
     let index = load_manifests_from_roots(

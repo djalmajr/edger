@@ -2923,6 +2923,11 @@ pub struct DenoProcessIsolate {
     /// Explicit root for the per-worker Deno cache (EDG-32); takes
     /// precedence over the `EDGER_DENO_CACHE_ROOT` environment variable.
     deno_cache_root: Option<PathBuf>,
+    /// App secrets (EDG-38): the resolver plus the worker name the names
+    /// apply to (the `WorkerRef` is known only at isolate creation). `None`
+    /// = vault not wired in: declared secrets are not injected (one warn
+    /// per worker and name) and the worker still starts.
+    app_secrets: Option<(String, std::sync::Arc<dyn edger_core::AppSecretResolver>)>,
 }
 
 impl DenoProcessIsolate {
@@ -2940,6 +2945,23 @@ impl DenoProcessIsolate {
             deno_cache_root: Some(root.into()),
             ..self
         }
+    }
+
+    /// (EDG-38) Enable app-secret injection at spawn: each name in
+    /// `config.secrets` is resolved and injected into the env of THIS Deno
+    /// process only — never into `WorkerConfig.env`, so `public_runtime_env`
+    /// (static_spa) and the state export never see the value. A declared but
+    /// absent secret (or an unavailable vault) is not injected: one warn per
+    /// worker and name, and the worker still starts.
+    /// `worker` is the full worker name the vault keys on (from the
+    /// `WorkerRef` the factory receives at isolate creation).
+    pub fn with_app_secrets(
+        mut self,
+        worker: impl Into<String>,
+        resolver: std::sync::Arc<dyn edger_core::AppSecretResolver>,
+    ) -> Self {
+        self.app_secrets = Some((worker.into(), resolver));
+        self
     }
 
     pub fn with_console(sender: ConsoleLogSender, context: ConsoleLogContext) -> Self {
@@ -2997,11 +3019,50 @@ impl DenoProcessIsolate {
             })?;
             let timeout = Duration::from_millis(config.timeout_ms.max(1));
             let limits = crate::limits::ResourceLimits::from_config(config);
+            // (EDG-38) App secrets: resolved from the vault and injected into
+            // the env of THIS Deno process at spawn only — never into
+            // `WorkerConfig.env`, so `public_runtime_env` (static_spa) and
+            // the state export never see the value. Declared but absent (or
+            // vault not wired in): one warn per worker and name, and the
+            // worker starts normally without the variable.
+            let mut secret_env: Option<std::collections::HashMap<String, String>> = None;
+            if !config.secrets.is_empty() {
+                match &self.app_secrets {
+                    Some((worker, resolver)) => {
+                        let mut env = config.env.clone();
+                        for name in &config.secrets {
+                            match resolver.resolve_secret(worker, name).await {
+                                Some(value) => {
+                                    env.insert(name.clone(), value);
+                                }
+                                None => {
+                                    tracing::warn!(
+                                        worker = %worker,
+                                        secret = %name,
+                                        "app secret not injected: absent from the vault or the vault is unavailable; the worker starts without the variable"
+                                    );
+                                }
+                            }
+                        }
+                        secret_env = Some(env);
+                    }
+                    None => {
+                        for name in &config.secrets {
+                            tracing::warn!(
+                                secret = %name,
+                                "app secret not injected: the app secrets vault is not wired into this process backend (EDGER_SECRETS_KEY_FILE missing?); the worker starts without the variable"
+                            );
+                        }
+                    }
+                }
+            }
+            let env: &std::collections::HashMap<String, String> =
+                secret_env.as_ref().map_or(&config.env, |env| env);
             let process = DenoWorkerProcess::spawn_with_policy(
                 worker_dir,
                 config.entrypoint.as_deref(),
                 timeout,
-                &config.env,
+                env,
                 limits.memory_mb,
                 if config.node_http_proxy
                     || config.fullstack.as_ref().is_some_and(|fullstack| {
@@ -4559,6 +4620,7 @@ mod stream_detach_tests {
             stream_max_duration_default_ms: None,
             detach: None,
             deno_cache_root: None,
+            app_secrets: None,
         };
         (isolate, stream_b)
     }
@@ -4694,6 +4756,7 @@ mod stream_detach_tests {
             stream_max_duration_default_ms: None,
             detach: None,
             deno_cache_root: None,
+            app_secrets: None,
         };
         (isolate, stream_b)
     }

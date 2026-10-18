@@ -697,12 +697,12 @@ describe("ConsoleUsers", () => {
     expect(list.getAttribute("aria-label")).toBe(
       `Permissions: ${permissions.join(", ")}`,
     );
-    expect(list.textContent).toContain("+11");
+    expect(list.textContent).toContain("+13");
     expect(
-      list.querySelector('[aria-label^="11 hidden permissions:"]')?.getAttribute(
+      list.querySelector('[aria-label^="13 hidden permissions:"]')?.getAttribute(
         "aria-label",
       ),
-    ).toBe(`11 hidden permissions: ${permissions.join(", ")}`);
+    ).toBe(`13 hidden permissions: ${permissions.join(", ")}`);
   });
 
   it("hides the permissions column by default and restores it from the columns menu", async () => {

@@ -56,6 +56,8 @@ export const PERMISSION_CATALOG = [
   "files:delete",
   "observability:read",
   "keys:manage",
+  "secrets:read",
+  "secrets:write",
 ] as const;
 
 // Mirror of the server's principal_has_permission: the root principal holds

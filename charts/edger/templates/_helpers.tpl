@@ -93,6 +93,23 @@ enters the ConfigMap, release values or logs.
 {{- end }}
 
 {{/*
+Fixed directory where the existing app-secrets master key Secret is mounted
+read-only (EDG-38). Fixed on purpose: the key path is not an operator-facing
+setting.
+*/}}
+{{- define "edger.appSecretsKeyMountPath" -}}
+{{- "/var/run/secrets/edger-app-secrets" -}}
+{{- end }}
+
+{{/*
+Absolute path passed to EDGER_SECRETS_KEY_FILE. The master key content (32
+bytes, base64 or raw) never enters the ConfigMap, release values or logs.
+*/}}
+{{- define "edger.appSecretsKeyFilePath" -}}
+{{- printf "%s/%s" (include "edger.appSecretsKeyMountPath" .) .Values.appSecrets.keySecret.key -}}
+{{- end }}
+
+{{/*
 Workers are persisted on one PVC while the routing index remains process-local.
 Multiple replicas are therefore unsafe until worker distribution is coordinated.
 */}}
@@ -105,6 +122,14 @@ Multiple replicas are therefore unsafe until worker distribution is coordinated.
 {{- end -}}
 {{- if .Values.hpa.enabled -}}
 {{- fail "hpa.enabled deve ser false: o autoscaling criaria múltiplas réplicas com índices de workers independentes; habilite HPA somente após implementar distribuição/coordenação de workers" -}}
+{{- end -}}
+{{- if .Values.appSecrets.enabled -}}
+{{- if not .Values.appSecrets.keySecret.name -}}
+{{- fail "appSecrets.keySecret.name é obrigatório com appSecrets.enabled=true: crie antes o Secret existente com a chave mestra do cofre (32 bytes, base64 ou raw)" -}}
+{{- end -}}
+{{- if not .Values.appSecrets.keySecret.key -}}
+{{- fail "appSecrets.keySecret.key é obrigatório com appSecrets.enabled=true: informe a chave do Secret que contém a chave mestra" -}}
+{{- end -}}
 {{- end -}}
 {{- if .Values.tenantRouting.enabled -}}
 {{- if not .Values.tenantRouting.tenancit.identifyUrl -}}

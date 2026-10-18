@@ -18,7 +18,10 @@
 //!   `all_roots()`;
 //! - `core-overlay/` — raiz de overlay dos workers de core, quando existe;
 //! - `api-keys.db` — cópia consistente do store (`VACUUM INTO`), quando
-//!   configurado.
+//!   configurado;
+//! - `app-secrets.db` — cópia consistente do cofre de segredos de app
+//!   (EDG-38), quando configurado (o arquivo segue CIFRADO pela chave
+//!   mestra; sem a chave o export não o devolve legível).
 //!
 //! Excluídos: o `.edger/` do topo de cada raiz de usuário (o banco e o
 //! overlay entram pelas entradas próprias; é o estado interno do EdgeR), o
@@ -39,6 +42,7 @@ use edger_core::{CoreError, WorkerOrigin};
 use serde::Serialize;
 
 use crate::api_keys::ApiKeyService;
+use crate::app_secrets::AppSecretVault;
 use crate::deploy::begin_state_export;
 use crate::manifest_index_stub::ManifestIndex;
 
@@ -84,6 +88,7 @@ struct StateManifest {
     user_roots: Vec<String>,
     core_worker_overlay_dir: Option<String>,
     api_keys_db: Option<String>,
+    app_secrets_db: Option<String>,
     skipped_symlinks: u64,
 }
 
@@ -96,6 +101,7 @@ struct StateManifest {
 pub(crate) async fn export_state(
     index: &ManifestIndex,
     key_service: Option<&Arc<ApiKeyService>>,
+    app_secrets: Option<&Arc<AppSecretVault>>,
     temp_dir: Option<&Path>,
 ) -> Result<StateExport, CoreError> {
     let guard = begin_state_export(STATE_EXPORT_WAIT_LIMIT).await?;
@@ -111,6 +117,7 @@ pub(crate) async fn export_state(
         .find(|(_, origin)| matches!(origin, WorkerOrigin::CoreOverlay))
         .map(|(root, _)| root);
     let keys: Option<Arc<ApiKeyService>> = key_service.cloned();
+    let secrets: Option<Arc<AppSecretVault>> = app_secrets.cloned();
     let temp_dir = temp_dir.map(PathBuf::from);
     let built = tokio::task::spawn_blocking(move || {
         // O guard vive com a tarefa (revisão P2): se o future da requisição
@@ -121,6 +128,7 @@ pub(crate) async fn export_state(
             &user_roots,
             overlay_root.as_deref(),
             keys.as_deref(),
+            secrets.as_deref(),
             temp_dir.as_deref(),
         )
     })
@@ -142,6 +150,7 @@ fn build_zip(
     user_roots: &[PathBuf],
     overlay_root: Option<&Path>,
     keys: Option<&ApiKeyService>,
+    secrets: Option<&AppSecretVault>,
     temp_dir: Option<&Path>,
 ) -> Result<StateExport, CoreError> {
     #[cfg(test)]
@@ -166,7 +175,7 @@ fn build_zip(
     let mut writer = zip::ZipWriter::new(&mut zip_file);
     let mut skipped_symlinks: u64 = 0;
 
-    let excluded_paths = excluded_paths(keys);
+    let excluded_paths = excluded_paths(keys, secrets);
     for (position, root) in user_roots.iter().enumerate() {
         walk_directory(
             &mut writer,
@@ -191,20 +200,33 @@ fn build_zip(
     }
 
     // Cópia consistente do banco (VACUUM INTO) — destino fresco (o VACUUM INTO
-    // não sobrepõe arquivo existente), lida pro ZIP e descartada.
+    // não sobrepõe arquivo existente), lida pro ZIP e descartada. O cofre de
+    // segredos (EDG-38) segue o MESMO padrão: o arquivo exportado continua
+    // cifrado pela chave mestra (o restore precisa da MESMA chave).
     let mut api_keys_db: Option<String> = None;
-    if let Some(keys) = keys {
+    let mut app_secrets_db: Option<String> = None;
+    if keys.is_some() || secrets.is_some() {
         let scratch = tempfile::tempdir().map_err(|err| {
             CoreError::new(
                 "STATE_EXPORT_FAILED",
                 format!("cannot create temp dir for db copy: {err}"),
             )
         })?;
-        let copy = scratch.path().join("api-keys.db");
-        keys.export_db(&copy)?;
-        add_file_to_zip(&mut writer, &copy, "api-keys.db")?;
-        if let Some(db) = keys.db_path() {
-            api_keys_db = Some(absolute_display(&db));
+        if let Some(keys) = keys {
+            let copy = scratch.path().join("api-keys.db");
+            keys.export_db(&copy)?;
+            add_file_to_zip(&mut writer, &copy, "api-keys.db")?;
+            if let Some(db) = keys.db_path() {
+                api_keys_db = Some(absolute_display(&db));
+            }
+        }
+        if let Some(secrets) = secrets {
+            let copy = scratch.path().join("app-secrets.db");
+            secrets.export_to(&copy)?;
+            add_file_to_zip(&mut writer, &copy, "app-secrets.db")?;
+            if let Some(db) = secrets.db_path() {
+                app_secrets_db = Some(absolute_display(db));
+            }
         }
     }
 
@@ -221,6 +243,7 @@ fn build_zip(
             .collect(),
         core_worker_overlay_dir: overlay_root.map(absolute_display),
         api_keys_db,
+        app_secrets_db,
         skipped_symlinks,
     };
     writer
@@ -267,9 +290,22 @@ fn build_zip(
 /// banco e os sidecars dele, e a cache do Deno quando fica dentro de uma raiz
 /// exportada. Canonicalização do lado do banco espelha a do walk (o entry é
 /// canonicalizado ao ser visitado).
-fn excluded_paths(keys: Option<&ApiKeyService>) -> BTreeSet<PathBuf> {
+fn excluded_paths(
+    keys: Option<&ApiKeyService>,
+    secrets: Option<&AppSecretVault>,
+) -> BTreeSet<PathBuf> {
     let mut paths = BTreeSet::new();
     if let Some(db) = keys.and_then(ApiKeyService::db_path) {
+        let db_str = db.to_string_lossy();
+        for suffix in ["", "-journal", "-wal", "-shm"] {
+            let candidate = PathBuf::from(format!("{db_str}{suffix}"));
+            paths.insert(canonical_or_raw(&candidate));
+        }
+    }
+    // O banco do cofre vive em `<root>/.edger/` (excluído do walk no topo),
+    // mas o operador pode sobrepô-lo fora dali — o mesmo cuidado da
+    // `api-keys.db` vale aqui.
+    if let Some(db) = secrets.and_then(AppSecretVault::db_path) {
         let db_str = db.to_string_lossy();
         for suffix in ["", "-journal", "-wal", "-shm"] {
             let candidate = PathBuf::from(format!("{db_str}{suffix}"));
@@ -491,8 +527,87 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    use crate::app_secrets::AppSecretVault;
     use crate::deploy::claim_worker_mutation_slot;
     use crate::manifest_loader::load_manifests_from_roots;
+
+    /// EDG-38: o `app-secrets.db` entra no ZIP com a MESMA semântica da
+    /// `api-keys.db` (cópia consistente + caminho absoluto no manifesto) —
+    /// e o arquivo no ZIP continua CIFRADO (o restore precisa da MESMA
+    /// chave mestra).
+    #[test]
+    fn app_secrets_db_enters_the_zip_when_the_vault_is_configured() {
+        let _lock = TEST_BUILD_LOCK.blocking_lock();
+
+        let vault_dir = tempfile::tempdir().unwrap();
+        let key_file = vault_dir.path().join("key");
+        std::fs::write(&key_file, [7u8; 32]).unwrap();
+        let key = super::super::load_master_key_file(&key_file).unwrap();
+        let vault = AppSecretVault::open(vault_dir.path().join("app-secrets.db"), key).unwrap();
+        vault
+            .set("pinar", "BYOK_MASTER_KEY", "s3cret-value")
+            .unwrap();
+
+        let temp = tempfile::tempdir().unwrap();
+        let export = build_zip(&[], None, None, Some(&vault), Some(temp.path())).unwrap();
+
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&export.path).unwrap()).unwrap();
+        let mut names: Vec<String> = Vec::new();
+        for i in 0..archive.len() {
+            let entry = archive.by_index(i).unwrap();
+            names.push(entry.name().unwrap().to_string());
+        }
+        assert!(
+            names.iter().any(|name| name == "app-secrets.db"),
+            "o cofre não entrou no zip: {names:?}"
+        );
+
+        // O manifesto carrega o caminho ABSOLUTO do banco original (cada
+        // `by_index` empresta o archive mutável: blocos separados por
+        // entrada).
+        let manifest_name = names
+            .iter()
+            .position(|name| name == "edger-state.json")
+            .unwrap();
+        let manifest: serde_json::Value = {
+            let mut file = archive.by_index(manifest_name).unwrap();
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut bytes).unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        };
+        let db_path = manifest["appSecretsDb"].as_str().unwrap();
+        assert!(db_path.ends_with("app-secrets.db"), "{db_path}");
+
+        // O conteúdo exportado é a CÓPIA cifrada: contém o ciphertext,
+        // nunca o valor em claro (o valor nem existe em claro no banco).
+        let secrets_entry = names
+            .iter()
+            .position(|name| name == "app-secrets.db")
+            .unwrap();
+        {
+            let mut file = archive.by_index(secrets_entry).unwrap();
+            let mut copy = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut copy).unwrap();
+            let decoded = String::from_utf8_lossy(&copy);
+            assert!(
+                !decoded.contains("s3cret-value"),
+                "o valor em claro não pode aparecer na cópia exportada"
+            );
+        }
+
+        // Sem cofre, a entrada não existe.
+        let temp2 = tempfile::tempdir().unwrap();
+        let export2 = build_zip(&[], None, None, None, Some(temp2.path())).unwrap();
+        let mut archive2 =
+            zip::ZipArchive::new(std::fs::File::open(&export2.path).unwrap()).unwrap();
+        let names2: Vec<String> = (0..archive2.len())
+            .map(|i| archive2.by_index(i).unwrap().name().unwrap().to_string())
+            .collect();
+        assert!(
+            !names2.iter().any(|name| name == "app-secrets.db"),
+            "sem cofre não há entrada: {names2:?}"
+        );
+    }
 
     /// Revisão P2: o guard vive com a tarefa de montagem. Mesmo com a task
     /// da requisição ABORTADA (cancelamento real — descartar o `JoinHandle`
@@ -530,7 +645,7 @@ mod tests {
         // teste ABORTA a task e aguarda a conclusão cancelada — como um
         // cliente que cancelou no meio (descartar o `JoinHandle` só
         // desanexaria a task e não cancelaria o future exportador).
-        let export = tokio::spawn(async move { export_state(&index, None, None).await });
+        let export = tokio::spawn(async move { export_state(&index, None, None, None).await });
         match started_rx.recv_timeout(Duration::from_secs(5)) {
             Ok(()) => {}
             Err(_) => {
@@ -581,7 +696,7 @@ mod tests {
         let not_a_dir = temp.path().join("not-a-dir");
         std::fs::write(&not_a_dir, "x").unwrap();
 
-        let err = build_zip(&[not_a_dir], None, None, Some(temp.path())).unwrap_err();
+        let err = build_zip(&[not_a_dir], None, None, None, Some(temp.path())).unwrap_err();
         assert_eq!(err.code, "STATE_EXPORT_FAILED");
 
         let leftovers: Vec<String> = std::fs::read_dir(temp.path())
@@ -660,10 +775,9 @@ mod tests {
             release: release_rx,
         });
 
-        let export =
-            tokio::spawn(
-                async move { export_state(&index, None, Some(temp_path.as_path())).await },
-            );
+        let export = tokio::spawn(async move {
+            export_state(&index, None, None, Some(temp_path.as_path())).await
+        });
         match started_rx.recv_timeout(Duration::from_secs(5)) {
             Ok(()) => {}
             Err(_) => {
