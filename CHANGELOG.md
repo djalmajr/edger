@@ -4,7 +4,9 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.24` (egress guard for
+Toward 0.3.2. Release candidates: `v0.3.2-rc.25` (EdgeR's own path
+check on package extraction, malformed zip reads as 400);
+`v0.3.2-rc.24` (egress guard for
 user-chosen hosts and app secrets vault for BYOK, checked duration
 parsing and `cron[]` limits); `v0.3.2-rc.23` (`zip` 9.0.4);
 `v0.3.2-rc.22` (cron jobs listed with
@@ -824,6 +826,16 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.25]
+
+- Package extraction (worker install and files upload) checks every entry
+  path itself after zip's `enclosed_name()`: only plain components, no
+  backslash or NUL, never empty, and the target must stay inside the
+  destination, refused as `DEPLOY_PATH_DENIED` (EDG-37). A directory entry
+  that points at the package root (`./`) is still ignored. A zip entry that
+  cannot be read (bad CRC, more bytes than declared, invalid deflate) now
+  answers `400 DEPLOY_INVALID_PACKAGE` instead of `500 DEPLOY_IO`.
 
 ## [0.3.2-rc.24]
 
