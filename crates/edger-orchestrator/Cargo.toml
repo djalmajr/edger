@@ -46,7 +46,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 opentelemetry = { version = "0.32", features = ["trace"], optional = true }
 opentelemetry-appender-tracing = { version = "0.32", optional = true }
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "logs", "grpc-tonic", "http-proto", "reqwest-client", "reqwest-rustls"], optional = true }
-opentelemetry_sdk = { version = "0.32", features = ["experimental_logs_batch_log_processor_with_async_runtime", "experimental_trace_batch_span_processor_with_async_runtime", "logs", "rt-tokio", "trace"], optional = true }
+opentelemetry_sdk = { version = "0.33", features = ["experimental_logs_batch_log_processor_with_async_runtime", "experimental_trace_batch_span_processor_with_async_runtime", "logs", "rt-tokio", "trace"], optional = true }
 tracing-opentelemetry = { version = "0.33", optional = true }
 tokio.workspace = true
 axum.workspace = true
