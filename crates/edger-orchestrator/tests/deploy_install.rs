@@ -4432,3 +4432,160 @@ async fn force_install_replaces_draft_scanned_through_symlinked_root() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(text, "after");
 }
+
+/// A one-file zip (stored) whose declared sizes, in the local header and in
+/// the central directory, are smaller than the content.
+fn zip_with_short_declared_size() -> Vec<u8> {
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        writer.start_file("index.ts", options).unwrap();
+        writer
+            .write_all(b"Deno.serve(() => new Response('declared-short'));")
+            .unwrap();
+        writer.finish().unwrap();
+    }
+    let mut bytes = cursor.into_inner();
+    for (signature, offsets) in [
+        ([0x50, 0x4b, 0x03, 0x04], [18, 22]),
+        ([0x50, 0x4b, 0x01, 0x02], [20, 24]),
+    ] {
+        let start = bytes
+            .windows(4)
+            .position(|window| window == signature)
+            .unwrap();
+        for offset in offsets {
+            bytes[start + offset..start + offset + 4].copy_from_slice(&5_u32.to_le_bytes());
+        }
+    }
+    bytes
+}
+
+// EDG-37: the install refuses a `../x` entry on its own check, answers 400
+// `DEPLOY_PATH_DENIED` and writes nothing next to the worker root.
+#[tokio::test]
+async fn install_denies_parent_dir_entry_and_writes_nothing_outside() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join("root");
+    fs::create_dir(&root).unwrap();
+    let app = build_pipeline(state_with_root(root.clone()));
+
+    let (status, json, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        zip_package(&[
+            ("manifest.yaml", "name: slip-app\nentrypoint: index.ts\n"),
+            ("index.ts", "Deno.serve(() => new Response('x'));"),
+            ("../x", "escaped"),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "unexpected body: {text}");
+    assert_eq!(json["code"], "DEPLOY_PATH_DENIED");
+    assert!(!parent.path().join("x").exists());
+    assert!(!root.join("x").exists());
+    assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 1);
+    assert!(fs::read_dir(&root).unwrap().next().is_none());
+}
+
+// EDG-37: the files upload refuses a `../x` entry too and nothing lands in
+// the worker root that holds the version dir (nor in the version dir).
+#[tokio::test]
+async fn files_upload_denies_parent_dir_entry_and_writes_nothing_outside() {
+    let root = tempfile::tempdir().unwrap();
+    let app = build_pipeline(state_with_root(root.path().to_path_buf()));
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        app_zip("1.0.0", "plain"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    let source = std::path::PathBuf::from(installed["source"].as_str().unwrap());
+    let listing_before = fs::read_dir(root.path()).unwrap().count();
+
+    let (status, json, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/zip-app/files?version=1.0.0",
+        Some("test-root"),
+        "application/zip",
+        zip_package(&[("index.ts", "edited"), ("../x", "escaped")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "unexpected body: {text}");
+    assert_eq!(json["code"], "DEPLOY_PATH_DENIED");
+    assert!(!root.path().join("x").exists());
+    assert!(!source.join("x").exists());
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), listing_before);
+}
+
+// EDG-37: an entry that cannot be read (declared size smaller than the
+// content) is a malformed package: 400, never a 500 `DEPLOY_IO`.
+#[tokio::test]
+async fn install_answers_400_for_an_entry_with_a_short_declared_size() {
+    let root = tempfile::tempdir().unwrap();
+    let app = build_pipeline(state_with_root(root.path().to_path_buf()));
+
+    let (status, json, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        zip_with_short_declared_size(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "unexpected body: {text}");
+    assert_eq!(json["code"], "DEPLOY_INVALID_PACKAGE");
+    assert!(
+        json["message"]
+            .as_str()
+            .is_some_and(|message| message.starts_with("failed to read zip entry: ")),
+        "unexpected body: {text}"
+    );
+    assert!(fs::read_dir(root.path()).unwrap().next().is_none());
+}
+
+// EDG-37: a directory entry that points at the package root (`./`, as
+// `zip -r pkg.zip .` writes it) stays a no-op: the install succeeds.
+#[tokio::test]
+async fn install_ignores_a_directory_entry_that_points_at_the_package_root() {
+    let root = tempfile::tempdir().unwrap();
+    let app = build_pipeline(state_with_root(root.path().to_path_buf()));
+
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut cursor);
+        let options = zip::write::SimpleFileOptions::default();
+        writer.add_directory("./", options).unwrap();
+        writer.start_file("manifest.yaml", options).unwrap();
+        writer
+            .write_all(b"name: dot-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n")
+            .unwrap();
+        writer.start_file("index.ts", options).unwrap();
+        writer
+            .write_all(b"Deno.serve(() => new Response('dot-ok'));")
+            .unwrap();
+        writer.finish().unwrap();
+    }
+    let (status, json, text) = send(
+        app,
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        cursor.into_inner(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    assert_eq!(json["name"], "dot-app");
+}

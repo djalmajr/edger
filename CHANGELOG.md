@@ -767,6 +767,16 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   package (including under the single wrapper folder and in case/Unicode
   variants) is purged before the version routes, so `release: completed`
   only reports a real run.
+- EDG-37: package extraction (install and files upload) no longer rests on
+  the `zip` library alone to keep entries inside the destination. After
+  `enclosed_name`, EdgeR accepts a path only when every component is a
+  plain name (no `..`, root, drive or verbatim prefix, `.`, `\` or NUL, and
+  not empty) and re-checks that the joined target stays under the
+  destination, all refused as `DEPLOY_PATH_DENIED`. A directory entry that
+  points at the package root (`./`) is still ignored. A zip entry that cannot
+  be read (declared size smaller than the content, wrong CRC, invalid
+  deflate) now answers 400 `DEPLOY_INVALID_PACKAGE` instead of 500
+  `DEPLOY_IO`.
 
 ### Dependencies
 
