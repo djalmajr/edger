@@ -75,8 +75,18 @@ hora (ver o runbook do ensaio).
 | `sqld-admin` | `admin-auth-key` | chave da API de admin (9090); vira `LIBSQL_ADMIN_AUTH_KEY` no Deployment |
 | `sqld-jwt-<banco>` | `jwt-public-key` | chave JWT **do banco** (passada na criação via API de admin; guardada aqui para referência/auditoria) |
 | `sqld-backup-<banco>` | `token` | token de leitura do banco para o backup (`GET /dump` com Bearer) |
+| `edger-app-secrets` | `master-key` | chave mestra do cofre de segredos de app (EDG-38): 32 bytes em base64; perdê-la torna ilegíveis os segredos já gravados |
 
 ```sh
+# chave mestra do cofre de segredos de app (0.3.2-rc.24 ou mais nova,
+# `appSecrets` nos values): 32 bytes aleatórios em base64, gerados no
+# próprio arquivo e nunca impressos. Guarde uma cópia fora do cluster: sem
+# ela, um segredo gravado não volta a ser lido (o EdgeR falha fechado).
+openssl rand -base64 32 | tr -d '\n' > ./secrets/edger-app-secrets-master-key.txt
+chmod 600 ./secrets/edger-app-secrets-master-key.txt
+kubectl -n edger create secret generic edger-app-secrets \
+  --from-file=master-key=./secrets/edger-app-secrets-master-key.txt
+
 # root key: copia da release atual SEM imprimir no terminal
 kubectl -n cinzel get secret cinzel-edger-root \
   -o jsonpath='{.data.root-key}' | base64 -d > ./secrets/edger-root-key.txt
