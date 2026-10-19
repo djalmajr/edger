@@ -3,7 +3,7 @@
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::io::{Cursor, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -1543,15 +1543,23 @@ pub(crate) fn extract_zip(
                 format!("invalid zip entry: {err}"),
             )
         })?;
-        // `enclosed_name` rejects absolute paths and `..` traversal (zip-slip).
-        let Some(relative) = entry.enclosed_name() else {
-            return Err(CoreError::new(
-                "DEPLOY_PATH_DENIED",
-                format!(
-                    "zip entry escapes package root: {}",
-                    String::from_utf8_lossy(entry.name_raw())
-                ),
-            ));
+        // `enclosed_name` rejects absolute paths and `..` traversal (zip-slip),
+        // but EdgeR does not rest on it alone: in 0.3.2-rc.22 `zip` 8.6.0
+        // returned a relative path with `..` for a Windows verbatim prefix and
+        // the entry was written outside the destination. The own check below
+        // (`is_contained_relative`) and the `starts_with` on the joined target
+        // hold even if the library regresses.
+        let enclosed = entry.enclosed_name();
+        let relative = enclosed
+            .clone()
+            .filter(|relative| is_contained_relative(relative));
+        let Some(relative) = relative else {
+            // A directory entry that points at the package root (`./`, `/`,
+            // as `zip -r pkg.zip .` writes it) is a no-op: skipped, as before.
+            if entry.is_dir() && enclosed.is_some_and(|path| path.as_os_str().is_empty()) {
+                continue;
+            }
+            return Err(path_denied(entry.name_raw()));
         };
         // EDG-21: the enabled toggle is operator state — a zip-root entry
         // named like the marker (or its temp files) is dropped, never
@@ -1571,7 +1579,10 @@ pub(crate) fn extract_zip(
         {
             continue;
         }
-        let target = destination.join(relative);
+        let target = destination.join(&relative);
+        if !target.starts_with(destination) {
+            return Err(path_denied(entry.name_raw()));
+        }
         if entry.is_dir() {
             fs::create_dir_all(&target)
                 .map_err(|err| deploy_io(format!("failed to create dir: {err}")))?;
@@ -1591,13 +1602,47 @@ pub(crate) fn extract_zip(
                 .map_err(|err| deploy_io(format!("failed to create dir: {err}")))?;
         }
         let mut contents = Vec::new();
-        entry
-            .read_to_end(&mut contents)
-            .map_err(|err| deploy_io(format!("failed to read zip entry: {err}")))?;
+        // The archive is read from memory, so a read error is never the
+        // disk: it is a malformed package (declared size, CRC, deflate).
+        entry.read_to_end(&mut contents).map_err(|err| {
+            CoreError::new(
+                "DEPLOY_INVALID_PACKAGE",
+                format!("failed to read zip entry: {err}"),
+            )
+        })?;
         fs::write(&target, contents)
             .map_err(|err| deploy_io(format!("failed to write file: {err}")))?;
     }
     Ok(())
+}
+
+fn path_denied(raw_name: &[u8]) -> CoreError {
+    CoreError::new(
+        "DEPLOY_PATH_DENIED",
+        format!(
+            "zip entry escapes package root: {}",
+            String::from_utf8_lossy(raw_name)
+        ),
+    )
+}
+
+/// A zip entry path is contained only when it is non-empty and every
+/// component is a plain name: `..`, a root, a drive/verbatim prefix and `.`
+/// are refused, and so is a name holding `\` (a Windows separator hidden in
+/// a Unix name) or NUL.
+fn is_contained_relative(relative: &Path) -> bool {
+    let mut components = 0_usize;
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        let name = name.to_string_lossy();
+        if name.contains('\\') || name.contains('\0') {
+            return false;
+        }
+        components += 1;
+    }
+    components > 0
 }
 
 /// Zipping a folder usually nests everything under one top-level directory;
@@ -1900,5 +1945,226 @@ mod release_tests {
         assert!(!is_release_marker_name("release-notes.txt"));
         assert!(!is_enabled_marker_name("manifest.yaml"));
         assert!(!is_release_marker_name(".edger-release-abc")); // sem o sufixo .tmp
+    }
+}
+
+#[cfg(test)]
+mod extract_zip_tests {
+    use super::*;
+
+    /// A zip with one entry per `(raw name, contents)`; directories are the
+    /// names ending in `/`. `None` when the writer itself refuses the name.
+    fn zip_with_names(entries: &[(&str, &str)]) -> Option<Vec<u8>> {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            for (name, contents) in entries {
+                if name.ends_with('/') {
+                    writer.add_directory(*name, options).ok()?;
+                } else {
+                    writer.start_file(*name, options).ok()?;
+                    writer.write_all(contents.as_bytes()).unwrap();
+                }
+            }
+            writer.finish().unwrap();
+        }
+        Some(cursor.into_inner())
+    }
+
+    fn patch_u32(bytes: &mut [u8], signature: [u8; 4], offsets: &[usize], value: u32) {
+        let start = bytes
+            .windows(4)
+            .position(|window| window == signature)
+            .expect("signature present");
+        for offset in offsets {
+            bytes[start + offset..start + offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    /// Extracts `bytes` into `<tempdir>/dest`; returns the result, the
+    /// destination and the tempdir that holds it (the destination's parent).
+    fn extract(bytes: &[u8]) -> (Result<(), CoreError>, PathBuf, tempfile::TempDir) {
+        let parent = tempfile::tempdir().unwrap();
+        let destination = parent.path().join("dest");
+        fs::create_dir(&destination).unwrap();
+        let result = extract_zip(bytes, &destination, true);
+        (result, destination, parent)
+    }
+
+    fn assert_nothing_escaped(destination: &Path, parent: &Path) {
+        let siblings: Vec<_> = fs::read_dir(parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            siblings,
+            vec![std::ffi::OsString::from("dest")],
+            "something was written next to the destination"
+        );
+        assert!(
+            fs::read_dir(destination).unwrap().next().is_none(),
+            "a refused entry must not leave a file in the destination"
+        );
+    }
+
+    // Mutation captured: removing the `is_contained_relative` filter (and the
+    // `starts_with` guard) lets the Windows-shaped names through whenever
+    // `enclosed_name` accepts them, and the matching cases go red.
+    #[test]
+    fn extract_zip_denies_paths_that_leave_the_destination() {
+        let hostile = [
+            "../x",
+            "a/../../x",
+            "\\\\?\\C:\\..\\x",
+            "a\\..\\..\\x",
+            "./../x",
+            "",
+            "a\0b/x",
+        ];
+        for name in hostile {
+            let Some(bytes) = zip_with_names(&[(name, "escaped")]) else {
+                // The writer refuses this name; there is no zip to feed.
+                continue;
+            };
+            let (result, destination, parent) = extract(&bytes);
+            let error = result.expect_err(&format!("{name:?} must be denied"));
+            assert_eq!(error.code, "DEPLOY_PATH_DENIED", "{name:?}: {error:?}");
+            assert!(
+                error
+                    .message
+                    .starts_with("zip entry escapes package root: "),
+                "{name:?}: {}",
+                error.message
+            );
+            assert_nothing_escaped(&destination, parent.path());
+        }
+    }
+
+    // zip 9.0.4 `enclosed_name` already turns these into plain relative paths
+    // (`abs/x`, `x`): they are not a traversal, so the package is accepted
+    // and the files land strictly inside the destination.
+    #[test]
+    fn extract_zip_keeps_rooted_and_drive_names_inside_the_destination() {
+        for (name, landed) in [("/abs/x", "abs/x"), ("C:\\x", "x")] {
+            let bytes = zip_with_names(&[(name, "inside")]).unwrap();
+            let (result, destination, parent) = extract(&bytes);
+            result.unwrap_or_else(|error| panic!("{name:?}: {error:?}"));
+            assert_eq!(
+                fs::read_to_string(destination.join(landed)).unwrap(),
+                "inside"
+            );
+            let siblings: Vec<_> = fs::read_dir(parent.path()).unwrap().collect();
+            assert_eq!(siblings.len(), 1, "{name:?} wrote outside the destination");
+        }
+    }
+
+    // A directory entry that normalizes to the package root (`./` from
+    // `zip -r pkg.zip .`, or `/`) is skipped, never a reason to refuse the
+    // package. Mutation captured: removing that `continue` turns both cases
+    // into DEPLOY_PATH_DENIED.
+    #[test]
+    fn extract_zip_skips_a_directory_entry_that_points_at_the_root() {
+        for root_entry in ["./", "/"] {
+            let bytes = zip_with_names(&[
+                (root_entry, ""),
+                ("manifest.yaml", "name: a\n"),
+                ("index.ts", "export default {};"),
+            ])
+            .unwrap();
+            let (result, destination, _parent) = extract(&bytes);
+            result.unwrap_or_else(|error| panic!("{root_entry:?}: {error:?}"));
+            let mut names: Vec<_> = fs::read_dir(&destination)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            assert_eq!(names, ["index.ts", "manifest.yaml"], "{root_entry:?}");
+        }
+    }
+
+    #[test]
+    fn extract_zip_accepts_legitimate_names() {
+        let bytes = zip_with_names(&[
+            ("dir/", ""),
+            ("a/b.txt", "b"),
+            (".well-known/x", "x"),
+            ("caf\u{e9}/\u{65e5}\u{672c}.txt", "u"),
+            ("with space/a b.txt", "s"),
+        ])
+        .unwrap();
+        let (result, destination, _parent) = extract(&bytes);
+        result.unwrap();
+        assert!(destination.join("dir").is_dir());
+        assert_eq!(
+            fs::read_to_string(destination.join("a/b.txt")).unwrap(),
+            "b"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join(".well-known/x")).unwrap(),
+            "x"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("caf\u{e9}/\u{65e5}\u{672c}.txt")).unwrap(),
+            "u"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("with space/a b.txt")).unwrap(),
+            "s"
+        );
+    }
+
+    #[test]
+    fn is_contained_relative_applies_the_component_rules() {
+        for name in [
+            "a",
+            "a/b.txt",
+            ".well-known/x",
+            "a b/c",
+            "caf\u{e9}/x",
+            "a/./b",
+        ] {
+            assert!(is_contained_relative(Path::new(name)), "{name:?}");
+        }
+        for name in [
+            "",
+            ".",
+            "..",
+            "../x",
+            "a/../x",
+            "/abs",
+            "./x",
+            "a\\b",
+            "a\0b",
+            "a/\\..\\x",
+        ] {
+            assert!(!is_contained_relative(Path::new(name)), "{name:?}");
+        }
+    }
+
+    // Mutation captured: mapping the `read_to_end` error back to `deploy_io`
+    // turns both cases into DEPLOY_IO and this test goes red.
+    #[test]
+    fn extract_zip_reports_a_malformed_entry_as_an_invalid_package() {
+        // Declared size smaller than the stored content.
+        let mut short = zip_with_names(&[("a.txt", "hello world")]).unwrap();
+        patch_u32(&mut short, [0x50, 0x4b, 0x03, 0x04], &[18, 22], 5);
+        patch_u32(&mut short, [0x50, 0x4b, 0x01, 0x02], &[20, 24], 5);
+        // Wrong CRC with the right sizes.
+        let mut crc = zip_with_names(&[("a.txt", "hello world")]).unwrap();
+        patch_u32(&mut crc, [0x50, 0x4b, 0x03, 0x04], &[14], 0xdead_beef);
+        patch_u32(&mut crc, [0x50, 0x4b, 0x01, 0x02], &[16], 0xdead_beef);
+
+        for (label, bytes) in [("short declared size", short), ("wrong crc", crc)] {
+            let (result, _destination, _parent) = extract(&bytes);
+            let error = result.expect_err(label);
+            assert_eq!(error.code, "DEPLOY_INVALID_PACKAGE", "{label}: {error:?}");
+            assert!(
+                error.message.starts_with("failed to read zip entry: "),
+                "{label}: {}",
+                error.message
+            );
+        }
     }
 }
