@@ -826,6 +826,15 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+- `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp` and
+  `opentelemetry-appender-tracing` 0.32 -> 0.33.1 and
+  `tracing-opentelemetry` 0.33 -> 0.34.0, together, behind the optional
+  `otel` feature (compiled into the release images; the export only runs
+  when `EDGER_OTEL_ENABLED` and an OTLP endpoint are set, which the
+  production values do not do); same signals, features and
+  `OTEL_*` variables. Upstream change kept: the OTLP exporters now retry a
+  failed export up to 3 times with backoff (off the request path, in the
+  batch processor).
 
 ## [0.3.2-rc.25]
 
