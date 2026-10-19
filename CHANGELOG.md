@@ -4,7 +4,9 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.23` (`zip` 9.0.4);
+Toward 0.3.2. Release candidates: `v0.3.2-rc.24` (egress guard for
+user-chosen hosts and app secrets vault for BYOK, checked duration
+parsing and `cron[]` limits); `v0.3.2-rc.23` (`zip` 9.0.4);
 `v0.3.2-rc.22` (cron jobs listed with
 their next run, expired API keys no longer authenticate from the cache);
 `v0.3.2-rc.21` (the worker's
@@ -812,6 +814,28 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   and `Dockerfile.cross` builder images, the three GitHub Actions
   `dtolnay/rust-toolchain` steps, and the GitLab CI job images.
 - `oven/bun` 1.4.2 in the frontend build stage of both Dockerfiles.
+
+## [0.3.2-rc.24]
+
+- Egress guard for user-chosen hosts (EDG-38): a worker version with
+  `egress.enabled` reaches HTTPS hosts picked by its users only through the
+  EdgeR, which resolves the name, refuses internal, metadata, cluster and
+  node addresses, dials the checked IP, revalidates redirects and enforces
+  timeouts, response size and concurrency per worker version. See the
+  `[Unreleased]` entry for the contract and the operator variables.
+- App secrets vault (EDG-38): secrets encrypted at rest
+  (ChaCha20-Poly1305), written through `PUT /api/admin/workers/{name}/secrets/{secret}`
+  (`secrets:write`; the value is never returned) and injected only into the
+  env of the worker's process. Needs the master key Secret and the chart's
+  `appSecrets` block; without the key the instance boots with the vault
+  unavailable.
+- Duration values no longer overflow, and the manifest validation caps
+  `cron[]` at 32 entries with an `@every` of at least 1 s (EDG-36). Before
+  upgrading, check that no version the scanner admits crosses those limits.
+- Production manifests: the `pinar-stg` database objects are gone, and the
+  production values enable the app secrets vault.
+- Dependencies: serde_json 1.0.154, http 1.5.0, serde 1.0.229, base64 0.23.1
+  and oven/bun 1.4.3.
 
 ## [0.3.2-rc.23]
 

@@ -23,6 +23,16 @@ rootKey:
   existingSecret: edger-root
   secretKey: root-key
 
+# Cofre de segredos de app (EDG-38, 0.3.2-rc.24 ou mais nova): a chave
+# mestra vem do Secret existente `edger-app-secrets` (chave `master-key`),
+# criado fora do git (ver README.md); o banco cifrado fica no PVC de
+# workers, em `/app/workers/.edger/app-secrets.db`.
+appSecrets:
+  enabled: true
+  keySecret:
+    name: edger-app-secrets
+    key: master-key
+
 userWorkers:
   persistence:
     enabled: true
