@@ -801,6 +801,27 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   be read (declared size smaller than the content, wrong CRC, invalid
   deflate) now answers 400 `DEPLOY_INVALID_PACKAGE` instead of 500
   `DEPLOY_IO`.
+- EDG-40: the files upload (`POST /api/admin/workers/{name}/files`) never
+  follows a symbolic link below the version directory, in an intermediate
+  or in the final component, even one planted from outside EdgeR and even
+  one pointing back inside the version. A `?path=` segment that is a link is
+  403 `FORBIDDEN` (`path crosses a symbolic link`), including a link in a
+  cycle or to a target without search permission; a zip entry that meets a
+  link is 400 `DEPLOY_PATH_DENIED` (`zip entry crosses a symbolic link:
+  <entry>`). A refusal, including one caused by a link, undoes the whole
+  upload; only a concurrent change that blocks the rollback itself (a
+  version directory turned into a link mid-upload) leaves that step undone,
+  logs a `warn` and keeps the backup dir for manual recovery. A link that was
+  the final target is no longer written through. On the version side every
+  operation (path walk, directory creation, write probe, backup, publication
+  and rollback) is relative to directory descriptors opened one component at
+  a time with `O_NOFOLLOW`, so a link swapped in between a check and the
+  write fails the open instead of being followed. The guarantee is that the
+  write never follows a link and acts on the directories opened at the
+  start; since a descriptor pins the inode, not its place in the tree, an
+  outside process that moves one of those directories out of the version
+  during the upload is not stopped by it, and guarding against that is up
+  to whoever has access to the node's filesystem.
 
 ### Dependencies
 
