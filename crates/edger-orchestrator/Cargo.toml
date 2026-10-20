@@ -88,6 +88,11 @@ base64 = "0.23"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tempfile = "3"
 
+# EDG-39: `O_NONBLOCK` / `EEXIST` for the files upload; already in Cargo.lock
+# (direct dependency of edger-isolation).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 base64 = "0.23"
 # Raw HTTP/1.1 parsing in the egress guard test upstream (EDG-38 S2a); already

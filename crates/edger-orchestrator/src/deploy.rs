@@ -1518,6 +1518,26 @@ pub(crate) fn extract_zip(
     destination: &Path,
     ignore_root_markers: bool,
 ) -> Result<(), CoreError> {
+    extract_zip_entries(bytes, destination, ignore_root_markers).map(|_| ())
+}
+
+/// One entry `extract_zip_entries` wrote, relative to the destination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExtractedEntry {
+    pub(crate) relative: PathBuf,
+    pub(crate) is_dir: bool,
+}
+
+/// Same checks and effects as `extract_zip`, plus the list of entries it
+/// wrote in archive order (a repeated name appears once per entry; the file
+/// on disk holds the last one). EDG-39: the files upload extracts into a
+/// staging dir and replays this list onto the version dir in the same order.
+pub(crate) fn extract_zip_entries(
+    bytes: &[u8],
+    destination: &Path,
+    ignore_root_markers: bool,
+) -> Result<Vec<ExtractedEntry>, CoreError> {
+    let mut extracted = Vec::new();
     if bytes.len() > MAX_DEPLOY_PACKAGE_BYTES {
         return Err(CoreError::new(
             "PAYLOAD_TOO_LARGE",
@@ -1586,6 +1606,10 @@ pub(crate) fn extract_zip(
         if entry.is_dir() {
             fs::create_dir_all(&target)
                 .map_err(|err| deploy_io(format!("failed to create dir: {err}")))?;
+            extracted.push(ExtractedEntry {
+                relative,
+                is_dir: true,
+            });
             continue;
         }
         expanded_bytes = expanded_bytes
@@ -1612,8 +1636,12 @@ pub(crate) fn extract_zip(
         })?;
         fs::write(&target, contents)
             .map_err(|err| deploy_io(format!("failed to write file: {err}")))?;
+        extracted.push(ExtractedEntry {
+            relative,
+            is_dir: false,
+        });
     }
-    Ok(())
+    Ok(extracted)
 }
 
 fn path_denied(raw_name: &[u8]) -> CoreError {

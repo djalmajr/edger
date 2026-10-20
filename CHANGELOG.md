@@ -447,6 +447,28 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Fixed
 
+- The files upload is all or nothing (EDG-39): `POST
+  /api/admin/workers/{name}/files` used to extract the zip straight into the
+  version dir, so an entry refused by path (`DEPLOY_PATH_DENIED`), a read
+  error mid-archive (`DEPLOY_INVALID_PACKAGE`), a file/directory type
+  conflict or an I/O error left the earlier entries written while the CAS
+  revision stayed the same. The upload now extracts and validates
+  everything in a `.edger-upload-*` staging dir next to the version, then
+  publishes the entries in archive order, each file by one atomic rename
+  over its target; an overwritten file is first kept as a hard link (a copy
+  where linking fails and the file has no other link) in a backup dir, so
+  the old file stays visible until the new one replaces it. Any failure
+  restores the published replacements, removes what was created (a new
+  `?path=` subfolder included, created level by level) and returns the
+  original error. Error codes and messages, permissions (a read-only file
+  is still refused), file modes and the success body are unchanged; a
+  target that is not a regular file (a FIFO, socket or device) is refused
+  without being opened.
+  `.edger-upload-*` dirs are never indexed as a version (not even one left
+  by a process that died mid-upload) and are skipped by the state export;
+  the install's `.edger-install-*` staging dirs are no longer indexed
+  either.
+
 - Size values no longer overflow (EDG-38): a size whose byte value does not
   fit `u64` (for example `17179869184gb`, 2^34 GiB) panicked the manifest
   parsing in debug builds and wrapped to a small value in release builds.

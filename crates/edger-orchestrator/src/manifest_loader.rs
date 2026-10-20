@@ -1179,6 +1179,10 @@ fn discover_worker_dirs(paths: &[PathBuf]) -> Result<Vec<PathBuf>, CoreError> {
         let mut children = entries
             .filter_map(Result::ok)
             .map(|entry| entry.path())
+            // EDG-39: the staging dirs of an install and the staging/backup
+            // dirs of a files upload (live, or left by a process that died
+            // mid-operation) are never a version.
+            .filter(|path| !is_edger_staging_dir(path))
             .filter(|path| path.is_dir() && is_worker_dir(path))
             .collect::<Vec<_>>();
         children.sort();
@@ -1187,6 +1191,14 @@ fn discover_worker_dirs(paths: &[PathBuf]) -> Result<Vec<PathBuf>, CoreError> {
 
     dirs.sort();
     Ok(dirs)
+}
+
+fn is_edger_staging_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.starts_with(".edger-install-") || name.starts_with(".edger-upload-")
+        })
 }
 
 fn is_worker_dir(path: &Path) -> bool {
@@ -1343,6 +1355,39 @@ fn dir_name(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // EDG-39: an install staging dir left in the worker root (a concurrent
+    // rescan, or a process that died mid-install) holds a valid package at
+    // its root and is never indexed; the same package in an ordinary dir is.
+    #[test]
+    fn leftover_install_dir_is_never_indexed() {
+        let root = tempfile::tempdir().unwrap();
+        for (dir, name) in [
+            (".edger-install-abc123", "ghost-app"),
+            ("control-app", "control-app"),
+        ] {
+            let path = root.path().join(dir);
+            fs::create_dir_all(&path).unwrap();
+            fs::write(
+                path.join("manifest.yaml"),
+                format!("name: {name}\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n"),
+            )
+            .unwrap();
+            fs::write(
+                path.join("index.ts"),
+                "Deno.serve(() => new Response('ok'));",
+            )
+            .unwrap();
+        }
+
+        let names: Vec<String> = scan_worker_manifests(&[root.path().to_path_buf()])
+            .unwrap()
+            .into_iter()
+            .map(|(_, manifest)| manifest.name)
+            .collect();
+        assert!(names.contains(&"control-app".to_string()), "{names:?}");
+        assert!(!names.contains(&"ghost-app".to_string()), "{names:?}");
+    }
 
     fn static_worker(root: &Path, directory: &str, name: &str, version: &str) {
         let worker = root.join(directory);

@@ -911,6 +911,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "jsonwebtoken",
+ "libc",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
