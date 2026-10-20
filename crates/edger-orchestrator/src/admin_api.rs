@@ -30,7 +30,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 
 use crate::deploy::{
-    commit_install, delete_worker as delete_worker_deployment, extract_zip,
+    commit_install, delete_worker as delete_worker_deployment, extract_zip_entries,
     install_worker_from_zip, rollback_install, run_worker_release_with_events,
     MAX_DEPLOY_PACKAGE_BYTES,
 };
@@ -2718,21 +2718,16 @@ fn write_worker_files(
         .ok_or_else(|| CoreError::new("DEPLOY_INTERNAL", "worker directory has no parent"))?;
     let _slot =
         crate::deploy::claim_worker_mutation_slot(mutation_root, &worker.name, &worker.version)?;
-    let requested = if rel.is_empty() {
-        base.clone()
-    } else {
-        base.join(rel)
-    };
-    std::fs::create_dir_all(&requested)
-        .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot create path: {err}")))?;
-    let dest = resolve_within(&base, rel)?;
+    // EDG-39: a subpasta nova do `?path=` só nasce na fase 2 — a parte que
+    // já existe passa pela contenção canônica de sempre, o resto é criado
+    // (e desfeito num rollback) junto com as entradas do zip.
+    let (existing, missing) = split_upload_path(&base, rel)?;
+    let dest = existing.join(&missing);
     // EDG-24 review (F1): whether the upload lands on the version root is
     // decided by the CANONICAL destination (dest == base), not by the path
     // spelling: `.` and any other alias of the root (a `..` segment is
     // rejected above, so nothing else normalizes to base) get the root
-    // guards. For those aliases `requested` is the version dir itself, so
-    // the create_dir_all above is a no-op and the refusal below happens
-    // before any file is written.
+    // guards. A path with a missing segment is never the root.
     let at_version_root = dest == base;
     // EDG-24: the `release` command runs outside the Deno sandbox — only
     // root may declare it, so a non-root upload that writes the version-
@@ -2759,7 +2754,14 @@ fn write_worker_files(
     // nunca escreve os marcadores reservados (estado de operador/EdgeR) —
     // um upload não pode substituí-los; em subcaminhos o nome é arquivo
     // comum e segue para o destino.
-    extract_zip(zip_bytes, &dest, at_version_root)?;
+    //
+    // EDG-39 fase 1: tudo é extraído e validado num staging irmão da versão
+    // (mesmo filesystem, para o rename); uma recusa aqui só apaga o staging.
+    let staging = upload_temp_dir(mutation_root)?;
+    let entries = extract_zip_entries(zip_bytes, staging.path(), at_version_root)?;
+    // Fase 2: as entradas vão para a versão na ordem do zip, com rollback.
+    let backup = upload_temp_dir(mutation_root)?;
+    apply_staged_upload(&base, &existing, &missing, staging.path(), &entries, backup)?;
     // Arquivos mudaram: a revisão CAS avança, senão um autosave force com a
     // revisão antiga passaria por cima da edição sem conflito.
     let revision = crate::deploy::bump_worker_revision(&base)?;
@@ -2768,6 +2770,474 @@ fn write_worker_files(
         object.insert("revision".into(), serde_json::Value::String(revision));
     }
     Ok(payload)
+}
+
+// EDG-39: staging and backup dirs of a files upload. Siblings of the version
+// dir (the mutation root), so every move is a same-filesystem rename; the
+// prefix keeps the scanner and the state export away from them, and the
+// `TempDir` removes them on success and failure.
+const UPLOAD_TEMP_PREFIX: &str = ".edger-upload-";
+
+fn upload_temp_dir(mutation_root: &std::path::Path) -> Result<tempfile::TempDir, CoreError> {
+    tempfile::Builder::new()
+        .prefix(UPLOAD_TEMP_PREFIX)
+        .tempdir_in(mutation_root)
+        .map_err(|err| upload_io(format!("failed to create staging dir: {err}")))
+}
+
+fn upload_io(message: String) -> CoreError {
+    CoreError::new("DEPLOY_IO", message)
+}
+
+// Splits the `?path=` of an upload into its existing part — canonicalized and
+// contained by `resolve_within`, same codes as before — and the missing
+// segments, created only in phase 2. Every existing segment must be a
+// directory (links followed, as `create_dir_all` did): anything else is the
+// same BAD_REQUEST, with the same system error, the old `create_dir_all`
+// answered. Nothing here writes to disk; an obstacle that disappears in a race
+// leaves its segment missing, and phase 2 creates it transactionally.
+fn split_upload_path(
+    base: &std::path::Path,
+    rel: &str,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), CoreError> {
+    let full = base.join(rel);
+    let mut existing = std::path::PathBuf::new();
+    let mut missing = std::path::PathBuf::new();
+    for component in std::path::Path::new(rel).components() {
+        let std::path::Component::Normal(segment) = component else {
+            continue;
+        };
+        if !missing.as_os_str().is_empty() {
+            missing.push(segment);
+            continue;
+        }
+        let candidate = base.join(&existing).join(segment);
+        let obstacle = match std::fs::metadata(&candidate) {
+            Ok(metadata) if metadata.is_dir() => {
+                existing.push(segment);
+                continue;
+            }
+            Ok(_) => true,
+            // A dangling link: `create_dir_all` failed on it, too.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::symlink_metadata(&candidate).is_ok()
+            }
+            Err(err) => {
+                return Err(CoreError::new(
+                    "BAD_REQUEST",
+                    format!("cannot create path: {err}"),
+                ))
+            }
+        };
+        if obstacle {
+            if let Some(err) = create_dir_all_obstacle_error(&candidate, &full) {
+                return Err(CoreError::new(
+                    "BAD_REQUEST",
+                    format!("cannot create path: {err}"),
+                ));
+            }
+        }
+        missing.push(segment);
+    }
+    let existing = resolve_within(base, &existing.to_string_lossy())?;
+    Ok((existing, missing))
+}
+
+#[cfg(test)]
+thread_local! {
+    // Runs once right before the error for an obstacle is selected.
+    static UPLOAD_BEFORE_OBSTACLE_ERROR: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+// EDG-39 review R3: the error the old `create_dir_all(full)` answered for the
+// non-directory found at `obstacle` (a prefix of `full`, or `full` itself),
+// selected with calls that change nothing on disk. `create_dir_all` tried the
+// deepest level first: below a file that is `Not a directory` (what `metadata`
+// of `full` answers too); on the final segment, or when the walk up ended on
+// a dangling link, it was `File exists`. `None` when the obstacle is gone or
+// became a directory (a race): the caller then creates the level through the
+// recorded path.
+fn create_dir_all_obstacle_error(
+    obstacle: &std::path::Path,
+    full: &std::path::Path,
+) -> Option<std::io::Error> {
+    #[cfg(test)]
+    if let Some(hook) = UPLOAD_BEFORE_OBSTACLE_ERROR.with(|hook| hook.borrow_mut().take()) {
+        hook();
+    }
+    std::fs::symlink_metadata(obstacle).ok()?;
+    if std::fs::metadata(obstacle).is_ok_and(|metadata| metadata.is_dir()) {
+        return None;
+    }
+    if obstacle == full {
+        return Some(file_exists_error());
+    }
+    match std::fs::metadata(full) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(file_exists_error()),
+        Err(err) => Some(err),
+        Ok(_) => None,
+    }
+}
+
+fn file_exists_error() -> std::io::Error {
+    #[cfg(unix)]
+    return std::io::Error::from_raw_os_error(libc::EEXIST);
+    #[cfg(not(unix))]
+    return std::io::Error::from(std::io::ErrorKind::AlreadyExists);
+}
+
+// EDG-39 review F3/F4: the old `fs::write` refused a target it could not open
+// for writing (a read-only file, a directory). Opening it the same way, with
+// neither `truncate` nor `create`, returns that same system error before
+// anything is published; it changes nothing on disk. EDG-39 review R1: the
+// effective target (links followed, as the writes through them still are,
+// EDG-40) must be a regular file or a directory — a FIFO, socket or device is
+// refused without being opened — and the open is non-blocking, so a target
+// swapped for a FIFO in a race fails instead of waiting for a reader.
+fn probe_upload_target(target: &std::path::Path) -> std::io::Result<()> {
+    let metadata = std::fs::metadata(target)?;
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    options.open(target).map(drop)
+}
+
+#[cfg(test)]
+thread_local! {
+    // Makes the backup hard link fail, to exercise the copy fallback.
+    static UPLOAD_FAIL_HARD_LINK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn backup_hard_link(target: &std::path::Path, backup: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if UPLOAD_FAIL_HARD_LINK.with(|fail| fail.get()) {
+        return Err(std::io::Error::other("injected hard link failure"));
+    }
+    std::fs::hard_link(target, backup)
+}
+
+fn link_count(metadata: &std::fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    return std::os::unix::fs::MetadataExt::nlink(metadata);
+    #[cfg(not(unix))]
+    return {
+        let _ = metadata;
+        1
+    };
+}
+
+// One reversible effect of phase 2, undone in reverse order on failure.
+enum UploadStep {
+    CreatedDir(std::path::PathBuf),
+    CreatedFile(std::path::PathBuf),
+    // An existing file replaced by the staged one, recorded only once the
+    // replacement is published. The backup is a hard link of the old file
+    // (a copy where linking fails and the file has no other link), so the old
+    // file stays visible until one rename publishes the new one, and one
+    // rename puts it back.
+    Replaced {
+        target: std::path::PathBuf,
+        backup: std::path::PathBuf,
+    },
+    // A link to a file is written through, as the old `fs::write` did (EDG-40
+    // owns links): the old contents are kept in the backup dir, or, for a
+    // dangling link, the file the write created is removed.
+    WroteThrough {
+        target: std::path::PathBuf,
+        backup: Option<std::path::PathBuf>,
+        created: Option<std::path::PathBuf>,
+    },
+}
+
+#[cfg(test)]
+thread_local! {
+    // Number of recorded phase-2 steps after which the next mutation fails.
+    static UPLOAD_FAULT_AFTER: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    // Runs once right after the backup of a replaced file is taken.
+    static UPLOAD_AFTER_BACKUP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn upload_after_backup_point() {
+    #[cfg(test)]
+    if let Some(hook) = UPLOAD_AFTER_BACKUP.with(|hook| hook.borrow_mut().take()) {
+        hook();
+    }
+}
+
+fn upload_fault_point(steps: usize) -> Result<(), CoreError> {
+    #[cfg(test)]
+    if UPLOAD_FAULT_AFTER.with(|fault| fault.get()) == Some(steps) {
+        return Err(upload_io("injected upload fault".into()));
+    }
+    let _ = steps;
+    Ok(())
+}
+
+// EDG-39 phase 2: replays the staged entries onto the version dir, in archive
+// order, by rename. On any error every recorded step is undone (backups back,
+// created files and dirs removed, deepest first) and the ORIGINAL error is
+// returned; a step the rollback cannot undo is a `warn` with relative paths
+// only, and the backup dir is then kept so no old contents are lost.
+fn apply_staged_upload(
+    base: &std::path::Path,
+    existing: &std::path::Path,
+    missing: &std::path::Path,
+    staging: &std::path::Path,
+    entries: &[crate::deploy::ExtractedEntry],
+    backup: tempfile::TempDir,
+) -> Result<(), CoreError> {
+    let mut steps = Vec::new();
+    let result = apply_staged_steps(
+        existing,
+        missing,
+        staging,
+        entries,
+        backup.path(),
+        &mut steps,
+    );
+    if let Err(error) = result {
+        if !rollback_upload_steps(base, &steps) {
+            let kept = backup.keep();
+            tracing::warn!(
+                backup = %kept.file_name().unwrap_or_default().to_string_lossy(),
+                "files upload rollback incomplete; backup dir kept"
+            );
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn apply_staged_steps(
+    existing: &std::path::Path,
+    missing: &std::path::Path,
+    staging: &std::path::Path,
+    entries: &[crate::deploy::ExtractedEntry],
+    backup_dir: &std::path::Path,
+    steps: &mut Vec<UploadStep>,
+) -> Result<(), CoreError> {
+    ensure_upload_dirs(existing, missing, steps)
+        .map_err(|err| CoreError::new("BAD_REQUEST", format!("cannot create path: {err}")))?;
+    let dest = existing.join(missing);
+    let firsts = staged_file_firsts(staging, entries)
+        .map_err(|err| upload_io(format!("failed to write file: {err}")))?;
+    for (entry, first) in entries.iter().zip(firsts) {
+        if entry.is_dir {
+            ensure_upload_dirs(&dest, &entry.relative, steps)
+                .map_err(|err| upload_io(format!("failed to create dir: {err}")))?;
+            continue;
+        }
+        // A repeated file: the staged file already holds the last entry.
+        if !first {
+            continue;
+        }
+        if let Some(parent) = entry.relative.parent() {
+            ensure_upload_dirs(&dest, parent, steps)
+                .map_err(|err| upload_io(format!("failed to create dir: {err}")))?;
+        }
+        let source = staging.join(&entry.relative);
+        let target = dest.join(&entry.relative);
+        apply_upload_file(&source, &target, backup_dir, steps)
+            .map_err(|err| upload_io(format!("failed to write file: {err}")))?;
+    }
+    Ok(())
+}
+
+// `true` for each entry that is the first occurrence of its staged file. A
+// repeated name, or (EDG-39 review F2) two names the filesystem treats as one
+// file (`Name.txt` and `name.txt` on a case-insensitive volume), share one
+// staged file: it is applied once, under the first name (the one on disk) and
+// at the first position, and holds the last entry, as the old in-place writes
+// left it. Identities are read before any staged file moves.
+fn staged_file_firsts(
+    staging: &std::path::Path,
+    entries: &[crate::deploy::ExtractedEntry],
+) -> std::io::Result<Vec<bool>> {
+    let mut names = std::collections::HashSet::new();
+    #[cfg(unix)]
+    let mut files = std::collections::HashSet::new();
+    let mut firsts = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let mut first = entry.is_dir || names.insert(entry.relative.clone());
+        #[cfg(unix)]
+        if first && !entry.is_dir {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = std::fs::symlink_metadata(staging.join(&entry.relative))?;
+            first = files.insert((metadata.dev(), metadata.ino()));
+        }
+        #[cfg(not(unix))]
+        let _ = staging;
+        firsts.push(first);
+    }
+    Ok(firsts)
+}
+
+// Creates every missing directory of `relative` under `root` one level at a
+// time, recording each one before the next step. A non-directory in the way
+// is the old `create_dir_all` error.
+fn ensure_upload_dirs(
+    root: &std::path::Path,
+    relative: &std::path::Path,
+    steps: &mut Vec<UploadStep>,
+) -> std::io::Result<()> {
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(segment) = component else {
+            continue;
+        };
+        current.push(segment);
+        match std::fs::metadata(&current) {
+            Ok(metadata) if metadata.is_dir() => continue,
+            Ok(_) => {
+                if let Some(err) = create_dir_all_obstacle_error(&current, &root.join(relative)) {
+                    return Err(err);
+                }
+            }
+            // A dangling link here makes `create_dir` fail with `File exists`,
+            // as `create_dir_all` did.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+        upload_fault_point(steps.len()).map_err(|err| std::io::Error::other(err.message))?;
+        std::fs::create_dir(&current)?;
+        steps.push(UploadStep::CreatedDir(current.clone()));
+    }
+    Ok(())
+}
+
+fn apply_upload_file(
+    source: &std::path::Path,
+    target: &std::path::Path,
+    backup_dir: &std::path::Path,
+    steps: &mut Vec<UploadStep>,
+) -> std::io::Result<()> {
+    // Opening a directory for writing always fails (`Is a directory`); the
+    // fallback only covers a platform that would let it through.
+    let is_a_directory = |target: &std::path::Path| {
+        probe_upload_target(target)
+            .err()
+            .unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::IsADirectory))
+    };
+    upload_fault_point(steps.len()).map_err(|err| std::io::Error::other(err.message))?;
+    let backup_path = backup_dir.join(steps.len().to_string());
+    match std::fs::symlink_metadata(target) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::rename(source, target)?;
+            steps.push(UploadStep::CreatedFile(target.to_path_buf()));
+        }
+        Err(err) => return Err(err),
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let backup = match std::fs::metadata(target) {
+                Ok(followed) if followed.is_dir() => return Err(is_a_directory(target)),
+                Ok(_) => {
+                    probe_upload_target(target)?;
+                    std::fs::write(&backup_path, std::fs::read(target)?)?;
+                    Some(backup_path)
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(err) => return Err(err),
+            };
+            let written = std::fs::write(target, std::fs::read(source)?);
+            let created = match backup {
+                Some(_) => None,
+                None => std::fs::canonicalize(target).ok(),
+            };
+            steps.push(UploadStep::WroteThrough {
+                target: target.to_path_buf(),
+                backup,
+                created,
+            });
+            written?;
+        }
+        Ok(metadata) if metadata.is_dir() => return Err(is_a_directory(target)),
+        Ok(metadata) => {
+            probe_upload_target(target)?;
+            // EDG-39 review F1: the old file never leaves `target` before the
+            // new one replaces it — a rescan that does not take the slot
+            // always sees a manifest there.
+            // EDG-39 review R2: a copy has another inode, so it can only
+            // stand in for a file without other links to keep.
+            if let Err(err) = backup_hard_link(target, &backup_path) {
+                if link_count(&metadata) > 1 {
+                    return Err(err);
+                }
+                std::fs::copy(target, &backup_path)?;
+            }
+            upload_after_backup_point();
+            // fs::write kept the mode of the file it overwrote.
+            std::fs::set_permissions(source, metadata.permissions())?;
+            std::fs::rename(source, target)?;
+            // Recorded only now: a failure above left `target` untouched, so
+            // the rollback must not "restore" it (the backup just goes away
+            // with its dir).
+            steps.push(UploadStep::Replaced {
+                target: target.to_path_buf(),
+                backup: backup_path,
+            });
+        }
+    }
+    Ok(())
+}
+
+// Undoes the recorded steps in reverse order; `false` when any step could
+// not be undone (logged with paths relative to the version dir only).
+fn rollback_upload_steps(base: &std::path::Path, steps: &[UploadStep]) -> bool {
+    let relative = |path: &std::path::Path| {
+        path.strip_prefix(base)
+            .unwrap_or_else(|_| std::path::Path::new(path.file_name().unwrap_or_default()))
+            .display()
+            .to_string()
+    };
+    let mut clean = true;
+    for step in steps.iter().rev() {
+        let (path, outcome) = match step {
+            UploadStep::CreatedDir(path) => (path, std::fs::remove_dir(path)),
+            UploadStep::CreatedFile(path) => (path, std::fs::remove_file(path)),
+            UploadStep::Replaced { target, backup } => (target, std::fs::rename(backup, target)),
+            UploadStep::WroteThrough {
+                target,
+                backup: Some(backup),
+                ..
+            } => (
+                target,
+                std::fs::read(backup).and_then(|contents| std::fs::write(target, contents)),
+            ),
+            UploadStep::WroteThrough {
+                target,
+                backup: None,
+                created,
+            } => (
+                target,
+                match created {
+                    Some(created) => std::fs::remove_file(created),
+                    None => Ok(()),
+                },
+            ),
+        };
+        if let Err(err) = outcome {
+            clean = false;
+            tracing::warn!(
+                path = %relative(path),
+                error = %err.kind(),
+                "files upload rollback step failed"
+            );
+        }
+    }
+    clean
 }
 
 // Batch delete of files/directories inside a deployed user version. Per-item
@@ -3979,5 +4449,497 @@ mod cron_jobs_list_tests {
         );
         assert!(entries.iter().all(|e| e["version"].is_null()));
         assert_eq!(calls.load(Ordering::SeqCst), 1, "the `None` is cached too");
+    }
+}
+
+#[cfg(test)]
+mod upload_rollback_tests {
+    use super::{
+        apply_staged_upload, split_upload_path, upload_temp_dir, UPLOAD_AFTER_BACKUP,
+        UPLOAD_BEFORE_OBSTACLE_ERROR, UPLOAD_FAIL_HARD_LINK, UPLOAD_FAULT_AFTER,
+        UPLOAD_TEMP_PREFIX,
+    };
+    use crate::deploy::ExtractedEntry;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    // Relative path -> type and contents. A link records its target and a
+    // special file (FIFO) only its type: neither is followed nor opened.
+    fn tree(root: &Path) -> BTreeMap<PathBuf, String> {
+        fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, String>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                let file_type = fs::symlink_metadata(&path).unwrap().file_type();
+                if file_type.is_symlink() {
+                    let target = fs::read_link(&path).unwrap();
+                    out.insert(relative, format!("link:{}", target.display()));
+                } else if file_type.is_dir() {
+                    out.insert(relative, "dir".into());
+                    walk(root, &path, out);
+                } else if file_type.is_file() {
+                    let contents = String::from_utf8_lossy(&fs::read(&path).unwrap()).into_owned();
+                    out.insert(relative, format!("file:{contents}"));
+                } else {
+                    out.insert(relative, "special".into());
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(root, root, &mut out);
+        out
+    }
+
+    fn file(relative: &str) -> ExtractedEntry {
+        ExtractedEntry {
+            relative: PathBuf::from(relative),
+            is_dir: false,
+        }
+    }
+
+    // Mutation captured: skipping `rollback_upload_steps` leaves `new/`,
+    // `new/inner.txt` and the new `over.txt` behind and this test goes red.
+    #[test]
+    fn a_fault_mid_apply_restores_backups_and_removes_what_was_created() {
+        let parent = tempfile::tempdir().unwrap();
+        let base = parent.path().join("app");
+        fs::create_dir_all(base.join("kept")).unwrap();
+        fs::write(base.join("kept/old.txt"), b"old").unwrap();
+        fs::write(base.join("over.txt"), b"before").unwrap();
+        let before = tree(&base);
+
+        let staging = tempfile::tempdir_in(parent.path()).unwrap();
+        fs::create_dir_all(staging.path().join("new")).unwrap();
+        fs::write(staging.path().join("new/inner.txt"), b"inner").unwrap();
+        fs::write(staging.path().join("over.txt"), b"after").unwrap();
+        fs::write(staging.path().join("z.txt"), b"z").unwrap();
+        let entries = [file("new/inner.txt"), file("over.txt"), file("z.txt")];
+        let backup = tempfile::Builder::new()
+            .prefix(UPLOAD_TEMP_PREFIX)
+            .tempdir_in(parent.path())
+            .unwrap();
+        let backup_path = backup.path().to_path_buf();
+
+        // Steps: created `new/`, created `new/inner.txt`, replaced
+        // `over.txt` -> the fault hits before `z.txt`.
+        UPLOAD_FAULT_AFTER.with(|fault| fault.set(Some(3)));
+        let result = apply_staged_upload(
+            &base,
+            &base,
+            Path::new(""),
+            staging.path(),
+            &entries,
+            backup,
+        );
+        UPLOAD_FAULT_AFTER.with(|fault| fault.set(None));
+
+        let error = result.expect_err("the injected fault must surface");
+        assert_eq!(error.code, "DEPLOY_IO");
+        assert!(error.message.contains("injected upload fault"), "{error:?}");
+        assert_eq!(tree(&base), before);
+        assert_eq!(fs::read(base.join("over.txt")).unwrap(), b"before");
+        assert!(!base.join("new").exists());
+        // A clean rollback lets the backup TempDir go.
+        assert!(!backup_path.exists());
+    }
+
+    // EDG-39 review F1: a rescan (which does not take the slot) running right
+    // after the backup of a `manifest.yaml` overwrite still sees the manifest,
+    // so the version keeps its identity in the index.
+    // Mutation captured: going back to `rename(target, backup)` hides the
+    // manifest from that rescan, which swaps `review-app@1.0.0` for the
+    // inferred `review-app@latest`, and this test goes red.
+    #[test]
+    fn a_rescan_right_after_the_backup_keeps_the_version_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("review-app");
+        fs::create_dir_all(&base).unwrap();
+        let manifest = "name: review-app\nversion: '1.0.0'\nentrypoint: index.ts\nkind: fetch\n";
+        fs::write(base.join("manifest.yaml"), manifest).unwrap();
+        fs::write(
+            base.join("index.ts"),
+            "Deno.serve(() => new Response('ok'));",
+        )
+        .unwrap();
+        let index =
+            crate::manifest_loader::load_manifests_from_dirs(&[root.path().to_path_buf()]).unwrap();
+        let identity = |index: &crate::ManifestIndex| {
+            index
+                .admin_workers()
+                .into_iter()
+                .map(|worker| format!("{}@{}", worker.name, worker.version))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(identity(&index), ["review-app@1.0.0"]);
+        let _slot =
+            crate::deploy::claim_worker_mutation_slot(root.path(), "review-app", "1.0.0").unwrap();
+        let scanned = index.clone();
+        let report = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let seen = report.clone();
+        UPLOAD_AFTER_BACKUP.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                *seen.borrow_mut() = Some(crate::deploy::rescan_workers(&scanned, false).unwrap());
+            }))
+        });
+        let staging = upload_temp_dir(root.path()).unwrap();
+        fs::write(staging.path().join("manifest.yaml"), manifest).unwrap();
+        let backup = upload_temp_dir(root.path()).unwrap();
+        let result = apply_staged_upload(
+            &base,
+            &base,
+            Path::new(""),
+            staging.path(),
+            &[file("manifest.yaml")],
+            backup,
+        );
+        UPLOAD_AFTER_BACKUP.with(|hook| hook.borrow_mut().take());
+        result.unwrap();
+
+        let report = report
+            .borrow_mut()
+            .take()
+            .expect("the rescan ran mid-apply");
+        assert!(report.removed.is_empty(), "removed: {:?}", report.removed);
+        assert!(report.added.is_empty(), "added: {:?}", report.added);
+        assert_eq!(identity(&index), ["review-app@1.0.0"]);
+        assert!(base.join("manifest.yaml").is_file());
+    }
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    fn inode(path: &Path) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(path).unwrap().ino()
+    }
+
+    // EDG-39 review R1: a FIFO target (or a link to one) is refused at once,
+    // without being opened — the old open for writing waited for a reader.
+    // Mutation captured: dropping the type check makes the probe block on the
+    // FIFO and the `recv_timeout` below fails the test instead of hanging.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_target_is_refused_without_blocking() {
+        for name in ["pipe", "pipe-link"] {
+            let parent = tempfile::tempdir().unwrap();
+            let base = parent.path().join("app");
+            fs::create_dir_all(&base).unwrap();
+            let status = std::process::Command::new("mkfifo")
+                .arg(base.join("pipe"))
+                .status()
+                .unwrap();
+            assert!(status.success(), "mkfifo failed");
+            std::os::unix::fs::symlink("pipe", base.join("pipe-link")).unwrap();
+            let before = tree(&base);
+            let staging = tempfile::tempdir_in(parent.path()).unwrap();
+            fs::write(staging.path().join("fresh.txt"), b"fresh").unwrap();
+            fs::write(staging.path().join(name), b"new").unwrap();
+
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let (thread_base, staging_path) = (base.clone(), staging.path().to_path_buf());
+            let backup = tempfile::tempdir_in(parent.path()).unwrap();
+            let entries = [file("fresh.txt"), file(name)];
+            std::thread::spawn(move || {
+                let result = apply_staged_upload(
+                    &thread_base,
+                    &thread_base,
+                    Path::new(""),
+                    &staging_path,
+                    &entries,
+                    backup,
+                );
+                let _ = sender.send(result);
+            });
+            let result = receiver
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("{name}: the upload blocked on the FIFO"));
+            let error = result.expect_err(name);
+            assert_eq!(error.code, "DEPLOY_IO", "{name}");
+            assert_eq!(
+                error.message, "failed to write file: not a regular file",
+                "{name}"
+            );
+            assert_eq!(tree(&base), before, "{name}");
+        }
+    }
+
+    // EDG-39 review R2: a failure between the backup and the publication
+    // leaves the target untouched — same inode, contents, mode and links —
+    // with the hard-link backup (two links) and with the copy (one link).
+    // Mutation captured: recording `Replaced` before the publication makes
+    // the rollback put the backup over the untouched target; with the copy
+    // that is another inode and this test goes red.
+    #[cfg(unix)]
+    #[test]
+    fn a_failure_before_publication_leaves_the_target_untouched() {
+        for force_copy in [false, true] {
+            let parent = tempfile::tempdir().unwrap();
+            let base = parent.path().join("app");
+            fs::create_dir_all(&base).unwrap();
+            fs::write(base.join("a"), b"old").unwrap();
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(base.join("a"), fs::Permissions::from_mode(0o751)).unwrap();
+            }
+            if !force_copy {
+                fs::hard_link(base.join("a"), base.join("b")).unwrap();
+            }
+            let inode_before = inode(&base.join("a"));
+            let staging = tempfile::tempdir_in(parent.path()).unwrap();
+            fs::write(staging.path().join("a"), b"new").unwrap();
+            let staged = staging.path().join("a");
+            // The publication rename fails: its source is gone.
+            UPLOAD_AFTER_BACKUP.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || fs::remove_file(staged).unwrap()))
+            });
+            UPLOAD_FAIL_HARD_LINK.with(|fail| fail.set(force_copy));
+            let backup = tempfile::tempdir_in(parent.path()).unwrap();
+            let backup_path = backup.path().to_path_buf();
+            let result = apply_staged_upload(
+                &base,
+                &base,
+                Path::new(""),
+                staging.path(),
+                &[file("a")],
+                backup,
+            );
+            UPLOAD_FAIL_HARD_LINK.with(|fail| fail.set(false));
+            UPLOAD_AFTER_BACKUP.with(|hook| hook.borrow_mut().take());
+
+            let error = result.expect_err("the publication rename fails");
+            assert_eq!(error.code, "DEPLOY_IO");
+            assert_eq!(fs::read(base.join("a")).unwrap(), b"old");
+            assert_eq!(inode(&base.join("a")), inode_before, "copy={force_copy}");
+            assert_eq!(mode(&base.join("a")), 0o751);
+            assert!(!backup_path.exists(), "a clean rollback drops the backup");
+            if !force_copy {
+                fs::write(base.join("b"), b"consumer update").unwrap();
+                assert_eq!(fs::read(base.join("a")).unwrap(), b"consumer update");
+            }
+        }
+    }
+
+    // EDG-39 review R2: with two links and the hard link failing, a copy
+    // could not keep `b` tied to `a` through a rollback: the entry is refused
+    // cleanly with the hard-link error and both links stay tied.
+    // Mutation captured: falling back to the copy regardless of `nlink`
+    // turns this refusal into a success and the test goes red.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_hard_link_on_a_multiply_linked_file_is_refused() {
+        let parent = tempfile::tempdir().unwrap();
+        let base = parent.path().join("app");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("a"), b"old").unwrap();
+        fs::hard_link(base.join("a"), base.join("b")).unwrap();
+        let before = tree(&base);
+        let inode_before = inode(&base.join("a"));
+        let staging = tempfile::tempdir_in(parent.path()).unwrap();
+        fs::write(staging.path().join("fresh.txt"), b"fresh").unwrap();
+        fs::write(staging.path().join("a"), b"new").unwrap();
+        let backup = tempfile::tempdir_in(parent.path()).unwrap();
+
+        UPLOAD_FAIL_HARD_LINK.with(|fail| fail.set(true));
+        let result = apply_staged_upload(
+            &base,
+            &base,
+            Path::new(""),
+            staging.path(),
+            &[file("fresh.txt"), file("a")],
+            backup,
+        );
+        UPLOAD_FAIL_HARD_LINK.with(|fail| fail.set(false));
+
+        let error = result.expect_err("a copy cannot keep the links");
+        assert_eq!(error.code, "DEPLOY_IO");
+        assert_eq!(
+            error.message,
+            "failed to write file: injected hard link failure"
+        );
+        assert_eq!(tree(&base), before);
+        assert_eq!(inode(&base.join("a")), inode_before);
+        fs::write(base.join("b"), b"consumer update").unwrap();
+        assert_eq!(fs::read(base.join("a")).unwrap(), b"consumer update");
+    }
+
+    // EDG-39 review R2: a single-link file backed up by copy and rolled back
+    // after its publication gets its bytes and mode back; with the hard link
+    // (two links) the rollback also restores the inode, so `b` stays tied.
+    #[cfg(unix)]
+    #[test]
+    fn a_rollback_after_publication_restores_bytes_mode_and_links() {
+        for force_copy in [true, false] {
+            let parent = tempfile::tempdir().unwrap();
+            let base = parent.path().join("app");
+            fs::create_dir_all(&base).unwrap();
+            fs::write(base.join("a"), b"old").unwrap();
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(base.join("a"), fs::Permissions::from_mode(0o751)).unwrap();
+            }
+            if !force_copy {
+                fs::hard_link(base.join("a"), base.join("b")).unwrap();
+            }
+            let inode_before = inode(&base.join("a"));
+            let staging = tempfile::tempdir_in(parent.path()).unwrap();
+            fs::write(staging.path().join("a"), b"new").unwrap();
+            fs::write(staging.path().join("z"), b"z").unwrap();
+            let backup = tempfile::tempdir_in(parent.path()).unwrap();
+
+            // Step 1 is the published `a`; the fault hits before `z`.
+            UPLOAD_FAIL_HARD_LINK.with(|fail| fail.set(force_copy));
+            UPLOAD_FAULT_AFTER.with(|fault| fault.set(Some(1)));
+            let result = apply_staged_upload(
+                &base,
+                &base,
+                Path::new(""),
+                staging.path(),
+                &[file("a"), file("z")],
+                backup,
+            );
+            UPLOAD_FAULT_AFTER.with(|fault| fault.set(None));
+            UPLOAD_FAIL_HARD_LINK.with(|fail| fail.set(false));
+
+            assert!(result.is_err());
+            assert_eq!(
+                fs::read(base.join("a")).unwrap(),
+                b"old",
+                "copy={force_copy}"
+            );
+            assert_eq!(mode(&base.join("a")), 0o751, "copy={force_copy}");
+            assert!(!base.join("z").exists());
+            if !force_copy {
+                assert_eq!(inode(&base.join("a")), inode_before);
+                assert_eq!(inode(&base.join("b")), inode_before);
+            }
+        }
+    }
+
+    // EDG-39 review R3: an obstacle in `?path=` that disappears right before
+    // its error is selected never makes the upload create anything outside
+    // the record: the path check writes nothing, the segment is created in
+    // phase 2 (and undone by a rollback), or the upload succeeds.
+    // Mutation captured: selecting the error with `create_dir_all` (the old
+    // helper) creates `taken/nested` during the check and this test goes red.
+    #[test]
+    fn a_path_obstacle_removed_in_a_race_leaves_no_unrecorded_dir() {
+        for fault in [Some(1), None] {
+            let parent = tempfile::tempdir().unwrap();
+            let base = parent.path().join("app");
+            fs::create_dir_all(&base).unwrap();
+            fs::write(base.join("taken"), b"obstacle").unwrap();
+            let base = fs::canonicalize(&base).unwrap();
+            let obstacle = base.join("taken");
+            UPLOAD_BEFORE_OBSTACLE_ERROR.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || fs::remove_file(obstacle).unwrap()))
+            });
+            let split = split_upload_path(&base, "taken/nested");
+            UPLOAD_BEFORE_OBSTACLE_ERROR.with(|hook| hook.borrow_mut().take());
+            let (existing, missing) = split.unwrap();
+            assert_eq!(existing, base);
+            assert_eq!(missing, Path::new("taken/nested"));
+            assert!(!base.join("taken").exists(), "the path check wrote nothing");
+
+            let staging = tempfile::tempdir_in(parent.path()).unwrap();
+            fs::write(staging.path().join("fresh.txt"), b"fresh").unwrap();
+            let backup = tempfile::tempdir_in(parent.path()).unwrap();
+            UPLOAD_FAULT_AFTER.with(|cell| cell.set(fault));
+            let result = apply_staged_upload(
+                &base,
+                &existing,
+                &missing,
+                staging.path(),
+                &[file("fresh.txt")],
+                backup,
+            );
+            UPLOAD_FAULT_AFTER.with(|cell| cell.set(None));
+            match fault {
+                Some(_) => {
+                    assert!(result.is_err());
+                    assert_eq!(tree(&base), BTreeMap::new());
+                }
+                None => {
+                    result.unwrap();
+                    assert_eq!(
+                        fs::read(base.join("taken/nested/fresh.txt")).unwrap(),
+                        b"fresh"
+                    );
+                }
+            }
+        }
+    }
+
+    // EDG-39 review R3, phase 2: an entry whose parent is a file that
+    // disappears right before its error is selected is created level by
+    // level through the record (a later fault removes it again).
+    #[test]
+    fn an_entry_obstacle_removed_in_a_race_is_created_through_the_record() {
+        for fault in [Some(1), None] {
+            let parent = tempfile::tempdir().unwrap();
+            let base = parent.path().join("app");
+            fs::create_dir_all(&base).unwrap();
+            fs::write(base.join("x"), b"obstacle").unwrap();
+            let obstacle = base.join("x");
+            let staging = tempfile::tempdir_in(parent.path()).unwrap();
+            fs::create_dir_all(staging.path().join("x")).unwrap();
+            fs::write(staging.path().join("x/y.txt"), b"y").unwrap();
+            let backup = tempfile::tempdir_in(parent.path()).unwrap();
+            UPLOAD_BEFORE_OBSTACLE_ERROR.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || fs::remove_file(obstacle).unwrap()))
+            });
+            UPLOAD_FAULT_AFTER.with(|cell| cell.set(fault));
+            let result = apply_staged_upload(
+                &base,
+                &base,
+                Path::new(""),
+                staging.path(),
+                &[file("x/y.txt")],
+                backup,
+            );
+            UPLOAD_FAULT_AFTER.with(|cell| cell.set(None));
+            UPLOAD_BEFORE_OBSTACLE_ERROR.with(|hook| hook.borrow_mut().take());
+            match fault {
+                Some(_) => {
+                    assert!(result.is_err());
+                    assert_eq!(tree(&base), BTreeMap::new());
+                }
+                None => {
+                    result.unwrap();
+                    assert_eq!(fs::read(base.join("x/y.txt")).unwrap(), b"y");
+                }
+            }
+        }
+    }
+
+    // Control: without the fault the same plan applies in full.
+    #[test]
+    fn without_a_fault_the_staged_entries_apply() {
+        let parent = tempfile::tempdir().unwrap();
+        let base = parent.path().join("app");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("over.txt"), b"before").unwrap();
+        let staging = tempfile::tempdir_in(parent.path()).unwrap();
+        fs::create_dir_all(staging.path().join("new")).unwrap();
+        fs::write(staging.path().join("new/inner.txt"), b"inner").unwrap();
+        fs::write(staging.path().join("over.txt"), b"after").unwrap();
+        let entries = [file("new/inner.txt"), file("over.txt")];
+        let backup = tempfile::tempdir_in(parent.path()).unwrap();
+
+        apply_staged_upload(
+            &base,
+            &base,
+            Path::new(""),
+            staging.path(),
+            &entries,
+            backup,
+        )
+        .unwrap();
+        assert_eq!(fs::read(base.join("over.txt")).unwrap(), b"after");
+        assert_eq!(fs::read(base.join("new/inner.txt")).unwrap(), b"inner");
     }
 }

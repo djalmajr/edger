@@ -4589,3 +4589,490 @@ async fn install_ignores_a_directory_entry_that_points_at_the_package_root() {
     assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
     assert_eq!(json["name"], "dot-app");
 }
+
+// EDG-39: a files upload is all or nothing. Each test photographs the version
+// tree (relative path, type and contents) before the upload and compares it
+// after; the `.edger-revision` CAS file is part of the photo.
+type TreePhoto = std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>>;
+
+/// Relative path -> `Some(contents)` for a file, `None` for a directory.
+fn photo_tree(root: &std::path::Path) -> TreePhoto {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut TreePhoto) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            let file_type = fs::symlink_metadata(&path).unwrap().file_type();
+            if file_type.is_dir() {
+                out.insert(relative, None);
+                walk(root, &path, out);
+            } else {
+                assert!(file_type.is_file(), "unexpected entry {path:?}");
+                out.insert(relative, Some(fs::read(&path).unwrap()));
+            }
+        }
+    }
+    let mut out = TreePhoto::new();
+    walk(root, root, &mut out);
+    out
+}
+
+fn upload_temp_dirs(parent: &std::path::Path) -> Vec<String> {
+    fs::read_dir(parent)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".edger-upload-"))
+        .collect()
+}
+
+/// Installs `zip-app@1.0.0` and returns the app and its version dir.
+async fn installed_zip_app(root: &std::path::Path) -> (Router, std::path::PathBuf) {
+    let app = build_pipeline(state_with_root_and_keys(root.to_path_buf()));
+    let (status, installed, text) = send(
+        app.clone(),
+        "POST",
+        "/api/admin/workers/install",
+        Some("test-root"),
+        "application/zip",
+        app_zip("1.0.0", "plain"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {text}");
+    let source = std::path::PathBuf::from(installed["source"].as_str().unwrap());
+    (app, source)
+}
+
+async fn upload(
+    app: Router,
+    query: &str,
+    body: Vec<u8>,
+) -> (StatusCode, serde_json::Value, String) {
+    send(
+        app,
+        "POST",
+        &format!("/api/admin/workers/zip-app/files?version=1.0.0{query}"),
+        Some("test-root"),
+        "application/zip",
+        body,
+    )
+    .await
+}
+
+/// Breaks the CRC of the `nth` entry (0-based) in both its local header and
+/// its central-directory record: reading it fails mid-archive.
+fn corrupt_entry_crc(bytes: &mut [u8], nth: usize) {
+    for (signature, offset) in [
+        ([0x50, 0x4b, 0x03, 0x04], 14),
+        ([0x50, 0x4b, 0x01, 0x02], 16),
+    ] {
+        let start = bytes
+            .windows(4)
+            .enumerate()
+            .filter(|(_, window)| *window == signature)
+            .map(|(position, _)| position)
+            .nth(nth)
+            .expect("entry header present");
+        bytes[start + offset..start + offset + 4].copy_from_slice(&0xdead_beef_u32.to_le_bytes());
+    }
+}
+
+// 1. A valid entry then a path-denied one: same answer as before, identical
+// tree, revision unchanged.
+#[tokio::test]
+async fn files_upload_refused_by_path_leaves_the_version_untouched() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, source) = installed_zip_app(root.path()).await;
+    let revision_before = fs::read(source.join(".edger-revision")).unwrap();
+    let before = photo_tree(&source);
+
+    let (status, json, text) = upload(
+        app,
+        "",
+        zip_package(&[("fresh.txt", "fresh"), ("../escape.txt", "escaped")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "unexpected body: {text}");
+    assert_eq!(json["code"], "DEPLOY_PATH_DENIED");
+    assert_eq!(photo_tree(&source), before);
+    assert_eq!(
+        fs::read(source.join(".edger-revision")).unwrap(),
+        revision_before
+    );
+    assert!(!source.parent().unwrap().join("escape.txt").exists());
+    assert!(upload_temp_dirs(source.parent().unwrap()).is_empty());
+}
+
+// 2. A valid entry then a malformed one (read error): 400
+// DEPLOY_INVALID_PACKAGE, identical tree.
+#[tokio::test]
+async fn files_upload_with_a_malformed_entry_leaves_the_version_untouched() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, source) = installed_zip_app(root.path()).await;
+    let before = photo_tree(&source);
+
+    let mut body = zip_package(&[("fresh.txt", "fresh"), ("broken.txt", "broken contents")]);
+    corrupt_entry_crc(&mut body, 1);
+    let (status, json, text) = upload(app, "", body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "unexpected body: {text}");
+    assert_eq!(json["code"], "DEPLOY_INVALID_PACKAGE");
+    assert_eq!(photo_tree(&source), before);
+    assert!(upload_temp_dirs(source.parent().unwrap()).is_empty());
+}
+
+// 3. An upload that overwrites an existing file and then fails: the file
+// keeps its old contents.
+#[tokio::test]
+async fn files_upload_that_fails_after_an_overwrite_keeps_the_old_contents() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, source) = installed_zip_app(root.path()).await;
+    let entrypoint_before = fs::read(source.join("index.ts")).unwrap();
+    let before = photo_tree(&source);
+
+    let (status, json, text) = upload(
+        app,
+        "",
+        zip_package(&[
+            ("index.ts", "Deno.serve(() => new Response('edited'));"),
+            ("../escape.txt", "escaped"),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "unexpected body: {text}");
+    assert_eq!(json["code"], "DEPLOY_PATH_DENIED");
+    assert_eq!(
+        fs::read(source.join("index.ts")).unwrap(),
+        entrypoint_before
+    );
+    assert_eq!(photo_tree(&source), before);
+}
+
+// 4. `?path=<new subfolder>` with a refused zip: the subfolder is not created.
+#[tokio::test]
+async fn files_upload_refused_into_a_new_subfolder_does_not_create_it() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, source) = installed_zip_app(root.path()).await;
+    let before = photo_tree(&source);
+
+    let (status, json, text) = upload(
+        app,
+        "&path=brand-new%2Fnested",
+        zip_package(&[("ok.txt", "ok"), ("../escape.txt", "escaped")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "unexpected body: {text}");
+    assert_eq!(json["code"], "DEPLOY_PATH_DENIED");
+    assert!(!source.join("brand-new").exists());
+    assert_eq!(photo_tree(&source), before);
+    assert!(upload_temp_dirs(source.parent().unwrap()).is_empty());
+}
+
+// 5. Type conflict: the version has the directory `a/` and the zip brings a
+// new `b.txt` and then a file `a`. Nothing is applied (no `b.txt`) and the
+// error code is the one the upload answered before EDG-39 (DEPLOY_IO from the
+// failed file write).
+#[tokio::test]
+async fn files_upload_with_a_type_conflict_applies_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, source) = installed_zip_app(root.path()).await;
+    fs::create_dir_all(source.join("a")).unwrap();
+    fs::write(source.join("a/inner.txt"), "inner").unwrap();
+    let before = photo_tree(&source);
+
+    let (status, json, text) = upload(
+        app,
+        "",
+        zip_package(&[("b.txt", "new"), ("a", "a file where a dir is")]),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "unexpected body: {text}"
+    );
+    assert_eq!(json["code"], "DEPLOY_IO");
+    assert!(!source.join("b.txt").exists());
+    assert_eq!(photo_tree(&source), before);
+    assert!(upload_temp_dirs(source.parent().unwrap()).is_empty());
+}
+
+// 6. Success keeps the current behavior: files applied, overwrite, a new
+// subfolder, the revision advances, and no `.edger-upload-*` is left.
+#[tokio::test]
+async fn files_upload_success_applies_everything_and_leaves_no_upload_dirs() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, source) = installed_zip_app(root.path()).await;
+    let revision_before = fs::read_to_string(source.join(".edger-revision")).unwrap();
+
+    let (status, json, text) = upload(
+        app.clone(),
+        "",
+        zip_package(&[
+            ("index.ts", "Deno.serve(() => new Response('edited'));"),
+            ("docs/new.txt", "new"),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(
+        fs::read_to_string(source.join("index.ts")).unwrap(),
+        "Deno.serve(() => new Response('edited'));"
+    );
+    assert_eq!(
+        fs::read_to_string(source.join("docs/new.txt")).unwrap(),
+        "new"
+    );
+    let revision = json["revision"].as_str().unwrap().to_string();
+    assert_ne!(revision, revision_before.trim());
+    assert_eq!(
+        fs::read_to_string(source.join(".edger-revision"))
+            .unwrap()
+            .trim(),
+        revision
+    );
+    assert!(upload_temp_dirs(source.parent().unwrap()).is_empty());
+
+    // A new subfolder through `?path=` is created on success, as before.
+    let (status, _json, text) = upload(
+        app,
+        "&path=fresh%2Fsub",
+        zip_package(&[("leaf.txt", "leaf")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(
+        fs::read_to_string(source.join("fresh/sub/leaf.txt")).unwrap(),
+        "leaf"
+    );
+    assert!(upload_temp_dirs(source.parent().unwrap()).is_empty());
+}
+
+// A `.edger-upload-*` left by a process that died mid-upload holds a valid
+// worker package: it is never indexed as a version.
+#[tokio::test]
+async fn leftover_upload_dir_is_never_indexed() {
+    let root = tempfile::tempdir().unwrap();
+    let leftover = root.path().join(".edger-upload-abc123");
+    fs::create_dir_all(&leftover).unwrap();
+    fs::write(
+        leftover.join("manifest.yaml"),
+        "name: ghost-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n",
+    )
+    .unwrap();
+    fs::write(
+        leftover.join("index.ts"),
+        "Deno.serve(() => new Response('ghost'));",
+    )
+    .unwrap();
+    // Control: the same package in an ordinary dir IS indexed.
+    let control = root.path().join("control-app");
+    fs::create_dir_all(&control).unwrap();
+    fs::write(
+        control.join("manifest.yaml"),
+        "name: control-app\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n",
+    )
+    .unwrap();
+    fs::write(
+        control.join("index.ts"),
+        "Deno.serve(() => new Response('ok'));",
+    )
+    .unwrap();
+
+    let index = load_manifests_from_dirs(&[root.path().to_path_buf()]).unwrap();
+    let names: Vec<String> = index.worker_refs().into_iter().map(|w| w.name).collect();
+    assert!(names.contains(&"control-app".to_string()), "{names:?}");
+    assert!(!names.contains(&"ghost-app".to_string()), "{names:?}");
+}
+
+// EDG-39 review F2: two names the filesystem treats as one file share one
+// staged file; the upload answers 200 with ONE file holding the last entry,
+// as before EDG-39. Runs only where the tempdir is case-insensitive (macOS
+// default volumes); a case-sensitive filesystem (Linux CI) skips it.
+#[tokio::test]
+async fn files_upload_with_case_alias_names_keeps_the_last_entry() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("case-probe"), "probe").unwrap();
+    if !root.path().join("CASE-PROBE").exists() {
+        eprintln!("skip: the tempdir filesystem is case-sensitive");
+        return;
+    }
+    let (app, source) = installed_zip_app(root.path()).await;
+
+    let (status, _json, text) = upload(
+        app,
+        "",
+        zip_package(&[("Name.txt", "first"), ("name.txt", "last")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(fs::read_to_string(source.join("Name.txt")).unwrap(), "last");
+    let aliases: Vec<String> = fs::read_dir(&source)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.eq_ignore_ascii_case("name.txt"))
+        .collect();
+    assert_eq!(aliases, ["Name.txt"]);
+    assert!(upload_temp_dirs(source.parent().unwrap()).is_empty());
+}
+
+// EDG-39 review F3: a read-only target is refused as the old `fs::write` did
+// (500 DEPLOY_IO, `Permission denied`); its contents, the revision and the
+// rest of the zip stay unapplied.
+#[cfg(unix)]
+#[tokio::test]
+async fn files_upload_over_a_read_only_file_is_refused_and_applies_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let (app, source) = installed_zip_app(root.path()).await;
+    fs::write(source.join("locked.txt"), "old").unwrap();
+    fs::set_permissions(source.join("locked.txt"), fs::Permissions::from_mode(0o444)).unwrap();
+    let revision_before = fs::read(source.join(".edger-revision")).unwrap();
+    let before = photo_tree(&source);
+
+    let (status, json, text) = upload(
+        app,
+        "",
+        zip_package(&[("fresh.txt", "fresh"), ("locked.txt", "new")]),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "unexpected body: {text}"
+    );
+    assert_eq!(json["code"], "DEPLOY_IO");
+    let message = json["message"].as_str().unwrap();
+    assert!(message.starts_with("failed to write file: "), "{message}");
+    assert!(message.contains("Permission denied"), "{message}");
+    assert_eq!(
+        fs::read_to_string(source.join("locked.txt")).unwrap(),
+        "old"
+    );
+    assert_eq!(
+        fs::read(source.join(".edger-revision")).unwrap(),
+        revision_before
+    );
+    assert!(!source.join("fresh.txt").exists());
+    assert_eq!(photo_tree(&source), before);
+    assert!(upload_temp_dirs(source.parent().unwrap()).is_empty());
+}
+
+// EDG-39 review F4: the type-conflict messages are the system errors the old
+// `create_dir_all` / `fs::write` answered, not fabricated text.
+#[tokio::test]
+async fn files_upload_type_conflicts_answer_the_system_errors() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, source) = installed_zip_app(root.path()).await;
+    fs::write(source.join("taken"), "file").unwrap();
+    fs::create_dir(source.join("directory")).unwrap();
+    let before = photo_tree(&source);
+
+    // The exact messages of the old `create_dir_all` / `fs::write` flow
+    // (`File exists` on the final segment, `Not a directory` below a file).
+    for (query, entry, status, code, message) in [
+        (
+            "&path=taken%2Fchild",
+            "fresh.txt",
+            StatusCode::BAD_REQUEST,
+            "BAD_REQUEST",
+            "cannot create path: Not a directory (os error 20)",
+        ),
+        (
+            "&path=taken",
+            "fresh.txt",
+            StatusCode::BAD_REQUEST,
+            "BAD_REQUEST",
+            "cannot create path: File exists (os error 17)",
+        ),
+        (
+            "",
+            "directory",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DEPLOY_IO",
+            "failed to write file: Is a directory (os error 21)",
+        ),
+        (
+            "",
+            "taken/inner.txt",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DEPLOY_IO",
+            "failed to create dir: File exists (os error 17)",
+        ),
+        (
+            "",
+            "taken/sub/inner.txt",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DEPLOY_IO",
+            "failed to create dir: Not a directory (os error 20)",
+        ),
+    ] {
+        let (actual, json, text) = upload(app.clone(), query, zip_package(&[(entry, "x")])).await;
+        assert_eq!(actual, status, "{query} {entry}: {text}");
+        assert_eq!(json["code"], code, "{query} {entry}");
+        assert_eq!(json["message"], message, "{query} {entry}");
+        assert_eq!(photo_tree(&source), before, "{query} {entry}");
+    }
+}
+
+// Archive order is kept: with repeated names the last entry wins, also when
+// two names reach the same file (an existing link `alias.txt -> target.txt`;
+// the link itself is handled as before, EDG-40).
+#[cfg(unix)]
+#[tokio::test]
+async fn files_upload_with_repeated_names_keeps_the_last_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, source) = installed_zip_app(root.path()).await;
+    fs::write(source.join("target.txt"), "old").unwrap();
+    std::os::unix::fs::symlink("target.txt", source.join("alias.txt")).unwrap();
+
+    // The zip writer refuses a repeated name: write `dup.tx2` and rename it
+    // to `dup.txt` in the local header and the central directory.
+    let mut body = zip_package(&[
+        ("dup.txt", "first"),
+        ("alias.txt", "first"),
+        ("target.txt", "last"),
+        ("dup.tx2", "last"),
+    ]);
+    let mut renamed = 0;
+    for start in 0..body.len().saturating_sub(6) {
+        if &body[start..start + 7] == b"dup.tx2" {
+            body[start..start + 7].copy_from_slice(b"dup.txt");
+            renamed += 1;
+        }
+    }
+    assert_eq!(renamed, 2, "local header + central directory");
+    let (status, _json, text) = upload(app, "", body).await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(fs::read_to_string(source.join("dup.txt")).unwrap(), "last");
+    assert_eq!(
+        fs::read_to_string(source.join("target.txt")).unwrap(),
+        "last"
+    );
+    assert_eq!(
+        fs::read_to_string(source.join("alias.txt")).unwrap(),
+        "last"
+    );
+}
+
+// An overwrite keeps the mode of the file it replaces, as `fs::write` did.
+#[cfg(unix)]
+#[tokio::test]
+async fn files_upload_overwrite_keeps_the_file_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let (app, source) = installed_zip_app(root.path()).await;
+    fs::write(source.join("mode.txt"), "old").unwrap();
+    fs::set_permissions(source.join("mode.txt"), fs::Permissions::from_mode(0o751)).unwrap();
+
+    let (status, _json, text) = upload(app, "", zip_package(&[("mode.txt", "new")])).await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(fs::read_to_string(source.join("mode.txt")).unwrap(), "new");
+    assert_eq!(
+        fs::metadata(source.join("mode.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o751
+    );
+}

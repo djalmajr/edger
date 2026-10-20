@@ -26,7 +26,7 @@
 //! Excluídos: o `.edger/` do topo de cada raiz de usuário (o banco e o
 //! overlay entram pelas entradas próprias; é o estado interno do EdgeR), o
 //! arquivo do banco e os sidecars dele (`-journal`, `-wal`, `-shm`), o
-//! `.edger-swaps/`, os `.edger-install-*`, os `.edger-revision-*.tmp`, os
+//! `.edger-swaps/`, os `.edger-install-*` e `.edger-upload-*`, os `.edger-revision-*.tmp`, os
 //! `*.tmp` do `.edger-defaults/` e `.edger-routing/`, a cache do Deno quando `EDGER_DENO_CACHE_ROOT`
 //! aponta para dentro de uma raiz exportada, e symlinks (pulados e contados
 //! em `skippedSymlinks`).
@@ -396,7 +396,10 @@ fn walk_directory<W: Write + Seek>(
             if user_root && dir == base && name_str == ".edger" {
                 continue;
             }
-            if name_str == ".edger-swaps" || name_str.starts_with(".edger-install-") {
+            if name_str == ".edger-swaps"
+                || name_str.starts_with(".edger-install-")
+                || name_str.starts_with(".edger-upload-")
+            {
                 continue;
             }
             if excluded.contains(&canonical_or_raw(&path)) {
