@@ -48,6 +48,6 @@ sha2 = "0.10"
 # the cipher zeroize its internal key copy on drop (F4).
 chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 zeroize = "1"
-wasmtime = { version = "49.0.2", default-features = false, features = ["anyhow", "cranelift", "runtime", "std", "wat"] }
-wasmtime-wasi = { version = "49.0.2", default-features = false, features = ["p1"] }
+wasmtime = { version = "49.0.4", default-features = false, features = ["anyhow", "cranelift", "runtime", "std", "wat"] }
+wasmtime-wasi = { version = "49.0.4", default-features = false, features = ["p1"] }
 wat = "1.261"
