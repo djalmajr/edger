@@ -5014,25 +5014,19 @@ async fn files_upload_type_conflicts_answer_the_system_errors() {
     }
 }
 
-// Archive order is kept: with repeated names the last entry wins, also when
-// two names reach the same file (an existing link `alias.txt -> target.txt`;
-// the link itself is handled as before, EDG-40).
-#[cfg(unix)]
+// Archive order is kept: with repeated names the last entry wins. EDG-40: the
+// variant where two names reached one file through an existing link
+// (`alias.txt -> target.txt`) is gone with the write through links; that
+// link is now refused (see `files_upload_never_follows_a_symbolic_link`) and
+// two names for one file remain covered by the case-alias test above.
 #[tokio::test]
 async fn files_upload_with_repeated_names_keeps_the_last_entry() {
     let root = tempfile::tempdir().unwrap();
     let (app, source) = installed_zip_app(root.path()).await;
-    fs::write(source.join("target.txt"), "old").unwrap();
-    std::os::unix::fs::symlink("target.txt", source.join("alias.txt")).unwrap();
 
     // The zip writer refuses a repeated name: write `dup.tx2` and rename it
     // to `dup.txt` in the local header and the central directory.
-    let mut body = zip_package(&[
-        ("dup.txt", "first"),
-        ("alias.txt", "first"),
-        ("target.txt", "last"),
-        ("dup.tx2", "last"),
-    ]);
+    let mut body = zip_package(&[("dup.txt", "first"), ("dup.tx2", "last")]);
     let mut renamed = 0;
     for start in 0..body.len().saturating_sub(6) {
         if &body[start..start + 7] == b"dup.tx2" {
@@ -5044,14 +5038,300 @@ async fn files_upload_with_repeated_names_keeps_the_last_entry() {
     let (status, _json, text) = upload(app, "", body).await;
     assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
     assert_eq!(fs::read_to_string(source.join("dup.txt")).unwrap(), "last");
+}
+
+// EDG-40: links never followed. Like `photo_tree`, but a link records its
+// target (it is never followed) and the root may hold anything.
+#[cfg(unix)]
+type LinkPhoto = std::collections::BTreeMap<std::path::PathBuf, String>;
+
+#[cfg(unix)]
+fn photo_with_links(root: &std::path::Path) -> LinkPhoto {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut LinkPhoto) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            let file_type = fs::symlink_metadata(&path).unwrap().file_type();
+            if file_type.is_symlink() {
+                let target = fs::read_link(&path).unwrap();
+                out.insert(relative, format!("link:{}", target.display()));
+            } else if file_type.is_dir() {
+                out.insert(relative, "dir".into());
+                walk(root, &path, out);
+            } else {
+                let contents = String::from_utf8_lossy(&fs::read(&path).unwrap()).into_owned();
+                out.insert(relative, format!("file:{contents}"));
+            }
+        }
+    }
+    let mut out = LinkPhoto::new();
+    walk(root, root, &mut out);
+    out
+}
+
+/// A zip whose entries are `(name, Some(contents))` files or `(name, None)`
+/// directory entries, in order.
+#[cfg(unix)]
+fn zip_with_dirs(entries: &[(&str, Option<&str>)]) -> Vec<u8> {
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut cursor);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, contents) in entries {
+            match contents {
+                Some(contents) => {
+                    writer.start_file(*name, options).unwrap();
+                    writer.write_all(contents.as_bytes()).unwrap();
+                }
+                None => writer.add_directory(*name, options).unwrap(),
+            }
+        }
+        writer.finish().unwrap();
+    }
+    cursor.into_inner()
+}
+
+/// `zip-app@1.0.0` with links planted from outside EdgeR: `out-file` ->
+/// `<outside>/secret.txt`, `linkdir` -> `<outside>/dir`, `inner-file` ->
+/// `target.txt` and `inner-link` -> `sub` (both inside the version).
+#[cfg(unix)]
+async fn version_with_links(
+    root: &std::path::Path,
+    outside: &std::path::Path,
+) -> (Router, std::path::PathBuf) {
+    let (app, source) = installed_zip_app(root).await;
+    fs::write(outside.join("secret.txt"), "secret").unwrap();
+    fs::create_dir(outside.join("dir")).unwrap();
+    fs::write(source.join("target.txt"), "inside").unwrap();
+    fs::create_dir(source.join("sub")).unwrap();
+    std::os::unix::fs::symlink(outside.join("secret.txt"), source.join("out-file")).unwrap();
+    std::os::unix::fs::symlink(outside.join("dir"), source.join("linkdir")).unwrap();
+    std::os::unix::fs::symlink("target.txt", source.join("inner-file")).unwrap();
+    std::os::unix::fs::symlink("sub", source.join("inner-link")).unwrap();
+    (app, source)
+}
+
+// EDG-40, tests 1, 2, 3, 6 and 7 of the brief: a zip entry that meets a link
+// in any component is 400 DEPLOY_PATH_DENIED; the version (links included),
+// its revision and the outside dir stay identical, and an earlier valid entry
+// is rolled back. Mutation captured: dropping the final-target link check
+// (`FileType::Symlink` in `apply_upload_file`) turns cases 1, 6 and 7 into
+// `DEPLOY_IO` and this test goes red.
+#[cfg(unix)]
+#[tokio::test]
+async fn files_upload_never_follows_a_symbolic_link() {
+    for (case, entries, denied) in [
+        // 1. The final target links to a file outside the version.
+        ("1", vec![("out-file", Some("new"))], "out-file"),
+        // 2. An intermediate directory links to a dir outside.
+        ("2", vec![("linkdir/x.txt", Some("x"))], "linkdir/x.txt"),
+        // 3. A directory entry over a link.
+        ("3", vec![("linkdir/", None)], "linkdir"),
+        // 3b. A directory entry below a link.
+        ("3b", vec![("linkdir/deeper/", None)], "linkdir/deeper"),
+        // 6. The final target links to a file inside the version.
+        ("6", vec![("inner-file", Some("new"))], "inner-file"),
+        // 6b. An intermediate link to a dir inside the version.
+        (
+            "6b",
+            vec![("inner-link/x.txt", Some("x"))],
+            "inner-link/x.txt",
+        ),
+        // 7. A valid entry (a new file, a new dir, an overwrite) before the
+        // one that meets a link: nothing applied.
+        (
+            "7",
+            vec![
+                ("fresh.txt", Some("fresh")),
+                ("newdir/inner.txt", Some("inner")),
+                ("target.txt", Some("overwritten")),
+                ("out-file", Some("new")),
+            ],
+            "out-file",
+        ),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let (app, source) = version_with_links(root.path(), outside.path()).await;
+        let revision_before = fs::read(source.join(".edger-revision")).unwrap();
+        let version_before = photo_with_links(&source);
+        let outside_before = photo_with_links(outside.path());
+
+        let (status, json, text) = upload(app, "", zip_with_dirs(&entries)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{case}: {text}");
+        assert_eq!(json["code"], "DEPLOY_PATH_DENIED", "{case}");
+        assert_eq!(
+            json["message"],
+            format!("zip entry crosses a symbolic link: {denied}"),
+            "{case}"
+        );
+        assert_eq!(photo_with_links(&source), version_before, "{case}");
+        assert_eq!(
+            photo_with_links(outside.path()),
+            outside_before,
+            "{case}: nothing outside"
+        );
+        assert_eq!(
+            fs::read(source.join(".edger-revision")).unwrap(),
+            revision_before,
+            "{case}"
+        );
+        assert!(
+            upload_temp_dirs(source.parent().unwrap()).is_empty(),
+            "{case}"
+        );
+    }
+}
+
+// EDG-40, tests 4 and 5 of the brief, plus the EDG-39 review P3 residual: a
+// `?path=` segment that is a link — to a dir outside, to a dir inside, in a
+// cycle, to a target without search permission, dangling, or followed by
+// more segments — is 403 FORBIDDEN; nothing is created inside or outside.
+// Mutation captured: dropping the link detection of the `?path=` walk (in
+// `split_upload_path` and in the obstacle re-read, which catches the link on
+// its own when only the first goes) answers 400 BAD_REQUEST and this test
+// goes red.
+#[cfg(unix)]
+#[tokio::test]
+async fn files_upload_path_through_a_symbolic_link_is_forbidden() {
+    use std::os::unix::fs::PermissionsExt;
+    // Restores the mode even when an assertion fails, so the tempdir goes.
+    struct Searchable(std::path::PathBuf);
+    impl Drop for Searchable {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+        }
+    }
+    for query in [
+        "&path=linkdir",
+        "&path=linkdir%2Fnew",
+        "&path=inner-link",
+        "&path=sub%2F..%2Finner-link",
+        "&path=loop",
+        "&path=locked-link",
+        "&path=dangling",
+        "&path=.%2Finner-link%2F",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let (app, source) = version_with_links(root.path(), outside.path()).await;
+        std::os::unix::fs::symlink("loop", source.join("loop")).unwrap();
+        std::os::unix::fs::symlink("missing", source.join("dangling")).unwrap();
+        fs::create_dir_all(outside.path().join("locked/inner")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("locked/inner"),
+            source.join("locked-link"),
+        )
+        .unwrap();
+        let version_before = photo_with_links(&source);
+        let outside_before = photo_with_links(outside.path());
+        fs::set_permissions(
+            outside.path().join("locked"),
+            fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        let _searchable = Searchable(outside.path().join("locked"));
+        let revision_before = fs::read(source.join(".edger-revision")).unwrap();
+
+        let (status, json, text) = upload(app, query, zip_package(&[("fresh.txt", "fresh")])).await;
+        drop(_searchable);
+        if query.contains("..") {
+            // `..` keeps its own (older) refusal, same code.
+            assert_eq!(status, StatusCode::FORBIDDEN, "{query}: {text}");
+            assert_eq!(json["code"], "FORBIDDEN", "{query}");
+        } else {
+            assert_eq!(status, StatusCode::FORBIDDEN, "{query}: {text}");
+            assert_eq!(json["code"], "FORBIDDEN", "{query}");
+            assert_eq!(json["message"], "path crosses a symbolic link", "{query}");
+        }
+        assert_eq!(photo_with_links(&source), version_before, "{query}");
+        assert_eq!(
+            photo_with_links(outside.path()),
+            outside_before,
+            "{query}: nothing outside"
+        );
+        assert_eq!(
+            fs::read(source.join(".edger-revision")).unwrap(),
+            revision_before,
+            "{query}"
+        );
+        assert!(
+            upload_temp_dirs(source.parent().unwrap()).is_empty(),
+            "{query}"
+        );
+    }
+}
+
+// EDG-40 (decision 5): with the write through links gone, archive order is
+// observable in which problem answers: the first entry of the zip that phase
+// 2 refuses defines the error, in both orders, and nothing is applied.
+#[cfg(unix)]
+#[tokio::test]
+async fn files_upload_first_refused_entry_defines_the_error() {
+    for (entries, status, code, message) in [
+        (
+            [("inner-file", "new"), ("sub", "x")],
+            StatusCode::BAD_REQUEST,
+            "DEPLOY_PATH_DENIED",
+            "zip entry crosses a symbolic link: inner-file",
+        ),
+        (
+            [("sub", "x"), ("inner-file", "new")],
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DEPLOY_IO",
+            "failed to write file: Is a directory (os error 21)",
+        ),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let (app, source) = version_with_links(root.path(), outside.path()).await;
+        let before = photo_with_links(&source);
+        let mut all = vec![("fresh.txt", "fresh")];
+        all.extend(entries);
+        let (actual, json, text) = upload(app, "", zip_package(&all)).await;
+        assert_eq!(actual, status, "{entries:?}: {text}");
+        assert_eq!(json["code"], code, "{entries:?}");
+        assert_eq!(json["message"], message, "{entries:?}");
+        assert_eq!(photo_with_links(&source), before, "{entries:?}");
+    }
+}
+
+// Control: the same version with links planted accepts an upload that meets
+// none of them, in the root and in a real subfolder.
+#[cfg(unix)]
+#[tokio::test]
+async fn files_upload_beside_symbolic_links_still_applies() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let (app, source) = version_with_links(root.path(), outside.path()).await;
+    let outside_before = photo_with_links(outside.path());
+    let (status, _json, text) = upload(
+        app.clone(),
+        "",
+        zip_package(&[("fresh.txt", "fresh"), ("target.txt", "updated")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    let (status, _json, text) =
+        upload(app, "&path=sub%2Fnew", zip_package(&[("x.txt", "x")])).await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {text}");
+    assert_eq!(
+        fs::read_to_string(source.join("fresh.txt")).unwrap(),
+        "fresh"
+    );
     assert_eq!(
         fs::read_to_string(source.join("target.txt")).unwrap(),
-        "last"
+        "updated"
     );
     assert_eq!(
-        fs::read_to_string(source.join("alias.txt")).unwrap(),
-        "last"
+        fs::read_link(source.join("inner-file")).unwrap(),
+        std::path::Path::new("target.txt")
     );
+    assert_eq!(
+        fs::read_to_string(source.join("sub/new/x.txt")).unwrap(),
+        "x"
+    );
+    assert_eq!(photo_with_links(outside.path()), outside_before);
 }
 
 // An overwrite keeps the mode of the file it replaces, as `fs::write` did.
