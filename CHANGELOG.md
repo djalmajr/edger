@@ -4,7 +4,10 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.25` (EdgeR's own path
+Toward 0.3.2. Release candidates: `v0.3.2-rc.26` (files upload all or
+nothing and never through a symbolic link, `wasmtime` 49.0.4,
+OpenTelemetry 0.33);
+`v0.3.2-rc.25` (EdgeR's own path
 check on package extraction, malformed zip reads as 400);
 `v0.3.2-rc.24` (egress guard for
 user-chosen hosts and app secrets vault for BYOK, checked duration
@@ -694,6 +697,13 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Security
 
+- `wasmtime`/`wasmtime-wasi` 49.0.3 -> 49.0.4 (floor raised to 49.0.4),
+  with the matching `cranelift` 0.136.4, `pulley` and `wiggle` patch
+  releases: RUSTSEC-2026-0378 (panic lowering a host-created component
+  model stream into a guest that expects a different payload type) and
+  RUSTSEC-2026-0379 (the Cranelift aarch64 backend can jump to the wrong
+  target on a large Wasm `br_table`). Both apply to the wasm worker
+  backend.
 - Package extraction could write outside its staging directory in
   0.3.2-rc.22 and earlier: `zip` 8.6.0 turned an entry name with a Windows
   verbatim prefix into a relative path with `..`, which escaped the
@@ -878,6 +888,25 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   `OTEL_*` variables. Upstream change kept: the OTLP exporters now retry a
   failed export up to 3 times with backoff (off the request path, in the
   batch processor).
+
+## [0.3.2-rc.26]
+
+- The files upload (`POST /api/admin/workers/{name}/files`) is all or
+  nothing (EDG-39): the zip is validated in a `.edger-upload-*` staging dir
+  next to the version and each file is published by one atomic rename, with
+  the overwritten files kept in a backup dir; any refusal or failure undoes
+  what was applied, with the same error codes and messages as before. The
+  scanner no longer indexes `.edger-upload-*` or the install's
+  `.edger-install-*` staging dirs.
+- The files upload never follows a symbolic link below the version
+  directory (EDG-40): every write is relative to directory descriptors
+  opened with `O_NOFOLLOW`; a link in `?path=` answers `403 FORBIDDEN` and a
+  zip entry that meets a link answers `400 DEPLOY_PATH_DENIED`.
+- `wasmtime`/`wasmtime-wasi` 49.0.4 (RUSTSEC-2026-0378, RUSTSEC-2026-0379),
+  with the matching `cranelift` 0.136.4 patch releases.
+- `opentelemetry` family 0.33.1 and `tracing-opentelemetry` 0.34.0 behind the
+  optional `otel` feature (export still off unless `EDGER_OTEL_ENABLED` and an
+  OTLP endpoint are set).
 
 ## [0.3.2-rc.25]
 
