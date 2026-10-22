@@ -4,7 +4,9 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.26` (files upload all or
+Toward 0.3.2. Release candidates: `v0.3.2-rc.27` (`rustls-webpki`
+0.103.16 and `webpki-roots` 1.0.10);
+`v0.3.2-rc.26` (files upload all or
 nothing and never through a symbolic link, `wasmtime` 49.0.4,
 OpenTelemetry 0.33);
 `v0.3.2-rc.25` (EdgeR's own path
@@ -888,6 +890,14 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   `OTEL_*` variables. Upstream change kept: the OTLP exporters now retry a
   failed export up to 3 times with backoff (off the request path, in the
   batch processor).
+
+## [0.3.2-rc.27]
+
+- `rustls-webpki` 0.103.16 (RUSTSEC-2026-0382) and `webpki-roots` 1.0.10
+  (RUSTSEC-2026-0381) for the outbound TLS clients (`reqwest`/`hyper-rustls`
+  in `edger-orchestrator` and `edger-mcp`, and the egress guard's `rustls`
+  client).
+  Lockfile-only patch bumps.
 
 ## [0.3.2-rc.26]
 
