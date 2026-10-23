@@ -4,7 +4,9 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.27` (`rustls-webpki`
+Toward 0.3.2. Release candidates: `v0.3.2-rc.28` (`ctutils` 0.4.5
+and `tokio` 1.54.1);
+`v0.3.2-rc.27` (`rustls-webpki`
 0.103.16 and `webpki-roots` 1.0.10);
 `v0.3.2-rc.26` (files upload all or
 nothing and never through a symbolic link, `wasmtime` 49.0.4,
@@ -890,6 +892,15 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   `OTEL_*` variables. Upstream change kept: the OTLP exporters now retry a
   failed export up to 3 times with backoff (off the request path, in the
   batch processor).
+
+## [0.3.2-rc.28]
+
+- `ctutils` 0.4.5 (RUSTSEC-2026-0385: non-constant-time mask generation and
+  `u128` comparisons), reached through `chacha20poly1305`, the app secrets
+  vault cipher.
+- `tokio` 1.54.1 (RUSTSEC-2026-0386: `AsyncFd::new` and related constructors
+  violate I/O safety).
+  Both are lockfile-only bumps (#160).
 
 ## [0.3.2-rc.27]
 
