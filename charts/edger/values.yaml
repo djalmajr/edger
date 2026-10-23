@@ -25,6 +25,15 @@ service:
   type: ClusterIP
   port: 3000
 
+# Allow startup to rebuild all worker bundles when the image's Deno version
+# changes; the default failure budget is 60 checks every 5 seconds (5 minutes).
+probes:
+  startup:
+    enabled: true
+    periodSeconds: 5
+    timeoutSeconds: 1
+    failureThreshold: 60
+
 ingress:
   enabled: false
   host: ""

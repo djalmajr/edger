@@ -48,3 +48,11 @@ Os seis pontos que declaram a toolchain e precisam subir juntos:
 Subir só um deixa o compilador do build diferente do compilador do CI.
 
 Feito na 0.3.2-rc.4 (2026-09-25): todos em 1.98.
+
+## Imagem do Deno
+
+`Dockerfile` e `Dockerfile.cross` fixam `denoland/deno:debian-<versão>` e
+precisam subir juntos em um PR explícito. A chave do cache de bundle inclui
+o `deno --version`: um Deno novo remonta todos os bundles no primeiro boot.
+Por isso o chart tem um `startupProbe`, com 5 minutos de tolerância por
+padrão para essa reconstrução antes de iniciar o liveness probe.
