@@ -4,7 +4,9 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.28` (`ctutils` 0.4.5
+Toward 0.3.2. Release candidates: `v0.3.2-rc.29` (chart `startupProbe`
+and pinned Deno image);
+`v0.3.2-rc.28` (`ctutils` 0.4.5
 and `tokio` 1.54.1);
 `v0.3.2-rc.27` (`rustls-webpki`
 0.103.16 and `webpki-roots` 1.0.10);
@@ -903,6 +905,13 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   `OTEL_*` variables. Upstream change kept: the OTLP exporters now retry a
   failed export up to 3 times with backoff (off the request path, in the
   batch processor).
+
+## [0.3.2-rc.29]
+
+- The chart adds a `startupProbe` on `/livez` (`probes.startup.*`, default
+  60 checks every 5 s), so a boot that rebuilds every bundle is no longer
+  killed by the liveness probe, and the image pins Deno
+  (`denoland/deno:debian-2.9.8`) (EDG-42, #162).
 
 ## [0.3.2-rc.28]
 
