@@ -202,7 +202,7 @@ owns git. Load the skill (`/soho`) before planning such work.
   back as an open question and is answered in the next brief.
 - Workers never commit, push or open PRs; the orchestrator owns git.
 - The orchestrator is the planner. `spawn planner` opens no pane.
-- Every code slice gets a reviewer from another model family before push,
+- Every code slice gets a reviewer before push,
   including code the orchestrator wrote itself.
 - The only completion signal is the worker's report file (`dispatch`,
   `wait`, `status`); never poll agent state by hand. A busy worker is not a
