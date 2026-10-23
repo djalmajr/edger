@@ -698,6 +698,17 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   `http://edger.local` placeholder: the name route, the `@version` pin,
   the homepage fallback, the plugin base on an owner-less host, the
   authenticated control-plane invoke, cron, health check and warmup.
+- EDG-42: a slow boot is no longer killed by the liveness probe. The chart
+  adds a `startupProbe` on `/livez` (`probes.startup.enabled`, default
+  `true`; `periodSeconds` 5, `timeoutSeconds` 1, `failureThreshold` 60, so
+  5 minutes), and liveness and readiness only start after it succeeds. The
+  bundle cache key includes `deno --version`, so an image with a new Deno
+  rebuilds the bundle of every admitted version before the server listens
+  (~53 s for 12 versions in production on 2026-10-22, when the liveness
+  probe killed the first container and the apps answered 503 for about
+  70 s). The image now pins Deno (`denoland/deno:debian-2.9.8` in
+  `Dockerfile` and `Dockerfile.cross`), so a Deno upgrade is an explicit
+  pull request.
 
 ### Security
 

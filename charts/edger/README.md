@@ -332,8 +332,16 @@ curl --fail http://127.0.0.1:3000/healthz
 open http://127.0.0.1:3000/cpanel/
 ```
 
-The Deployment exposes `/livez` and `/ready` probes. The configured root key is
-mounted from its Secret and is required for root control-plane access.
+The Deployment exposes liveness and readiness probes at `/livez` and `/ready`,
+plus a `startupProbe` at `/livez` to cover rebuilding all worker bundles when
+the image's Deno version changes. `probes.startup.enabled` enables it (default
+`true`); `probes.startup.periodSeconds` sets the check interval (default `5`),
+`probes.startup.timeoutSeconds` sets the timeout per check (default `1`), and
+`probes.startup.failureThreshold` sets the number of failed checks allowed
+(default `60`). The default startup budget is 5 minutes (60 × 5 seconds);
+liveness and readiness checks start after the startup probe succeeds.
+The configured root key is mounted from its Secret and is required for root
+control-plane access.
 
 ## Backup and restore
 

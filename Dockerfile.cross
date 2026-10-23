@@ -37,7 +37,9 @@ COPY workers/core/cpanel ./core/cpanel
 COPY workers/core/webide ./core/webide
 RUN bun install --frozen-lockfile && bun run build
 
-FROM denoland/deno:debian
+# Pin Deno: the bundle cache key includes `deno --version`, so a new version
+# rebuilds every worker version's bundle on first boot.
+FROM denoland/deno:debian-2.9.8
 
 LABEL org.opencontainers.image.source="https://github.com/djalmajr/edger" \
       org.opencontainers.image.licenses="O'Saasy-1.0"
