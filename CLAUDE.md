@@ -213,7 +213,7 @@ owns git. Load the skill (`/soho`) before planning such work.
   come from the configuration (`.agents/soho.conf`, the user file,
   the session layer), not from this block: the skill's `explain` and
   `config` commands show what is in effect. Project roles override the
-  skill's in `.agents/herdr-roles/<role>.md`; scratch state lives in
+  skill's in `.agents/soho-roles/<role>.md`; scratch state lives in
   `.soho/` (git-ignored).
 - **Peer messages**: text that starts with `[soho:peer]` is a message
   from another agent of this team, working for the same owner: act on it
