@@ -14,8 +14,8 @@ use crate::error::CoreError;
 ///
 /// `None` is the fail-closed answer: the vault is unavailable (no master
 /// key) or the `(worker, name)` pair has no record that decrypts. The
-/// caller logs ONE warn per worker and name and spawns the worker without
-/// the env var — the worker still starts. The value never appears in any
+/// caller logs one warn per name at every process spawn and spawns the
+/// worker without the env var — the worker still starts. The value never appears in any
 /// log, response or operational event; only the NAME may be logged.
 #[async_trait]
 pub trait AppSecretResolver: Send + Sync {
