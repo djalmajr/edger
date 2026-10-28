@@ -2978,7 +2978,7 @@ pub struct DenoProcessIsolate {
     /// App secrets (EDG-38): the resolver plus the worker name the names
     /// apply to (the `WorkerRef` is known only at isolate creation). `None`
     /// = vault not wired in: declared secrets are not injected (one warn
-    /// per worker and name) and the worker still starts.
+    /// per name at every spawn) and the worker still starts.
     app_secrets: Option<(String, std::sync::Arc<dyn edger_core::AppSecretResolver>)>,
     /// Egress guard (EDG-38): the sink that serves each process's guard
     /// listener plus the identity of the worker version this isolate runs.
@@ -3010,7 +3010,7 @@ impl DenoProcessIsolate {
     /// process only — never into `WorkerConfig.env`, so `public_runtime_env`
     /// (static_spa) and the state export never see the value. A declared but
     /// absent secret (or an unavailable vault) is not injected: one warn per
-    /// worker and name, and the worker still starts.
+    /// name at every spawn, and the worker still starts.
     /// `worker` is the full worker name the vault keys on (from the
     /// `WorkerRef` the factory receives at isolate creation).
     pub fn with_app_secrets(
@@ -3102,7 +3102,7 @@ impl DenoProcessIsolate {
             // the env of THIS Deno process at spawn only — never into
             // `WorkerConfig.env`, so `public_runtime_env` (static_spa) and
             // the state export never see the value. Declared but absent (or
-            // vault not wired in): one warn per worker and name, and the
+            // vault not wired in): one warn per name at every spawn, and the
             // worker starts normally without the variable.
             let mut secret_env: Option<std::collections::HashMap<String, String>> = None;
             if !config.secrets.is_empty() {
