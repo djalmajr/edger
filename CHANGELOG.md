@@ -849,6 +849,21 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   outside process that moves one of those directories out of the version
   during the upload is not stopped by it, and guarding against that is up
   to whoever has access to the node's filesystem.
+- Egress guard responses and DNS (EDG-51, EDG-57): a destination could
+  forge the guard's protocol headers in its own answer (for example
+  `x-edger-egress-error: EGRESS_HOST_BLOCKED`) and the app could not tell
+  the forgery from a real refusal; every `x-edger-egress-*` header
+  (case-insensitive) is now stripped from the forwarded upstream response on
+  every hop that reaches the worker, including the final answer after
+  redirects, while the guard's own refusals keep `x-edger-egress-error`.
+  And name destinations are resolved ABSOLUTE: the guard passes the name
+  with a trailing dot to the resolver (adding at most one), because the
+  pod's OS resolver otherwise applies the cluster search domains
+  (`ndots:5`) and expands `svc.ns` or `kubernetes` into a cluster Service
+  name — a 403 (the name exists and its IP is blocked) versus a 502
+  `EGRESS_DNS_ERROR` (it does not) revealed which Services exist. The SNI,
+  the `Host` header and every event field keep the name without the added
+  dot.
 
 ### Dependencies
 

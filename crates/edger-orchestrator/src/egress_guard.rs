@@ -931,14 +931,27 @@ impl EgressGuard {
                 ip
             }
             EgressHost::Name(name) => {
-                let resolved =
-                    match timeout_at_opt(total_deadline, self.config.resolver.resolve(&name, port))
-                        .await
-                    {
-                        Ok(Ok(ips)) if !ips.is_empty() => ips,
-                        Ok(_) => return HopOutcome::Refused(Refusal::dns_error(), target),
-                        Err(_) => return HopOutcome::Refused(Refusal::timeout(), target),
-                    };
+                // The name resolves ABSOLUTE (a trailing dot): the pod's
+                // resolver would otherwise expand it through the cluster
+                // search domains (`ndots:5`) into a Service name, and the
+                // 403-vs-`EGRESS_DNS_ERROR` difference would reveal which
+                // Services exist. The SNI, the `Host` header and the events
+                // keep the name without the added dot.
+                let resolve_name = if name.ends_with('.') {
+                    name.clone()
+                } else {
+                    format!("{name}.")
+                };
+                let resolved = match timeout_at_opt(
+                    total_deadline,
+                    self.config.resolver.resolve(&resolve_name, port),
+                )
+                .await
+                {
+                    Ok(Ok(ips)) if !ips.is_empty() => ips,
+                    Ok(_) => return HopOutcome::Refused(Refusal::dns_error(), target),
+                    Err(_) => return HopOutcome::Refused(Refusal::timeout(), target),
+                };
                 // EVERY resolved IP is classified; one refusal refuses the
                 // whole request (an attacker-controlled AAAA could answer a
                 // private IP behind a public one).
@@ -1872,6 +1885,23 @@ fn strip_hop_by_hop(headers: &HeaderMap) -> HeaderMap {
     out
 }
 
+/// A copy of `headers` without the guard protocol headers (every name
+/// starting with `x-edger-egress-`): the worker must see them only on the
+/// guard's own refusals, never echoed back by a destination that forges a
+/// refusal (for example `x-edger-egress-error: EGRESS_HOST_BLOCKED`).
+/// `HeaderName` is already lowercase, so the prefix match is
+/// case-insensitive.
+fn strip_guard_protocol_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut out = HeaderMap::with_capacity(headers.len());
+    for (name, value) in headers {
+        if name.as_str().starts_with("x-edger-egress-") {
+            continue;
+        }
+        out.append(name.clone(), value.clone());
+    }
+    out
+}
+
 /// A single header value: `None` when absent or ambiguous (more than one
 /// occurrence) — a redirect with two `Location` headers is not followed.
 fn single_header_value(headers: &HeaderMap, name: &HeaderName) -> Option<String> {
@@ -1962,9 +1992,12 @@ fn server_name_for(host_text: &str, ip: IpAddr) -> Option<ServerName<'static>> {
 }
 
 /// The answer to the worker for a destination response: the status, the
-/// headers without the hop-by-hop ones and with the destination's
-/// `Content-Length` only when its body is exactly sized (otherwise `hyper`
-/// frames the body chunked), and the streaming body.
+/// headers without the hop-by-hop ones and without the destination's
+/// `x-edger-egress-*` headers (a forged guard refusal never reaches the
+/// worker), and with the destination's `Content-Length` only when its body
+/// is exactly sized (otherwise `hyper` frames the body chunked), and the
+/// streaming body. Every answer that reaches the worker goes through here,
+/// including the final one after redirects.
 fn forward_response(
     status: StatusCode,
     headers: &HeaderMap,
@@ -1975,7 +2008,7 @@ fn forward_response(
     kill: Arc<Notify>,
 ) -> Response<EgressBody> {
     let exact = upstream.incoming.size_hint().exact().is_some();
-    let mut forwarded = strip_hop_by_hop(headers);
+    let mut forwarded = strip_guard_protocol_headers(&strip_hop_by_hop(headers));
     if !exact {
         forwarded.remove(CONTENT_LENGTH);
     }
