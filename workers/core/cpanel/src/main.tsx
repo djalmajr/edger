@@ -155,6 +155,7 @@ import { ConsoleSessions } from "./components/console-sessions";
 import { ConsoleSettings } from "./components/console-settings";
 import { ApiKeys } from "./components/api-keys";
 import { PageTitleHelp } from "./components/page-title-help";
+import { PasswordChangeScreen } from "./components/password-change";
 import { Overview } from "./components/overview";
 import { RoutingPolicyPanel } from "./components/routing-policy";
 import { AdminLogin } from "./components/login";
@@ -166,12 +167,14 @@ import {
   useI18n,
 } from "./lib/i18n";
 import {
+  adminSession,
   apiDownload,
   apiJson,
   can,
   canManageKeys,
   clearSession,
   compareSemver,
+  isPasswordChangeRequired,
   isSessionToken,
   kindLabel,
   loadAll,
@@ -948,7 +951,7 @@ function Observability({
   target?: Target;
 }) {
   const seriesQuery = useQuery({
-    queryKey: ["cpanel", "series", target],
+    queryKey: ["cpanel", "series", apiKey, target],
     queryFn: () =>
       apiJson<{
         bucketMs: number;
@@ -1089,7 +1092,7 @@ function Logs({ apiKey, target }: { apiKey: string; target?: Target }) {
     warn: "Warning",
   };
   const eventsQuery = useQuery({
-    queryKey: ["cpanel", "events", target],
+    queryKey: ["cpanel", "events", apiKey, target],
     queryFn: () => {
       const params = new URLSearchParams({ limit: "500" });
       if (target) {
@@ -1377,7 +1380,7 @@ function Files({
   );
   const canDownload = can(principal, "files:read");
   const filesQuery = useQuery({
-    queryKey: ["cpanel", "files", target, path],
+    queryKey: ["cpanel", "files", apiKey, target, path],
     queryFn: () =>
       apiJson<{ entries: FileEntry[] }>(
         apiKey,
@@ -1405,7 +1408,7 @@ function Files({
       ),
     onSuccess: () => {
       setFileErrors([]);
-      queryClient.invalidateQueries({ queryKey: ["cpanel", "files", target] });
+      queryClient.invalidateQueries({ queryKey: ["cpanel", "files", apiKey, target] });
     },
   });
   // The route answers with the ROOT listing of the version: apply it to the
@@ -1430,7 +1433,7 @@ function Files({
         data.errors.map((error) => `${error.path}: ${error.message}`),
       );
       for (const update of deleteEntriesCacheUpdates(path)) {
-        const queryKey = ["cpanel", "files", target, update.path];
+        const queryKey = ["cpanel", "files", apiKey, update.path];
         if (update.action === "set")
           queryClient.setQueryData(queryKey, { entries: data.entries });
         else queryClient.invalidateQueries({ queryKey });
@@ -2361,26 +2364,76 @@ function CpanelApp() {
   const [apiKey, setApiKey] = React.useState(
     () => sessionStorage.getItem(SESSION_KEY) ?? "",
   );
+  const queryClient = useQueryClient();
+  // Identity first: the session read stays answerable while the password is
+  // temporary, so the app can show the change screen without touching any
+  // data route (those answer 403 PASSWORD_CHANGE_REQUIRED for a pending
+  // session, which used to kill the restored session outright).
+  const identityQuery = useQuery({
+    queryKey: ["cpanel", "identity", apiKey],
+    queryFn: () => adminSession(apiKey),
+    enabled: Boolean(apiKey),
+  });
   const runtimeQuery = useQuery({
     queryKey: ["cpanel", "runtime", apiKey],
     queryFn: () => loadAll(apiKey),
-    enabled: Boolean(apiKey),
+    enabled:
+      identityQuery.data !== undefined &&
+      identityQuery.data.mustChangePassword === false,
     refetchInterval: 5000,
     refetchOnWindowFocus: true,
   });
   React.useEffect(() => {
-    if (runtimeQuery.error && apiKey) {
-      sessionStorage.removeItem(SESSION_KEY);
-      setApiKey("");
+    const error = identityQuery.error ?? runtimeQuery.error;
+    if (!error || !apiKey) return;
+    if (isPasswordChangeRequired(error)) {
+      // The credential is still valid: the operator marked the password as
+      // temporary. The stored session must survive this error — never clear
+      // it here. Re-check the identity so the change screen comes back (or
+      // the runtime reloads if the flag is already gone).
+      void queryClient.invalidateQueries({ queryKey: ["cpanel"] });
+      return;
     }
-  }, [apiKey, runtimeQuery.error]);
+    sessionStorage.removeItem(SESSION_KEY);
+    setApiKey("");
+  }, [apiKey, identityQuery.error, runtimeQuery.error, queryClient]);
+  function applyCredential(token: string) {
+    // A credential switch must never render the previous one's cached data:
+    // drop every ["cpanel", …] query before the new credential's queries
+    // start — including component keys that still lack the token.
+    queryClient.removeQueries({ queryKey: ["cpanel"] });
+    sessionStorage.setItem(SESSION_KEY, token);
+    setApiKey(token);
+  }
+  function endSession() {
+    queryClient.removeQueries({ queryKey: ["cpanel"] });
+    sessionStorage.removeItem(SESSION_KEY);
+    setApiKey("");
+  }
   if (!apiKey)
     return (
       <AdminLogin
-        onAuthenticated={(token) => {
-          sessionStorage.setItem(SESSION_KEY, token);
-          setApiKey(token);
+        onAuthenticated={(token) => applyCredential(token)}
+      />
+    );
+  if (identityQuery.data === undefined)
+    return (
+      <div className="grid min-h-screen place-items-center text-muted-foreground">
+        Restoring session…
+      </div>
+    );
+  if (identityQuery.data.mustChangePassword)
+    return (
+      <PasswordChangeScreen
+        apiKey={apiKey}
+        onLogout={() => {
+          // `ses-` sessions are revoked best-effort; the local session is
+          // gone before any network I/O (see clearSession).
+          void clearSession(apiKey);
+          endSession();
         }}
+        onNewSession={(token) => applyCredential(token)}
+        onRequireLogin={endSession}
       />
     );
   if (runtimeQuery.isLoading || !runtimeQuery.data)
@@ -2398,20 +2451,10 @@ function CpanelApp() {
         // cleared locally before network I/O (see clearSession). The UI also
         // returns to login immediately if the revocation request stalls.
         void clearSession(apiKey);
-        setApiKey("");
+        endSession();
       }}
-      onNewSession={(token) => {
-        // A rotated session token replaces the stored credential and the
-        // auth state; the runtime query refetches under the new token.
-        sessionStorage.setItem(SESSION_KEY, token);
-        setApiKey(token);
-      }}
-      onRequireLogin={() => {
-        // The runtime did not hand back a session: end the local session and
-        // return to the sign-in screen.
-        sessionStorage.removeItem(SESSION_KEY);
-        setApiKey("");
-      }}
+      onNewSession={(token) => applyCredential(token)}
+      onRequireLogin={endSession}
     />
   );
 }

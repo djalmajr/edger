@@ -66,6 +66,22 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   `GET /api/admin/session`, logout and `POST /api/admin/me/password`. The
   console users table gains `must_change_password` (additive, existing users
   keep 0).
+- cPanel forced password change before the Shell (EDG-48): when the cPanel
+  signs in with a temporary password, it asks for a new password before
+  anything else. The non-dismissable change screen (current, new, confirm
+  with the same policy hints as the change-password dialog) replaces the
+  Shell for all three entry paths — password login, a pasted `ses-` token
+  and a session restored on reload — and only `/api/admin/session`, logout
+  and `POST /api/admin/me/password` are used while the flag is set: the root
+  app loads the identity first and runs the data load only when
+  `mustChangePassword` is false, so a 403 `PASSWORD_CHANGE_REQUIRED` from a
+  data route never clears the stored session (the change screen comes back
+  on the next identity check). A successful change stores the rotated token
+  and loads the Shell; with no token in the answer the local session ends.
+  Cached data is isolated per credential: the runtime/series/events/files
+  query keys carry the token and every `["cpanel", …]` cache is removed on
+  logout and on credential change, so the previous credential's data never
+  renders for the next one.
 - Egress guard for user-chosen hosts (EDG-38): an app that must call a host
   the user picked (Pinar's BYOK) cannot put that host in `allowNet` without
   also letting the worker leave through it directly, so the EdgeR serves the

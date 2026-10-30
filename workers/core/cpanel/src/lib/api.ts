@@ -250,15 +250,53 @@ export async function apiDownload(
   return { blob: await response.blob(), filename };
 }
 
-export async function loadAll(apiKey: string): Promise<RuntimeData> {
-  const session = await apiJson<{
+export type AdminSession = {
+  mustChangePassword: boolean;
+  principal: Principal;
+  tenantRoutingEnabled: boolean;
+  weightedRoutingEnabled: boolean;
+};
+
+// GET /api/admin/session — the identity read the root app performs before any
+// data route: the principal, the two routing flags and the must-change
+// password gate. It stays answerable while the password is temporary (one of
+// the three routes allowed for a pending session); every other admin route
+// answers 403 PASSWORD_CHANGE_REQUIRED until the password changes. A missing
+// or non-boolean flag fails closed as false for non-session credentials, as
+// on the server.
+export async function adminSession(apiKey: string): Promise<AdminSession> {
+  const data = await apiJson<{
+    mustChangePassword?: unknown;
     principal: Principal;
     tenantRoutingEnabled?: unknown;
     weightedRoutingEnabled?: unknown;
-  }>(
-    apiKey,
-    "/api/admin/session",
+  }>(apiKey, "/api/admin/session");
+  return {
+    mustChangePassword: data.mustChangePassword === true,
+    principal: data.principal,
+    tenantRoutingEnabled: data.tenantRoutingEnabled === true,
+    weightedRoutingEnabled: data.weightedRoutingEnabled === true,
+  };
+}
+
+// The server's 403 for a pending console session (fixed copy on the wire).
+// Only this error must never clear the stored session: the credential is
+// still valid and the user must be kept on the password-change screen.
+export function isPasswordChangeRequired(reason: unknown): boolean {
+  return (
+    reason instanceof ApiError &&
+    reason.status === 403 &&
+    reason.message === "password change required"
   );
+}
+
+// Takes a pre-read identity (the root app and the login screen read it
+// first) or reads /api/admin/session itself when called bare.
+export async function loadAll(
+  apiKey: string,
+  session?: AdminSession,
+): Promise<RuntimeData> {
+  const identity = session ?? (await adminSession(apiKey));
   const [workers, workerErrors, metricsStats] = await Promise.all([
     apiJson<{ workers: Worker[] }>(apiKey, "/api/admin/workers").then(
       (data) => data.workers ?? [],
@@ -276,10 +314,10 @@ export async function loadAll(apiKey: string): Promise<RuntimeData> {
   ]);
   return {
     metricsStats,
-    principal: session.principal,
-    tenantRoutingEnabled: session.tenantRoutingEnabled === true,
+    principal: identity.principal,
+    tenantRoutingEnabled: identity.tenantRoutingEnabled,
     workerErrors,
-    weightedRoutingEnabled: session.weightedRoutingEnabled === true,
+    weightedRoutingEnabled: identity.weightedRoutingEnabled,
     workers,
   };
 }
@@ -380,13 +418,22 @@ export async function loginOptions(): Promise<LoginOptions | null> {
   return null;
 }
 
-// POST /api/admin/login {username,password} -> {token:"ses-..."}. Failure is
-// a bare ApiError with the status; the request body and any server echo are
-// never kept in the error, so nothing credential-shaped reaches the UI.
-export async function login(
+export type LoginResult = {
+  mustChangePassword: boolean;
+  token: string;
+};
+
+// POST /api/admin/login {username,password} -> {token:"ses-...",
+// mustChangePassword:<bool>}. A pending password is a VALID session: the
+// caller must not validate it against the data routes (they answer 403
+// PASSWORD_CHANGE_REQUIRED) but hand it to the root app, which shows the
+// change screen. Failure is a bare ApiError with the status; the request
+// body and any server echo are never kept in the error, so nothing
+// credential-shaped reaches the UI.
+export async function loginAs(
   username: string,
   password: string,
-): Promise<string> {
+): Promise<LoginResult> {
   const response = await fetch(runtimeUrl("/api/admin/login"), {
     body: JSON.stringify({ username, password }),
     headers: { "content-type": "application/json" },
@@ -394,12 +441,24 @@ export async function login(
   });
   if (!response.ok) throw new ApiError(response.status, "login failed");
   const data = (await response.json().catch(() => null)) as {
+    mustChangePassword?: unknown;
     token?: unknown;
   } | null;
   if (typeof data?.token !== "string" || data.token.length === 0) {
     throw new Error("login response is missing token");
   }
-  return data.token;
+  return {
+    mustChangePassword: data.mustChangePassword === true,
+    token: data.token,
+  };
+}
+
+// Token-only form of loginAs for callers that only need the credential.
+export async function login(
+  username: string,
+  password: string,
+): Promise<string> {
+  return (await loginAs(username, password)).token;
 }
 
 // POST /api/admin/logout revokes only `ses-` sessions; the endpoint accepts
@@ -584,9 +643,10 @@ export async function deleteUser(apiKey: string, id: number): Promise<void> {
 // POST /api/admin/me/password — {current, new} for `ses-` session
 // credentials only. A success answers either with the rotated session token
 // ({"token":"ses-…"}) or without one (the runtime requires a fresh login);
-// both are honest outcomes and never leak either password. Failure is a bare
-// ApiError with the status: the request body and any server echo are not kept
-// in the error.
+// both are honest outcomes and never leak either password. Failure is a
+// bare ApiError with the status: the request body is not kept in the error,
+// and only a 400 keeps the server's fixed validation message (the change
+// screen shows it verbatim); any other status keeps the fixed copy.
 export async function changeMyPassword(
   token: string,
   current: string,
@@ -600,7 +660,22 @@ export async function changeMyPassword(
     },
     method: "POST",
   });
-  if (!response.ok) throw new ApiError(response.status, "password change failed");
+  if (!response.ok) {
+    // A 400 carries the server's fixed validation copy (for example: the new
+    // password must differ from the current one); the change screen shows it
+    // verbatim. Every other status keeps the fixed copy: credential values
+    // must never surface in error text.
+    let message = "password change failed";
+    if (response.status === 400) {
+      const data = (await response.json().catch(() => null)) as {
+        message?: unknown;
+      } | null;
+      if (data !== null && typeof data.message === "string" && data.message.length > 0) {
+        message = data.message;
+      }
+    }
+    throw new ApiError(response.status, message);
+  }
   const data = (await response.json().catch(() => null)) as {
     token?: unknown;
   } | null;
