@@ -60,6 +60,67 @@ pub fn validate_key_grant(
     Ok(())
 }
 
+/// Somente sessões de administradores do console delegam gestão de usuários.
+pub fn console_actor_is_manager(actor: &ApiKeyPrincipal) -> bool {
+    actor.is_root || (actor.key_prefix == "ses" && actor.role == "admin")
+}
+
+/// Cobertura literal do estado do alvo, sem subsunção de glob.
+pub fn console_actor_can_manage(actor: &ApiKeyPrincipal, target: &ApiKeyPrincipal) -> bool {
+    if target.is_root {
+        return false;
+    }
+    if actor.is_root {
+        return true;
+    }
+    console_actor_is_manager(actor)
+        && actor.id != target.id
+        && target.role == "operator"
+        && target
+            .permissions
+            .iter()
+            .all(|entry| actor.permissions.contains(entry))
+        && [&target.namespaces, &target.workers]
+            .into_iter()
+            .zip([&actor.namespaces, &actor.workers])
+            .all(|(granted, owned)| {
+                owned.iter().any(|entry| entry == "*")
+                    || granted.iter().all(|entry| owned.contains(entry))
+            })
+}
+
+pub fn validate_console_role(
+    actor: &ApiKeyPrincipal,
+    role: Option<&str>,
+    patch: bool,
+) -> Result<(), CoreError> {
+    if !console_actor_is_manager(actor)
+        || (!actor.is_root && (patch && role.is_some() || role == Some("admin")))
+    {
+        return Err(CoreError::new("FORBIDDEN", "forbidden"));
+    }
+    if role.is_some_and(|role| !matches!(role, "operator" | "admin")) {
+        return Err(CoreError::new("VALIDATION_ERROR", "invalid role"));
+    }
+    Ok(())
+}
+
+/// Mesmo validador de keys, com erro de autoridade sem revelar grants.
+pub fn validate_console_grant(
+    actor: &ApiKeyPrincipal,
+    permissions: &[String],
+    namespaces: &[String],
+    workers: &[String],
+) -> Result<(), CoreError> {
+    validate_key_grant(actor, permissions, namespaces, workers).map_err(|err| {
+        if err.code == "KEY_GRANT_DENIED" {
+            CoreError::new("FORBIDDEN", "forbidden")
+        } else {
+            err
+        }
+    })
+}
+
 fn validate_scope_grant(
     creator: &ApiKeyPrincipal,
     kind: &str,
@@ -185,6 +246,76 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn console_management_requires_session_admin_and_literal_coverage() {
+        let mut actor = scoped_principal(vec!["@acme"], vec!["workers:read"]);
+        actor.id = 10;
+        actor.role = "admin".into();
+        actor.key_prefix = "ses".into();
+        actor.workers = strings(&["p-abc*"]);
+        let mut target = actor.clone();
+        target.id = 11;
+        target.role = "operator".into();
+        assert!(console_actor_can_manage(&actor, &target));
+        for field in ["permission", "namespace", "worker", "role", "self", "root"] {
+            let mut denied = target.clone();
+            match field {
+                "permission" => denied.permissions.push("workers:install".into()),
+                "namespace" => denied.namespaces = strings(&["@other"]),
+                "worker" => denied.workers = strings(&["p-abc-api"]),
+                "role" => denied.role = "admin".into(),
+                "self" => denied.id = actor.id,
+                "root" => denied.is_root = true,
+                _ => unreachable!(),
+            }
+            assert!(!console_actor_can_manage(&actor, &denied), "{field}");
+        }
+        actor.key_prefix = "egk_admin".into();
+        assert!(!console_actor_can_manage(&actor, &target));
+        assert!(console_actor_can_manage(
+            &crate::principal::root_principal(),
+            &target
+        ));
+    }
+
+    #[test]
+    fn console_role_assignment_and_grant_use_real_actor() {
+        let mut actor = scoped_principal(vec!["@acme"], vec!["workers:read"]);
+        actor.role = "admin".into();
+        actor.key_prefix = "ses".into();
+        assert!(validate_console_role(&actor, None, false).is_ok());
+        assert!(validate_console_role(&actor, Some("operator"), false).is_ok());
+        for (role, patch) in [
+            (Some("admin"), false),
+            (Some("operator"), true),
+            (Some("admin"), true),
+        ] {
+            assert_eq!(
+                validate_console_role(&actor, role, patch).unwrap_err().code,
+                "FORBIDDEN"
+            );
+        }
+        assert!(
+            validate_console_role(&crate::principal::root_principal(), Some("admin"), true).is_ok()
+        );
+        assert!(validate_console_grant(
+            &actor,
+            &strings(&["workers:read"]),
+            &strings(&["@acme"]),
+            &strings(&["*"])
+        )
+        .is_ok());
+        let denied = validate_console_grant(
+            &actor,
+            &strings(&["workers:install"]),
+            &strings(&["@acme"]),
+            &strings(&["*"]),
+        )
+        .unwrap_err();
+        assert_eq!(denied.code, "FORBIDDEN");
+        assert_eq!(denied.message, "forbidden");
     }
 
     #[test]
