@@ -469,6 +469,7 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Fixed
 
+- The console login no longer flashes the password form before login-options answers.
 - The files upload is all or nothing (EDG-39): `POST
   /api/admin/workers/{name}/files` used to extract the zip straight into the
   version dir, so an entry refused by path (`DEPLOY_PATH_DENIED`), a read
