@@ -853,6 +853,9 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Dependencies
 
+- `wasmtime` and `wasmtime-wasi` 49.0.4 -> 49.0.5 for RUSTSEC-2026-0422,
+  RUSTSEC-2026-0423 and RUSTSEC-2026-0424 (the `cranelift`, `pulley` and
+  `wiggle` crates move with them).
 - `zip` 8.6.0 -> 9.0.4 for RUSTSEC-2026-0367, RUSTSEC-2026-0368 and
   RUSTSEC-2026-0369. Those advisories cover `ZipArchive::extract()` and
   `ZipStreamReader::extract()`, which EdgeR does not call: the install
