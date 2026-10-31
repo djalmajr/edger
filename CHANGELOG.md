@@ -4,7 +4,11 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.29` (chart `startupProbe`
+Toward 0.3.2. Release candidates: `v0.3.2-rc.30` (console admin role and
+temporary passwords, the cPanel admin screens, the cPanel login waiting
+for login-options, egress header filtering and absolute DNS names, the
+Cinzel collab hub in `sqld-ingress`, `wasmtime` 49.0.5);
+`v0.3.2-rc.29` (chart `startupProbe`
 and pinned Deno image);
 `v0.3.2-rc.28` (`ctutils` 0.4.5
 and `tokio` 1.54.1);
@@ -967,6 +971,49 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   `OTEL_*` variables. Upstream change kept: the OTLP exporters now retry a
   failed export up to 3 times with backoff (off the request path, in the
   batch processor).
+
+## [0.3.2-rc.30]
+
+- The cPanel login screen waits for the login-options answer before
+  rendering the password form, so the form no longer flashes and swaps
+  to the token form when the server answers `passwordEnabled` false (an
+  unknown answer keeps the password form); the username field takes
+  focus once, only when nothing else on the card is focused and the
+  token form is closed (#171).
+- The production `sqld-ingress` policy admits the Cinzel collaborative
+  hub (DJA-515): pods labeled `app.kubernetes.io/name=cinzel-collab` in
+  namespace `cinzel` on port 8080, the same sqld database; the existing
+  sources are unchanged (#172).
+- Console admin role and temporary passwords (EDG-45, EDG-46, EDG-47,
+  #173): a non-root console user with role `admin` manages the operators
+  it covers (create, edit, disable, delete, reset password and revoke
+  sessions); root and other admins are listed without actions, and only
+  root assigns or removes `admin`. Created and reset users get a
+  temporary password (`mustChangePassword`): until they choose a new,
+  different one, every admin route answers 403 `PASSWORD_CHANGE_REQUIRED`
+  except the session read, logout and the password change. See the
+  `[Unreleased]` entry for the coverage and session rules.
+- The cPanel takes the admin role end to end (EDG-48, EDG-49, #176): a
+  temporary password opens a non-dismissable change screen before the
+  Shell for password login, a pasted token and a restored session; a
+  console admin sees the Users and Sessions panels within its coverage,
+  Settings stays root-only, rows it cannot manage show no actions, and
+  its grant pickers are limited to what it holds. See the `[Unreleased]`
+  entries for the per-credential cache isolation and the fixes to file
+  deletion, stale password changes and old-credential reads.
+- `wasmtime` and `wasmtime-wasi` 49.0.5 (RUSTSEC-2026-0422,
+  RUSTSEC-2026-0423 and RUSTSEC-2026-0424); the `cranelift`, `pulley` and
+  `wiggle` crates move with them, and the workspace floor rises to
+  49.0.5 (#174).
+- The egress guard strips every `x-edger-egress-*` header of the
+  upstream answer (the final answer after redirects included) before it
+  reaches the worker, so a destination cannot fake the guard's refusal
+  marker (the guard's own refusals keep the header), and resolves names
+  as absolute: the name goes to the resolver with a trailing dot, so
+  `svc.ns` and `kubernetes` no longer expand through the pod's search
+  domains and the 403/502 difference no longer reveals which cluster
+  Services exist; SNI, `Host` and the events keep the name without the
+  dot (EDG-51, EDG-57, #175).
 
 ## [0.3.2-rc.29]
 

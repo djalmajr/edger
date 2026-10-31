@@ -25,6 +25,27 @@ réplica. Sem persistência, o estado local não sobrevive à substituição do 
   Usuários e sessões compartilham o SQLite de API keys (`EDGER_API_KEYS_DB`),
   portanto exigem persistência do volume para sobreviver ao ciclo do Pod.
   Sem esse Secret, a entrada por token continua disponível.
+- O papel admin e a senha temporária são estado do banco/da API de admin,
+  **não** valor do chart: o chart segue expondo apenas
+  `consoleAuth.rootPasswordSecret.name/key` (mecanismo de seed; alterar o
+  Secret depois não reseta a senha do `root` já existente). O usuário `root`
+  é único e imutável (papel `admin`, `isRoot`); só root cria, promove ou
+  rebaixa o papel admin. Uma sessão de console com papel admin (credencial
+  `ses-`) gerencia os operadores cobertos — permissões, namespaces e workers
+  do alvo todos dentro dos próprios grants do ator (sem subunção de glob; `*`
+  cobre a dimensão de escopo); a linha do root e os demais admins aparecem
+  sem ações. A chave `egk_` com papel admin não ganha gestão de
+  usuários/sessões. O admin pode criar/editar/desabilitar/excluir operadores
+  cobertos, resetar a senha e revogar sessões; pode revogar as próprias
+  sessões exceto a corrente (só o logout termina a corrente). Rebaixamento,
+  desativação e redução de grants revogam as sessões do alvo na mesma
+  escrita. Criação/reset por outro usuário gera senha temporária: até o
+  usuário escolher uma nova diferente, toda rota de admin responde
+  `403 PASSWORD_CHANGE_REQUIRED` exceto `GET /api/admin/session`,
+  `POST /api/admin/logout` e `POST /api/admin/me/password`; a troca
+  bem-sucedida rotaciona as sessões e devolve o token novo. O cPanel mostra a
+  tela de troca (sem fechar) antes do Shell em todos os caminhos de entrada
+  (senha, token colado, sessão restaurada).
 - OIDC genérico está implementado e fica opt-in via `oidc.enabled`, `oidc.issuer`,
   `oidc.audience`, `oidc.rolesClaim` e `oidc.requiredRole`, renderizados como
   `EDGER_OIDC_*`.
@@ -117,3 +138,33 @@ serializa requests dentro de cada pod. A operação completa está descrita em
 - Rotação de root key sem restart: chave nova aceita após ~75s (re-projeção do kubelet), chave antiga 401, restartCount=0.
 - Limpeza completa: helm uninstall + namespace e imagem removidos.
 - Pendência que resta: exposição via Cloudflare Tunnel/ingress e deploy contínuo (kaniko/registry, runbook 08 do infra) ficam para quando o edger for a produção de fato.
+
+## Upgrade da plataforma para o 0.3.2-rc.30
+
+Procedimento para o upgrade da release `edger` (namespace
+`edger`) para o `0.3.2-rc.30` — a primeira versão com o papel admin da
+console e a senha temporária (EDG-45/46/47 no backend, EDG-48/49 no cPanel;
+EDG-50 documenta o contrato). Execute as etapas na ordem abaixo e registre
+separadamente a versão, a revisão e o resultado das verificações da operação.
+
+1. **Backup consistente do `api-keys.db` antes do upgrade.** O arquivo fica no
+   PVC local `edger-user-workers` e guarda as chaves `egk_`, os usuários da
+   console (`console_users`) e as sessões (`console_sessions`). A migração do
+   rc.30 é aditiva e idempotente (`ALTER TABLE console_users ADD COLUMN
+   must_change_password INTEGER NOT NULL DEFAULT 0`, executada só com a
+   coluna ausente; usuários existentes mantêm `0`, sem recriar tabela), mas o
+   backup é a âncora do rollback: cópia consistente via export de estado
+   (`VACUUM INTO`) ou backup online do SQLite; uma cópia bruta do arquivo só
+   é consistente com o EdgeR parado.
+2. **Upgrade do chart para o `0.3.2-rc.30`** (a imagem é fixada por digest no
+   chart; manter `--history-max 5` para o `helm rollback`).
+3. **Promoção do `djalmajr` para admin, sem reset de senha.** Localizar a
+   linha do `djalmajr` em `GET /api/admin/users` (com a root key) e aplicar
+   `PATCH /api/admin/users/{id}` com exatamente `{"role":"admin"}` — um único
+   campo; o SQL da mutação não toca `password_hash`, `password_changed_at`
+   nem `must_change_password`, então a senha e o estado de senha temporária
+   do usuário não mudam. A promoção **não** revoga as sessões do alvo (ao
+   contrário do rebaixamento): o token `ses-` existente passa a reportar
+   `role: "admin"` no `GET /api/admin/session` a partir do próximo request.
+   Se a linha não existir ou `isRoot` for `true`, parar e reabrir o escopo do
+   EDG-50 (a linha do root é imutável, `403 USER_IMMUTABLE`).
