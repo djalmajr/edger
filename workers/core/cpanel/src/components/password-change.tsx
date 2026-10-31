@@ -27,6 +27,10 @@ import { LanguageMenu, ThemeMenu } from "./preference-menus";
 // back no token). The policy rules and the copy come from the shared
 // passwordPolicyIssues and the change-password dialog's i18n keys — nothing
 // is duplicated here; only the confirm field and its message are new.
+// A change that is still in flight when the session ends (logout, or the
+// screen unmounting) is ignored on completion: the request generation must
+// still match, or the late answer would restore a credential the user just
+// threw away.
 export function PasswordChangeScreen({
   apiKey,
   onLogout,
@@ -35,7 +39,7 @@ export function PasswordChangeScreen({
 }: {
   apiKey: string;
   onLogout(): void;
-  onNewSession(token: string): void;
+  onNewSession(token: string, fromCredential: string): void;
   onRequireLogin(): void;
 }) {
   const { t } = useI18n();
@@ -44,6 +48,9 @@ export function PasswordChangeScreen({
   const [confirm, setConfirm] = React.useState("");
   const [error, setError] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
+  // Request generation: bumped on logout and on unmount so an in-flight
+  // change cannot complete a session that has already ended.
+  const generationRef = React.useRef(0);
 
   // The same policy check as the account-menu dialog: an empty new password
   // is allowed to be typed and rejected at submit time; anything non-empty
@@ -51,6 +58,12 @@ export function PasswordChangeScreen({
   const nextOk =
     next === "" || passwordPolicyIssues(next).length === 0;
   const confirmOk = next === "" || confirm === next;
+
+  // Unmounting invalidates the in-flight change: its completion must not
+  // write a session back.
+  React.useEffect(() => () => {
+    generationRef.current += 1;
+  }, []);
 
   function describeChangeError(reason: unknown): string {
     if (reason instanceof ApiError) {
@@ -68,17 +81,29 @@ export function PasswordChangeScreen({
   ): Promise<void> {
     event.preventDefault();
     if (submitting || !current || !nextOk || !confirmOk || next === "") return;
+    const generation = generationRef.current;
     setSubmitting(true);
     setError("");
     try {
       const token = await changeMyPassword(apiKey, current, next);
-      if (token) onNewSession(token);
+      // A logout or unmount during the request bumped the generation: the
+      // session ended, and the late answer must not restore it.
+      if (generation !== generationRef.current) return;
+      if (token) onNewSession(token, apiKey);
       else onRequireLogin();
     } catch (reason) {
+      if (generation !== generationRef.current) return;
       setError(describeChangeError(reason));
     } finally {
-      setSubmitting(false);
+      if (generation === generationRef.current) setSubmitting(false);
     }
+  }
+
+  function logout() {
+    // Invalidate the in-flight change before the session ends: a late
+    // success must not restore the credential this screen just dropped.
+    generationRef.current += 1;
+    onLogout();
   }
 
   return (
@@ -175,7 +200,7 @@ export function PasswordChangeScreen({
             <Button
               className="justify-self-start"
               variant="outline"
-              onClick={onLogout}
+              onClick={logout}
             >
               {t("account.logout")}
             </Button>

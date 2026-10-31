@@ -250,12 +250,12 @@ export async function apiDownload(
   return { blob: await response.blob(), filename };
 }
 
-export type AdminSession = {
+export interface AdminSession {
   mustChangePassword: boolean;
   principal: Principal;
   tenantRoutingEnabled: boolean;
   weightedRoutingEnabled: boolean;
-};
+}
 
 // GET /api/admin/session — the identity read the root app performs before any
 // data route: the principal, the two routing flags and the must-change
@@ -418,10 +418,10 @@ export async function loginOptions(): Promise<LoginOptions | null> {
   return null;
 }
 
-export type LoginResult = {
+export interface LoginResult {
   mustChangePassword: boolean;
   token: string;
-};
+}
 
 // POST /api/admin/login {username,password} -> {token:"ses-...",
 // mustChangePassword:<bool>}. A pending password is a VALID session: the
@@ -440,16 +440,16 @@ export async function loginAs(
     method: "POST",
   });
   if (!response.ok) throw new ApiError(response.status, "login failed");
-  const data = (await response.json().catch(() => null)) as {
-    mustChangePassword?: unknown;
-    token?: unknown;
-  } | null;
-  if (typeof data?.token !== "string" || data.token.length === 0) {
+  const data: unknown = await response.json().catch(() => null);
+  if (typeof data !== "object" || data === null)
     throw new Error("login response is missing token");
-  }
+  const token = (data as { token?: unknown }).token;
+  if (typeof token !== "string" || token.length === 0)
+    throw new Error("login response is missing token");
   return {
-    mustChangePassword: data.mustChangePassword === true,
-    token: data.token,
+    mustChangePassword:
+      (data as { mustChangePassword?: unknown }).mustChangePassword === true,
+    token,
   };
 }
 

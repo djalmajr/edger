@@ -1433,7 +1433,10 @@ function Files({
         data.errors.map((error) => `${error.path}: ${error.message}`),
       );
       for (const update of deleteEntriesCacheUpdates(path)) {
-        const queryKey = ["cpanel", "files", apiKey, update.path];
+        // The write/invalidation keys must match the read key exactly —
+        // including the worker target — or the mounted listing keeps showing
+        // the deleted file.
+        const queryKey = ["cpanel", "files", apiKey, target, update.path];
         if (update.action === "set")
           queryClient.setQueryData(queryKey, { entries: data.entries });
         else queryClient.invalidateQueries({ queryKey });
@@ -2365,11 +2368,16 @@ function CpanelApp() {
     () => sessionStorage.getItem(SESSION_KEY) ?? "",
   );
   const queryClient = useQueryClient();
+  // The latest credential at call time: a completion captured by an older
+  // render (a password change that finished after logout) may still hold a
+  // stale handler, but this ref reads the current state.
+  const credentialRef = React.useRef(apiKey);
+  credentialRef.current = apiKey;
   // Identity first: the session read stays answerable while the password is
   // temporary, so the app can show the change screen without touching any
   // data route (those answer 403 PASSWORD_CHANGE_REQUIRED for a pending
   // session, which used to kill the restored session outright).
-  const identityQuery = useQuery({
+  const identity$ = useQuery({
     queryKey: ["cpanel", "identity", apiKey],
     queryFn: () => adminSession(apiKey),
     enabled: Boolean(apiKey),
@@ -2378,13 +2386,13 @@ function CpanelApp() {
     queryKey: ["cpanel", "runtime", apiKey],
     queryFn: () => loadAll(apiKey),
     enabled:
-      identityQuery.data !== undefined &&
-      identityQuery.data.mustChangePassword === false,
+      identity$.data !== undefined &&
+      identity$.data.mustChangePassword === false,
     refetchInterval: 5000,
     refetchOnWindowFocus: true,
   });
   React.useEffect(() => {
-    const error = identityQuery.error ?? runtimeQuery.error;
+    const error = identity$.error ?? runtimeQuery.error;
     if (!error || !apiKey) return;
     if (isPasswordChangeRequired(error)) {
       // The credential is still valid: the operator marked the password as
@@ -2396,7 +2404,7 @@ function CpanelApp() {
     }
     sessionStorage.removeItem(SESSION_KEY);
     setApiKey("");
-  }, [apiKey, identityQuery.error, runtimeQuery.error, queryClient]);
+  }, [apiKey, identity$.error, runtimeQuery.error, queryClient]);
   function applyCredential(token: string) {
     // A credential switch must never render the previous one's cached data:
     // drop every ["cpanel", …] query before the new credential's queries
@@ -2410,19 +2418,27 @@ function CpanelApp() {
     sessionStorage.removeItem(SESSION_KEY);
     setApiKey("");
   }
+  function onNewSession(newToken: string, fromCredential: string) {
+    // A completion belonging to a session that ended or changed must never
+    // restore the credential: compare the credential that started the
+    // request with the one held now (read at call time, so a stale handler
+    // captured by an older render is still rejected after logout).
+    if (credentialRef.current !== fromCredential) return;
+    applyCredential(newToken);
+  }
   if (!apiKey)
     return (
       <AdminLogin
         onAuthenticated={(token) => applyCredential(token)}
       />
     );
-  if (identityQuery.data === undefined)
+  if (identity$.data === undefined)
     return (
       <div className="grid min-h-screen place-items-center text-muted-foreground">
         Restoring session…
       </div>
     );
-  if (identityQuery.data.mustChangePassword)
+  if (identity$.data.mustChangePassword)
     return (
       <PasswordChangeScreen
         apiKey={apiKey}
@@ -2432,7 +2448,7 @@ function CpanelApp() {
           void clearSession(apiKey);
           endSession();
         }}
-        onNewSession={(token) => applyCredential(token)}
+        onNewSession={onNewSession}
         onRequireLogin={endSession}
       />
     );
@@ -2453,7 +2469,7 @@ function CpanelApp() {
         void clearSession(apiKey);
         endSession();
       }}
-      onNewSession={(token) => applyCredential(token)}
+      onNewSession={(token) => onNewSession(token, apiKey)}
       onRequireLogin={endSession}
     />
   );
