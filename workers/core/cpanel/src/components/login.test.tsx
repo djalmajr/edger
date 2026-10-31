@@ -1,7 +1,7 @@
 import { ensureLoginDom } from "./login.dom";
 import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 
-const { cleanup, render, screen, waitFor, within } = await import(
+const { cleanup, fireEvent, render, screen, waitFor, within } = await import(
   "@testing-library/react"
 );
 const { default: userEvent } = await import("@testing-library/user-event");
@@ -66,6 +66,162 @@ describe("AdminLogin", () => {
     fetchMock.mockReset();
     localStorage.clear();
     sessionStorage.clear();
+  });
+
+  it("keeps password controls and state-dependent copy hidden while login-options is pending, with token login usable", async () => {
+    localStorage.setItem("edger.cpanel.locale", "pt-BR");
+    const onAuthenticated = storeOnAuthenticated();
+    const pendingOptions = deferred<Response>();
+    fetchMock.mockReturnValueOnce(pendingOptions.promise);
+    queueLoadAllSuccess();
+    renderLogin(onAuthenticated);
+
+    expect(screen.getByText("Acesso administrativo")).toBeTruthy();
+    expect(document.querySelector("#login-password")).toBeNull();
+    expect(screen.queryByLabelText("Usuário")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Entrar" })).toBeNull();
+    expect(screen.queryByText("Root é seedado no primeiro boot.")).toBeNull();
+    expect(
+      screen.queryByText("Você também pode entrar com token."),
+    ).toBeNull();
+    expect(
+      screen.queryByText(
+        "O login por senha ainda não está disponível. Entre com token.",
+      ),
+    ).toBeNull();
+
+    const user = userEvent.setup();
+    const toggle = screen.getByRole("button", { name: "Entrar com token" });
+    await user.click(toggle);
+    expect(screen.getByLabelText("Token")).toBeTruthy();
+    await user.click(toggle);
+    expect(screen.queryByLabelText("Token")).toBeNull();
+    await user.click(toggle);
+    await user.type(screen.getByLabelText("Token"), "root-key");
+    await user.click(screen.getByRole("button", { name: "Entrar" }));
+    await waitFor(() =>
+      expect(onAuthenticated).toHaveBeenCalledWith("root-key"),
+    );
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe("root-key");
+    expect(document.querySelector("#login-password")).toBeNull();
+    expect(screen.queryByLabelText("Usuário")).toBeNull();
+    expect(
+      screen.queryByText("Você também pode entrar com token."),
+    ).toBeNull();
+  });
+
+  it.each([
+    { state: "enabled", body: { passwordEnabled: true, rootSeeded: true } },
+    { state: "unknown", body: null },
+  ])(
+    "preserves token entry when $state login-options resolves",
+    async ({ body }) => {
+      localStorage.setItem("edger.cpanel.locale", "pt-BR");
+      const pendingOptions = deferred<Response>();
+      fetchMock.mockReturnValueOnce(pendingOptions.promise);
+      renderLogin(storeOnAuthenticated());
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Entrar com token" }));
+      const tokenInput = screen.getByLabelText("Token") as HTMLInputElement;
+      await user.type(tokenInput, "prefix-");
+      expect(document.activeElement).toBe(tokenInput);
+
+      pendingOptions.resolve(jsonResponse(body));
+      const usernameInput = await screen.findByLabelText(
+        "Usuário",
+      ) as HTMLInputElement;
+      expect(document.activeElement).toBe(tokenInput);
+      await user.keyboard("suffix");
+      expect(document.activeElement).toBe(tokenInput);
+      expect(tokenInput.value).toBe("prefix-suffix");
+      expect(usernameInput.value).toBe("");
+    },
+  );
+
+  it.each([
+    { state: "enabled", body: { passwordEnabled: true, rootSeeded: true } },
+    { state: "unknown", body: null },
+  ])(
+    "focuses username after $state login-options resolves without interaction",
+    async ({ body }) => {
+      localStorage.setItem("edger.cpanel.locale", "pt-BR");
+      const pendingOptions = deferred<Response>();
+      fetchMock.mockReturnValueOnce(pendingOptions.promise);
+      renderLogin(storeOnAuthenticated());
+      expect(document.activeElement).toBe(document.body);
+
+      pendingOptions.resolve(jsonResponse(body));
+      const usernameInput = await screen.findByLabelText("Usuário");
+      await waitFor(() => expect(document.activeElement).toBe(usernameInput));
+    },
+  );
+
+  it.each(["input", "textarea", "select", "button"] as const)(
+    "keeps a chosen %s focused when the password form mounts",
+    async (kind) => {
+      localStorage.setItem("edger.cpanel.locale", "pt-BR");
+      const pendingOptions = deferred<Response>();
+      fetchMock.mockReturnValueOnce(pendingOptions.promise);
+      renderLogin(storeOnAuthenticated());
+      const control = kind === "button"
+        ? screen.getByRole("button", { name: "Entrar com token" })
+        : document.createElement(kind);
+      if (kind !== "button") {
+        const card = screen.getByText("Acesso administrativo")
+          .closest("[data-slot='card']");
+        if (!card) throw new Error("login card not found");
+        card.append(control);
+      }
+      control.focus();
+
+      pendingOptions.resolve(
+        jsonResponse({ passwordEnabled: true, rootSeeded: true }),
+      );
+      await screen.findByLabelText("Usuário");
+      expect(document.activeElement).toBe(control);
+      expect(screen.queryByLabelText("Token")).toBeNull();
+    },
+  );
+
+  it("preserves focus outside the login card when the password form mounts", async () => {
+    localStorage.setItem("edger.cpanel.locale", "pt-BR");
+    const pendingOptions = deferred<Response>();
+    fetchMock.mockReturnValueOnce(pendingOptions.promise);
+    renderLogin(storeOnAuthenticated());
+    const { container } = render(<div tabIndex={-1} />);
+    const outside = container.firstElementChild as HTMLDivElement;
+    outside.focus();
+
+    pendingOptions.resolve(
+      jsonResponse({ passwordEnabled: true, rootSeeded: true }),
+    );
+    await screen.findByLabelText("Usuário");
+    expect(document.activeElement).toBe(outside);
+  });
+
+  it("does not focus username with the token form open even when focus returns to the body", async () => {
+    localStorage.setItem("edger.cpanel.locale", "pt-BR");
+    const pendingOptions = deferred<Response>();
+    fetchMock.mockReturnValueOnce(pendingOptions.promise);
+    renderLogin(storeOnAuthenticated());
+    const user = userEvent.setup();
+    const toggle = screen.getByRole("button", { name: "Entrar com token" });
+    await user.click(toggle);
+    toggle.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    pendingOptions.resolve(
+      jsonResponse({ passwordEnabled: true, rootSeeded: true }),
+    );
+    await screen.findByLabelText("Usuário");
+    expect(screen.getByLabelText("Token")).toBeTruthy();
+    expect(document.activeElement).toBe(document.body);
+    // A click need not move focus (for example a touch interaction). Closing
+    // the token form must not retry the skipped mount-time focus attempt.
+    fireEvent.click(toggle);
+    expect(screen.queryByLabelText("Token")).toBeNull();
+    expect(document.activeElement).toBe(document.body);
   });
 
   it("logs in with user/password, validates the session token, and stores it", async () => {
@@ -321,10 +477,14 @@ describe("AdminLogin", () => {
   it("hides the password form when the runtime says passwords are off, and keeps the token path working", async () => {
     localStorage.setItem("edger.cpanel.locale", "pt-BR");
     const onAuthenticated = storeOnAuthenticated();
-    fetchMock.mockResolvedValueOnce(
+    const pendingOptions = deferred<Response>();
+    fetchMock.mockReturnValueOnce(pendingOptions.promise);
+    renderLogin(onAuthenticated);
+    expect(document.querySelector("#login-password")).toBeNull();
+    expect(screen.queryByLabelText("Usuário")).toBeNull();
+    pendingOptions.resolve(
       jsonResponse({ passwordEnabled: false, rootSeeded: false }),
     );
-    renderLogin(onAuthenticated);
     await screen.findByText(
       "O login por senha ainda não está disponível. Entre com token.",
     );
@@ -360,6 +520,11 @@ describe("AdminLogin", () => {
         formVisible: true,
       },
       {
+        body: null,
+        line: "Você também pode entrar com token.",
+        formVisible: true,
+      },
+      {
         // Passwords on but seed not confirmed: neutral sentence only.
         body: { passwordEnabled: true, rootSeeded: false },
         line: "Você também pode entrar com token.",
@@ -370,13 +535,20 @@ describe("AdminLogin", () => {
       cleanup();
       fetchMock.mockReset();
       localStorage.setItem("edger.cpanel.locale", "pt-BR");
-      fetchMock.mockResolvedValueOnce(jsonResponse(state.body));
+      const pendingOptions = deferred<Response>();
+      fetchMock.mockReturnValueOnce(pendingOptions.promise);
       renderLogin(storeOnAuthenticated());
+      expect(screen.queryByLabelText("Usuário")).toBeNull();
+      expect(document.querySelector("#login-password")).toBeNull();
+      expect(screen.queryByText(state.line)).toBeNull();
+      pendingOptions.resolve(jsonResponse(state.body));
       await screen.findByText(state.line);
       expect(screen.queryByText("Root é seedado no primeiro boot.")).toBeNull();
       if (state.formVisible) {
+        expect(screen.queryByLabelText("Usuário")).toBeTruthy();
         expect(screen.queryByLabelText("Senha")).toBeTruthy();
       } else {
+        expect(screen.queryByLabelText("Usuário")).toBeNull();
         expect(screen.queryByLabelText("Senha")).toBeNull();
       }
     }
