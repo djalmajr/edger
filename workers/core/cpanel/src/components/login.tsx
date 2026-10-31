@@ -18,9 +18,10 @@ import { Separator } from "@edger/ui/components/ui/separator";
 import * as React from "react";
 
 import {
+  adminSession,
   ApiError,
-  login,
   loadAll,
+  loginAs,
   loginOptions,
   type LoginOptions,
 } from "../lib/api";
@@ -121,11 +122,13 @@ export function AdminLogin({
     setSubmittingForm("password");
     setError("");
     try {
-      const token = await login(name, password);
-      // Validate before storing: a token that cannot load the runtime is not
-      // a session.
-      await loadAll(token);
-      onAuthenticated(token);
+      const result = await loginAs(name, password);
+      // A pending password is a valid session: the root app shows the change
+      // screen from /api/admin/session. Only a non-pending token validates
+      // the data routes here — a token that cannot load the runtime is not a
+      // session.
+      if (!result.mustChangePassword) await loadAll(result.token);
+      onAuthenticated(result.token);
     } catch (reason) {
       // Fixed copy per status: the password never reaches the error surface.
       setError(describeLoginError(reason));
@@ -146,7 +149,11 @@ export function AdminLogin({
     setSubmittingForm("token");
     setError("");
     try {
-      await loadAll(value);
+      const identity = await adminSession(value);
+      // A pending token is a valid session: the root app shows the change
+      // screen. Only a non-pending credential validates the data routes
+      // here, exactly like before.
+      if (!identity.mustChangePassword) await loadAll(value, identity);
       onAuthenticated(value);
     } catch (reason) {
       setError(

@@ -26,6 +26,25 @@ const operatorPrincipal: Principal = {
   role: "operator",
   permissions: ["workers:read"],
 };
+// A console admin: a `ses-` session whose user row is admin (the wire
+// shape the server's principal envelope carries).
+const adminPrincipal: Principal = {
+  isRoot: false,
+  keyPrefix: "ses",
+  name: "boss",
+  role: "admin",
+  permissions: ["*"],
+  namespaces: ["*"],
+  workers: ["*"],
+};
+// The same role string on an `egk_` API key is NOT a console admin.
+const egkAdminPrincipal: Principal = {
+  isRoot: false,
+  keyPrefix: "egk_",
+  name: "svc",
+  role: "admin",
+  permissions: ["*"],
+};
 
 function makeUser(overrides: Partial<AdminUser> = {}): AdminUser {
   return {
@@ -33,6 +52,8 @@ function makeUser(overrides: Partial<AdminUser> = {}): AdminUser {
     disabled: false,
     id: 2,
     isRoot: false,
+    manageable: true,
+    mustChangePassword: false,
     namespaces: ["*"],
     permissions: ["workers:read", "files:read"],
     role: "operator",
@@ -44,7 +65,7 @@ function makeUser(overrides: Partial<AdminUser> = {}): AdminUser {
 
 const listBody = {
   users: [
-    makeUser({ id: 1, isRoot: true, permissions: ["*"], role: "root", username: "root" }),
+    makeUser({ id: 1, isRoot: true, manageable: false, permissions: ["*"], role: "admin", username: "root" }),
     makeUser(),
   ],
 };
@@ -226,6 +247,7 @@ describe("ConsoleUsers", () => {
       namespaces: ["*"],
       password: "str0ng!passw0rd",
       permissions: ["workers:read", "keys:manage"],
+      role: "operator",
       username: "analyst-02",
       workers: ["*"],
     });
@@ -500,6 +522,7 @@ describe("ConsoleUsers", () => {
     expect(JSON.parse(String(patch[1].body))).toEqual({
       namespaces: ["*"],
       permissions: ["workers:read"],
+      role: "operator",
       workers: ["*"],
     });
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -555,7 +578,7 @@ describe("ConsoleUsers", () => {
   it("searches username, namespaces and workers, resets to page one from a later page, and recovers the list on clear", async () => {
     globalThis.fetch = fetchMock;
     const users = [
-      makeUser({ id: 1, isRoot: true, permissions: ["*"], role: "root", username: "root" }),
+      makeUser({ id: 1, isRoot: true, manageable: false, permissions: ["*"], role: "admin", username: "root" }),
       ...Array.from({ length: 30 }, (_, index) =>
         makeUser({ id: 2 + index, username: `user-${String(index).padStart(2, "0")}` }),
       ),
@@ -643,8 +666,9 @@ describe("ConsoleUsers", () => {
         makeUser({
           id: 1,
           isRoot: true,
+          manageable: false,
           permissions: ["*"],
-          role: "root",
+          role: "admin",
           username: "root",
         }),
         makeUser({ id: 2, username: longName, workers: longWorkers }),
@@ -744,6 +768,292 @@ describe("ConsoleUsers", () => {
         JSON.parse(localStorage.getItem("edger.cpanel.columns.users")!),
       ).toEqual({ permissions: true });
     }
+  });
+
+  it("hides the panel from an egk_ key with the admin role string", () => {
+    globalThis.fetch = fetchMock;
+    renderUsers(egkAdminPrincipal);
+    expect(
+      screen.getByText(
+        "Only the root principal manages users. Ask the operator for access.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("lists every user for a ses- admin, with actions only on covered rows and the role and temporary-password badges", async () => {
+    globalThis.fetch = fetchMock;
+    const adminBody = {
+      users: [
+        makeUser({ id: 1, isRoot: true, manageable: false, permissions: ["*"], role: "admin", username: "root" }),
+        makeUser({ id: 3, manageable: false, permissions: ["workers:read"], role: "admin", username: "boss" }),
+        makeUser({ id: 4, manageable: true, mustChangePassword: true, username: "analyst-01" }),
+      ],
+    };
+    stubJson(fetchMock, adminBody);
+    renderUsers(adminPrincipal);
+    const table = await screen.findByRole("table");
+    // The admin sees every row, root and other admins included.
+    expect(within(table).getAllByText("root").length).toBeGreaterThanOrEqual(2);
+    expect(within(table).getByText("boss")).toBeTruthy();
+    expect(within(table).getByText("analyst-01")).toBeTruthy();
+    // The admin row wears the role badge…
+    expect(within(table).getByText("admin")).toBeTruthy();
+    // …and the temporary-password badge shows for the flagged row.
+    expect(within(table).getByText("Temporary password")).toBeTruthy();
+    // No action controls on the rows the caller cannot manage…
+    const [rootRow, bossRow, analystRow] =
+      table.querySelectorAll("tbody tr");
+    expect(within(rootRow as HTMLElement).queryByRole("button")).toBeNull();
+    expect(within(bossRow as HTMLElement).queryByRole("button")).toBeNull();
+    // …while the covered operator row keeps all four.
+    expect(
+      within(analystRow as HTMLElement).getByRole("button", { name: "Edit" }),
+    ).toBeTruthy();
+    expect(
+      within(analystRow as HTMLElement).getByRole("button", { name: "Disable" }),
+    ).toBeTruthy();
+    expect(
+      within(analystRow as HTMLElement).getByRole("button", {
+        name: "Reset password",
+      }),
+    ).toBeTruthy();
+    expect(
+      within(analystRow as HTMLElement).getByRole("button", { name: "Delete" }),
+    ).toBeTruthy();
+  });
+
+  it("renders the role selector for root and sends the selected role", async () => {
+    globalThis.fetch = fetchMock;
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(listBody))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { user: makeUser({ id: 5, role: "admin", username: "boss" }) },
+          201,
+        ),
+      );
+    stubJson(fetchMock, listBody);
+    renderUsers();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "New user" }));
+    const dialog = await screen.findByRole("dialog");
+    const role = within(dialog).getByLabelText("Role") as HTMLSelectElement;
+    expect(role.value).toBe("operator");
+    await user.type(within(dialog).getByLabelText("Username"), "boss");
+    await user.type(within(dialog).getByLabelText("Password"), "str0ng!passw0rd");
+    await user.selectOptions(role, "admin");
+    await user.click(within(dialog).getByRole("button", { name: "New user" }));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(
+        true,
+      ),
+    );
+    const create = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "POST",
+    ) as unknown as [string, RequestInit];
+    expect(JSON.parse(String(create[1].body))).toEqual({
+      namespaces: ["*"],
+      password: "str0ng!passw0rd",
+      permissions: ["workers:read"],
+      role: "admin",
+      username: "boss",
+      workers: ["*"],
+    });
+  });
+
+  it("omits the role field from an admin's create and edit requests and offers no role selector", async () => {
+    globalThis.fetch = fetchMock;
+    const adminBody = {
+      users: [
+        makeUser({ id: 1, isRoot: true, manageable: false, permissions: ["*"], role: "admin", username: "root" }),
+        makeUser({ id: 4, manageable: true, username: "analyst-01" }),
+      ],
+    };
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(adminBody))
+      .mockResolvedValueOnce(
+        jsonResponse({ user: makeUser({ id: 6, username: "analyst-02" }) }, 201),
+      );
+    stubJson(fetchMock, adminBody);
+    renderUsers(adminPrincipal);
+    const te = userEvent.setup();
+    await te.click(await screen.findByRole("button", { name: "New user" }));
+    let dialog = await screen.findByRole("dialog");
+    // No role selector for a console admin…
+    expect(within(dialog).queryByLabelText("Role")).toBeNull();
+    await te.type(within(dialog).getByLabelText("Username"), "analyst-02");
+    await te.type(within(dialog).getByLabelText("Password"), "str0ng!passw0rd");
+    await te.click(within(dialog).getByRole("button", { name: "New user" }));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(
+        true,
+      ),
+    );
+    const create = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "POST",
+    ) as unknown as [string, RequestInit];
+    const createBody = JSON.parse(String(create[1].body)) as Record<string, unknown>;
+    expect("role" in createBody).toBe(false);
+    expect(createBody.permissions).toEqual(["workers:read"]);
+    // …and the edit request carries it no less: the dialog offers no
+    // selector and the PATCH body has no role field.
+    await te.click(await screen.findByRole("button", { name: "Edit" }));
+    dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByLabelText("Role")).toBeNull();
+    await te.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(
+        true,
+      ),
+    );
+    const patch = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "PATCH",
+    ) as unknown as [string, RequestInit];
+    expect("role" in JSON.parse(String(patch[1].body))).toBe(false);
+  });
+
+  it("opens the form on the caller's own grantable scopes with zero errors for a restricted admin", async () => {
+    globalThis.fetch = fetchMock;
+    const restricted: Principal = {
+      isRoot: false,
+      keyPrefix: "ses",
+      name: "boss",
+      role: "admin",
+      permissions: ["workers:read", "files:read"],
+      namespaces: ["@acme"],
+      workers: ["hello"],
+    };
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(listBody))
+      .mockResolvedValueOnce(
+        jsonResponse({ user: makeUser({ id: 3, username: "analyst-02" }) }, 201),
+      );
+    stubJson(fetchMock, listBody);
+    renderUsers(restricted);
+    const te = userEvent.setup();
+    await te.click(await screen.findByRole("button", { name: "New user" }));
+    const dialog = await screen.findByRole("dialog");
+    // The scope fields default to the caller's own grantable entries — not
+    // "*": zero scope errors on open. The valid defaults never block the
+    // submit (an unfilled form is refused by the submit guard, not by the
+    // button)…
+    expect(within(dialog).queryAllByRole("alert")).toHaveLength(0);
+    expect(
+      (within(dialog).getByLabelText(/Namespaces/) as HTMLInputElement).value,
+    ).toBe("@acme");
+    expect(
+      (within(dialog).getByLabelText(/Workers/) as HTMLInputElement).value,
+    ).toBe("hello");
+    expect(within(dialog).getByRole("button", { name: "New user" })).toHaveProperty(
+      "disabled",
+      false,
+    );
+    await te.click(within(dialog).getByRole("button", { name: "New user" }));
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length,
+    ).toBe(0);
+    // …and once the form is filled the create goes out.
+    await te.type(within(dialog).getByLabelText("Username"), "analyst-02");
+    await te.type(within(dialog).getByLabelText("Password"), "str0ng!passw0rd");
+    await te.click(within(dialog).getByRole("button", { name: "New user" }));
+    // A successful create keeps the same rule on the reset: the dialog
+    // closes and re-opens on the caller's own grantable scopes again.
+    await te.click(within(dialog).getByRole("button", { name: "New user" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await te.click(await screen.findByRole("button", { name: "New user" }));
+    const reopened = await screen.findByRole("dialog");
+    expect(within(reopened).queryAllByRole("alert")).toHaveLength(0);
+    expect(
+      (within(reopened).getByLabelText(/Namespaces/) as HTMLInputElement).value,
+    ).toBe("@acme");
+    expect(
+      (within(reopened).getByLabelText(/Workers/) as HTMLInputElement).value,
+    ).toBe("hello");
+  });
+
+  it("offers only the admin's own permissions and refuses namespaces and workers outside its coverage", async () => {
+    globalThis.fetch = fetchMock;
+    const restricted: Principal = {
+      isRoot: false,
+      keyPrefix: "ses",
+      name: "boss",
+      role: "admin",
+      permissions: ["workers:read", "files:read"],
+      namespaces: ["@acme"],
+      workers: ["hello"],
+    };
+    stubJson(fetchMock, { users: [makeUser({ id: 4, username: "analyst-01" })] });
+    renderUsers(restricted);
+    const te = userEvent.setup();
+    await te.click(await screen.findByRole("button", { name: "New user" }));
+    const dialog = await screen.findByRole("dialog");
+    // The permission options are limited to the caller's own permissions.
+    expect(
+      within(dialog).getByRole("checkbox", { name: "workers:read" }),
+    ).toBeTruthy();
+    expect(within(dialog).getByRole("checkbox", { name: "files:read" })).toBeTruthy();
+    expect(
+      within(dialog).queryByRole("checkbox", { name: "keys:manage" }),
+    ).toBeNull();
+    // The default scopes sit INSIDE this caller's coverage: no alerts. The
+    // submit stays gated only by the (empty) username and password…
+    expect(within(dialog).queryAllByRole("alert")).toHaveLength(0);
+    // …and values typed outside the coverage show the same validation
+    // style, disabling the submit until brought back inside the coverage.
+    await te.clear(within(dialog).getByLabelText(/Namespaces/));
+    await te.type(within(dialog).getByLabelText(/Namespaces/), "platform-x");
+    expect(within(dialog).queryAllByRole("alert")).toHaveLength(1);
+    expect(within(dialog).getByRole("button", { name: "New user" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    await te.clear(within(dialog).getByLabelText(/Namespaces/));
+    await te.type(within(dialog).getByLabelText(/Namespaces/), "@acme");
+    await te.clear(within(dialog).getByLabelText(/Workers/));
+    await te.type(within(dialog).getByLabelText(/Workers/), "other");
+    expect(within(dialog).queryAllByRole("alert")).toHaveLength(1);
+    await te.clear(within(dialog).getByLabelText(/Workers/));
+    await te.type(within(dialog).getByLabelText(/Workers/), "hello");
+    expect(within(dialog).queryAllByRole("alert")).toHaveLength(0);
+    // Filled and covered, the create goes out with the covered values and
+    // no role (an admin never sends a role).
+    await te.type(within(dialog).getByLabelText("Username"), "analyst-02");
+    await te.type(within(dialog).getByLabelText("Password"), "str0ng!passw0rd");
+    await te.click(within(dialog).getByRole("button", { name: "New user" }));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([, init]) => init?.method === "POST"),
+      ).toBe(true),
+    );
+    const create = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "POST",
+    ) as unknown as [string, RequestInit];
+    expect(JSON.parse(String(create[1].body))).toEqual({
+      namespaces: ["@acme"],
+      password: "str0ng!passw0rd",
+      permissions: ["workers:read"],
+      username: "analyst-02",
+      workers: ["hello"],
+    });
+  });
+
+  it("accepts any worker value for an admin whose own list holds *", async () => {
+    globalThis.fetch = fetchMock;
+    stubJson(fetchMock, { users: [makeUser({ id: 4, username: "analyst-01" })] });
+    renderUsers(adminPrincipal);
+    const te = userEvent.setup();
+    await te.click(await screen.findByRole("button", { name: "New user" }));
+    const dialog = await screen.findByRole("dialog");
+    // The default form is already valid for a caller that holds "*" in
+    // both dimensions…
+    expect(within(dialog).queryAllByRole("alert")).toHaveLength(0);
+    // …and a worker outside any literal list stays accepted.
+    await te.clear(within(dialog).getByLabelText(/Workers/));
+    await te.type(within(dialog).getByLabelText(/Workers/), "p-any");
+    expect(within(dialog).queryAllByRole("alert")).toHaveLength(0);
   });
 });
 
