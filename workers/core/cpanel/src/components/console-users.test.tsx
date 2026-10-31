@@ -915,6 +915,65 @@ describe("ConsoleUsers", () => {
     expect("role" in JSON.parse(String(patch[1].body))).toBe(false);
   });
 
+  it("opens the form on the caller's own grantable scopes with zero errors for a restricted admin", async () => {
+    globalThis.fetch = fetchMock;
+    const restricted: Principal = {
+      isRoot: false,
+      keyPrefix: "ses",
+      name: "boss",
+      role: "admin",
+      permissions: ["workers:read", "files:read"],
+      namespaces: ["@acme"],
+      workers: ["hello"],
+    };
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(listBody))
+      .mockResolvedValueOnce(
+        jsonResponse({ user: makeUser({ id: 3, username: "analyst-02" }) }, 201),
+      );
+    stubJson(fetchMock, listBody);
+    renderUsers(restricted);
+    const te = userEvent.setup();
+    await te.click(await screen.findByRole("button", { name: "New user" }));
+    const dialog = await screen.findByRole("dialog");
+    // The scope fields default to the caller's own grantable entries — not
+    // "*": zero scope errors on open. The valid defaults never block the
+    // submit (an unfilled form is refused by the submit guard, not by the
+    // button)…
+    expect(within(dialog).queryAllByRole("alert")).toHaveLength(0);
+    expect(
+      (within(dialog).getByLabelText(/Namespaces/) as HTMLInputElement).value,
+    ).toBe("@acme");
+    expect(
+      (within(dialog).getByLabelText(/Workers/) as HTMLInputElement).value,
+    ).toBe("hello");
+    expect(within(dialog).getByRole("button", { name: "New user" })).toHaveProperty(
+      "disabled",
+      false,
+    );
+    await te.click(within(dialog).getByRole("button", { name: "New user" }));
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length,
+    ).toBe(0);
+    // …and once the form is filled the create goes out.
+    await te.type(within(dialog).getByLabelText("Username"), "analyst-02");
+    await te.type(within(dialog).getByLabelText("Password"), "str0ng!passw0rd");
+    await te.click(within(dialog).getByRole("button", { name: "New user" }));
+    // A successful create keeps the same rule on the reset: the dialog
+    // closes and re-opens on the caller's own grantable scopes again.
+    await te.click(within(dialog).getByRole("button", { name: "New user" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await te.click(await screen.findByRole("button", { name: "New user" }));
+    const reopened = await screen.findByRole("dialog");
+    expect(within(reopened).queryAllByRole("alert")).toHaveLength(0);
+    expect(
+      (within(reopened).getByLabelText(/Namespaces/) as HTMLInputElement).value,
+    ).toBe("@acme");
+    expect(
+      (within(reopened).getByLabelText(/Workers/) as HTMLInputElement).value,
+    ).toBe("hello");
+  });
+
   it("offers only the admin's own permissions and refuses namespaces and workers outside its coverage", async () => {
     globalThis.fetch = fetchMock;
     const restricted: Principal = {
@@ -939,9 +998,14 @@ describe("ConsoleUsers", () => {
     expect(
       within(dialog).queryByRole("checkbox", { name: "keys:manage" }),
     ).toBeNull();
-    // The default "*" scopes sit outside this caller's coverage: the form
-    // shows the same validation style and the submit stays disabled…
-    expect(within(dialog).queryAllByRole("alert")).toHaveLength(2);
+    // The default scopes sit INSIDE this caller's coverage: no alerts. The
+    // submit stays gated only by the (empty) username and password…
+    expect(within(dialog).queryAllByRole("alert")).toHaveLength(0);
+    // …and values typed outside the coverage show the same validation
+    // style, disabling the submit until brought back inside the coverage.
+    await te.clear(within(dialog).getByLabelText(/Namespaces/));
+    await te.type(within(dialog).getByLabelText(/Namespaces/), "platform-x");
+    expect(within(dialog).queryAllByRole("alert")).toHaveLength(1);
     expect(within(dialog).getByRole("button", { name: "New user" })).toHaveProperty(
       "disabled",
       true,
@@ -949,19 +1013,31 @@ describe("ConsoleUsers", () => {
     await te.clear(within(dialog).getByLabelText(/Namespaces/));
     await te.type(within(dialog).getByLabelText(/Namespaces/), "@acme");
     await te.clear(within(dialog).getByLabelText(/Workers/));
+    await te.type(within(dialog).getByLabelText(/Workers/), "other");
+    expect(within(dialog).queryAllByRole("alert")).toHaveLength(1);
+    await te.clear(within(dialog).getByLabelText(/Workers/));
     await te.type(within(dialog).getByLabelText(/Workers/), "hello");
-    // …and values inside the coverage clear it without any request going
-    // out.
     expect(within(dialog).queryAllByRole("alert")).toHaveLength(0);
+    // Filled and covered, the create goes out with the covered values and
+    // no role (an admin never sends a role).
     await te.type(within(dialog).getByLabelText("Username"), "analyst-02");
     await te.type(within(dialog).getByLabelText("Password"), "str0ng!passw0rd");
-    expect(within(dialog).getByRole("button", { name: "New user" })).toHaveProperty(
-      "disabled",
-      false,
+    await te.click(within(dialog).getByRole("button", { name: "New user" }));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([, init]) => init?.method === "POST"),
+      ).toBe(true),
     );
-    expect(
-      fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length,
-    ).toBe(0);
+    const create = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "POST",
+    ) as unknown as [string, RequestInit];
+    expect(JSON.parse(String(create[1].body))).toEqual({
+      namespaces: ["@acme"],
+      password: "str0ng!passw0rd",
+      permissions: ["workers:read"],
+      username: "analyst-02",
+      workers: ["hello"],
+    });
   });
 
   it("accepts any worker value for an admin whose own list holds *", async () => {

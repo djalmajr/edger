@@ -275,14 +275,18 @@ export interface AdminSession {
 // the three routes allowed for a pending session); every other admin route
 // answers 403 PASSWORD_CHANGE_REQUIRED until the password changes. A missing
 // or non-boolean flag fails closed as false for non-session credentials, as
-// on the server.
-export async function adminSession(apiKey: string): Promise<AdminSession> {
+// on the server. The caller's abort signal (React Query passes it) stops the
+// read once the query is cancelled.
+export async function adminSession(
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<AdminSession> {
   const data = await apiJson<{
     mustChangePassword?: unknown;
     principal: Principal;
     tenantRoutingEnabled?: unknown;
     weightedRoutingEnabled?: unknown;
-  }>(apiKey, "/api/admin/session");
+  }>(apiKey, "/api/admin/session", signal ? { signal } : {});
   return {
     mustChangePassword: data.mustChangePassword === true,
     principal: data.principal,
@@ -303,25 +307,35 @@ export function isPasswordChangeRequired(reason: unknown): boolean {
 }
 
 // Takes a pre-read identity (the root app and the login screen read it
-// first) or reads /api/admin/session itself when called bare.
+// first) or reads /api/admin/session itself when called bare. The caller's
+// abort signal (React Query's) is threaded through both phases: a load whose
+// credential ended (logout, query removal) while the identity read was in
+// flight must stop before its second phase starts any data request.
 export async function loadAll(
   apiKey: string,
   session?: AdminSession,
+  signal?: AbortSignal,
 ): Promise<RuntimeData> {
-  const identity = session ?? (await adminSession(apiKey));
+  const identity = session ?? (await adminSession(apiKey, signal));
+  if (signal?.aborted)
+    throw new DOMException("The operation was aborted.", "AbortError");
   const [workers, workerErrors, metricsStats] = await Promise.all([
-    apiJson<{ workers: Worker[] }>(apiKey, "/api/admin/workers").then(
-      (data) => data.workers ?? [],
-    ),
+    apiJson<{ workers: Worker[] }>(
+      apiKey,
+      "/api/admin/workers",
+      signal ? { signal } : {},
+    ).then((data) => data.workers ?? []),
     apiJson<{ summary: RuntimeData["workerErrors"] }>(
       apiKey,
       "/api/admin/workers/error-summary",
+      signal ? { signal } : {},
     )
       .then((data) => data.summary ?? {})
       .catch(() => ({})),
     apiJson<NonNullable<RuntimeData["metricsStats"]>>(
       apiKey,
       "/metrics/stats",
+      signal ? { signal } : {},
     ).catch(() => null),
   ]);
   return {

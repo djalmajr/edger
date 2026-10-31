@@ -107,6 +107,15 @@ function coversEntries(caller: string[], entries: string[]): boolean {
   return caller.includes("*") || entries.every((entry) => caller.includes(entry));
 }
 
+// The create-form default for a scope dimension: "*" for root or a caller
+// holding "*" in that dimension, otherwise the caller's own grantable
+// entries — the form must never open on a value the caller cannot grant
+// (the server would reject it, and it would block every submission).
+function scopeDefault(principal: Principal, dimension: string[]): string {
+  if (principal.isRoot === true || dimension.includes("*")) return "*";
+  return dimension.join(", ");
+}
+
 // The permission options a caller may grant: the full catalog for root or
 // a caller holding "*", otherwise only the caller's own permissions.
 function permissionOptionsFor(principal: Principal): string[] {
@@ -665,8 +674,12 @@ function CreateUserDialog({
   const [permissions, setPermissions] = React.useState<string[]>(() =>
     permissionOptions.includes("workers:read") ? ["workers:read"] : [],
   );
-  const [namespaces, setNamespaces] = React.useState("*");
-  const [workers, setWorkers] = React.useState("*");
+  const [namespaces, setNamespaces] = React.useState(() =>
+    scopeDefault(principal, principal.namespaces ?? []),
+  );
+  const [workers, setWorkers] = React.useState(() =>
+    scopeDefault(principal, principal.workers ?? []),
+  );
   const [role, setRole] = React.useState<"admin" | "operator">("operator");
   const create = useMutation({
     mutationFn: (request: CreateUserRequest) =>
@@ -677,8 +690,8 @@ function CreateUserDialog({
       setPermissions(
         permissionOptions.includes("workers:read") ? ["workers:read"] : [],
       );
-      setNamespaces("*");
-      setWorkers("*");
+      setNamespaces(scopeDefault(principal, principal.namespaces ?? []));
+      setWorkers(scopeDefault(principal, principal.workers ?? []));
       setRole("operator");
       onClose();
       onCreated();
@@ -767,10 +780,10 @@ function CreateUserDialog({
               <select
                 className="h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none md:text-sm"
                 id="user-role"
+                value={role}
                 onChange={(event) =>
                   setRole(event.target.value === "admin" ? "admin" : "operator")
                 }
-                value={role}
               >
                 <option value="admin">admin</option>
                 <option value="operator">operator</option>
@@ -909,10 +922,10 @@ function EditUserDialog({
               <select
                 className="h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none md:text-sm"
                 id="edit-role"
+                value={role}
                 onChange={(event) =>
                   setRole(event.target.value === "admin" ? "admin" : "operator")
                 }
-                value={role}
               >
                 <option value="admin">admin</option>
                 <option value="operator">operator</option>

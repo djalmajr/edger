@@ -2381,12 +2381,12 @@ function CpanelApp() {
   // session, which used to kill the restored session outright).
   const identity$ = useQuery({
     queryKey: ["cpanel", "identity", apiKey],
-    queryFn: () => adminSession(apiKey),
+    queryFn: ({ signal }) => adminSession(apiKey, signal),
     enabled: Boolean(apiKey),
   });
-  const runtimeQuery = useQuery({
+  const runtime$ = useQuery({
     queryKey: ["cpanel", "runtime", apiKey],
-    queryFn: () => loadAll(apiKey),
+    queryFn: ({ signal }) => loadAll(apiKey, undefined, signal),
     enabled:
       identity$.data !== undefined &&
       identity$.data.mustChangePassword === false,
@@ -2394,7 +2394,7 @@ function CpanelApp() {
     refetchOnWindowFocus: true,
   });
   React.useEffect(() => {
-    const error = identity$.error ?? runtimeQuery.error;
+    const error = identity$.error ?? runtime$.error;
     if (!error || !apiKey) return;
     if (isPasswordChangeRequired(error)) {
       // The credential is still valid: the operator marked the password as
@@ -2406,7 +2406,7 @@ function CpanelApp() {
     }
     sessionStorage.removeItem(SESSION_KEY);
     setApiKey("");
-  }, [apiKey, identity$.error, runtimeQuery.error, queryClient]);
+  }, [apiKey, identity$.error, runtime$.error, queryClient]);
   function applyCredential(token: string) {
     // A credential switch must never render the previous one's cached data:
     // drop every ["cpanel", …] query before the new credential's queries
@@ -2454,7 +2454,7 @@ function CpanelApp() {
         onRequireLogin={endSession}
       />
     );
-  if (runtimeQuery.isLoading || !runtimeQuery.data)
+  if (runtime$.isLoading || !runtime$.data)
     return (
       <div className="grid min-h-screen place-items-center text-muted-foreground">
         Restoring session…
@@ -2463,7 +2463,7 @@ function CpanelApp() {
   return (
     <Shell
       apiKey={apiKey}
-      data={runtimeQuery.data}
+      data={runtime$.data}
       logout={() => {
         // `ses-` sessions are revoked best-effort; every credential kind is
         // cleared locally before network I/O (see clearSession). The UI also
