@@ -150,6 +150,595 @@ async fn login(app: &Router, ip: Ipv4Addr, username: &str, password: &str) -> (S
     (status, json)
 }
 
+// Completa o fluxo obrigatório e mantém a senha escolhida pelo fixture.
+// Os testes do estado temporário chamam `login` diretamente.
+async fn ready_login(
+    app: &Router,
+    ip: Ipv4Addr,
+    username: &str,
+    password: &str,
+) -> (StatusCode, Value) {
+    let (status, mut payload) = login(app, ip, username, password).await;
+    if status != StatusCode::OK || payload["mustChangePassword"] != true {
+        return (status, payload);
+    }
+    let intermediate = format!("{password}!Changed1");
+    for (current, new) in [
+        (password, intermediate.as_str()),
+        (intermediate.as_str(), password),
+    ] {
+        let token = payload["token"].as_str().unwrap();
+        let (status, _, result, text) = send(
+            app,
+            ip,
+            "POST",
+            "/api/admin/me/password",
+            vec![bearer(token)],
+            json_body(&json!({"current":current,"new":new})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        payload = result;
+    }
+    payload["mustChangePassword"] = json!(false);
+    (StatusCode::OK, payload)
+}
+
+fn console_user_request(name: &str, role: &str) -> Value {
+    json!({"username":name,"password":OP_PASSWORD,"role":role,
+        "permissions":edger_core::security::PERMISSION_CATALOG,"namespaces":["*"],"workers":["*"]})
+}
+
+async fn user_call(
+    app: &Router,
+    token: &str,
+    method: &str,
+    uri: &str,
+    body: Value,
+) -> (StatusCode, Value) {
+    let (status, _, result, _) = send(
+        app,
+        IP_A,
+        method,
+        uri,
+        vec![bearer(token)],
+        if body.is_null() {
+            vec![]
+        } else {
+            json_body(&body)
+        },
+    )
+    .await;
+    (status, result)
+}
+
+async fn create_console_user(app: &Router, token: &str, request: Value) -> Value {
+    let (status, payload) = user_call(app, token, "POST", "/api/admin/users", request).await;
+    assert_eq!(status, StatusCode::CREATED, "{payload}");
+    assert_eq!(payload["user"]["mustChangePassword"], true);
+    payload["user"].clone()
+}
+
+async fn console_manager(app: &Router, name: &str, request: Value) -> (i64, String) {
+    let user = create_console_user(app, ROOT_KEY, request).await;
+    let (status, payload) = ready_login(app, IP_A, name, OP_PASSWORD).await;
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    (
+        user["id"].as_i64().unwrap(),
+        payload["token"].as_str().unwrap().to_string(),
+    )
+}
+
+#[tokio::test]
+async fn console_admin_manages_covered_operator_lifecycle_and_session_revocation() {
+    let app = build_pipeline(state_with_console(seeded_console()));
+    let (_, manager) =
+        console_manager(&app, "manager", console_user_request("manager", "admin")).await;
+    let operator =
+        create_console_user(&app, &manager, console_user_request("target", "operator")).await;
+    let id = operator["id"].as_i64().unwrap();
+    assert_eq!(operator["manageable"], true);
+    let uri = format!("/api/admin/users/{id}");
+    for patch in [
+        json!({"permissions":["workers:read"]}),
+        json!({"disabled":true}),
+        json!({"disabled":false}),
+    ] {
+        let (status, result) = user_call(&app, &manager, "PATCH", &uri, patch).await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+        assert_eq!(result["user"]["manageable"], true);
+    }
+    let (_, payload) = login(&app, IP_A, "target", OP_PASSWORD).await;
+    let target_token = payload["token"].as_str().unwrap();
+    let (status, sessions) =
+        user_call(&app, &manager, "GET", "/api/admin/sessions", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    let session = sessions["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["username"] == "target")
+        .unwrap();
+    assert_eq!(session["revocable"], true);
+    let (status, result) = user_call(
+        &app,
+        &manager,
+        "DELETE",
+        &format!("/api/admin/sessions/{}", session["id"].as_str().unwrap()),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(
+        user_call(&app, target_token, "GET", "/api/admin/session", Value::Null)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (_, second) = login(&app, IP_A, "target", OP_PASSWORD).await;
+    let (status, reset) = user_call(
+        &app,
+        &manager,
+        "POST",
+        &format!("{uri}/reset-password"),
+        json!({"password":OP_PASSWORD_2}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reset}");
+    assert_eq!(reset["user"]["mustChangePassword"], true);
+    assert_eq!(
+        user_call(
+            &app,
+            second["token"].as_str().unwrap(),
+            "GET",
+            "/api/admin/session",
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, reset_login) = login(&app, IP_A, "target", OP_PASSWORD_2).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reset_login["mustChangePassword"], true);
+    assert_eq!(
+        user_call(&app, &manager, "DELETE", &uri, Value::Null)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        user_call(
+            &app,
+            reset_login["token"].as_str().unwrap(),
+            "GET",
+            "/api/admin/session",
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn console_admin_denies_protected_targets_literal_scope_and_grant_escalation() {
+    let app = build_pipeline(state_with_console(seeded_console()));
+    let mut request = console_user_request("manager", "admin");
+    request["permissions"] = json!(["workers:read"]);
+    request["namespaces"] = json!(["@acme"]);
+    request["workers"] = json!(["p-abc*"]);
+    let (manager_id, manager) = console_manager(&app, "manager", request.clone()).await;
+    let mut operator = request.clone();
+    operator["username"] = json!("covered");
+    operator["role"] = json!("operator");
+    let covered = create_console_user(&app, &manager, operator.clone()).await;
+    let mut protected = vec![manager_id];
+    let (_, users) = user_call(&app, &manager, "GET", "/api/admin/users", Value::Null).await;
+    protected.push(
+        users["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["isRoot"] == true)
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap(),
+    );
+    let other =
+        create_console_user(&app, ROOT_KEY, console_user_request("other-admin", "admin")).await;
+    protected.push(other["id"].as_i64().unwrap());
+    for (name, field, value) in [
+        ("permission", "permissions", json!(["workers:install"])),
+        ("namespace", "namespaces", json!(["@other"])),
+        ("worker", "workers", json!(["p-abc-api"])),
+    ] {
+        let mut beyond = operator.clone();
+        beyond["username"] = json!(name);
+        beyond[field] = value.clone();
+        let target = create_console_user(&app, ROOT_KEY, beyond.clone()).await;
+        protected.push(target["id"].as_i64().unwrap());
+        beyond["username"] = json!(format!("new-{name}"));
+        let (status, error) = user_call(&app, &manager, "POST", "/api/admin/users", beyond).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{field}: {error}");
+        assert_eq!(error, json!({"code":"FORBIDDEN","message":"forbidden"}));
+        let patch = json!({field: value});
+        let (status, error) = user_call(
+            &app,
+            &manager,
+            "PATCH",
+            &format!("/api/admin/users/{}", covered["id"]),
+            patch,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{field}: {error}");
+        assert_eq!(error["code"], "FORBIDDEN");
+    }
+    for id in &protected {
+        let uri = format!("/api/admin/users/{id}");
+        for (method, path, body) in [
+            ("PATCH", uri.clone(), json!({"disabled":true})),
+            (
+                "PATCH",
+                uri.clone(),
+                json!({"disabled":false,"permissions":["workers:read"],"namespaces":["@acme"],"workers":["p-abc*"]}),
+            ),
+            (
+                "POST",
+                format!("{uri}/reset-password"),
+                json!({"password":OP_PASSWORD_2}),
+            ),
+            ("DELETE", uri.clone(), Value::Null),
+        ] {
+            let (status, error) = user_call(&app, &manager, method, &path, body).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}: {error}");
+            assert_eq!(error["code"], "FORBIDDEN");
+        }
+    }
+    let mut admin_request = request;
+    admin_request["username"] = json!("forbidden-admin");
+    assert_eq!(
+        user_call(&app, &manager, "POST", "/api/admin/users", admin_request)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    for role in [json!("operator"), json!("admin"), Value::Null] {
+        let (status, error) = user_call(
+            &app,
+            &manager,
+            "PATCH",
+            &format!("/api/admin/users/{}", covered["id"]),
+            json!({"role":role}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+        assert_eq!(error["code"], "FORBIDDEN");
+    }
+    let (_, users) = user_call(&app, &manager, "GET", "/api/admin/users", Value::Null).await;
+    assert_eq!(
+        users["users"].as_array().unwrap().len(),
+        protected.len() + 1
+    );
+    for row in users["users"].as_array().unwrap() {
+        assert_eq!(row["manageable"], row["id"] == covered["id"], "{row}");
+        assert_eq!(row["disabled"], false);
+    }
+    let (_, roots) = user_call(&app, ROOT_KEY, "GET", "/api/admin/users", Value::Null).await;
+    for row in roots["users"].as_array().unwrap() {
+        assert_eq!(row["manageable"], row["isRoot"] == false, "{row}");
+    }
+}
+
+#[tokio::test]
+async fn console_session_visibility_and_revocable_flags_follow_current_owner_authority() {
+    let app = build_pipeline(state_with_console(seeded_console()));
+    let (_, manager) =
+        console_manager(&app, "manager", console_user_request("manager", "admin")).await;
+    create_console_user(&app, ROOT_KEY, console_user_request("other-admin", "admin")).await;
+    create_console_user(&app, &manager, console_user_request("target", "operator")).await;
+    for name in ["root", "other-admin", "target", "manager"] {
+        let password = if name == "root" { STRONG } else { OP_PASSWORD };
+        assert_eq!(login(&app, IP_A, name, password).await.0, StatusCode::OK);
+    }
+    let (status, result) =
+        user_call(&app, &manager, "GET", "/api/admin/sessions", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    let sessions = result["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 5);
+    for session in sessions {
+        let name = session["username"].as_str().unwrap();
+        let revocable = session["current"] == false && matches!(name, "target" | "manager");
+        assert_eq!(session["revocable"], revocable, "{session}");
+        let (status, payload) = user_call(
+            &app,
+            &manager,
+            "DELETE",
+            &format!("/api/admin/sessions/{}", session["id"].as_str().unwrap()),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(
+            status,
+            if revocable {
+                StatusCode::OK
+            } else {
+                StatusCode::FORBIDDEN
+            },
+            "{payload}"
+        );
+        if !revocable {
+            assert_eq!(payload["code"], "FORBIDDEN");
+        }
+    }
+}
+
+#[tokio::test]
+async fn root_assigns_admin_promotes_and_demotes_with_session_revocation() {
+    let app = build_pipeline(state_with_console(seeded_console()));
+    let admin = create_console_user(&app, ROOT_KEY, console_user_request("admin", "admin")).await;
+    assert_eq!(admin["role"], "admin");
+    let operator =
+        create_console_user(&app, ROOT_KEY, console_user_request("target", "operator")).await;
+    let (_, login) = ready_login(&app, IP_A, "target", OP_PASSWORD).await;
+    let token = login["token"].as_str().unwrap();
+    let uri = format!("/api/admin/users/{}", operator["id"]);
+    let (status, promoted) =
+        user_call(&app, ROOT_KEY, "PATCH", &uri, json!({"role":"admin"})).await;
+    assert_eq!(status, StatusCode::OK, "{promoted}");
+    assert_eq!(promoted["user"]["role"], "admin");
+    let (status, session) = user_call(&app, token, "GET", "/api/admin/session", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(session["principal"]["role"], "admin");
+    assert_eq!(session["principal"]["isRoot"], false);
+    assert_eq!(session["principal"]["keyPrefix"], "ses");
+    let (status, demoted) =
+        user_call(&app, ROOT_KEY, "PATCH", &uri, json!({"role":"operator"})).await;
+    assert_eq!(status, StatusCode::OK, "{demoted}");
+    assert_eq!(demoted["user"]["role"], "operator");
+    assert_eq!(
+        user_call(&app, token, "GET", "/api/admin/session", Value::Null)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn temporary_password_gates_all_admin_paths_and_allows_only_identity_logout_and_rotation() {
+    let app = build_pipeline(state_with_console(seeded_console()));
+    let (status, _, _, text) = send(
+        &app,
+        IP_A,
+        "GET",
+        "/api/admin/workers/hello/invoke",
+        vec![
+            bearer("ses-worker-owned-credential"),
+            (
+                "x-edger-control-authorization",
+                format!("Bearer {ROOT_KEY}"),
+            ),
+        ],
+        vec![],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    create_console_user(&app, ROOT_KEY, console_user_request("target", "operator")).await;
+    let (status, payload) = login(&app, IP_A, "target", OP_PASSWORD).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["mustChangePassword"], true);
+    let token = payload["token"].as_str().unwrap();
+    let (status, session) = user_call(&app, token, "GET", "/api/admin/session", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(session["mustChangePassword"], true);
+    for uri in [
+        "/api/admin/workers",
+        "/api/admin/users",
+        "/api/admin/observability/events",
+        "/api/admin/workers/hello/invoke",
+        "/api/admin/settings",
+        "/api/admin/sessions",
+    ] {
+        let (status, error) = user_call(&app, token, "GET", uri, Value::Null).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {error}");
+        assert_eq!(
+            error,
+            json!({"code":"PASSWORD_CHANGE_REQUIRED","message":"password change required"})
+        );
+    }
+    let (status, _, error, _) = send(
+        &app,
+        IP_A,
+        "POST",
+        "/api/admin/workers/hello/invoke",
+        vec![("x-edger-control-authorization", format!("Bearer {token}"))],
+        vec![],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(error["code"], "PASSWORD_CHANGE_REQUIRED");
+    let (_, other) = login(&app, IP_A, "target", OP_PASSWORD).await;
+    assert_eq!(
+        user_call(
+            &app,
+            other["token"].as_str().unwrap(),
+            "POST",
+            "/api/admin/logout",
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let (status, error) = user_call(
+        &app,
+        token,
+        "POST",
+        "/api/admin/me/password",
+        json!({"current":OP_PASSWORD,"new":OP_PASSWORD}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error,
+        json!({"code":"VALIDATION_ERROR","message":"new password must differ from the current one"})
+    );
+    let (status, result) = user_call(
+        &app,
+        token,
+        "POST",
+        "/api/admin/me/password",
+        json!({"current":OP_PASSWORD,"new":OP_PASSWORD_2}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let rotated = result["token"].as_str().unwrap();
+    assert_ne!(rotated, token);
+    assert_eq!(
+        user_call(&app, token, "GET", "/api/admin/session", Value::Null)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, session) =
+        user_call(&app, rotated, "GET", "/api/admin/session", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(session["mustChangePassword"], false);
+    assert_eq!(
+        user_call(&app, rotated, "GET", "/api/admin/workers", Value::Null)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let (_, payload) = login(&app, IP_A, "target", OP_PASSWORD_2).await;
+    assert_eq!(payload["mustChangePassword"], false);
+    assert_eq!(
+        user_call(&app, ROOT_KEY, "GET", "/api/admin/session", Value::Null)
+            .await
+            .1["mustChangePassword"],
+        false
+    );
+}
+
+#[tokio::test]
+async fn admin_api_key_with_every_permission_never_becomes_console_manager() {
+    let app = build_pipeline(state_with_console(seeded_console()));
+    let (status,key) = user_call(&app,ROOT_KEY,"POST","/api/admin/keys",json!({"name":"admin-key","role":"admin","permissions":edger_core::security::PERMISSION_CATALOG,"namespaces":["*"],"workers":["*"]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{key}");
+    let token = key["rawKey"].as_str().unwrap();
+    let (status, session) = user_call(&app, token, "GET", "/api/admin/session", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(session["principal"]["role"], "admin");
+    assert_eq!(session["mustChangePassword"], false);
+    for uri in ["/api/admin/users", "/api/admin/sessions"] {
+        let (status, error) = user_call(&app, token, "GET", uri, Value::Null).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(error["code"], "FORBIDDEN");
+        assert_eq!(
+            user_call(&app, ROOT_KEY, "GET", uri, Value::Null).await.0,
+            StatusCode::OK
+        );
+    }
+}
+
+#[tokio::test]
+async fn console_admin_keeps_root_only_routes_release_checks_and_internal_bypass_closed() {
+    use std::io::Write;
+    let root = tempfile::tempdir().unwrap();
+    let version = root.path().join("guarded").join("1.0.0");
+    std::fs::create_dir_all(&version).unwrap();
+    let manifest = "name: guarded\nversion: '1.0.0'\nentrypoint: index.ts\nkind: fetch\n";
+    std::fs::write(version.join("manifest.yaml"), manifest).unwrap();
+    std::fs::write(
+        version.join("index.ts"),
+        "Deno.serve(() => new Response('ok'));",
+    )
+    .unwrap();
+    let mut state = state_with_console(seeded_console());
+    state.index = ManifestIndex::new();
+    state
+        .index
+        .insert(
+            version.clone(),
+            WorkerManifest {
+                name: "guarded".into(),
+                version: Some("1.0.0".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let app = build_pipeline(state);
+    let (_, manager) =
+        console_manager(&app, "manager", console_user_request("manager", "admin")).await;
+    for (method, uri, body) in [
+        ("GET", "/api/admin/settings", Value::Null),
+        ("GET", "/api/admin/catalog", Value::Null),
+        (
+            "PUT",
+            "/api/admin/routing-policy?name=guarded",
+            json!({"tenants":["acme"]}),
+        ),
+        (
+            "DELETE",
+            "/api/admin/routing-policy?name=guarded",
+            Value::Null,
+        ),
+        ("GET", "/api/admin/state/export", Value::Null),
+    ] {
+        let (status, error) = user_call(&app, &manager, method, uri, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {error}");
+        assert_eq!(error["code"], "FORBIDDEN");
+    }
+    let (status, _, error, _) = send(
+        &app,
+        IP_A,
+        "POST",
+        "/api/admin/users",
+        vec![bearer(&manager), ("x-edger-internal", "true".into())],
+        json_body(&console_user_request("internal-target", "operator")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(error["code"], "FORBIDDEN");
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, content) in [
+        ("manifest.yaml", format!("{manifest}release: 'false'\n")),
+        (
+            "index.ts",
+            "Deno.serve(() => new Response('edited'));".into(),
+        ),
+    ] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(content.as_bytes()).unwrap();
+    }
+    let bytes = zip.finish().unwrap().into_inner();
+    for uri in [
+        "/api/admin/workers/install",
+        "/api/admin/workers/guarded/files?version=1.0.0",
+    ] {
+        let (status, _, error, text) = send(
+            &app,
+            IP_A,
+            "POST",
+            uri,
+            vec![bearer(&manager), ("content-type", "application/zip".into())],
+            bytes.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {text}");
+        assert_eq!(error["code"], "RELEASE_REQUIRES_ROOT");
+        assert_eq!(
+            std::fs::read_to_string(version.join("manifest.yaml")).unwrap(),
+            manifest
+        );
+        assert_eq!(
+            std::fs::read_to_string(version.join("index.ts")).unwrap(),
+            "Deno.serve(() => new Response('ok'));"
+        );
+    }
+}
+
 /// Espelho do `parseAdminUser` do cPanel: o registro precisa ser INTEIRO —
 /// qualquer campo ausente/fora do tipo falha a UI. Sem senha/hash nunca.
 fn assert_admin_user_shape(value: &Value) {
@@ -273,7 +862,7 @@ async fn user_lifecycle_over_http_with_exact_cpanel_shape() {
     assert!(!text.contains(OP_PASSWORD));
 
     // OPERADOR LOGA e usa as permissões gravadas — e só elas.
-    let (status, json) = login(&app, IP_A, "alice", OP_PASSWORD).await;
+    let (status, json) = ready_login(&app, IP_A, "alice", OP_PASSWORD).await;
     assert_eq!(status, StatusCode::OK, "{json}");
     let alice = json["token"].as_str().unwrap().to_string();
     let alice_headers = || {
@@ -801,7 +1390,7 @@ async fn user_creation_validation_rejects_hostile_inputs_over_http() {
         json_body(&json!({
             "username": "alice", "password": OP_PASSWORD,
             "permissions": ["workers:read"], "namespaces": ["*"], "workers": ["*"],
-            "role": "admin"
+            "unexpected": "admin"
         })),
     )
     .await;
@@ -1096,7 +1685,7 @@ async fn scoped_operator_cannot_touch_out_of_scope_workers_over_http() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{text}");
-    let (status, json) = login(&app, IP_A, "carol", OP_PASSWORD).await;
+    let (status, json) = ready_login(&app, IP_A, "carol", OP_PASSWORD).await;
     assert_eq!(status, StatusCode::OK);
     let carol = json["token"].as_str().unwrap().to_string();
     let carol_headers = || {

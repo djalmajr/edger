@@ -42,6 +42,7 @@ pub struct AdminMutationResponse {
 #[serde(rename_all = "camelCase")]
 pub struct AdminSessionResponse {
     pub principal: ApiKeyPrincipal,
+    pub must_change_password: bool,
     pub tenant_routing_enabled: bool,
     pub weighted_routing_enabled: bool,
 }

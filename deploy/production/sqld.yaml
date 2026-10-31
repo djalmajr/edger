@@ -154,9 +154,11 @@ spec:
       targetPort: http
 ---
 # Só os pods do EdgeR (release `edger`, label `app.kubernetes.io/instance`
-# conforme o chart) e os jobs de backup (`app.kubernetes.io/name:
-# sqld-backup`, ver backup/) chegam ao sqld na 8080. `kubectl
-# port-forward` (API de admin e dumps) vai pelo kubelet e não é afetado.
+# conforme o chart), os jobs de backup (`app.kubernetes.io/name:
+# sqld-backup`, ver backup/) e o hub colaborativo do Cinzel (namespace
+# `cinzel`, `app.kubernetes.io/name: cinzel-collab`, DJA-515) chegam ao
+# sqld na 8080. `kubectl port-forward` (API de admin e dumps) vai pelo
+# kubelet e não é afetado.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -175,5 +177,11 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: sqld-backup
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cinzel
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cinzel-collab
       ports:
         - port: 8080

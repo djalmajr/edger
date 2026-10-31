@@ -142,7 +142,7 @@ fn session_headers(token: &str) -> Vec<(&str, String)> {
 }
 
 async fn login(app: &Router, ip: Ipv4Addr, username: &str, password: &str) -> (StatusCode, Value) {
-    let (status, _h, json, _text) = send(
+    let (status, _h, mut json, _text) = send(
         app,
         ip,
         "POST",
@@ -151,6 +151,26 @@ async fn login(app: &Router, ip: Ipv4Addr, username: &str, password: &str) -> (S
         json_body(&json!({ "username": username, "password": password })),
     )
     .await;
+    if status == StatusCode::OK && json["mustChangePassword"] == true {
+        let intermediate = format!("{password}!Changed1");
+        for (current, new) in [
+            (password, intermediate.as_str()),
+            (intermediate.as_str(), password),
+        ] {
+            let (status, _, rotated, text) = send(
+                app,
+                ip,
+                "POST",
+                "/api/admin/me/password",
+                session_headers(json["token"].as_str().unwrap()),
+                json_body(&json!({"current":current,"new":new})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            json = rotated;
+        }
+        json["mustChangePassword"] = json!(false);
+    }
     (status, json)
 }
 
@@ -179,7 +199,7 @@ fn assert_session_shape(session: &Value) {
     let object = session
         .as_object()
         .unwrap_or_else(|| panic!("registro malformado: {session}"));
-    assert_eq!(object.len(), 8, "campos permitidos: {session}");
+    assert_eq!(object.len(), 9, "campos permitidos: {session}");
     for key in [
         "id",
         "userId",
@@ -189,6 +209,7 @@ fn assert_session_shape(session: &Value) {
         "createdAt",
         "expiresAt",
         "current",
+        "revocable",
     ] {
         assert!(object.contains_key(key), "faltando {key}: {session}");
     }
@@ -204,6 +225,7 @@ fn assert_session_shape(session: &Value) {
     assert!(session["expiresAt"].is_i64(), "epoch segundos: {session}");
     assert!(session["isRoot"].is_boolean());
     assert!(session["current"].is_boolean());
+    assert!(session["revocable"].is_boolean());
 }
 
 #[tokio::test]

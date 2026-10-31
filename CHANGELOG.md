@@ -53,6 +53,19 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Added
 
+- Console admin role (EDG-45, EDG-46, EDG-47): a non-root console user with
+  role `admin`, signed in with a console session, manages the operators it
+  covers (every permission, namespace and worker literally within its own,
+  or it holds `*`): create, edit, disable, delete, reset password and revoke
+  sessions. Root and other admins are listed without actions (`manageable`,
+  `revocable`); only root assigns or removes `admin`, and a demotion ends the
+  target's sessions. API keys with role `admin` and OIDC principals do not
+  count. Created and reset users get a temporary password
+  (`mustChangePassword`): until they choose a new, different one, every
+  admin route answers 403 `PASSWORD_CHANGE_REQUIRED` except
+  `GET /api/admin/session`, logout and `POST /api/admin/me/password`. The
+  console users table gains `must_change_password` (additive, existing users
+  keep 0).
 - Egress guard for user-chosen hosts (EDG-38): an app that must call a host
   the user picked (Pinar's BYOK) cannot put that host in `allowNet` without
   also letting the worker leave through it directly, so the EdgeR serves the
@@ -456,6 +469,7 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Fixed
 
+- The console login no longer flashes the password form before login-options answers.
 - The files upload is all or nothing (EDG-39): `POST
   /api/admin/workers/{name}/files` used to extract the zip straight into the
   version dir, so an entry refused by path (`DEPLOY_PATH_DENIED`), a read

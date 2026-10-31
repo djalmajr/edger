@@ -7,7 +7,7 @@ use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
 use axum::http::HeaderMap;
-use edger_core::{root_principal, ApiKeyPrincipal};
+use edger_core::{root_principal, ApiKeyPrincipal, CoreError};
 
 #[cfg(test)]
 use crate::oidc::JwksSource;
@@ -150,6 +150,32 @@ impl ControlAuth {
 
     pub fn console_service(&self) -> Option<&Arc<crate::console_auth::ConsoleAuthService>> {
         self.console.as_ref()
+    }
+
+    /// O estado temporário pertence ao usuário da sessão, nunca à key/OIDC.
+    pub fn must_change_password(&self, headers: &HeaderMap) -> Result<bool, CoreError> {
+        let Some(token) = extract_api_key(headers) else {
+            return Ok(false);
+        };
+        if self.current_root_key().is_some_and(|root| root == token)
+            || !token.starts_with(crate::console_auth::SESSION_PREFIX)
+        {
+            return Ok(false);
+        }
+        match self.console.as_ref() {
+            Some(console) => console.session_must_change_password(&token),
+            None => Ok(false),
+        }
+    }
+
+    pub fn require_password_changed(&self, headers: &HeaderMap) -> Result<(), CoreError> {
+        if self.must_change_password(headers)? {
+            return Err(CoreError::new(
+                "PASSWORD_CHANGE_REQUIRED",
+                "password change required",
+            ));
+        }
+        Ok(())
     }
 
     pub fn from_env() -> Result<Self, ControlAuthConfigError> {
