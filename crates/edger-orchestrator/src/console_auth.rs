@@ -1,5 +1,5 @@
 //! Autenticação por senha do plano de controle: usuário `root` semeado uma
-//! vez, usuários adicionais criados pelo root (`role=operator`, sem papel
+//! vez, usuários adicionais criados pelo root ou admin (sem papel
 //! root delegável) e sessões opacas `ses-` persistentes.
 //!
 //! O store vive no MESMO arquivo SQLite das api-keys persistentes
@@ -49,9 +49,13 @@ use argon2::password_hash::{
 use argon2::Argon2;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use edger_core::{root_principal, validate_key_grant, ApiKeyPrincipal, CoreError};
-use rusqlite::{params, Connection};
-use serde::Serialize;
+use edger_core::security::{
+    console_actor_can_manage, console_actor_is_manager, validate_console_grant,
+    validate_console_role,
+};
+use edger_core::{root_principal, ApiKeyPrincipal, CoreError};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
@@ -100,11 +104,12 @@ pub const ROOT_USERNAME: &str = "root";
 pub struct ConsoleUserInfo {
     pub id: i64,
     pub username: String,
-    /// `admin` para o root, `operator` para os demais (fixo pela API — não
-    /// existe papel root delegável).
+    /// `admin` ou `operator`; o root reservado continua imutável.
     pub role: String,
     pub is_root: bool,
     pub active: bool,
+    pub must_change_password: bool,
+    pub manageable: bool,
     pub permissions: Vec<String>,
     pub namespaces: Vec<String>,
     pub workers: Vec<String>,
@@ -116,10 +121,30 @@ pub struct ConsoleUserInfo {
 /// PATCH de usuário: campos opcionais — ausente (`None`) = mantém o atual.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConsoleUserPatch {
+    pub role: Option<String>,
     pub disabled: Option<bool>,
     pub permissions: Option<Vec<String>>,
     pub namespaces: Option<Vec<String>>,
     pub workers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsoleUserCreate {
+    pub username: String,
+    pub password: String,
+    pub role: Option<String>,
+    pub permissions: Vec<String>,
+    pub namespaces: Vec<String>,
+    pub workers: Vec<String>,
+}
+
+/// Ator autenticado pelo controle HTTP; a sessão e o usuário são relidos
+/// em cada transação, inclusive depois do cálculo assíncrono da senha.
+#[derive(Debug, Clone)]
+pub struct ConsoleActor {
+    principal: ApiKeyPrincipal,
+    session_hash: Option<String>,
 }
 
 /// Metadados de uma sessão viva para o admin API (root-only) — SEM token/
@@ -140,6 +165,7 @@ pub struct SessionInfo {
     /// Epoch em segundos.
     pub expires_at: i64,
     pub current: bool,
+    pub revocable: bool,
 }
 
 /// Resultado da revogação de sessão por id (sem segredos). A proteção contra
@@ -321,15 +347,25 @@ pub fn validate_username(username: &str) -> Result<(), CoreError> {
 /// gastar hash ou tocar no banco): username normalizado e não reservado,
 /// entradas de escopo sem vazio/espaços nas pontas e permissões/escopos
 /// pelo MESMO catálogo da criação de keys (`validate_key_grant` com
-/// criador root) — `"*"` como PERMISSÃO é rejeitado lá (fora do catálogo),
+/// ator real) — `"*"` como PERMISSÃO é rejeitado lá (fora do catálogo),
 /// enquanto `"*"` segue sendo escopo legítimo de namespaces/workers.
 pub fn validate_user_grant(
+    actor: &ApiKeyPrincipal,
     username: &str,
     permissions: &[String],
     namespaces: &[String],
     workers: &[String],
 ) -> Result<(), CoreError> {
     validate_username(username)?;
+    validate_user_scopes(actor, permissions, namespaces, workers)
+}
+
+fn validate_user_scopes(
+    actor: &ApiKeyPrincipal,
+    permissions: &[String],
+    namespaces: &[String],
+    workers: &[String],
+) -> Result<(), CoreError> {
     for list in [permissions, namespaces, workers] {
         for entry in list {
             if entry.is_empty() || entry != entry.trim() {
@@ -340,7 +376,7 @@ pub fn validate_user_grant(
             }
         }
     }
-    validate_key_grant(&root_principal(), permissions, namespaces, workers)
+    validate_console_grant(actor, permissions, namespaces, workers)
 }
 
 /// Lê a senha inicial no boot: arquivo inexistente/ilegível, vazio após trim
@@ -394,6 +430,7 @@ struct UserRecord {
     id: i64,
     username: String,
     active: bool,
+    must_change_password: bool,
     role: String,
     permissions: Vec<String>,
     namespaces: Vec<String>,
@@ -404,7 +441,24 @@ struct UserRecord {
 
 /// Metadados públicos a partir do registro (NUNCA hash/senha). O `role` do
 /// root é sempre `admin` (o restante do fluxo depende dele).
-fn user_info(record: &UserRecord) -> ConsoleUserInfo {
+fn user_principal(record: &UserRecord) -> ApiKeyPrincipal {
+    if record.username.eq_ignore_ascii_case(ROOT_USERNAME) {
+        return root_principal();
+    }
+    ApiKeyPrincipal {
+        id: record.id as u64,
+        name: record.username.clone(),
+        key_prefix: "ses".into(),
+        role: record.role.clone(),
+        permissions: record.permissions.clone(),
+        namespaces: record.namespaces.clone(),
+        workers: record.workers.clone(),
+        is_root: false,
+        expires_at: None,
+    }
+}
+
+fn user_info(record: &UserRecord, actor: &ApiKeyPrincipal) -> ConsoleUserInfo {
     let is_root = record.username.eq_ignore_ascii_case(ROOT_USERNAME);
     ConsoleUserInfo {
         id: record.id,
@@ -416,6 +470,8 @@ fn user_info(record: &UserRecord) -> ConsoleUserInfo {
         },
         is_root,
         active: record.active,
+        must_change_password: record.must_change_password,
+        manageable: console_actor_can_manage(actor, &user_principal(record)),
         permissions: record.permissions.clone(),
         namespaces: record.namespaces.clone(),
         workers: record.workers.clone(),
@@ -521,6 +577,7 @@ impl SqliteConsoleStore {
                 username TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 password_hash TEXT NOT NULL,
                 active INTEGER NOT NULL DEFAULT 1,
+                must_change_password INTEGER NOT NULL DEFAULT 0,
                 role TEXT NOT NULL DEFAULT 'operator',
                 is_root INTEGER NOT NULL DEFAULT 0,
                 permissions TEXT NOT NULL DEFAULT '[]',
@@ -570,6 +627,12 @@ impl SqliteConsoleStore {
             &columns,
             "role",
             "role TEXT NOT NULL DEFAULT 'operator'",
+        )?;
+        ensure_column(
+            conn,
+            &columns,
+            "must_change_password",
+            "must_change_password INTEGER NOT NULL DEFAULT 0",
         )?;
         ensure_column(
             conn,
@@ -684,7 +747,7 @@ impl SqliteConsoleStore {
         let raw = conn
             .query_row(
                 "SELECT id, username, active, role, permissions, namespaces, workers,
-                        created_at, updated_at
+                        created_at, updated_at, must_change_password
                  FROM console_users WHERE id = ?1",
                 params![id],
                 |row| {
@@ -698,6 +761,7 @@ impl SqliteConsoleStore {
                         row.get::<_, String>(6)?,
                         row.get::<_, i64>(7)?,
                         row.get::<_, i64>(8)?,
+                        row.get::<_, bool>(9)?,
                     ))
                 },
             )
@@ -712,6 +776,7 @@ impl SqliteConsoleStore {
             workers,
             created_at,
             updated_at,
+            must_change_password,
         )) = raw
         else {
             return Ok(None);
@@ -720,6 +785,7 @@ impl SqliteConsoleStore {
             id,
             username,
             active,
+            must_change_password,
             role,
             permissions: parse_scopes(&permissions)?,
             namespaces: parse_scopes(&namespaces)?,
@@ -730,12 +796,69 @@ impl SqliteConsoleStore {
     }
 
     /// Metadados de todos os usuários (NUNCA hash/senha), ordenados por id.
-    fn list_users(&self) -> Result<Vec<ConsoleUserInfo>, CoreError> {
-        let conn = self.conn.lock().map_err(|_| lock_err())?;
+    fn revalidate_actor(
+        conn: &Connection,
+        actor: &ConsoleActor,
+    ) -> Result<ApiKeyPrincipal, CoreError> {
+        let Some(hash) = &actor.session_hash else {
+            return if actor.principal.is_root {
+                Ok(actor.principal.clone())
+            } else {
+                Err(forbidden_err())
+            };
+        };
+        let id: i64 = conn
+            .query_row(
+                "SELECT user_id FROM console_sessions WHERE token_hash = ?1 AND expires_at > ?2",
+                params![hash, now_epoch()? as i64],
+                |row| row.get(0),
+            )
+            .map_err(|_| forbidden_err())?;
+        let user = Self::user_by_id_locked(conn, id)?.ok_or_else(forbidden_err)?;
+        let current = user_principal(&user);
+        if !user.active
+            || !console_actor_is_manager(&current)
+            || current.is_root != actor.principal.is_root
+            || (!current.is_root && current.id != actor.principal.id)
+        {
+            return Err(forbidden_err());
+        }
+        if user.must_change_password {
+            return Err(CoreError::new(
+                "PASSWORD_CHANGE_REQUIRED",
+                "password change required",
+            ));
+        }
+        Ok(current)
+    }
+
+    fn require_target(
+        conn: &Connection,
+        actor: &ApiKeyPrincipal,
+        id: i64,
+    ) -> Result<UserRecord, CoreError> {
+        let target = Self::user_by_id_locked(conn, id)?.ok_or_else(|| user_not_found_err(id))?;
+        if !console_actor_can_manage(actor, &user_principal(&target)) {
+            return Err(
+                if actor.is_root && target.username.eq_ignore_ascii_case(ROOT_USERNAME) {
+                    user_immutable_err()
+                } else {
+                    forbidden_err()
+                },
+            );
+        }
+        Ok(target)
+    }
+
+    fn list_users(&self, actor: &ConsoleActor) -> Result<Vec<ConsoleUserInfo>, CoreError> {
+        let mut conn = self.conn.lock().map_err(|_| lock_err())?;
+        let tx = conn.transaction().map_err(store_err)?;
+        let actor = Self::revalidate_actor(&tx, actor)?;
+        let conn = &tx;
         let mut stmt = conn
             .prepare(
                 "SELECT id, username, active, role, permissions, namespaces, workers,
-                        created_at, updated_at
+                        created_at, updated_at, must_change_password
                  FROM console_users ORDER BY id",
             )
             .map_err(store_err)?;
@@ -751,6 +874,7 @@ impl SqliteConsoleStore {
                     row.get::<_, String>(6)?,
                     row.get::<_, i64>(7)?,
                     row.get::<_, i64>(8)?,
+                    row.get::<_, bool>(9)?,
                 ))
             })
             .map_err(store_err)?;
@@ -766,23 +890,26 @@ impl SqliteConsoleStore {
                 workers,
                 created_at,
                 updated_at,
+                must_change_password,
             ) = row.map_err(store_err)?;
             let permissions = parse_scopes(&permissions)?;
             let namespaces = parse_scopes(&namespaces)?;
             let workers = parse_scopes(&workers)?;
-            let is_root = username.eq_ignore_ascii_case(ROOT_USERNAME);
-            users.push(ConsoleUserInfo {
-                id,
-                username,
-                role: if is_root { "admin".to_string() } else { role },
-                is_root,
-                active,
-                permissions,
-                namespaces,
-                workers,
-                created_at,
-                updated_at,
-            });
+            users.push(user_info(
+                &UserRecord {
+                    id,
+                    username,
+                    role,
+                    active,
+                    must_change_password,
+                    permissions,
+                    namespaces,
+                    workers,
+                    created_at,
+                    updated_at,
+                },
+                &actor,
+            ));
         }
         Ok(users)
     }
@@ -803,34 +930,40 @@ impl SqliteConsoleStore {
         Ok(())
     }
 
-    /// Criação de usuário adicional (sempre `role=operator`, `is_root=0`):
+    /// Criação transacional com papel/grants validados pelo ator atual:
     /// a unicidade case-insensitive do username é garantida pelo UNIQUE
     /// COLLATE NOCASE — conflito é `USERNAME_TAKEN` (409), nunca erro vago.
     fn create_user_record(
         &self,
-        username: &str,
+        actor: &ConsoleActor,
+        request: &ConsoleUserCreate,
         password_hash: &str,
-        permissions: &[String],
-        namespaces: &[String],
-        workers: &[String],
         now: i64,
     ) -> Result<ConsoleUserInfo, CoreError> {
-        let permissions_json = json_array(permissions)?;
-        let namespaces_json = json_array(namespaces)?;
-        let workers_json = json_array(workers)?;
-        let conn = self.conn.lock().map_err(|_| lock_err())?;
-        conn.execute(
+        let mut conn = self.conn.lock().map_err(|_| lock_err())?;
+        let tx = conn.transaction().map_err(store_err)?;
+        let actor = Self::revalidate_actor(&tx, actor)?;
+        validate_console_role(&actor, request.role.as_deref(), false)?;
+        validate_user_grant(
+            &actor,
+            &request.username,
+            &request.permissions,
+            &request.namespaces,
+            &request.workers,
+        )?;
+        tx.execute(
             "INSERT INTO console_users
              (username, password_hash, active, role, is_root, permissions, namespaces, workers,
-              created_at, updated_at, password_changed_at)
-             VALUES (?1, ?2, 1, 'operator', 0, ?3, ?4, ?5, ?6, ?6, ?6)",
+              created_at, updated_at, password_changed_at, must_change_password)
+             VALUES (?1, ?2, 1, ?7, 0, ?3, ?4, ?5, ?6, ?6, ?6, 1)",
             params![
-                username,
+                request.username,
                 password_hash,
-                permissions_json,
-                namespaces_json,
-                workers_json,
-                now
+                json_array(&request.permissions)?,
+                json_array(&request.namespaces)?,
+                json_array(&request.workers)?,
+                now,
+                request.role.as_deref().unwrap_or("operator")
             ],
         )
         .map_err(|err| {
@@ -840,10 +973,11 @@ impl SqliteConsoleStore {
                 store_err(err.to_string())
             }
         })?;
-        let id = conn.last_insert_rowid();
-        Self::user_by_id_locked(&conn, id)
-            .map(|user| user.expect("linha recém-criada existe"))
-            .map(|record| user_info(&record))
+        let id = tx.last_insert_rowid();
+        let record = Self::user_by_id_locked(&tx, id)?.expect("linha recém-criada existe");
+        let info = user_info(&record, &actor);
+        tx.commit().map_err(store_err)?;
+        Ok(info)
     }
 
     /// PATCH transacional (atualiza `console_users` E ANTES disso lê o
@@ -855,36 +989,19 @@ impl SqliteConsoleStore {
     /// já é resolvido do estado atual).
     fn update_user_tx(
         &self,
+        actor: &ConsoleActor,
         id: i64,
         patch: &ConsoleUserPatch,
         now: i64,
     ) -> Result<ConsoleUserInfo, CoreError> {
         let mut conn = self.conn.lock().map_err(|_| lock_err())?;
         let tx = conn.transaction().map_err(store_err)?;
-        let user = tx
-            .query_row(
-                "SELECT username, active, permissions, namespaces, workers
-                 FROM console_users WHERE id = ?1",
-                params![id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)? == 1,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                    ))
-                },
-            )
-            .map_err(|_| user_not_found_err(id))?;
-        let (username, active, old_permissions_raw, old_namespaces_raw, old_workers_raw) = user;
-        let old_permissions = parse_scopes(&old_permissions_raw)?;
-        let old_namespaces = parse_scopes(&old_namespaces_raw)?;
-        let old_workers = parse_scopes(&old_workers_raw)?;
-        if username.eq_ignore_ascii_case(ROOT_USERNAME) {
-            tx.rollback().map_err(store_err)?;
-            return Err(user_immutable_err());
-        }
+        let actor = Self::revalidate_actor(&tx, actor)?;
+        validate_console_role(&actor, patch.role.as_deref(), true)?;
+        let old = Self::require_target(&tx, &actor, id)?;
+        let old_permissions = old.permissions;
+        let old_namespaces = old.namespaces;
+        let old_workers = old.workers;
         let permissions = patch
             .permissions
             .clone()
@@ -896,19 +1013,21 @@ impl SqliteConsoleStore {
         let workers = patch.workers.clone().unwrap_or_else(|| old_workers.clone());
         let active = match patch.disabled {
             Some(disabled) => !disabled,
-            None => active,
+            None => old.active,
         };
         // O conjunto FINAL (o que fica gravado) passa no MESMO catálogo da
         // criação: um PATCH que deixaria permissões vazias ou inválidas
         // falha com rollback integral.
-        validate_key_grant(&root_principal(), &permissions, &namespaces, &workers)?;
+        validate_user_scopes(&actor, &permissions, &namespaces, &workers)?;
+        let role = patch.role.as_deref().unwrap_or(&old.role);
         let revoke = !active
+            || (old.role == "admin" && role == "operator")
             || shrink_contains(&old_permissions, &permissions)
             || shrink_contains(&old_namespaces, &namespaces)
             || shrink_contains(&old_workers, &workers);
         tx.execute(
             "UPDATE console_users
-             SET active = ?1, permissions = ?2, namespaces = ?3, workers = ?4, updated_at = ?5
+             SET active = ?1, permissions = ?2, namespaces = ?3, workers = ?4, updated_at = ?5, role = ?7
              WHERE id = ?6",
             params![
                 active as i64,
@@ -916,7 +1035,8 @@ impl SqliteConsoleStore {
                 json_array(&namespaces)?,
                 json_array(&workers)?,
                 now,
-                id
+                id,
+                role
             ],
         )
         .map_err(store_err)?;
@@ -930,37 +1050,25 @@ impl SqliteConsoleStore {
         let updated =
             Self::user_by_id_locked(&tx, id).map(|user| user.expect("linha atualizada existe"))?;
         tx.commit().map_err(store_err)?;
-        Ok(user_info(&updated))
+        Ok(user_info(&updated, &actor))
     }
 
     /// Reset de senha transacional (UPDATE de `console_users` E revogação de
     /// TODAS as sessões do alvo na mesma transação — nunca estado parcial).
     fn reset_user_password_tx(
         &self,
+        actor: &ConsoleActor,
         id: i64,
         new_hash: &str,
         now: i64,
     ) -> Result<ConsoleUserInfo, CoreError> {
         let mut conn = self.conn.lock().map_err(|_| lock_err())?;
         let tx = conn.transaction().map_err(store_err)?;
-        let username = match tx.query_row(
-            "SELECT username FROM console_users WHERE id = ?1",
-            params![id],
-            |row| row.get::<_, String>(0),
-        ) {
-            Ok(username) => username,
-            Err(_) => {
-                tx.rollback().map_err(store_err)?;
-                return Err(user_not_found_err(id));
-            }
-        };
-        if username.eq_ignore_ascii_case(ROOT_USERNAME) {
-            tx.rollback().map_err(store_err)?;
-            return Err(user_immutable_err());
-        }
+        let actor = Self::revalidate_actor(&tx, actor)?;
+        Self::require_target(&tx, &actor, id)?;
         tx.execute(
             "UPDATE console_users
-             SET password_hash = ?1, password_changed_at = ?2, updated_at = ?2
+             SET password_hash = ?1, password_changed_at = ?2, updated_at = ?2, must_change_password = 1
              WHERE id = ?3",
             params![new_hash, now, id],
         )
@@ -973,31 +1081,18 @@ impl SqliteConsoleStore {
         let updated =
             Self::user_by_id_locked(&tx, id).map(|user| user.expect("linha do reset existe"))?;
         tx.commit().map_err(store_err)?;
-        Ok(user_info(&updated))
+        Ok(user_info(&updated, &actor))
     }
 
     /// Exclusão transacional: sessões E usuário saem na mesma transação
     /// (o root nunca é alvo). FK não é enforced no SQLite (default), então a
     /// ordem garante que não sobra sessão órfã; mesmo assim o lookup de
     /// sessão falha fechado para `user_id` sem usuário.
-    fn delete_user_tx(&self, id: i64) -> Result<(), CoreError> {
+    fn delete_user_tx(&self, actor: &ConsoleActor, id: i64) -> Result<(), CoreError> {
         let mut conn = self.conn.lock().map_err(|_| lock_err())?;
         let tx = conn.transaction().map_err(store_err)?;
-        let username = match tx.query_row(
-            "SELECT username FROM console_users WHERE id = ?1",
-            params![id],
-            |row| row.get::<_, String>(0),
-        ) {
-            Ok(username) => username,
-            Err(_) => {
-                tx.rollback().map_err(store_err)?;
-                return Err(user_not_found_err(id));
-            }
-        };
-        if username.eq_ignore_ascii_case(ROOT_USERNAME) {
-            tx.rollback().map_err(store_err)?;
-            return Err(user_immutable_err());
-        }
+        let actor = Self::revalidate_actor(&tx, actor)?;
+        Self::require_target(&tx, &actor, id)?;
         tx.execute(
             "DELETE FROM console_sessions WHERE user_id = ?1",
             params![id],
@@ -1171,14 +1266,19 @@ impl SqliteConsoleStore {
     /// comparação e NUNCA sai do store.
     fn list_sessions(
         &self,
-        caller_token_hash: Option<&str>,
+        actor: &ConsoleActor,
         now: i64,
     ) -> Result<(Vec<SessionInfo>, bool), CoreError> {
-        let conn = self.conn.lock().map_err(|_| lock_err())?;
+        let mut conn = self.conn.lock().map_err(|_| lock_err())?;
+        let tx = conn.transaction().map_err(store_err)?;
+        let current = Self::revalidate_actor(&tx, actor)?;
+        let caller_token_hash = actor.session_hash.as_deref();
+        let conn = &tx;
         let mut stmt = conn
             .prepare(
                 "SELECT s.id, s.user_id, u.username, u.role,
-                        s.created_at, s.expires_at, s.token_hash
+                        s.created_at, s.expires_at, s.token_hash,
+                        u.permissions, u.namespaces, u.workers
                  FROM console_sessions AS s
                  JOIN console_users AS u ON u.id = s.user_id
                  WHERE s.expires_at > ?1 AND u.active = 1
@@ -1196,14 +1296,43 @@ impl SqliteConsoleStore {
                     row.get::<_, i64>(4)?,
                     row.get::<_, i64>(5)?,
                     row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
                 ))
             })
             .map_err(store_err)?;
         let mut sessions = Vec::new();
         for row in rows {
-            let (id, user_id, username, role, created_at, expires_at, token_hash) =
-                row.map_err(store_err)?;
+            let (
+                id,
+                user_id,
+                username,
+                role,
+                created_at,
+                expires_at,
+                token_hash,
+                permissions,
+                namespaces,
+                workers,
+            ) = row.map_err(store_err)?;
             let is_root = username.eq_ignore_ascii_case(ROOT_USERNAME);
+            let target = ApiKeyPrincipal {
+                id: user_id as u64,
+                name: username.clone(),
+                key_prefix: "ses".into(),
+                role: role.clone(),
+                is_root,
+                permissions: parse_scopes(&permissions)?,
+                namespaces: parse_scopes(&namespaces)?,
+                workers: parse_scopes(&workers)?,
+                expires_at: None,
+            };
+            let own = caller_token_hash.is_some_and(|caller| caller == token_hash);
+            let revocable = !own
+                && (current.is_root
+                    || current.id == target.id
+                    || console_actor_can_manage(&current, &target));
             sessions.push(SessionInfo {
                 id,
                 user_id,
@@ -1212,7 +1341,8 @@ impl SqliteConsoleStore {
                 is_root,
                 created_at,
                 expires_at,
-                current: caller_token_hash.is_some_and(|caller| caller == token_hash),
+                current: own,
+                revocable,
             });
         }
         let truncated = sessions.len() > SESSION_LIST_LIMIT;
@@ -1228,28 +1358,38 @@ impl SqliteConsoleStore {
     /// própria/alheia acontece dentro do store.
     fn revoke_session_by_id(
         &self,
+        actor: &ConsoleActor,
         session_id: &str,
-        caller_token_hash: Option<&str>,
     ) -> Result<RevokeSessionOutcome, CoreError> {
-        let conn = self.conn.lock().map_err(|_| lock_err())?;
-        let mut stmt = conn
-            .prepare("SELECT token_hash FROM console_sessions WHERE id = ?1")
+        let mut conn = self.conn.lock().map_err(|_| lock_err())?;
+        let tx = conn.transaction().map_err(store_err)?;
+        let current = Self::revalidate_actor(&tx, actor)?;
+        let caller_token_hash = actor.session_hash.as_deref();
+        let target: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT token_hash, user_id FROM console_sessions WHERE id = ?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
             .map_err(store_err)?;
-        let mut rows = stmt
-            .query_map(params![session_id], |row| row.get::<_, String>(0))
-            .map_err(store_err)?;
-        let Some(current_hash) = rows.next().transpose().map_err(store_err)? else {
+        let Some((current_hash, user_id)) = target else {
             return Ok(RevokeSessionOutcome::NotFound);
         };
         if caller_token_hash.is_some_and(|caller| caller == current_hash) {
             return Ok(RevokeSessionOutcome::OwnSession);
         }
-        let removed = conn
+        let target = Self::user_by_id_locked(&tx, user_id)?.ok_or_else(forbidden_err)?;
+        if !current.is_root && current.id != user_id as u64 {
+            Self::require_target(&tx, &current, target.id)?;
+        }
+        let removed = tx
             .execute(
                 "DELETE FROM console_sessions WHERE id = ?1 AND token_hash IS NOT ?2",
                 params![session_id, caller_token_hash],
             )
             .map_err(store_err)?;
+        tx.commit().map_err(store_err)?;
         if removed == 1 {
             Ok(RevokeSessionOutcome::Revoked)
         } else {
@@ -1307,7 +1447,7 @@ impl SqliteConsoleStore {
         // Aplica de uma vez: novo hash, todas as sessões morrem (a corrente
         // inclusive) e a nova entra.
         tx.execute(
-            "UPDATE console_users SET password_hash = ?1, password_changed_at = ?2 WHERE id = ?3",
+            "UPDATE console_users SET password_hash = ?1, password_changed_at = ?2, must_change_password = 0 WHERE id = ?3",
             params![new_hash, now, user_id],
         )
         .map_err(store_err)?;
@@ -1583,20 +1723,35 @@ impl ConsoleAuthService {
         if !user.active {
             return None;
         }
-        if user.username.eq_ignore_ascii_case(ROOT_USERNAME) {
-            return Some(root_principal());
+        Some(user_principal(&user))
+    }
+
+    pub fn session_must_change_password(&self, raw_token: &str) -> Result<bool, CoreError> {
+        let conn = self.store.conn.lock().map_err(|_| lock_err())?;
+        conn.query_row(
+            "SELECT u.must_change_password FROM console_sessions s JOIN console_users u ON u.id = s.user_id
+             WHERE s.token_hash = ?1 AND s.expires_at > ?2 AND u.active = 1",
+            params![hash_token(raw_token), now_epoch()? as i64], |row| row.get(0),
+        ).optional().map_err(store_err)?.ok_or_else(|| CoreError::new("UNAUTHORIZED", "missing or invalid API key"))
+    }
+
+    pub fn verified_actor(
+        &self,
+        principal: &ApiKeyPrincipal,
+        credential: Option<&str>,
+    ) -> Result<ConsoleActor, CoreError> {
+        if !console_actor_is_manager(principal) {
+            return Err(forbidden_err());
         }
-        Some(ApiKeyPrincipal {
-            id: user.id as u64,
-            name: user.username.clone(),
-            key_prefix: "ses".into(),
-            role: user.role.clone(),
-            permissions: user.permissions.clone(),
-            namespaces: user.namespaces.clone(),
-            workers: user.workers.clone(),
-            is_root: false,
-            expires_at: None,
-        })
+        let actor = ConsoleActor {
+            principal: principal.clone(),
+            session_hash: credential
+                .filter(|token| token.starts_with(SESSION_PREFIX))
+                .map(hash_token),
+        };
+        let conn = self.store.conn.lock().map_err(|_| lock_err())?;
+        SqliteConsoleStore::revalidate_actor(&conn, &actor)?;
+        Ok(actor)
     }
 
     /// Revoga a sessão do token (terminal: a linha sai do banco). `false` =
@@ -1616,13 +1771,10 @@ impl ConsoleAuthService {
     /// token estático, `egk_`) não tem sessão corrente.
     pub fn list_sessions(
         &self,
-        caller_credential: Option<&str>,
+        actor: &ConsoleActor,
     ) -> Result<(Vec<SessionInfo>, bool), CoreError> {
-        let caller_hash = caller_credential
-            .filter(|credential| credential.starts_with(SESSION_PREFIX))
-            .map(hash_token);
         let now = now_epoch()? as i64;
-        self.store.list_sessions(caller_hash.as_deref(), now)
+        self.store.list_sessions(actor, now)
     }
 
     /// Revoga por id uma sessão ALHEIA à credencial do chamador: a própria
@@ -1633,14 +1785,10 @@ impl ConsoleAuthService {
     /// vive no predicado atômico do DELETE por `token_hash`.
     pub fn revoke_session_by_id(
         &self,
+        actor: &ConsoleActor,
         session_id: &str,
-        caller_credential: Option<&str>,
     ) -> Result<RevokeSessionOutcome, CoreError> {
-        let caller_hash = caller_credential
-            .filter(|credential| credential.starts_with(SESSION_PREFIX))
-            .map(hash_token);
-        self.store
-            .revoke_session_by_id(session_id, caller_hash.as_deref())
+        self.store.revoke_session_by_id(actor, session_id)
     }
 
     /// Troca a senha do dono da sessão: valida a atual (prova contra o
@@ -1679,6 +1827,11 @@ impl ConsoleAuthService {
             }
             Err(err) => return Err(ConsoleAuthError::Store(err)),
         };
+        if current == new {
+            return Err(ConsoleAuthError::InvalidRequest(
+                "new password must differ from the current one".into(),
+            ));
+        }
         let new_hash = hash_password(new).map_err(ConsoleAuthError::Store)?;
         self.change_password_finalize(session_token, &expected_hash, &new_hash)
     }
@@ -1704,6 +1857,7 @@ impl ConsoleAuthService {
         }
         validate_password_policy(new)
             .map_err(|err| ConsoleAuthError::InvalidRequest(err.message.clone()))?;
+        let same_password = current == new;
         let session_token = session_token.to_string();
         let current = current.to_string();
         let new = new.to_string();
@@ -1724,7 +1878,14 @@ impl ConsoleAuthService {
                             Some(hash) => hash,
                             None => return Ok(None),
                         };
-                    Ok(Some((expected_hash, hash_password(&new)?)))
+                    Ok(Some((
+                        expected_hash,
+                        if same_password {
+                            String::new()
+                        } else {
+                            hash_password(&new)?
+                        },
+                    )))
                 },
             )
             .await
@@ -1736,6 +1897,11 @@ impl ConsoleAuthService {
             self.limiter.record_failure(client_ip);
             return Err(ConsoleAuthError::InvalidCredentials);
         };
+        if same_password {
+            return Err(ConsoleAuthError::InvalidRequest(
+                "new password must differ from the current one".into(),
+            ));
+        }
         self.change_password_finalize(&session_token, &expected_hash, &new_hash)
     }
 
@@ -1765,62 +1931,71 @@ impl ConsoleAuthService {
     }
 
     // ------------------------------------------------------------------
-    // Gestão de usuários adicionais (root-only via HTTP): metadados SEM
+    // Gestão de usuários adicionais por root/admin: metadados SEM
     // hash/senha, transações que revogam sessões na mesma escrita e
     // validação de catálogo/escopos ANTES de gastar hash ou persistir.
     // ------------------------------------------------------------------
 
-    pub fn list_users(&self) -> Result<Vec<ConsoleUserInfo>, CoreError> {
-        self.store.list_users()
+    pub fn list_users(&self, actor: &ConsoleActor) -> Result<Vec<ConsoleUserInfo>, CoreError> {
+        self.store.list_users(actor)
     }
 
     /// Criação: valida nome/senha/permissões (falha 400 sem gastar hash),
     /// faz o hash sob o limite compartilhado e insere; username duplicado é
-    /// `USERNAME_TAKEN` (409). O novo usuário é sempre `role=operator`.
+    /// `USERNAME_TAKEN` (409). O papel padrão é `operator`.
     pub async fn create_user(
         &self,
-        username: &str,
-        password: &str,
-        permissions: &[String],
-        namespaces: &[String],
-        workers: &[String],
+        actor: &ConsoleActor,
+        request: &ConsoleUserCreate,
     ) -> Result<ConsoleUserInfo, CoreError> {
-        validate_user_grant(username, permissions, namespaces, workers)?;
-        validate_password_policy(password)?;
-        let password_hash = self.hash_password_limited(password).await?;
+        {
+            let conn = self.store.conn.lock().map_err(|_| lock_err())?;
+            let current = SqliteConsoleStore::revalidate_actor(&conn, actor)?;
+            validate_console_role(&current, request.role.as_deref(), false)?;
+            validate_user_grant(
+                &current,
+                &request.username,
+                &request.permissions,
+                &request.namespaces,
+                &request.workers,
+            )?;
+        }
+        validate_password_policy(&request.password)?;
+        let password_hash = self.hash_password_limited(&request.password).await?;
         let now = now_epoch()? as i64;
-        self.store.create_user_record(
-            username,
-            &password_hash,
-            permissions,
-            namespaces,
-            workers,
-            now,
-        )
+        self.store
+            .create_user_record(actor, request, &password_hash, now)
     }
 
     pub fn update_user(
         &self,
+        actor: &ConsoleActor,
         id: i64,
         patch: &ConsoleUserPatch,
     ) -> Result<ConsoleUserInfo, CoreError> {
         let now = now_epoch()? as i64;
-        self.store.update_user_tx(id, patch, now)
+        self.store.update_user_tx(actor, id, patch, now)
     }
 
     pub async fn reset_user_password(
         &self,
+        actor: &ConsoleActor,
         id: i64,
         password: &str,
     ) -> Result<ConsoleUserInfo, CoreError> {
+        {
+            let conn = self.store.conn.lock().map_err(|_| lock_err())?;
+            let current = SqliteConsoleStore::revalidate_actor(&conn, actor)?;
+            SqliteConsoleStore::require_target(&conn, &current, id)?;
+        }
         validate_password_policy(password)?;
         let new_hash = self.hash_password_limited(password).await?;
         let now = now_epoch()? as i64;
-        self.store.reset_user_password_tx(id, &new_hash, now)
+        self.store.reset_user_password_tx(actor, id, &new_hash, now)
     }
 
-    pub fn delete_user(&self, id: i64) -> Result<(), CoreError> {
-        self.store.delete_user_tx(id)
+    pub fn delete_user(&self, actor: &ConsoleActor, id: i64) -> Result<(), CoreError> {
+        self.store.delete_user_tx(actor, id)
     }
 
     /// Spawn na pool de blocking com a contagem de hashes em voo E com o
@@ -1954,6 +2129,10 @@ fn username_taken_err() -> CoreError {
     CoreError::new("USERNAME_TAKEN", "username is already in use")
 }
 
+fn forbidden_err() -> CoreError {
+    CoreError::new("FORBIDDEN", "forbidden")
+}
+
 fn user_not_found_err(id: i64) -> CoreError {
     CoreError::new("NOT_FOUND", format!("console user {id} not found"))
 }
@@ -2006,6 +2185,338 @@ mod tests {
         service
     }
 
+    fn root_actor() -> ConsoleActor {
+        ConsoleActor {
+            principal: root_principal(),
+            session_hash: None,
+        }
+    }
+
+    fn actor_for(credential: Option<&str>) -> ConsoleActor {
+        ConsoleActor {
+            principal: root_principal(),
+            session_hash: credential.map(hash_token),
+        }
+    }
+
+    #[tokio::test]
+    async fn console_admin_store_revalidates_actor_after_hash_and_target_before_write() {
+        let service = seeded();
+        let root = root_actor();
+        let request = ConsoleUserCreate {
+            username: "manager".into(),
+            password: OP_PASSWORD.into(),
+            role: Some("admin".into()),
+            permissions: vec!["workers:read".into()],
+            namespaces: vec!["@acme".into()],
+            workers: vec!["hello".into()],
+        };
+        let manager = service.create_user(&root, &request).await.unwrap();
+        assert!(manager.must_change_password);
+        let pending = service.login(ip_a(), "manager", OP_PASSWORD).unwrap();
+        let principal = service.authenticate_session(&pending).unwrap();
+        assert_eq!(
+            service
+                .verified_actor(&principal, Some(&pending))
+                .unwrap_err()
+                .code,
+            "PASSWORD_CHANGE_REQUIRED"
+        );
+        let token = service
+            .change_password(ip_a(), &pending, OP_PASSWORD, STRONG_2)
+            .unwrap();
+        let principal = service.authenticate_session(&token).unwrap();
+        let actor = service.verified_actor(&principal, Some(&token)).unwrap();
+        let target = service
+            .create_user(
+                &actor,
+                &ConsoleUserCreate {
+                    username: "target".into(),
+                    role: None,
+                    ..request.clone()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(target.manageable);
+        // A prova do ator fica obsoleta no limite entre hash e escrita.
+        service.logout(&token).unwrap();
+        let err = service
+            .store
+            .reset_user_password_tx(
+                &actor,
+                target.id,
+                &hash_password(STRONG).unwrap(),
+                now_epoch().unwrap() as i64,
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "FORBIDDEN");
+        let fresh = service.login(ip_a(), "manager", STRONG_2).unwrap();
+        let actor = service
+            .verified_actor(&service.authenticate_session(&fresh).unwrap(), Some(&fresh))
+            .unwrap();
+        let target_token = service.login(ip_a(), "target", OP_PASSWORD).unwrap();
+        service
+            .update_user(
+                &root,
+                target.id,
+                &ConsoleUserPatch {
+                    role: Some("admin".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            service.authenticate_session(&target_token).unwrap().role,
+            "admin"
+        );
+        assert_eq!(
+            service.delete_user(&actor, target.id).unwrap_err().code,
+            "FORBIDDEN"
+        );
+        assert!(service
+            .list_users(&root)
+            .unwrap()
+            .iter()
+            .any(|user| user.id == target.id));
+        service
+            .update_user(
+                &root,
+                target.id,
+                &ConsoleUserPatch {
+                    role: Some("operator".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(service.authenticate_session(&target_token).is_none());
+    }
+
+    #[test]
+    fn temporary_password_requires_different_password_and_clears_on_rotation() {
+        let service = seeded();
+        let id = operator_user_id(&service);
+        let token = service.login(ip_a(), "alice", OP_PASSWORD).unwrap();
+        assert!(service.session_must_change_password(&token).unwrap());
+        assert!(
+            matches!(service.change_password(ip_a(), &token, OP_PASSWORD, OP_PASSWORD), Err(ConsoleAuthError::InvalidRequest(message)) if message == "new password must differ from the current one")
+        );
+        let rotated = service
+            .change_password(ip_a(), &token, OP_PASSWORD, STRONG_2)
+            .unwrap();
+        assert!(!service.session_must_change_password(&rotated).unwrap());
+        assert!(service.authenticate_session(&token).is_none());
+        assert!(
+            !service
+                .list_users(&root_actor())
+                .unwrap()
+                .iter()
+                .find(|user| user.id == id)
+                .unwrap()
+                .must_change_password
+        );
+        let reset = service
+            .store
+            .reset_user_password_tx(
+                &root_actor(),
+                id,
+                &hash_password(STRONG).unwrap(),
+                now_epoch().unwrap() as i64,
+            )
+            .unwrap();
+        assert!(reset.must_change_password);
+        assert!(service.authenticate_session(&rotated).is_none());
+        let pending = service.login(ip_a(), "alice", STRONG).unwrap();
+        assert!(service.session_must_change_password(&pending).unwrap());
+    }
+
+    #[tokio::test]
+    async fn reset_rechecks_actor_and_target_across_async_hash_boundary() {
+        use std::future::Future;
+        use std::task::Poll;
+        for change in [
+            "session",
+            "role",
+            "active",
+            "permissions",
+            "namespaces",
+            "workers",
+            "pending",
+            "target_role",
+            "target_scope",
+            "control",
+        ] {
+            let service = seeded().with_hash_concurrency(1);
+            let request = ConsoleUserCreate {
+                username: "manager".into(),
+                password: OP_PASSWORD.into(),
+                role: Some("admin".into()),
+                permissions: vec!["workers:read".into()],
+                namespaces: vec!["@acme".into()],
+                workers: vec!["hello".into()],
+            };
+            let manager = service.create_user(&root_actor(), &request).await.unwrap();
+            let pending = service.login(ip_a(), "manager", OP_PASSWORD).unwrap();
+            let token = service
+                .change_password(ip_a(), &pending, OP_PASSWORD, STRONG_2)
+                .unwrap();
+            let actor = service
+                .verified_actor(&service.authenticate_session(&token).unwrap(), Some(&token))
+                .unwrap();
+            let target = service
+                .create_user(
+                    &actor,
+                    &ConsoleUserCreate {
+                        username: "target".into(),
+                        role: None,
+                        ..request
+                    },
+                )
+                .await
+                .unwrap();
+            let old_hash = service.store.user_by_username("target").unwrap().unwrap().1;
+            let permit = service.hash_slots.clone().acquire_owned().await.unwrap();
+            let reset = service.reset_user_password(&actor, target.id, STRONG);
+            let mut reset = std::pin::pin!(reset);
+            // A chamada já leu ator/alvo e parou no slot, antes do hash.
+            std::future::poll_fn(|cx| {
+                assert!(reset.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            {
+                let conn = service.store.conn.lock().unwrap();
+                let sql = match change {
+                    "session" => "DELETE FROM console_sessions WHERE user_id = ?1",
+                    "role" => "UPDATE console_users SET role = 'operator' WHERE id = ?1",
+                    "active" => "UPDATE console_users SET active = 0 WHERE id = ?1",
+                    "permissions" => "UPDATE console_users SET permissions = '[\"workers:install\"]' WHERE id = ?1",
+                    "namespaces" => "UPDATE console_users SET namespaces = '[\"@other\"]' WHERE id = ?1",
+                    "workers" => "UPDATE console_users SET workers = '[\"other\"]' WHERE id = ?1",
+                    "pending" => "UPDATE console_users SET must_change_password = 1 WHERE id = ?1",
+                    "target_role" => "UPDATE console_users SET role = 'admin' WHERE id = ?1",
+                    "target_scope" => "UPDATE console_users SET workers = '[\"other\"]' WHERE id = ?1",
+                    "control" => "UPDATE console_users SET updated_at = updated_at WHERE id = ?1",
+                    _ => unreachable!(),
+                };
+                conn.execute(
+                    sql,
+                    params![if change.starts_with("target_") {
+                        target.id
+                    } else {
+                        manager.id
+                    }],
+                )
+                .unwrap();
+            }
+            drop(permit);
+            let result = reset.await;
+            if change == "control" {
+                assert!(result.is_ok());
+                assert_ne!(
+                    service.store.user_by_username("target").unwrap().unwrap().1,
+                    old_hash
+                );
+            } else {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    if change == "pending" {
+                        "PASSWORD_CHANGE_REQUIRED"
+                    } else {
+                        "FORBIDDEN"
+                    },
+                    "{change}"
+                );
+                assert_eq!(
+                    service.store.user_by_username("target").unwrap().unwrap().1,
+                    old_hash,
+                    "{change}: reset wrote before revalidation"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn current_schema_password_flag_migration_is_additive_and_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("console.db");
+        let service = ConsoleAuthService::open(&path).unwrap();
+        service.seed_root_if_empty(Some(STRONG)).unwrap();
+        operator_user_id(&service);
+        let root_token = service.login(ip_a(), "root", STRONG).unwrap();
+        let operator_token = service.login(ip_a(), "alice", OP_PASSWORD).unwrap();
+        assert!(!service.session_must_change_password(&root_token).unwrap());
+        drop(service);
+        // Schema imediatamente anterior, com grants/roles e sessões vivas.
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("ALTER TABLE console_users DROP COLUMN must_change_password")
+            .unwrap();
+        for _ in 0..2 {
+            let service = ConsoleAuthService::open(&path).unwrap();
+            assert!(!service.session_must_change_password(&root_token).unwrap());
+            assert!(!service
+                .session_must_change_password(&operator_token)
+                .unwrap());
+            assert!(service.authenticate_session(&root_token).unwrap().is_root);
+            assert_eq!(
+                service.authenticate_session(&operator_token).unwrap().role,
+                "operator"
+            );
+            assert!(service
+                .list_users(&root_actor())
+                .unwrap()
+                .iter()
+                .all(|user| !user.must_change_password));
+        }
+    }
+
+    #[tokio::test]
+    async fn create_rechecks_revoked_actor_and_current_grants_after_hash() {
+        use std::future::Future;
+        use std::task::Poll;
+        for change in ["session", "grants"] {
+            let service = seeded().with_hash_concurrency(1);
+            let request = ConsoleUserCreate {
+                username: "manager".into(),
+                password: OP_PASSWORD.into(),
+                role: Some("admin".into()),
+                permissions: vec!["workers:read".into()],
+                namespaces: vec!["@acme".into()],
+                workers: vec!["hello".into()],
+            };
+            service.create_user(&root_actor(), &request).await.unwrap();
+            let pending = service.login(ip_a(), "manager", OP_PASSWORD).unwrap();
+            let token = service
+                .change_password(ip_a(), &pending, OP_PASSWORD, STRONG_2)
+                .unwrap();
+            let actor = service
+                .verified_actor(&service.authenticate_session(&token).unwrap(), Some(&token))
+                .unwrap();
+            let request = ConsoleUserCreate {
+                username: "target".into(),
+                role: None,
+                ..request
+            };
+            let permit = service.hash_slots.clone().acquire_owned().await.unwrap();
+            let create = service.create_user(&actor, &request);
+            let mut create = std::pin::pin!(create);
+            std::future::poll_fn(|cx| {
+                assert!(create.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            if change == "session" {
+                service.logout(&token).unwrap();
+            } else {
+                service.store.conn.lock().unwrap().execute("UPDATE console_users SET permissions = '[\"workers:install\"]' WHERE username = 'manager'", []).unwrap();
+            }
+            drop(permit);
+            assert_eq!(create.await.unwrap_err().code, "FORBIDDEN", "{change}");
+            assert!(service.store.user_by_username("target").unwrap().is_none());
+        }
+    }
+
     /// Usuária adicional `alice` com duas permissões do catálogo — helper
     /// dos testes de sessão/escopo/revogação (hash direto no store: a
     /// validação de grant é coberta em `validate_user_grant`).
@@ -2013,11 +2524,16 @@ mod tests {
         service
             .store
             .create_user_record(
-                "alice",
+                &root_actor(),
+                &ConsoleUserCreate {
+                    username: "alice".to_string(),
+                    password: String::new(),
+                    role: None,
+                    permissions: vec!["workers:read".to_string(), "keys:manage".to_string()],
+                    namespaces: vec!["*".to_string()],
+                    workers: vec!["*".to_string()],
+                },
                 &hash_password(OP_PASSWORD).unwrap(),
-                &["workers:read".to_string(), "keys:manage".to_string()],
-                &["*".to_string()],
-                &["*".to_string()],
                 1_700_000_000,
             )
             .unwrap()
@@ -2027,7 +2543,7 @@ mod tests {
     fn user_by_name(service: &ConsoleAuthService, username: &str) -> ConsoleUserInfo {
         service
             .store
-            .list_users()
+            .list_users(&root_actor())
             .unwrap()
             .into_iter()
             .find(|user| user.username == username)
@@ -2104,11 +2620,16 @@ mod tests {
         service
             .store
             .create_user_record(
-                "alice",
+                &root_actor(),
+                &ConsoleUserCreate {
+                    username: "alice".to_string(),
+                    password: String::new(),
+                    role: None,
+                    permissions: vec!["workers:read".to_string()],
+                    namespaces: vec!["*".to_string()],
+                    workers: vec!["*".to_string()],
+                },
                 &hash_password(OP_PASSWORD).unwrap(),
-                &["workers:read".to_string()],
-                &["*".to_string()],
-                &["*".to_string()],
                 1_700_000_000,
             )
             .unwrap();
@@ -2120,7 +2641,7 @@ mod tests {
         assert!(service.has_root_user().unwrap());
         assert!(service.login(ip_a(), "root", STRONG).is_ok());
         assert!(service.authenticate_session(&token).is_some());
-        let users = service.store.list_users().unwrap();
+        let users = service.store.list_users(&root_actor()).unwrap();
         assert_eq!(users.len(), 2);
         assert!(users.iter().any(|user| user.username == "alice"));
 
@@ -2187,25 +2708,31 @@ mod tests {
         let read = vec!["workers:read".to_string()];
         // `"*"` como PERMISSÃO é indevido (fora do catálogo) — mesmo que o
         // criador seja root.
-        let err = validate_user_grant("alice", &star, &star, &star).unwrap_err();
+        let err = validate_user_grant(&root_principal(), "alice", &star, &star, &star).unwrap_err();
         assert_eq!(err.code, "VALIDATION_ERROR");
         // Permissão desconhecida.
         let unknown = vec!["users:manage".to_string()];
-        let err = validate_user_grant("alice", &unknown, &star, &star).unwrap_err();
+        let err =
+            validate_user_grant(&root_principal(), "alice", &unknown, &star, &star).unwrap_err();
         assert_eq!(err.code, "VALIDATION_ERROR");
         // Listas vazias (permissões, namespaces, workers).
-        assert!(validate_user_grant("alice", &[], &star, &star).is_err());
-        assert!(validate_user_grant("alice", &read, &[], &star).is_err());
-        assert!(validate_user_grant("alice", &read, &star, &[]).is_err());
+        assert!(validate_user_grant(&root_principal(), "alice", &[], &star, &star).is_err());
+        assert!(validate_user_grant(&root_principal(), "alice", &read, &[], &star).is_err());
+        assert!(validate_user_grant(&root_principal(), "alice", &read, &star, &[]).is_err());
         // Entrada vazia / com espaço nas pontas.
-        assert!(validate_user_grant("alice", &read, &["".into()], &star).is_err());
-        assert!(validate_user_grant("alice", &read, &[" @acme".into()], &star).is_err());
+        assert!(
+            validate_user_grant(&root_principal(), "alice", &read, &["".into()], &star).is_err()
+        );
+        assert!(
+            validate_user_grant(&root_principal(), "alice", &read, &[" @acme".into()], &star)
+                .is_err()
+        );
         // Válido: permissões do catálogo + escopos (incluindo `"*"` e glob
         // de sufixo como escopo de worker).
         let perms = vec!["workers:read".to_string(), "keys:manage".to_string()];
         let nss = vec!["@acme".to_string()];
         let workers = vec!["p-abc*".to_string()];
-        assert!(validate_user_grant("alice", &perms, &nss, &workers).is_ok());
+        assert!(validate_user_grant(&root_principal(), "alice", &perms, &nss, &workers).is_ok());
     }
 
     #[test]
@@ -2214,11 +2741,16 @@ mod tests {
         let info = service
             .store
             .create_user_record(
-                "alice",
+                &root_actor(),
+                &ConsoleUserCreate {
+                    username: "alice".to_string(),
+                    password: String::new(),
+                    role: None,
+                    permissions: vec!["workers:read".to_string()],
+                    namespaces: vec!["*".to_string()],
+                    workers: vec!["*".to_string()],
+                },
                 &hash_password(OP_PASSWORD).unwrap(),
-                &["workers:read".to_string()],
-                &["*".to_string()],
-                &["*".to_string()],
                 1_700_000_000,
             )
             .unwrap();
@@ -2227,7 +2759,7 @@ mod tests {
         assert!(!info.is_root);
         assert!(info.active);
         // Metadados SEM hash/senha (list_users): root + alice.
-        let listed = service.store.list_users().unwrap();
+        let listed = service.store.list_users(&root_actor()).unwrap();
         assert_eq!(listed.len(), 2);
         assert!(listed
             .iter()
@@ -2267,22 +2799,35 @@ mod tests {
             let err = service
                 .store
                 .create_user_record(
-                    username,
+                    &root_actor(),
+                    &ConsoleUserCreate {
+                        username: username.to_string(),
+                        password: String::new(),
+                        role: None,
+                        permissions: vec!["workers:read".to_string()],
+                        namespaces: vec!["*".to_string()],
+                        workers: vec!["*".to_string()],
+                    },
                     &hash_password(STRONG_2).unwrap(),
-                    &["workers:read".to_string()],
-                    &["*".to_string()],
-                    &["*".to_string()],
                     1_700_000_001,
                 )
                 .unwrap_err();
-            assert_eq!(err.code, "USERNAME_TAKEN", "{username}");
+            assert_eq!(
+                err.code,
+                if username == "alice" {
+                    "USERNAME_TAKEN"
+                } else {
+                    "VALIDATION_ERROR"
+                },
+                "{username}"
+            );
         }
         // `root` é reservado na validação (400) — nem com root ausente ele
         // entra pela API de usuários.
         let star = vec!["*".to_string()];
-        let err = validate_user_grant("root", &star, &star, &star).unwrap_err();
+        let err = validate_user_grant(&root_principal(), "root", &star, &star, &star).unwrap_err();
         assert_eq!(err.code, "VALIDATION_ERROR");
-        let err = validate_user_grant("ROOT", &star, &star, &star).unwrap_err();
+        let err = validate_user_grant(&root_principal(), "ROOT", &star, &star, &star).unwrap_err();
         assert_eq!(err.code, "VALIDATION_ERROR");
     }
 
@@ -2307,6 +2852,7 @@ mod tests {
         service
             .store
             .update_user_tx(
+                &root_actor(),
                 id,
                 &ConsoleUserPatch {
                     disabled: Some(true),
@@ -2325,6 +2871,7 @@ mod tests {
         service
             .store
             .update_user_tx(
+                &root_actor(),
                 id,
                 &ConsoleUserPatch {
                     disabled: Some(false),
@@ -2349,6 +2896,7 @@ mod tests {
         service
             .store
             .update_user_tx(
+                &root_actor(),
                 id,
                 &ConsoleUserPatch {
                     permissions: Some(vec!["workers:read".to_string()]),
@@ -2370,6 +2918,7 @@ mod tests {
         service
             .store
             .update_user_tx(
+                &root_actor(),
                 id,
                 &ConsoleUserPatch {
                     permissions: Some(vec!["workers:read".to_string(), "keys:manage".to_string()]),
@@ -2389,7 +2938,12 @@ mod tests {
         let token = service.login(ip_a(), "alice", OP_PASSWORD).unwrap();
         service
             .store
-            .reset_user_password_tx(id, &hash_password(STRONG_2).unwrap(), 1_700_000_300)
+            .reset_user_password_tx(
+                &root_actor(),
+                id,
+                &hash_password(STRONG_2).unwrap(),
+                1_700_000_300,
+            )
             .unwrap();
         // Sessão morre; senha antiga não; senha nova entra.
         assert!(service.authenticate_session(&token).is_none());
@@ -2405,7 +2959,7 @@ mod tests {
         let service = seeded();
         let id = operator_user_id(&service);
         let token = service.login(ip_a(), "alice", OP_PASSWORD).unwrap();
-        service.store.delete_user_tx(id).unwrap();
+        service.store.delete_user_tx(&root_actor(), id).unwrap();
         assert!(service.authenticate_session(&token).is_none());
         assert!(matches!(
             service.login(ip_a(), "alice", OP_PASSWORD).unwrap_err(),
@@ -2413,12 +2967,12 @@ mod tests {
         ));
         assert!(!service
             .store
-            .list_users()
+            .list_users(&root_actor())
             .unwrap()
             .iter()
             .any(|user| user.username == "alice"));
         // Sem alvo: 404 honesto.
-        let err = service.store.delete_user_tx(id).unwrap_err();
+        let err = service.store.delete_user_tx(&root_actor(), id).unwrap_err();
         assert_eq!(err.code, "NOT_FOUND");
     }
 
@@ -2429,6 +2983,7 @@ mod tests {
         let err = service
             .store
             .update_user_tx(
+                &root_actor(),
                 root_id,
                 &ConsoleUserPatch {
                     disabled: Some(true),
@@ -2440,11 +2995,20 @@ mod tests {
         assert_eq!(err.code, "USER_IMMUTABLE");
         let err = service
             .store
-            .reset_user_password_tx(root_id, &hash_password(STRONG_2).unwrap(), 1_700_000_401)
+            .reset_user_password_tx(
+                &root_actor(),
+                root_id,
+                &hash_password(STRONG_2).unwrap(),
+                1_700_000_401,
+            )
             .unwrap_err();
         assert_eq!(err.code, "USER_IMMUTABLE");
         assert_eq!(
-            service.store.delete_user_tx(root_id).unwrap_err().code,
+            service
+                .store
+                .delete_user_tx(&root_actor(), root_id)
+                .unwrap_err()
+                .code,
             "USER_IMMUTABLE"
         );
         // Root segue intacto e autenticando.
@@ -2462,6 +3026,7 @@ mod tests {
         let err = service
             .store
             .update_user_tx(
+                &root_actor(),
                 id,
                 &ConsoleUserPatch {
                     permissions: Some(vec![]),
@@ -2481,6 +3046,7 @@ mod tests {
         let err = service
             .store
             .update_user_tx(
+                &root_actor(),
                 9999,
                 &ConsoleUserPatch {
                     disabled: Some(true),
@@ -2545,6 +3111,7 @@ mod tests {
         let err = service
             .store
             .update_user_tx(
+                &root_actor(),
                 id,
                 &ConsoleUserPatch {
                     disabled: Some(true),
@@ -2568,7 +3135,12 @@ mod tests {
         // (o UPDATE foi desfeito) e a sessão segue viva.
         let err = service
             .store
-            .reset_user_password_tx(id, &hash_password(STRONG_2).unwrap(), 1_700_000_601)
+            .reset_user_password_tx(
+                &root_actor(),
+                id,
+                &hash_password(STRONG_2).unwrap(),
+                1_700_000_601,
+            )
             .unwrap_err();
         assert_eq!(err.code, "STORE_ERROR");
         assert!(service.login(ip_b(), "alice", OP_PASSWORD).is_ok());
@@ -2586,6 +3158,7 @@ mod tests {
         service
             .store
             .update_user_tx(
+                &root_actor(),
                 id,
                 &ConsoleUserPatch {
                     disabled: Some(true),
@@ -2861,11 +3434,16 @@ mod tests {
         let info = service
             .store
             .create_user_record(
-                "alice",
+                &root_actor(),
+                &ConsoleUserCreate {
+                    username: "alice".to_string(),
+                    password: String::new(),
+                    role: None,
+                    permissions: vec!["workers:read".to_string()],
+                    namespaces: vec!["*".to_string()],
+                    workers: vec!["*".to_string()],
+                },
                 &hash_password(OP_PASSWORD).unwrap(),
-                &["workers:read".to_string()],
-                &["*".to_string()],
-                &["*".to_string()],
                 1_700_001_000,
             )
             .unwrap();
@@ -2888,6 +3466,7 @@ mod tests {
             "username",
             "password_hash",
             "active",
+            "must_change_password",
             "role",
             "is_root",
             "permissions",
@@ -3021,7 +3600,7 @@ mod tests {
 
         // Limite: 1000 voltam e `truncated` sinaliza que há mais; a ordem é
         // `created_at DESC` (a mais nova é a linha da credencial de unidade).
-        let (sessions, truncated) = service.list_sessions(None).unwrap();
+        let (sessions, truncated) = service.list_sessions(&actor_for(None)).unwrap();
         assert!(truncated, "esperado truncado com 1002 sessões vivas");
         assert_eq!(sessions.len(), SESSION_LIST_LIMIT);
         for (position, session) in sessions.iter().enumerate() {
@@ -3035,7 +3614,9 @@ mod tests {
         }
         // `current` pela credencial (comparação por hash no store): só a
         // linha dela sai marcada — e nenhuma linha devolve token/hash.
-        let (sessions, truncated) = service.list_sessions(Some("ses-unit-caller")).unwrap();
+        let (sessions, truncated) = service
+            .list_sessions(&actor_for(Some("ses-unit-caller")))
+            .unwrap();
         assert!(truncated);
         assert_eq!(sessions.len(), SESSION_LIST_LIMIT);
         assert!(sessions[0].current);
@@ -3076,7 +3657,7 @@ mod tests {
             .unwrap();
         }
         drop(conn);
-        let (sessions, truncated) = service.list_sessions(None).unwrap();
+        let (sessions, truncated) = service.list_sessions(&actor_for(None)).unwrap();
         assert!(!truncated);
         assert_eq!(sessions.len(), 3);
 
@@ -3084,11 +3665,13 @@ mod tests {
         // aqui (o predicado atômico a protege — o banco continua com 3).
         assert_eq!(
             service
-                .revoke_session_by_id(&own_id, Some("ses-unit-own"))
+                .revoke_session_by_id(&actor_for(Some("ses-unit-own")), &own_id)
                 .unwrap(),
             RevokeSessionOutcome::OwnSession
         );
-        let (after_own, _) = service.list_sessions(Some("ses-unit-own")).unwrap();
+        let (after_own, _) = service
+            .list_sessions(&actor_for(Some("ses-unit-own")))
+            .unwrap();
         assert_eq!(after_own.len(), 3, "self-revoke não toca a linha");
         assert!(after_own.iter().any(|session| session.current));
 
@@ -3096,23 +3679,27 @@ mod tests {
         // linha sai e as demais seguem vivas.
         assert_eq!(
             service
-                .revoke_session_by_id(&victim_id, Some("ses-unit-own"))
+                .revoke_session_by_id(&actor_for(Some("ses-unit-own")), &victim_id)
                 .unwrap(),
             RevokeSessionOutcome::Revoked
         );
-        let (after_victim, _) = service.list_sessions(Some("ses-unit-own")).unwrap();
+        let (after_victim, _) = service
+            .list_sessions(&actor_for(Some("ses-unit-own")))
+            .unwrap();
         assert_eq!(after_victim.len(), 2);
         assert!(!after_victim.iter().any(|session| session.id == victim_id));
 
         // Chamador sem sessão (root token estático): revoga sem a guarda se
         // aplicar — e id desconhecido é `NotFound`, não erro de store.
         assert_eq!(
-            service.revoke_session_by_id(&foreign_id, None).unwrap(),
+            service
+                .revoke_session_by_id(&actor_for(None), &foreign_id)
+                .unwrap(),
             RevokeSessionOutcome::Revoked
         );
         assert_eq!(
             service
-                .revoke_session_by_id(&format!("{:032x}", 99), None)
+                .revoke_session_by_id(&actor_for(None), &format!("{:032x}", 99))
                 .unwrap(),
             RevokeSessionOutcome::NotFound
         );
