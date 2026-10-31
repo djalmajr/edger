@@ -59,6 +59,12 @@
 - Weighted routing uses an opaque session cohort on versionless public routes; explicit `@version` bypasses weights but still passes an enabled tenant gate. Rancher setup exposes both flags and requires an existing Tenancit token Secret only when tenant routing is on.
 - The feature is implemented and tested locally in `planning/edger/docs/tenant-routing.md` and `planning/edger/status/evidence/tenant-routing-2026-09-26.md`; no production publication is implied. Policy files are local to one instance, so multi-replica coordination is still required.
 
+## Console users and sessions (EDG-44)
+- The console root is unique and immutable (`isRoot: true`, role `admin`); only root assigns or removes the admin role. Root-only settings, catalog, routing policy, state export, release-marked installs and internal-call bypass keep their existing guards.
+- Delegated user/session management requires a console session (`ses-`) of an admin. An `egk_` key with role `admin` gains no delegated management authority. Admins may manage only operators whose permissions, namespaces and workers are all covered by their own grants; lists include protected root/admin rows without actions. Their own other sessions are revocable; the current session is protected.
+- Creation or password reset by another user sets `mustChangePassword`. Until a different password is chosen, only `GET /api/admin/session`, `POST /api/admin/logout` and `POST /api/admin/me/password` are allowed; other admin routes return 403 `PASSWORD_CHANGE_REQUIRED`. A successful change rotates the session. Demotion, disabling or reduced grants revoke the target's sessions.
+- Existing users migrate with `must_change_password = 0`; the Secret-seeded root is exempt. Back up `api-keys.db` consistently before the additive migration. Role promotion sends only `role`, preserving password state. The full contract and upgrade procedure are in `charts/edger/README.md` and `planning/edger/docs/deployment-k8s.md`; role/password-gate state introduces no Helm value.
+
 ## Discipline
 - Planning maturity: `/agile-refinement` Mode 1 on `planning/edger/` + `refinement-lint.py` (see `planning/edger/scripts/run-gates.sh`). Only the orchestrator agent calls ai-memory tools; subagents must not.
 - `memory_lint` (workspace `djalmajr`, project `edger`): orchestrator only, when the remote server is stable — excluded from planning gates if unstable.

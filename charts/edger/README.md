@@ -94,9 +94,32 @@ The initial password is never a chart value or ConfigMap entry. After a root
 user exists, changing the mounted Secret does not replace that user's stored
 password; use the authenticated password-change flow. Keep the API key database
 on persistent storage so users and sessions survive a restart.
-The cPanel **Users** page is root-only: root can create operator accounts with
-explicit permissions and scopes, disable them, reset passwords, and revoke
-their sessions. The root key remains a separate token credential.
+The cPanel **Users** and **Sessions** pages are available to root and to a
+console session whose user row has role admin; Settings and the other
+root-only operations (catalog, routing-policy, state export, release-marked
+worker installs and the internal-call bypass) keep their guards. Console
+access control is database state, not a chart value: the `root` user is
+unique and immutable (role admin, `isRoot`), and only root creates, promotes
+or demotes the admin role. A console admin manages only the covered
+operators: every permission, namespace and worker of the target must be
+within the admin's own grants (no glob subsumption; a `*` entry covers a
+whole scope dimension), and the root row and the other admins are listed
+without actions. The covered operations are create, edit, disable and delete
+of operators, their password reset and their session revocation. An admin may
+revoke its own other sessions; its current session stays protected (only
+logout ends it). Role demotion, disabling and a grant reduction revoke the
+target's sessions in the same write. An `egk_` API key with role admin gains
+no user or session management.
+
+A user created or password-reset by someone else gets a temporary password:
+until the user chooses a new, different password, every admin route answers
+403 `PASSWORD_CHANGE_REQUIRED` except `GET /api/admin/session`,
+`POST /api/admin/logout` and `POST /api/admin/me/password`, and a successful
+change rotates the user's sessions and returns the new token. The cPanel
+shows a non-dismissible change screen before the Shell for every entry path
+(password login, pasted token, restored session). Existing users and the
+root seeded from the Secret are not pending. The root key remains a separate
+token credential.
 
 ### labdev example
 
@@ -321,6 +344,16 @@ previous `emptyDir` is not migrated, because it was already lost on every
 restart. On image upgrades, the highest enabled cPanel semver is active
 unless a version was explicitly promoted; a promoted version remains the
 default.
+
+The console users and sessions live in the same `api-keys.db` SQLite file as
+the persistent API keys. From 0.3.2-rc.30 on, the boot adds
+`must_change_password INTEGER NOT NULL DEFAULT 0` to `console_users`
+through an additive, idempotent `ALTER TABLE` (only when the column is
+absent): existing users keep `0`, no table is recreated, and rolling back to
+an older image is data-safe (the older binary never references the column).
+Take a consistent backup of `api-keys.db` before the upgrade — the state
+export above already ships a consistent copy (`VACUUM INTO`) — and a raw
+file copy is only consistent while EdgeR is stopped.
 
 ## Access and validation
 
