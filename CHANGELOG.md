@@ -82,6 +82,20 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   query keys carry the token and every `["cpanel", …]` cache is removed on
   logout and on credential change, so the previous credential's data never
   renders for the next one.
+- cPanel delegated user and session management (EDG-49): console admins now
+  manage the users and sessions they cover from the cpanel. The Users and
+  Sessions navigation entries and panels open for the root principal and for
+  a `ses-` session whose user row is admin (an `egk_` key with the admin role
+  string and `ses-` operators are refused by the same shared predicate);
+  Settings stays root-only. The users list shows every row to the admin, with
+  the role and temporary-password badges, and no action controls on rows
+  whose server-computed `manageable` is false (root and other admins); only
+  root sees the role selector and sends `role` on create and PATCH, while an
+  admin's requests omit it and its grant pickers are limited to the
+  permissions, namespaces and workers the caller itself holds (`*` keeps a
+  dimension open). The sessions list renders the revoke action only for
+  `revocable` rows and keeps the current session's disabled rendering with
+  the logout hint. The server remains the authority for every rule.
 - Egress guard for user-chosen hosts (EDG-38): an app that must call a host
   the user picked (Pinar's BYOK) cannot put that host in `allowNet` without
   also letting the worker leave through it directly, so the EdgeR serves the

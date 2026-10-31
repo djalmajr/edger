@@ -25,23 +25,25 @@ import {
   DataGridColumnHeader,
   DEFAULT_PAGE_SIZE,
 } from "./data-grid";
-import { apiJson, type Principal } from "../lib/api";
+import { apiJson, isUserManager, type Principal } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 
 // The backend contract serves only the connected sessions, epochs in
 // seconds, and never a token or hash. The server is the real barrier
-// (root only, 403 on self, 404 on unknown); the UI hides the management
-// surface for any other principal before the panel mounts its hooks.
-export type AdminSession = {
+// (user managers only, 403 on self, 404 on unknown); the UI hides the
+// management surface for any other principal before the panel mounts its
+// hooks.
+export interface AdminSession {
   createdAt: number;
   current: boolean;
   expiresAt: number;
   id: string;
   isRoot: boolean;
+  revocable: boolean;
   role: string;
   userId: number;
   username: string;
-};
+}
 
 export function ConsoleSessions({
   apiKey,
@@ -51,9 +53,9 @@ export function ConsoleSessions({
   principal: Principal;
 }) {
   const { t } = useI18n();
-  // The gate runs before the child, so a non-root principal never mounts
-  // the query hooks and never issues a single request.
-  if (!principal.isRoot) {
+  // The gate runs before the child, so a principal without the management
+  // role never mounts the query hooks and never issues a single request.
+  if (!isUserManager(principal)) {
     return (
       <p className="text-sm text-muted-foreground">
         {t("sessions.noManagement")}
@@ -190,8 +192,11 @@ function SessionsPanel({ apiKey }: { apiKey: string }) {
         ),
         cell: ({ row }) => {
           const session = row.original;
-          // The current session cannot end from here: the server would 403,
-          // and logging out is the only supported way to close it.
+          // The caller's current session cannot end from here: the server
+          // would 403, and logging out is the only supported way to close
+          // it — it keeps its disabled rendering with the logout hint.
+          // A session the caller cannot revoke renders no action at all.
+          if (!session.current && !session.revocable) return null;
           const disabled = session.current || revoke.isPending;
           return (
             <div className="flex justify-end">

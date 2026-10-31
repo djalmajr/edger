@@ -176,6 +176,7 @@ import {
   compareSemver,
   isPasswordChangeRequired,
   isSessionToken,
+  isUserManager,
   kindLabel,
   loadAll,
   SESSION_KEY,
@@ -2093,7 +2094,8 @@ function Shell({
     (entry) =>
       (entry.id !== "keys" || canManageKeys(data.principal)) &&
       (entry.id !== "observability" || can(data.principal, "observability:read")) &&
-      (!["users", "sessions", "settings"].includes(entry.id) || data.principal.isRoot),
+      (!["users", "sessions"].includes(entry.id) || isUserManager(data.principal)) &&
+      (entry.id !== "settings" || data.principal.isRoot),
   );
   const navigationGroups = [
     {

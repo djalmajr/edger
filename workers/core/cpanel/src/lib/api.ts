@@ -33,6 +33,7 @@ export type LoginOptions = {
 };
 
 export type Principal = {
+  keyPrefix?: string;
   name?: string;
   namespaces?: string[];
   role?: string;
@@ -72,6 +73,17 @@ export function can(principal: Principal, permission: string): boolean {
 
 export function canManageKeys(principal: Principal): boolean {
   return can(principal, "keys:manage");
+}
+
+// User manager of the console users/sessions screens — the mirror of the
+// server's console_actor_is_manager: the root principal, or a `ses-`
+// session whose user row is admin. An `egk_` API key with the admin role
+// string is NOT a manager; the server is the real authority.
+export function isUserManager(principal: Principal): boolean {
+  return (
+    principal.isRoot === true ||
+    (principal.role === "admin" && principal.keyPrefix === "ses")
+  );
 }
 
 export type ApiKey = {
@@ -514,32 +526,36 @@ export function compareSemver(a: string, b: string) {
 // server; the UI just hides what the principal cannot do. Passwords ride the
 // request body only — never URLs, errors, or logs.
 
-export type AdminUser = {
+export interface AdminUser {
   createdAt: number;
   disabled: boolean;
   id: number;
   isRoot: boolean;
+  manageable: boolean;
+  mustChangePassword: boolean;
   namespaces: string[];
   permissions: string[];
   role: string;
   username: string;
   workers: string[];
-};
+}
 
-export type CreateUserRequest = {
+export interface CreateUserRequest {
   namespaces: string[];
   password: string;
   permissions: string[];
+  role?: "admin" | "operator";
   username: string;
   workers: string[];
-};
+}
 
-export type UpdateUserRequest = {
+export interface UpdateUserRequest {
   disabled?: boolean;
   namespaces?: string[];
   permissions?: string[];
+  role?: "admin" | "operator";
   workers?: string[];
-};
+}
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string");
@@ -558,6 +574,8 @@ function parseAdminUser(value: unknown): AdminUser {
     typeof user.role !== "string" ||
     typeof user.isRoot !== "boolean" ||
     typeof user.disabled !== "boolean" ||
+    typeof user.manageable !== "boolean" ||
+    typeof user.mustChangePassword !== "boolean" ||
     typeof user.createdAt !== "number" ||
     !isStringArray(user.permissions) ||
     !isStringArray(user.namespaces) ||
@@ -569,6 +587,8 @@ function parseAdminUser(value: unknown): AdminUser {
     disabled: user.disabled,
     id: user.id,
     isRoot: user.isRoot,
+    manageable: user.manageable,
+    mustChangePassword: user.mustChangePassword,
     namespaces: user.namespaces,
     permissions: user.permissions,
     role: user.role,

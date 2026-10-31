@@ -25,6 +25,24 @@ const operatorPrincipal: Principal = {
   role: "operator",
   permissions: ["workers:read"],
 };
+// A console admin: a `ses-` session whose user row is admin.
+const adminPrincipal: Principal = {
+  isRoot: false,
+  keyPrefix: "ses",
+  name: "boss",
+  role: "admin",
+  permissions: ["*"],
+  namespaces: ["*"],
+  workers: ["*"],
+};
+// The same role string on an `egk_` API key is NOT a console admin.
+const egkAdminPrincipal: Principal = {
+  isRoot: false,
+  keyPrefix: "egk_",
+  name: "svc",
+  role: "admin",
+  permissions: ["*"],
+};
 
 function makeSession(overrides: Partial<AdminSession> = {}): AdminSession {
   return {
@@ -33,6 +51,7 @@ function makeSession(overrides: Partial<AdminSession> = {}): AdminSession {
     expiresAt: 1_700_864_000,
     id: "sess-1",
     isRoot: false,
+    revocable: true,
     role: "operator",
     userId: 2,
     username: "analyst-01",
@@ -46,6 +65,7 @@ const sessionBody = {
       current: true,
       id: "sess-current",
       isRoot: true,
+      revocable: false,
       role: "root",
       userId: 1,
       username: "root",
@@ -117,6 +137,67 @@ describe("ConsoleSessions", () => {
     expect(screen.queryByRole("table")).toBeNull();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("hides the panel from an egk_ key with the admin role string", () => {
+    globalThis.fetch = fetchMock;
+    renderSessions(egkAdminPrincipal);
+    expect(
+      screen.getByText(
+        "Only the root principal manages sessions. Ask the operator for access.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("lists sessions for a ses- admin and renders revoke only for revocable rows", async () => {
+    globalThis.fetch = fetchMock;
+    const adminBody = {
+      sessions: [
+        makeSession({
+          current: true,
+          id: "sess-admin",
+          revocable: false,
+          role: "admin",
+          userId: 3,
+          username: "boss",
+        }),
+        makeSession({
+          id: "sess-root",
+          isRoot: true,
+          revocable: false,
+          role: "admin",
+          userId: 1,
+          username: "root",
+        }),
+        makeSession({ id: "sess-op", revocable: true }),
+      ],
+      truncated: false,
+    };
+    stubJson(fetchMock, adminBody);
+    renderSessions(adminPrincipal);
+    const table = await screen.findByRole("table");
+    const [currentRow, rootRow, operatorRow] =
+      table.querySelectorAll("tbody tr");
+    // The caller's current session keeps its non-revocable rendering: the
+    // disabled button with the logout hint.
+    const currentButton = within(currentRow as HTMLElement).getByRole(
+      "button",
+      { name: "Revoke" },
+    );
+    expect(currentButton.hasAttribute("disabled")).toBe(true);
+    expect(currentButton.getAttribute("title")).toBe(
+      "To end this session, use Log out.",
+    );
+    // A session the caller cannot revoke renders no action at all.
+    expect(within(rootRow as HTMLElement).queryByRole("button")).toBeNull();
+    // …while the covered operator's session keeps a live revoke.
+    expect(
+      within(operatorRow as HTMLElement)
+        .getByRole("button", { name: "Revoke" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
   });
 
   it("lists the active sessions with a fixed elastic username column", async () => {

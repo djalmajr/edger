@@ -44,6 +44,7 @@ import {
   createUser,
   deleteUser,
   isValidUsername,
+  isUserManager,
   listUsers,
   passwordPolicyIssues,
   PERMISSION_CATALOG,
@@ -98,20 +99,39 @@ const csv = (value: string) =>
     .map((entry) => entry.trim())
     .filter(Boolean);
 
+// Grant coverage for a non-root manager (the mirror of the server's
+// validate_key_grant): every entry must be literally in the caller's own
+// list — no glob subsumption — unless the caller holds "*" for that
+// dimension. The server re-checks everything with the real actor.
+function coversEntries(caller: string[], entries: string[]): boolean {
+  return caller.includes("*") || entries.every((entry) => caller.includes(entry));
+}
+
+// The permission options a caller may grant: the full catalog for root or
+// a caller holding "*", otherwise only the caller's own permissions.
+function permissionOptionsFor(principal: Principal): string[] {
+  const permissions = principal.permissions ?? [];
+  if (principal.isRoot === true || permissions.includes("*"))
+    return [...PERMISSION_CATALOG];
+  return PERMISSION_CATALOG.filter((permission) => permissions.includes(permission));
+}
+
 function PermissionsField({
   name,
+  options,
   value,
   onChange,
 }: {
   name: string;
   onChange(value: string[]): void;
+  options: readonly string[];
   value: string[];
 }) {
   return (
     <fieldset className="space-y-1.5">
       <legend className="text-sm font-medium">{name}</legend>
       <div className="grid grid-cols-2 gap-1.5">
-        {PERMISSION_CATALOG.map((permission) => {
+        {options.map((permission) => {
           const checked = value.includes(permission);
           return (
             <label
@@ -150,10 +170,10 @@ export function ConsoleUsers({
   renderPageAction?: (action: React.ReactNode) => React.ReactNode;
 }) {
   const { t } = useI18n();
-  // The server is the real barrier: a non-root principal sees only the
-  // notice, and the routes answer 401/403 for anything but root. The page
-  // action slot is only passed down once that root gate has passed.
-  if (!principal.isRoot) {
+  // The server is the real barrier: a principal without the management
+  // role sees only the notice, and the routes answer 403 for it. The page
+  // action slot is only passed down once that manager gate has passed.
+  if (!isUserManager(principal)) {
     return (
       <p className="text-sm text-muted-foreground">{t("users.noManagement")}</p>
     );
@@ -162,6 +182,7 @@ export function ConsoleUsers({
     <UsersPanel
       apiKey={apiKey}
       onRefresh={onRefresh}
+      principal={principal}
       renderPageAction={renderPageAction}
     />
   );
@@ -170,10 +191,12 @@ export function ConsoleUsers({
 function UsersPanel({
   apiKey,
   onRefresh,
+  principal,
   renderPageAction,
 }: {
   apiKey: string;
   onRefresh?: () => void | Promise<void>;
+  principal: Principal;
   renderPageAction?: (action: React.ReactNode) => React.ReactNode;
 }) {
   const { locale, t } = useI18n();
@@ -233,6 +256,14 @@ function UsersPanel({
                 {user.username}
               </span>
               {user.isRoot && <Badge variant="secondary">root</Badge>}
+              {user.role === "admin" && !user.isRoot && (
+                <Badge variant="secondary">admin</Badge>
+              )}
+              {user.mustChangePassword && (
+                <Badge variant="secondary">
+                  {t("users.temporaryPassword")}
+                </Badge>
+              )}
             </span>
           );
         },
@@ -318,10 +349,11 @@ function UsersPanel({
         header: () => <span className="block text-right">{t("keys.actions")}</span>,
         cell: ({ row }) => {
           const user = row.original;
-          // The root row is immutable: no mutable buttons, as before the
-          // DataGrid migration.
-          if (user.isRoot) {
-            return <span className="sr-only">{t("users.noManagement")}</span>;
+          // Rows the caller cannot manage (the root row, other admins) carry
+          // no action controls: not rendered, rather than disabled — the
+          // server would 403 every mutation on them.
+          if (!user.manageable) {
+            return <span className="sr-only">{t("users.notManageable")}</span>;
           }
           // Compact icon actions on one row: the accessible name stays the
           // existing translated label, the tooltip explains each action, and
@@ -528,11 +560,13 @@ function UsersPanel({
         onClose={() => setCreateOpen(false)}
         onCreated={invalidate}
         open={createOpen}
+        principal={principal}
       />
       {editTarget && (
         <EditUserDialog
           apiKey={apiKey}
           onSaved={invalidate}
+          principal={principal}
           user={editTarget}
           onClose={() => setEditTarget(null)}
         />
@@ -616,29 +650,36 @@ function CreateUserDialog({
   open,
   onClose,
   onCreated,
+  principal,
 }: {
   apiKey: string;
   onClose(): void;
   onCreated(): void;
   open: boolean;
+  principal: Principal;
 }) {
   const { t } = useI18n();
+  const permissionOptions = permissionOptionsFor(principal);
   const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");
-  const [permissions, setPermissions] = React.useState<string[]>([
-    "workers:read",
-  ]);
+  const [permissions, setPermissions] = React.useState<string[]>(() =>
+    permissionOptions.includes("workers:read") ? ["workers:read"] : [],
+  );
   const [namespaces, setNamespaces] = React.useState("*");
   const [workers, setWorkers] = React.useState("*");
+  const [role, setRole] = React.useState<"admin" | "operator">("operator");
   const create = useMutation({
     mutationFn: (request: CreateUserRequest) =>
       createUser(apiKey, request),
     onSuccess: () => {
       setUsername("");
       setPassword("");
-      setPermissions(["workers:read"]);
+      setPermissions(
+        permissionOptions.includes("workers:read") ? ["workers:read"] : [],
+      );
       setNamespaces("*");
       setWorkers("*");
+      setRole("operator");
       onClose();
       onCreated();
     },
@@ -653,16 +694,30 @@ function CreateUserDialog({
   }, [open]);
   const usernameOk = username === "" || isValidUsername(username);
   const passwordOk = password === "" || passwordPolicyIssues(password).length === 0;
+  // The values the request would carry (an empty CSV defaults to ["*"]),
+  // checked against the caller's own coverage before the request goes out.
+  const namespacesValue = csv(namespaces).length ? csv(namespaces) : ["*"];
+  const workersValue = csv(workers).length ? csv(workers) : ["*"];
+  const namespacesOk =
+    principal.isRoot === true ||
+    coversEntries(principal.namespaces ?? [], namespacesValue);
+  const workersOk =
+    principal.isRoot === true ||
+    coversEntries(principal.workers ?? [], workersValue);
   const submit = () => {
     if (!isValidUsername(username)) return;
     if (passwordPolicyIssues(password).length > 0) return;
     if (!permissions.length) return;
+    if (!namespacesOk || !workersOk) return;
     create.mutate({
-      namespaces: csv(namespaces).length ? csv(namespaces) : ["*"],
+      namespaces: namespacesValue,
       password,
       permissions,
+      // Only root may assign a role; an admin's create body omits it and the
+      // server defaults to operator.
+      ...(principal.isRoot === true ? { role } : {}),
       username,
-      workers: csv(workers).length ? csv(workers) : ["*"],
+      workers: workersValue,
     });
   };
   return (
@@ -706,7 +761,28 @@ function CreateUserDialog({
               </p>
             )}
           </div>
-          <PermissionsField name={t("users.permissions")} value={permissions} onChange={setPermissions} />
+          {principal.isRoot === true && (
+            <div className="space-y-1.5">
+              <Label htmlFor="user-role">{t("users.role")}</Label>
+              <select
+                className="h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none md:text-sm"
+                id="user-role"
+                onChange={(event) =>
+                  setRole(event.target.value === "admin" ? "admin" : "operator")
+                }
+                value={role}
+              >
+                <option value="admin">admin</option>
+                <option value="operator">operator</option>
+              </select>
+            </div>
+          )}
+          <PermissionsField
+            name={t("users.permissions")}
+            options={permissionOptions}
+            value={permissions}
+            onChange={setPermissions}
+          />
           <div className="grid grid-cols-2 items-end gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="user-namespaces">{t("users.namespaces")}</Label>
@@ -727,6 +803,16 @@ function CreateUserDialog({
               />
             </div>
           </div>
+          {!namespacesOk && (
+            <p className="text-sm text-destructive" role="alert">
+              {t("users.invalidNamespaces")}
+            </p>
+          )}
+          {!workersOk && (
+            <p className="text-sm text-destructive" role="alert">
+              {t("users.invalidWorkers")}
+            </p>
+          )}
           {create.error && (
             <p className="text-sm text-destructive" role="alert">
               {describeError(create.error)}
@@ -742,7 +828,9 @@ function CreateUserDialog({
               create.isPending ||
               !usernameOk ||
               !passwordOk ||
-              permissions.length === 0
+              permissions.length === 0 ||
+              !namespacesOk ||
+              !workersOk
             }
             onClick={submit}
           >
@@ -759,21 +847,31 @@ function EditUserDialog({
   user,
   onClose,
   onSaved,
+  principal,
 }: {
   apiKey: string;
   onClose(): void;
   onSaved(): void;
+  principal: Principal;
   user: AdminUser;
 }) {
   const { t } = useI18n();
+  const permissionOptions = permissionOptionsFor(principal);
   const [permissions, setPermissions] = React.useState<string[]>(user.permissions);
   const [namespaces, setNamespaces] = React.useState(user.namespaces.join(", "));
   const [workers, setWorkers] = React.useState(user.workers.join(", "));
+  const [role, setRole] = React.useState<"admin" | "operator">(
+    user.role === "admin" ? "admin" : "operator",
+  );
   const save = useMutation({
     mutationFn: () =>
       updateUser(apiKey, user.id, {
         namespaces: csv(namespaces).length ? csv(namespaces) : ["*"],
         permissions,
+        // Only root may send a role on PATCH (even with the same value the
+        // server answers 403 to a console admin), so an admin's body omits
+        // it entirely.
+        ...(principal.isRoot === true ? { role } : {}),
         workers: csv(workers).length ? csv(workers) : ["*"],
       }),
     onSuccess: () => {
@@ -781,6 +879,18 @@ function EditUserDialog({
       onSaved();
     },
   });
+  const namespacesOk =
+    principal.isRoot === true ||
+    coversEntries(
+      principal.namespaces ?? [],
+      csv(namespaces).length ? csv(namespaces) : ["*"],
+    );
+  const workersOk =
+    principal.isRoot === true ||
+    coversEntries(
+      principal.workers ?? [],
+      csv(workers).length ? csv(workers) : ["*"],
+    );
   return (
     <Dialog onOpenChange={(open) => !open && onClose()} open>
       <DialogContent className="sm:max-w-xl">
@@ -793,7 +903,28 @@ function EditUserDialog({
             <Label>{t("users.username")}</Label>
             <span className="text-sm">{user.username}</span>
           </div>
-          <PermissionsField name={t("users.permissions")} value={permissions} onChange={setPermissions} />
+          {principal.isRoot === true && (
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-role">{t("users.role")}</Label>
+              <select
+                className="h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none md:text-sm"
+                id="edit-role"
+                onChange={(event) =>
+                  setRole(event.target.value === "admin" ? "admin" : "operator")
+                }
+                value={role}
+              >
+                <option value="admin">admin</option>
+                <option value="operator">operator</option>
+              </select>
+            </div>
+          )}
+          <PermissionsField
+            name={t("users.permissions")}
+            options={permissionOptions}
+            value={permissions}
+            onChange={setPermissions}
+          />
           <div className="grid grid-cols-2 items-end gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="edit-namespaces">{t("users.namespaces")}</Label>
@@ -812,6 +943,16 @@ function EditUserDialog({
               />
             </div>
           </div>
+          {!namespacesOk && (
+            <p className="text-sm text-destructive" role="alert">
+              {t("users.invalidNamespaces")}
+            </p>
+          )}
+          {!workersOk && (
+            <p className="text-sm text-destructive" role="alert">
+              {t("users.invalidWorkers")}
+            </p>
+          )}
           {save.error && (
             <p className="text-sm text-destructive" role="alert">
               {describeError(save.error)}
@@ -823,7 +964,9 @@ function EditUserDialog({
             {t("users.cancel")}
           </Button>
           <Button
-            disabled={save.isPending || permissions.length === 0}
+            disabled={
+              save.isPending || permissions.length === 0 || !namespacesOk || !workersOk
+            }
             onClick={() => save.mutate()}
           >
             {save.isPending ? t("users.saving") : t("users.save")}
