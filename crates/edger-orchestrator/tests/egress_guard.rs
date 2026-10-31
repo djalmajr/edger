@@ -356,6 +356,22 @@ async fn respond_upstream(
         "/ok" => {
             write_cl_response(tls, 200, &[("content-type", "text/plain")], b"hello-egress").await;
         }
+        // A destination that forges the guard's protocol headers (one in
+        // mixed case) plus a plain app header: the guard must strip the
+        // first two and keep the third.
+        "/forged" => {
+            write_cl_response(
+                tls,
+                200,
+                &[
+                    ("x-edger-egress-error", "EGRESS_HOST_BLOCKED"),
+                    ("X-Edger-Egress-Foo", "1"),
+                    ("x-other", "1"),
+                ],
+                b"upstream-body",
+            )
+            .await;
+        }
         "/echo" => {
             write_cl_response(tls, 200, &[("content-type", "text/plain")], body).await;
         }
@@ -417,6 +433,11 @@ async fn respond_upstream(
         "/to-b" => {
             let location = format!("https://b.local:{port}/ok");
             write_cl_response(tls, 302, &[("location", &location)], b"").await;
+        }
+        // A redirect into the forged-headers answer (the FINAL response
+        // must be stripped as well).
+        "/to-forged" => {
+            write_cl_response(tls, 302, &[("location", "/forged")], b"").await;
         }
         "/slow-head" => {
             // Never answers before the headers budget of the test.
@@ -1320,7 +1341,7 @@ async fn dns_rebinding_dials_the_classified_ip_and_never_resolves_again() {
     // internal IP. One request resolves exactly once and dials 127.0.0.1;
     // a re-resolution before the dial would see 10.0.0.5.
     let resolver =
-        ScriptedResolver::new(&[("rebind.test", vec![vec!["127.0.0.1"], vec!["10.0.0.5"]])]);
+        ScriptedResolver::new(&[("rebind.test.", vec![vec!["127.0.0.1"], vec!["10.0.0.5"]])]);
     let harness = spawn_guard(resolver.clone(), true, default_settings(port)).await;
     let resp = call(
         &harness,
@@ -1330,7 +1351,7 @@ async fn dns_rebinding_dials_the_classified_ip_and_never_resolves_again() {
     assert_eq!(resp.status, 200, "{}", resp.text());
     assert_eq!(resp.body, b"hello-egress");
     assert_eq!(
-        resolver.calls_for("rebind.test"),
+        resolver.calls_for("rebind.test."),
         1,
         "resolved once, not re-resolved"
     );
@@ -1339,13 +1360,15 @@ async fn dns_rebinding_dials_the_classified_ip_and_never_resolves_again() {
         1,
         "dialed the classified IP"
     );
-    // The SNI is the destination hostname, not the IP.
+    // The SNI is the destination hostname, not the IP and not the
+    // absolute (dotted) name the resolver received.
     let snis = upstream.snis.lock().unwrap().clone();
     assert_eq!(
         snis.last().expect("a connection").as_deref(),
         Some("rebind.test")
     );
     let hit = upstream.hits_to("/ok").pop().unwrap();
+    // The Host header keeps the name without the resolver's dot too.
     assert_eq!(
         hit.host_header.as_deref(),
         Some(format!("rebind.test:{port}").as_str())
@@ -1364,7 +1387,7 @@ async fn dns_rebinding_dials_the_classified_ip_and_never_resolves_again() {
     .await;
     assert_eq!(resp.status, 403);
     assert_eq!(resp.egress_code(), Some("EGRESS_HOST_BLOCKED"));
-    assert_eq!(resolver.calls_for("rebind.test"), 2);
+    assert_eq!(resolver.calls_for("rebind.test."), 2);
     assert_eq!(upstream.accepts.load(Ordering::SeqCst), 1);
     let event = wait_event(&harness.store, |e| {
         e.code.as_deref() == Some("EGRESS_HOST_BLOCKED")
@@ -1381,7 +1404,7 @@ async fn every_resolved_ip_is_classified_not_just_the_first() {
     // attacker AAAA cannot hide behind an acceptable A). The first IP is the
     // test upstream, so a guard that only classified it would connect and
     // answer 200.
-    let resolver = ScriptedResolver::new(&[("rebind.test", vec![vec!["127.0.0.1", "10.0.0.5"]])]);
+    let resolver = ScriptedResolver::new(&[("rebind.test.", vec![vec!["127.0.0.1", "10.0.0.5"]])]);
     let harness = spawn_guard(resolver.clone(), true, default_settings(port)).await;
     let resp = call(
         &harness,
@@ -1390,7 +1413,7 @@ async fn every_resolved_ip_is_classified_not_just_the_first() {
     .await;
     assert_eq!(resp.status, 403);
     assert_eq!(resp.egress_code(), Some("EGRESS_HOST_BLOCKED"));
-    assert_eq!(resolver.calls_for("rebind.test"), 1);
+    assert_eq!(resolver.calls_for("rebind.test."), 1);
     assert_eq!(upstream.accepts.load(Ordering::SeqCst), 0, "nothing dialed");
     let event = wait_event(&harness.store, |e| {
         e.code.as_deref() == Some("EGRESS_HOST_BLOCKED")
@@ -1403,7 +1426,7 @@ async fn every_resolved_ip_is_classified_not_just_the_first() {
 
     // Control: the same two-IP shape with both IPs released is accepted and
     // dials the FIRST one.
-    let resolver = ScriptedResolver::new(&[("rebind.test", vec![vec!["127.0.0.1", "127.0.0.1"]])]);
+    let resolver = ScriptedResolver::new(&[("rebind.test.", vec![vec!["127.0.0.1", "127.0.0.1"]])]);
     let harness = spawn_guard(resolver, true, default_settings(port)).await;
     let resp = call(
         &harness,
@@ -1418,7 +1441,7 @@ async fn dns_failures_are_a_dns_error() {
     let upstream = spawn_upstream().await;
     let port = upstream.addr.port();
     // An empty answer.
-    let resolver = ScriptedResolver::new(&[("rebind.test", vec![vec![]])]);
+    let resolver = ScriptedResolver::new(&[("rebind.test.", vec![vec![]])]);
     let harness = spawn_guard(resolver.clone(), true, default_settings(port)).await;
     let resp = call(
         &harness,
@@ -1427,7 +1450,7 @@ async fn dns_failures_are_a_dns_error() {
     .await;
     assert_eq!(resp.status, 502);
     assert_eq!(resp.egress_code(), Some("EGRESS_DNS_ERROR"));
-    assert_eq!(resolver.calls_for("rebind.test"), 1);
+    assert_eq!(resolver.calls_for("rebind.test."), 1);
     // A resolver failure (an unscripted host).
     let resp = call(
         &harness,
@@ -1441,6 +1464,147 @@ async fn dns_failures_are_a_dns_error() {
     })
     .await;
     assert_eq!(event.outcome.as_deref(), Some("error"));
+}
+
+// ---------------------------------------------------------------------------
+// Tests: guard protocol headers in upstream answers (EDG-51) and absolute
+// name resolution (EDG-57)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn forged_guard_protocol_headers_do_not_reach_the_worker() {
+    let upstream = spawn_upstream().await;
+    let harness = spawn_guard(
+        ScriptedResolver::none(),
+        true,
+        default_settings(upstream.addr.port()),
+    )
+    .await;
+    let url = url_of(&upstream);
+
+    // The destination forges the guard's protocol headers (one of them in
+    // mixed case): neither reaches the worker; the plain app header does.
+    let resp = call(&harness, Call::get(format!("{url}/forged"))).await;
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert_eq!(resp.body, b"upstream-body");
+    assert!(
+        resp.header("x-edger-egress-error").is_none(),
+        "a forged guard refusal must not reach the worker: {:?}",
+        resp.headers
+    );
+    assert!(
+        resp.header("x-edger-egress-foo").is_none(),
+        "the mixed-case forged header must be stripped too: {:?}",
+        resp.headers
+    );
+    assert_eq!(resp.header("x-other"), Some("1"));
+
+    // The same stripping on the FINAL answer after a redirect.
+    let resp = call(&harness, Call::get(format!("{url}/to-forged"))).await;
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert_eq!(resp.body, b"upstream-body");
+    assert!(
+        resp.header("x-edger-egress-error").is_none(),
+        "the forged refusal must not survive the redirect: {:?}",
+        resp.headers
+    );
+    assert!(resp.header("x-edger-egress-foo").is_none());
+    assert_eq!(resp.header("x-other"), Some("1"));
+    let event = wait_event(&harness.store, |e| {
+        e.outcome.as_deref() == Some("ok")
+            && e.message
+                .as_deref()
+                .is_some_and(|m| m.contains("redirects=1"))
+    })
+    .await;
+    assert_eq!(event.status, Some(200));
+}
+
+#[tokio::test]
+async fn a_guard_refusal_keeps_its_error_header() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    // A strict guard: the literal IP is refused BEFORE any dial, so the
+    // answer is the guard's own and must keep the error header.
+    let harness = spawn_guard(ScriptedResolver::none(), false, default_settings(port)).await;
+    let resp = call(&harness, Call::get(format!("https://127.0.0.1:{port}/ok"))).await;
+    assert_eq!(resp.status, 403);
+    assert_eq!(resp.egress_code(), Some("EGRESS_HOST_BLOCKED"));
+    assert_eq!(resp.header("content-type"), Some("application/json"));
+}
+
+#[tokio::test]
+async fn names_are_resolved_as_absolute_not_search_domain_expanded() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    // The scripts key ONLY the absolute names, with a blocked answer: the
+    // refusal happens before any dial, so the proof is the name the
+    // resolver received. A bare or search-domain-expanded name would be
+    // unscripted ("no such host") and the call would 502 instead.
+    let resolver = ScriptedResolver::new(&[
+        ("a.local.", vec![vec!["10.0.0.5"]]),
+        ("svc.ns.", vec![vec!["10.0.0.5"]]),
+        ("kubernetes.", vec![vec!["10.0.0.5"]]),
+    ]);
+    let harness = spawn_guard(resolver.clone(), true, default_settings(port)).await;
+    for name in ["a.local", "svc.ns", "kubernetes"] {
+        let resp = call(&harness, Call::get(format!("https://{name}:{port}/ok"))).await;
+        assert_eq!(resp.status, 403, "{name}: {}", resp.text());
+        assert_eq!(resp.egress_code(), Some("EGRESS_HOST_BLOCKED"), "{name}");
+        // The event keeps the name WITHOUT the resolver's dot.
+        let event = wait_event(&harness.store, |e| {
+            e.code.as_deref() == Some("EGRESS_HOST_BLOCKED")
+                && e.message
+                    .as_deref()
+                    .is_some_and(|m| m.contains(&format!("host={name} port=")))
+        })
+        .await;
+        let message = event.message.unwrap();
+        assert!(message.contains("ip=10.0.0.5"), "{name}: {message}");
+    }
+    // Every name (two-label, two-label and one-label) reached the resolver
+    // with the trailing dot, and never bare.
+    assert_eq!(resolver.calls_for("a.local."), 1);
+    assert_eq!(resolver.calls_for("svc.ns."), 1);
+    assert_eq!(resolver.calls_for("kubernetes."), 1);
+    assert_eq!(resolver.calls_for("a.local"), 0);
+    assert_eq!(resolver.calls_for("svc.ns"), 0);
+    assert_eq!(resolver.calls_for("kubernetes"), 0);
+    assert_eq!(upstream.accepts.load(Ordering::SeqCst), 0, "nothing dialed");
+}
+
+#[tokio::test]
+async fn a_dotted_destination_is_resolved_with_one_dot_only() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    // The answer is a blocked IP: the refusal happens BEFORE any dial or
+    // TLS, so the proof is exactly the name the resolver received.
+    let resolver = ScriptedResolver::new(&[("a.local.", vec![vec!["10.0.0.5"]])]);
+    let harness = spawn_guard(resolver.clone(), true, default_settings(port)).await;
+    let resp = call(&harness, Call::get(format!("https://a.local.:{port}/ok"))).await;
+    assert_eq!(resp.status, 403);
+    assert_eq!(resp.egress_code(), Some("EGRESS_HOST_BLOCKED"));
+    assert_eq!(
+        resolver.calls_for("a.local."),
+        1,
+        "the dotted destination is passed with its single dot"
+    );
+    assert_eq!(resolver.calls_for("a.local"), 0, "and not bare");
+    assert_eq!(
+        resolver.calls_for("a.local.."),
+        0,
+        "no second dot was added"
+    );
+    assert_eq!(upstream.accepts.load(Ordering::SeqCst), 0, "nothing dialed");
+    let event = wait_event(&harness.store, |e| {
+        e.code.as_deref() == Some("EGRESS_HOST_BLOCKED")
+    })
+    .await;
+    let message = event.message.unwrap();
+    // The event keeps the name as the destination spelled it, without an
+    // added dot.
+    assert!(message.contains("host=a.local."), "{message}");
+    assert!(message.contains("ip=10.0.0.5"), "{message}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1540,7 +1704,7 @@ async fn more_than_five_redirects_are_refused() {
 async fn a_redirect_into_a_refused_destination_is_refused_at_the_hop() {
     let upstream = spawn_upstream().await;
     let port = upstream.addr.port();
-    let resolver = ScriptedResolver::new(&[("internal.test", vec![vec!["10.0.0.5"]])]);
+    let resolver = ScriptedResolver::new(&[("internal.test.", vec![vec!["10.0.0.5"]])]);
     let harness = spawn_guard(resolver.clone(), true, default_settings(port)).await;
     let url = url_of(&upstream);
 
@@ -1567,7 +1731,7 @@ async fn a_redirect_into_a_refused_destination_is_refused_at_the_hop() {
     let resp = call(&harness, Call::get(format!("{url}/to-internal-name"))).await;
     assert_eq!(resp.status, 403);
     assert_eq!(resp.egress_code(), Some("EGRESS_HOST_BLOCKED"));
-    assert_eq!(resolver.calls_for("internal.test"), 1);
+    assert_eq!(resolver.calls_for("internal.test."), 1);
     let event = wait_event(&harness.store, |e| {
         e.code.as_deref() == Some("EGRESS_HOST_BLOCKED")
             && e.message
@@ -1588,8 +1752,8 @@ async fn credentials_do_not_follow_a_cross_origin_redirect() {
     let upstream = spawn_upstream().await;
     let port = upstream.addr.port();
     let resolver = ScriptedResolver::new(&[
-        ("a.local", vec![vec!["127.0.0.1"]]),
-        ("b.local", vec![vec!["127.0.0.1"]]),
+        ("a.local.", vec![vec!["127.0.0.1"]]),
+        ("b.local.", vec![vec!["127.0.0.1"]]),
     ]);
     let harness = spawn_guard(resolver, true, default_settings(port)).await;
     let resp = call(
