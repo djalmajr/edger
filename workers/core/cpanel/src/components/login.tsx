@@ -39,7 +39,7 @@ export function AdminLogin({
   onAuthenticated(token: string): void;
 }) {
   const { t } = useI18n();
-  const [options, setOptions] = React.useState<LoginOptions | null>(null);
+  const [options, setOptions] = React.useState<LoginOptions | null>();
   const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [showPassword, setShowPassword] = React.useState(false);
@@ -50,6 +50,25 @@ export function AdminLogin({
     "password" | "token" | null
   >(null);
   const [error, setError] = React.useState("");
+  const usernameInputRef = React.useRef<HTMLInputElement>(null);
+  const usernameFocusAttempted = React.useRef(false);
+
+  const optionsPending = options === undefined;
+  // Pending shows no password form or state-dependent copy. Once answered,
+  // an unknown answer keeps the form unless passwords are explicitly off.
+  const passwordEnabled = !optionsPending && options?.passwordEnabled !== false;
+  // The seed claim is only shown when the runtime confirms it.
+  const rootSeeded =
+    options?.passwordEnabled === true && options?.rootSeeded === true;
+  // Copy states: a confirmed seed, an explicit "passwords off", or the
+  // neutral token sentence. The neutral sentence also covers an unknown or
+  // malformed /login-options answer — the screen never asserts a fact the
+  // runtime did not confirm, and never promises actions the token cannot do.
+  const copyKey: TranslationKey = rootSeeded
+    ? "auth.rootSeeded"
+    : options?.passwordEnabled === false
+      ? "auth.passwordUnavailable"
+      : "auth.alsoWithToken";
 
   // The seed claim is only shown when the runtime confirms it; an unknown or
   // partial /login-options answer must never present a fact it did not give.
@@ -63,21 +82,24 @@ export function AdminLogin({
     };
   }, []);
 
-  // The form stays visible unless the runtime explicitly says password login
-  // is off; an unknown answer keeps the form.
-  const passwordEnabled = options?.passwordEnabled !== false;
-  // The seed claim is only shown when the runtime confirms it.
-  const rootSeeded =
-    options?.passwordEnabled === true && options?.rootSeeded === true;
-  // Copy states: a confirmed seed, an explicit "passwords off", or the
-  // neutral token sentence. The neutral sentence also covers an unknown or
-  // malformed /login-options answer — the screen never asserts a fact the
-  // runtime did not confirm, and never promises actions the token cannot do.
-  const copyKey: TranslationKey = rootSeeded
-    ? "auth.rootSeeded"
-    : options?.passwordEnabled === false
-      ? "auth.passwordUnavailable"
-      : "auth.alsoWithToken";
+  React.useEffect(() => {
+    if (!passwordEnabled || usernameFocusAttempted.current) return;
+    // Only attempt focus when the delayed form first mounts, never when the
+    // token form is later closed or another control already has focus.
+    usernameFocusAttempted.current = true;
+    const input = usernameInputRef.current;
+    if (!input || tokenOpen) return;
+    const active = input.ownerDocument.activeElement;
+    if (
+      !active ||
+      active.matches("input, textarea, select, button") ||
+      (active !== input.ownerDocument.body &&
+        !input.closest("[data-slot='card']")?.contains(active))
+    ) {
+      return;
+    }
+    input.focus();
+  }, [passwordEnabled, tokenOpen]);
 
   function describeLoginError(reason: unknown): string {
     if (reason instanceof ApiError) {
@@ -150,7 +172,12 @@ export function AdminLogin({
             <div className="min-w-0">
               <CardTitle>{t("auth.title")}</CardTitle>
               <CardDescription>{t("auth.description")}</CardDescription>
-              <p className="text-sm text-muted-foreground">{t(copyKey)}</p>
+              <p
+                aria-busy={optionsPending}
+                className="text-sm text-muted-foreground"
+              >
+                {optionsPending ? <br /> : t(copyKey)}
+              </p>
             </div>
           </div>
           <CardAction>
@@ -169,14 +196,14 @@ export function AdminLogin({
                     {t("auth.username")}
                   </Label>
                   <Input
-                    autoComplete="username"
-                    autoFocus
                     autoCapitalize="off"
+                    autoComplete="username"
                     autoCorrect="off"
                     id="login-username"
-                    onChange={(event) => setUsername(event.target.value)}
+                    ref={usernameInputRef}
                     spellCheck={false}
                     value={username}
+                    onChange={(event) => setUsername(event.target.value)}
                   />
                 </div>
                 <div className="grid gap-2">
@@ -187,9 +214,9 @@ export function AdminLogin({
                     <InputGroupInput
                       autoComplete="current-password"
                       id="login-password"
-                      onChange={(event) => setPassword(event.target.value)}
                       type={showPassword ? "text" : "password"}
                       value={password}
+                      onChange={(event) => setPassword(event.target.value)}
                     />
                     <InputGroupButton
                       aria-label={
@@ -197,9 +224,9 @@ export function AdminLogin({
                           ? t("auth.hidePassword")
                           : t("auth.showPassword")
                       }
-                      onClick={() => setShowPassword((value) => !value)}
                       size="icon-sm"
                       type="button"
+                      onClick={() => setShowPassword((value) => !value)}
                     >
                       {showPassword ? <EyeOffGlyph /> : <EyeGlyph />}
                     </InputGroupButton>
@@ -226,8 +253,8 @@ export function AdminLogin({
             <Separator />
             <button
               className="justify-self-start text-xs text-muted-foreground underline-offset-2 hover:underline"
-              onClick={() => setTokenOpen((value) => !value)}
               type="button"
+              onClick={() => setTokenOpen((value) => !value)}
             >
               {t("auth.enterWithToken")}
             </button>
@@ -238,17 +265,17 @@ export function AdminLogin({
                   <InputGroupInput
                     autoComplete="off"
                     id="login-token"
-                    onChange={(event) => setToken(event.target.value)}
                     type={showToken ? "text" : "password"}
                     value={token}
+                    onChange={(event) => setToken(event.target.value)}
                   />
                   <InputGroupButton
                     aria-label={
                       showToken ? t("auth.hideToken") : t("auth.showToken")
                     }
-                    onClick={() => setShowToken((value) => !value)}
                     size="icon-sm"
                     type="button"
+                    onClick={() => setShowToken((value) => !value)}
                   >
                     {showToken ? <EyeOffGlyph /> : <EyeGlyph />}
                   </InputGroupButton>
