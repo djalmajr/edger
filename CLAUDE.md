@@ -14,6 +14,11 @@
 - For buntime cross-ref use zommehq/buntime scope explicitly.
 - Persist important validated architectural, operational and product findings in ai-memory after verification; do not save transient hypotheses or routine progress as durable knowledge.
 
+## Console design proposals
+- Read root DESIGN.md and inspect the real worker-detail UI before drawing.
+- Preserve the existing shell and Workers navigation; Secrets belongs inside worker details.
+- Do not introduce an Applications/Aplicações menu or a replacement console shell.
+
 ## Extensions (edger-ext-*)
 - Crates `edger-ext-*` depend only on `edger-core` — never on `edger-orchestrator`.
 - **choose ONE** mode per crate: Middleware, AuthProvider, or WorkerHandler (not mixed without exclusive Cargo features).

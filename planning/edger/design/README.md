@@ -1,21 +1,33 @@
-# Proposta visual: secrets por aplicativo
+# Proposta visual: Secrets nos detalhes de um worker
 
-**Status:** proposta para revisão; não implementa nem altera produção.
+**Status:** proposta corrigida para revisão; não implementa nem altera produção.
 **Ferramenta:** Open Pencil aberto pelo operador, documento editável `.fig`.
 **Arquivo:** [edger-secrets.fig](../../../edger-secrets.fig), na raiz do projeto.
 **Referência:** EDG-38, API de app secrets; solicitação do operador em 2026-11-04.
-**Identidade:** não há `DESIGN.md` na raiz. Esta proposta usa o tema existente de
-`workers/ui/src/theme.css`; este índice não cria um contrato de design de produção.
+**Identidade:** `DESIGN.md` registra a orientação confirmada pelo operador;
+`workers/ui/src/theme.css` continua sendo a fonte dos tokens de produção.
+Esta revisão substitui o shell incorreto da primeira proposta, que introduzia
+um menu Aplicações. A navegação existente chama-se **Workers**.
 
 ## Brief
 
-- Produto em pt-BR; navegação Aplicações → Atlas → Secrets. Atlas e seus dados são fictícios.
-- Noto Sans, correspondente à família Noto Sans Variable do console; texto 14/16 px,
-  auxiliares 12/13 px, subtítulos 18/20 px e título 28 px.
+- Referência visual: o bundle público atual do console rc.30, servido localmente
+  com API sintética. Nenhum dado de usuário ou credencial de produção foi usado.
+- Entrada: **Workers → detalhes de demo-worker → Secrets**. `demo-worker`, sua
+  versão 1.2.0 e os metadados do desenho são fictícios.
+- Preservar Management/Operations/System, Overview/Workers/API Keys/Users,
+  Observability, Active sessions e Settings conforme o principal. As abas existentes
+  Files/Observability/Logs permanecem; a única aba nova é Secrets.
+- Sidebar 216 px e header 64 px medidos; conteúdo com 16 px de padding; tabs de
+  32 px. O header mantém nome, versão, retorno à lista e controles de preferência.
+- A cópia visível segue a referência atual em inglês; as notas são em pt-BR.
+- Noto Sans, correspondente à família Noto Sans Variable do console; texto de
+  14 px, auxiliares 12/13 px e título do worker de 18 px.
 - Superfícies branca e neutra quente; texto `#0c0c09`, borda `#e8e8e3`, marca `#bb4d00`,
   sidebar `#fbfbf9`; conversões sRGB dos tokens OKLCH existentes. Texto secundário
   `#626258` proposto para legibilidade. Destrutivo `#e7000b` do tema existente.
-- Espaçamento em múltiplos de 4/8 px; controles de 40/44 px; raio visual 8 px.
+- Preservar controles compactos de 32 px e raios existentes; diálogos de 512 px
+  usam o mesmo padrão visual. Alvo transparente de fechar tem 44 px.
 - Tema escuro de referência com fundo `#0c0c09`, card `#1d1d16`, texto `#fbfbf9`.
 - Valor preenchido só aparece mascarado; nunca representar um valor retornado pela API.
 
@@ -51,6 +63,8 @@
 ## Telas e estados
 
 Cada ID tem um frame e exatamente uma nota pareada ao lado dele no documento.
+Página 01: Worker · Secrets. Página 02: estados e permissões. Página 03: temas e
+tela pequena. O ponto de entrada e o shell foram corrigidos em todos os frames.
 
 | ID | Página | Finalidade | Regras |
 |---|---|---|---|
@@ -81,9 +95,8 @@ o arquivo não declara ligações interativas de protótipo.
 
 Fechar o diálogo equivale a cancelar. Na implementação, os diálogos devem ter
 nome acessível, foco contido, Escape para cancelar e retorno de foco ao gatilho.
-Há um componente nativo de aviso de privacidade no topo da página 01, reutilizado
-na lista principal e no estado de somente leitura. As demais telas reutilizam o
-mesmo shell visual, sem criar um catálogo paralelo ao pacote de componentes.
+O aviso de escopo e o shell seguem o mesmo padrão visual, sem criar um catálogo
+paralelo ao pacote de componentes.
 
 As operações de dados existentes são GET da coleção e PUT/DELETE do secret em
 `/api/admin/workers/{name}/secrets[/{secret}]`. A aplicação aos processos usa a rota
@@ -92,21 +105,39 @@ de recycle por versão, não um endpoint inventado de aplicação de secret.
 A chave mestra, suas referências Kubernetes e valores reais ficam fora da interface
 de app e deste documento. Nenhum dado de produção foi lido para montar o desenho.
 
+A rota de UI proposta conserva o contexto do detalhe
+`/cpanel/workers/demo-worker/1.2.0/secrets`; ela ainda não existe no console.
+A chamada de dados usa somente o nome do worker, sem versão. Header, navegação e
+posição das abas foram comparados com a tela real de Files. A referência móvel
+foi inspecionada a 390 × 844, sem um menu alternativo inventado.
+
 ## Validação
 
 - [x] 18 frames de tela/estado e 18 notas pareadas conferidos contra este índice.
 - [x] Ações e destinos conferidos, inclusive cancelamento e permissão de recycle.
-- [x] Revisão visual por exports do Open Pencil, tema claro/escuro e largura 390 px.
-- [x] Checks de acessibilidade do Open Pencil sem erros ou avisos nas quatro páginas;
-  texto mínimo 12 px e alvo de fechar diálogos 44 px. Sem sobreposição entre
-  frames e notas no nível superior. São checks do desenho, não testes de UI executável.
-- [x] Arquivo nativo salvo e reaberto; hash em disco preservado na reabertura.
-- [x] Escopo para versionamento restrito ao `.fig` e a este índice; alterações
-  preexistentes em `.gitignore` e `CLAUDE.md` preservadas.
+- [x] Referência real do frontend renderizada localmente com dados sintéticos;
+  inspeção visual e medidas de sidebar/header/tabs.
+- [x] Shell e entrada corrigidos nos 18 frames, incluindo claro/escuro e 390 px.
+- [x] Revisão final por exports representativos, estrutura e checks do Open Pencil:
+  18 telas e 18 notas; sem overflow de texto ou sobreposição maior entre raízes;
+  fontes Noto Sans disponíveis, sem substituição.
+- [x] Contraste e tamanho de texto sem apontamentos. O preset completo de
+  acessibilidade mantém 18 apontamentos de alvo de toque no container das abas
+  existentes (32 px; recomendação do checker: 44 px). A densidade da referência
+  foi preservada; o desenho não comprova acessibilidade da implementação.
+- [x] Arquivo corrigido salvo e reaberto; SHA-256 preservado:
+  `04100e20667e0e49e7c7af4e19ab0fa9fd7e7ae6452c3bc5a3b66d5d9bfe63dd`.
+- [x] Versionar apenas a correção do desenho, índice e regras de layout aprovadas;
+  preservar alterações preexistentes de `.gitignore` e `CLAUDE.md`.
+
+O estado de limite mostra 15 dos 64 nomes, página 1 de 5, no mesmo padrão de
+paginação do console. O aviso de escopo tem um componente nativo reutilizado
+nas listas normal e somente leitura. A revisão foi feita sobre dados fictícios.
 
 ## Questões abertas
 
-- Nome final da seção e aceite visual pelo operador.
+- Aceite visual da proposta corrigida pelo operador; nome e posição de Secrets
+  já foram definidos por ele dentro dos detalhes de um worker.
 - A tela não poderá inferir o estado de adoção de cada secret pelos processos.
 - Habilitação do cofre em cada instalação deve ser indicada pela resposta da API;
   não presumir disponibilidade com base nos defaults do Helm.
