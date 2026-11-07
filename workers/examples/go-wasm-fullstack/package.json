@@ -1,0 +1,13 @@
+{
+  "name": "go-wasm-fullstack",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "EdgeR example: Vite SPA with a Go/WASM backend (fullstack, adapter wasm). Vite is a build-time tool only; the existing 8.1.4 install of the control-panel UI is reused for offline builds (see README.md).",
+  "scripts": {
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "vite": "8.1.4"
+  }
+}

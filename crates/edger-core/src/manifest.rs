@@ -111,6 +111,26 @@ pub struct EgressManifest {
     pub max_concurrent: Option<u32>,
 }
 
+/// Host-held SSE policy (EDG-55): the guest authorizes and publishes in short
+/// executions and the host keeps the browser connection. Validation lives in
+/// `validate_worker_manifest`; every default is resolved in `SseSettings`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SseManifest {
+    /// Maximum simultaneous subscribers of this app (default 256, capped by
+    /// the host ceiling).
+    pub max_connections: Option<u32>,
+    /// Worker-relative routes that accept `publish` directives (0 to 16).
+    #[serde(default)]
+    pub publish: Vec<String>,
+    /// Worker-relative routes that open a subscription (1 to 16).
+    #[serde(default)]
+    pub subscribe: Vec<String>,
+    /// Subscription lifetime before the client is told to reconnect; same
+    /// forms as the worker `ttl` (default `5m`, from `5s` to `1h`).
+    pub ttl: Option<DurationValue>,
+}
+
 /// Raw value of a duration manifest field (`ttl`, `streamTimeout`,
 /// `shutdownGrace`, `cooldown`, `queueTimeout`).
 ///
@@ -140,6 +160,62 @@ pub enum DurationValue {
     Mapping(std::collections::BTreeMap<String, DurationValue>),
 }
 
+/// Explicit WASM backend of a fullstack SPA (EDG-53). Both fields are
+/// required by validation (`validate_worker_manifest`); they parse as
+/// `Option` so a missing field is a static validation error naming the
+/// field instead of a serde message.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WasmBackendManifest {
+    /// Relative, portable path of the `.wasm`/`.wat` module inside the version.
+    pub entrypoint: Option<String>,
+    /// Canonical absolute API prefix (`/api`, `/rpc/v1`); never `/`.
+    pub api_prefix: Option<String>,
+}
+
+/// Pure check (no filesystem access) for a relative, portable manifest path:
+/// non-empty, no leading `/`, no `//` or trailing `/`, no `.`/`..` component,
+/// no Windows drive prefix, backslash, NUL or control character.
+pub fn is_portable_relative_path(value: &str) -> bool {
+    if value.trim().is_empty() || value.starts_with('/') {
+        return false;
+    }
+    if value.chars().any(|c| c == '\\' || c.is_control()) {
+        return false;
+    }
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return false;
+    }
+    value
+        .split('/')
+        .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+/// Pure check for a WASM backend entrypoint: portable relative path ending
+/// in `.wasm` or `.wat` (the extensions the existing WASM backend accepts).
+pub fn is_valid_wasm_entrypoint(value: &str) -> bool {
+    is_portable_relative_path(value) && (value.ends_with(".wasm") || value.ends_with(".wat"))
+}
+
+/// Pure check for a canonical API prefix: absolute, non-root, no trailing or
+/// repeated `/`, no `.`/`..` component, no whitespace/control character and
+/// none of `%`, `?`, `#`, `\`.
+pub fn is_valid_api_prefix(value: &str) -> bool {
+    if !value.starts_with('/') || value.len() < 2 || value.ends_with('/') {
+        return false;
+    }
+    if value
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '%' | '?' | '#' | '\\'))
+    {
+        return false;
+    }
+    value[1..]
+        .split('/')
+        .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
 /// Human-editable worker manifest (from manifest.yaml / package.json fallback).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -166,6 +242,8 @@ pub struct WorkerManifest {
     /// Opt-in egress guard policy (EDG-38); `None` or `enabled: false`
     /// leaves the worker exactly as before.
     pub egress: Option<EgressManifest>,
+    /// Host-held SSE policy (EDG-55); `None` leaves the worker as before.
+    pub sse: Option<SseManifest>,
     /// App secret names (EDG-38): the values live in the EdgeR vault, never
     /// in the manifest; the names are injected into the worker's `env` at
     /// spawn.
@@ -207,6 +285,10 @@ pub struct WorkerManifest {
     pub adapter: Option<String>,
     pub ssr_entrypoint: Option<String>,
     pub client_dir: Option<String>,
+    /// Opt-in WASM backend for `kind: fullstack` + `adapter: wasm`
+    /// (EDG-53): explicit nested object, never inferred from the top-level
+    /// `entrypoint`/`ssrEntrypoint`.
+    pub wasm_backend: Option<WasmBackendManifest>,
     #[serde(default)]
     pub asset_prefixes: Vec<String>,
     pub base_path: Option<String>,
@@ -223,4 +305,67 @@ pub struct WorkerManifest {
     #[serde(default)]
     pub name_route: bool,
     pub dependencies: Option<Vec<String>>,
+}
+
+#[cfg(test)]
+mod wasm_backend_tests {
+    use super::*;
+
+    #[test]
+    fn portable_relative_paths_accept_plain_and_nested() {
+        for ok in ["dist", "backend/index.wasm", "a/b/c", "dist.v2/x", "a.b"] {
+            assert!(is_portable_relative_path(ok), "{ok}");
+        }
+    }
+
+    #[test]
+    fn portable_relative_paths_refuse_hostile_forms() {
+        for bad in [
+            "", "   ", "/abs", "a//b", "a/", ".", "..", "./a", "a/./b", "../a", "a/../b", "a/..",
+            "C:/x", "c:x", "a\\b", "a\0b", "a\nb", "a\tb", "a\u{7f}b",
+        ] {
+            assert!(!is_portable_relative_path(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn wasm_entrypoint_requires_wasm_or_wat_extension() {
+        assert!(is_valid_wasm_entrypoint("backend/index.wasm"));
+        assert!(is_valid_wasm_entrypoint("backend/index.wat"));
+        assert!(!is_valid_wasm_entrypoint("backend/index.js"));
+        assert!(!is_valid_wasm_entrypoint("backend/index.wasm/"));
+        assert!(!is_valid_wasm_entrypoint("../index.wasm"));
+        assert!(!is_valid_wasm_entrypoint("/index.wasm"));
+        assert!(!is_valid_wasm_entrypoint("index"));
+    }
+
+    #[test]
+    fn api_prefix_accepts_canonical_and_refuses_hostile_forms() {
+        for ok in ["/api", "/rpc/v1", "/a-b_c.d"] {
+            assert!(is_valid_api_prefix(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "/",
+            "api",
+            "/api/",
+            "//api",
+            "/api//v1",
+            "/.",
+            "/..",
+            "/api/.",
+            "/api/../x",
+            "/a b",
+            "/a\tb",
+            "/a\0b",
+            "/a%2fb",
+            "/a?b",
+            "/a#b",
+            "/a\\b",
+            "/a\u{a0}b",
+            " /api",
+        ] {
+            assert!(!is_valid_api_prefix(bad), "{bad:?}");
+        }
+    }
 }

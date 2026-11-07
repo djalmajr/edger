@@ -34,11 +34,12 @@ use crate::deno_bundle::{
     bundle_cache_stats, default_deno_executable, entry_needs_bundle, BundleEntry, DenoCliBundler,
 };
 use crate::deno_sandbox_policy::{
-    deno_network_permission_args_with_uds, read_allowlist, select_deno_dir,
+    deno_network_permission_args_with_uds, prepare_deno_dir, read_allowlist, select_deno_dir,
 };
 use crate::egress::{
-    warn_egress_unavailable_once, EgressBinding, EgressListenerContext, EgressListenerSink,
-    EgressSpawn, EgressTask, EGRESS_GUARD_HOST, EGRESS_HOST_ENV, EGRESS_SOCKET_ENV,
+    check_managed_origin, warn_egress_unavailable_once, EgressBinding, EgressListenerContext,
+    EgressListenerSink, EgressSpawn, EgressTask, ManagedDatabaseBinding, EGRESS_GUARD_HOST,
+    EGRESS_HOST_ENV, EGRESS_SOCKET_ENV,
 };
 use crate::guard_env::is_reserved_guard_env;
 
@@ -226,6 +227,11 @@ struct WireEndFrame {
     /// protocol error outside of it.
     #[serde(default, rename = "cancelled")]
     cancelled: bool,
+    /// Set by the harness when the body stopped at `EDGER_STREAM_MAX_BYTES`:
+    /// a clean end for the client and the process, but not a complete
+    /// response (EDG-55).
+    #[serde(default, rename = "truncated")]
+    truncated: bool,
 }
 
 /// Response frame tags (must match the harness).
@@ -786,8 +792,9 @@ pub struct ProcessStreamedResponse {
     /// when neither detach nor max-duration tracking is configured.
     pub completed: Option<CompletionSignal>,
     /// Shared production-complete flag (see
-    /// `StreamedResponse::production_complete`); `None` when neither detach
-    /// nor max-duration tracking is configured.
+    /// `StreamedResponse::production_complete`). Always present; without
+    /// detach and max-duration tracking it is never marked complete and only
+    /// carries the byte-cap truncation flag (EDG-55).
     pub production_complete: Option<Arc<StreamProductionState>>,
     pub max_duration_elapsed_ms: Option<Arc<AtomicU64>>,
     /// Milliseconds from response-header arrival to a per-frame-timeout
@@ -982,8 +989,15 @@ impl DenoWorkerProcess {
         // failure leaves the worker without any of them (one warn per worker
         // and version) and the worker still starts.
         let guard_socket_path = workdir.path().join("guard.sock");
+        let mut managed_bind_failed = false;
         let guard = egress.and_then(|egress| match UnixListener::bind(&guard_socket_path) {
             Ok(guard_listener) => Some((egress, guard_listener)),
+            // A managed database spawn has no fallback: the caller below
+            // refuses the spawn when its socket did not bind.
+            Err(_) if egress.managed_origin.is_some() => {
+                managed_bind_failed = true;
+                None
+            }
             Err(err) => {
                 warn_egress_unavailable_once(
                     &egress.context.worker,
@@ -997,6 +1011,13 @@ impl DenoWorkerProcess {
             }
         });
 
+        if managed_bind_failed {
+            return Err(IsolationError::new(
+                "UDS_MANAGED_DATABASE_BIND",
+                "the managed database guard socket could not be bound; the worker is not started",
+            ));
+        }
+
         let deno_dir = select_deno_dir(
             &worker_dir,
             deno_cache_mode,
@@ -1005,14 +1026,7 @@ impl DenoWorkerProcess {
             deno_cache_root,
             std::env::var("EDGER_DENO_CACHE_ROOT").ok().as_deref(),
         );
-        if let Some(dir) = deno_dir.env_dir.as_deref() {
-            std::fs::create_dir_all(dir).map_err(|err| {
-                IsolationError::new(
-                    "UDS_DENO_DIR",
-                    format!("create DENO_DIR {}: {err}", dir.display()),
-                )
-            })?;
-        }
+        prepare_deno_dir(&deno_dir, deno_cache_mode)?;
 
         let executable = default_deno_executable();
         let mut command = Command::new(&executable);
@@ -1068,11 +1082,21 @@ impl DenoWorkerProcess {
         if let Some(config_path) = deno_config_path(&worker_dir) {
             command.arg("--config").arg(config_path);
         }
-        let mut child = command
+        command
             .arg(&harness_path)
             .arg(&socket_path)
             .arg(&entry_url)
-            .arg(node_http_mode.as_arg())
+            .arg(node_http_mode.as_arg());
+        // (managed database) The validated origin is the 4th harness
+        // argument, passed only when the guard socket really exists; absent
+        // = the bootstrap installs no interception (the old behavior).
+        if let Some(origin) = guard
+            .as_ref()
+            .and_then(|(spawn, _)| spawn.managed_origin.as_deref())
+        {
+            command.arg(origin);
+        }
+        let mut child = command
             .current_dir(&worker_dir)
             .stdin(Stdio::null())
             .stdout(if console_sender.is_some() {
@@ -1402,9 +1426,10 @@ impl DenoWorkerProcess {
                 )
             }
             None => {
-                let production_complete = duration_context
-                    .as_ref()
-                    .map(|_| Arc::new(StreamProductionState::default()));
+                // Always present on the legacy path: it carries the byte-cap
+                // truncation flag (EDG-55). Without a duration cap nothing
+                // else ever marks it, so the lifecycle is unchanged.
+                let production_complete = Some(Arc::new(StreamProductionState::default()));
                 let (done_tx, done_rx) = if duration_context.is_some() {
                     let (tx, rx) = oneshot::channel::<StreamCompletion>();
                     (Some(tx), Some(rx))
@@ -1916,6 +1941,11 @@ impl DenoWorkerProcess {
                     // BEFORE the signal so a body drop racing the signal
                     // observer can never recycle a socket that is in sync and
                     // reusable.
+                    if end.truncated {
+                        // Before every clean-end mark and signal: a reader
+                        // that observes the end must observe the cut.
+                        production_complete.mark_truncated();
+                    }
                     let _ = restore_tx.send(read_half);
                     production_complete.mark_complete();
                     pipeline.budget.record_detached();
@@ -2510,9 +2540,19 @@ impl DenoWorkerProcess {
                             .await;
                         return;
                     }
+                    if let Some(production_complete) = &production_complete {
+                        if end.truncated {
+                            production_complete.mark_truncated();
+                        }
+                    }
                     let _ = restore_tx.send(read_half); // clean end: reusable
+                                                        // The state also exists without a duration cap only to
+                                                        // carry the truncation flag: the clean-end mark stays
+                                                        // tied to the duration policy, as before.
                     if let Some(production_complete) = production_complete {
-                        production_complete.mark_complete();
+                        if max_duration.is_some() {
+                            production_complete.mark_complete();
+                        }
                     }
                     if let Some(done_tx) = done_tx {
                         let _ = done_tx.send(StreamCompletion::Completed);
@@ -2541,16 +2581,38 @@ impl DenoWorkerProcess {
         req: SerializedRequest,
         detach: Option<&StreamDetach>,
     ) -> Result<SerializedResponse, IsolationError> {
+        self.request_with_detach_marked(req, detach)
+            .await
+            .map(|(response, _truncated)| response)
+    }
+
+    /// `request_with_detach` plus the host's truncation mark: `true` when the
+    /// harness cut the body at `EDGER_STREAM_MAX_BYTES` (its end frame says
+    /// so and the stream reader recorded it on the production state). Read
+    /// after the chunk channel closed: the reader marks the state before it
+    /// ends the channel, so a cut body can never be seen without its mark.
+    async fn request_with_detach_marked(
+        &mut self,
+        req: SerializedRequest,
+        detach: Option<&StreamDetach>,
+    ) -> Result<(SerializedResponse, bool), IsolationError> {
         let mut streamed = self.request_stream_with_detach(req, detach).await?;
         let mut body = Vec::new();
         while let Some(chunk) = streamed.chunks.recv().await {
             body.extend_from_slice(&chunk?);
         }
-        Ok(SerializedResponse {
-            status: streamed.status,
-            headers: streamed.headers,
-            body: (!body.is_empty()).then(|| Bytes::from(body)),
-        })
+        let truncated = streamed
+            .production_complete
+            .as_ref()
+            .is_some_and(|state| state.is_truncated());
+        Ok((
+            SerializedResponse {
+                status: streamed.status,
+                headers: streamed.headers,
+                body: (!body.is_empty()).then(|| Bytes::from(body)),
+            },
+            truncated,
+        ))
     }
 
     /// Graceful shutdown: send a control frame so the worker fires its
@@ -2954,6 +3016,19 @@ fn harness_script() -> &'static str {
     include_str!("multiproc_harness.mjs")
 }
 
+/// Host-side admission fence of a cold Deno spawn (never configurable by a
+/// guest or a manifest). The isolate runs it every time it is about to create
+/// a process, AFTER all declared secrets were resolved and BEFORE the spawn
+/// plan / process exist; an `Err` propagates unchanged with no process, no
+/// socket and no second secret resolution. Without a validator the spawn runs
+/// as before. Implementations must not log the config.
+#[async_trait]
+pub trait DenoSpawnValidator: Send + Sync {
+    /// `config` is exactly the config the spawn is about to use.
+    #[allow(clippy::double_must_use)] // `async_trait` adds must_use to the future return.
+    async fn validate(&self, config: &WorkerConfig) -> Result<(), IsolationError>;
+}
+
 /// `Isolate` backed by a persistent Deno worker process (the durable JS runtime).
 ///
 /// The process is spawned lazily on the first fetch/routes call and reused
@@ -2986,6 +3061,26 @@ pub struct DenoProcessIsolate {
     /// starts without the socket and the variables (one warn per worker and
     /// version).
     egress: Option<EgressBinding>,
+    /// Private managed-database state (never in `WorkerConfig`, never
+    /// serialized): the host sets it between processes. Independent of
+    /// `egress`; when set, the next spawn arms the guard socket for it.
+    managed_database: Option<ManagedDatabaseBinding>,
+    /// Host fence run on every cold spawn (see [`DenoSpawnValidator`]).
+    spawn_validator: Option<Arc<dyn DenoSpawnValidator>>,
+    /// Host-held mark (EDG-55): a buffered call (`dispatch`) collected a body
+    /// the harness cut at `EDGER_STREAM_MAX_BYTES`. It comes from the end
+    /// frame the harness writes after its own byte cap, read by the Rust
+    /// stream reader, never from the guest response. Sticky across the
+    /// buffered calls of one dispatch (a fullstack adapter may call twice)
+    /// until `take_response_truncation` reads and clears it.
+    response_truncated: bool,
+}
+
+fn spawn_binding_live() -> IsolationError {
+    IsolationError::new(
+        "UDS_SPAWN_BINDING_LIVE",
+        "spawn admission state cannot change while a worker process is live",
+    )
 }
 
 impl DenoProcessIsolate {
@@ -3041,6 +3136,88 @@ impl DenoProcessIsolate {
             namespace,
         });
         self
+    }
+
+    /// Whether a worker process currently exists. The managed-database
+    /// setters refuse to change state while it does.
+    pub fn has_live_process(&self) -> bool {
+        self.process.is_some()
+    }
+
+    /// Host setter of the cold-spawn fence ([`DenoSpawnValidator`]); `None`
+    /// removes it. Refused while a process is live, with nothing modified.
+    /// Touches no other knob (console, cache root, detach, egress, secrets).
+    pub fn set_spawn_validator(
+        &mut self,
+        validator: Option<Arc<dyn DenoSpawnValidator>>,
+    ) -> Result<(), IsolationError> {
+        if self.process.is_some() {
+            return Err(spawn_binding_live());
+        }
+        self.spawn_validator = validator;
+        Ok(())
+    }
+
+    /// Host setter of the app-secret resolver the NEXT spawn uses (same data
+    /// as [`Self::with_app_secrets`]). Refused while a process is live, with
+    /// nothing modified; touches no other knob.
+    pub fn set_app_secret_resolver(
+        &mut self,
+        worker: String,
+        resolver: std::sync::Arc<dyn edger_core::AppSecretResolver>,
+    ) -> Result<(), IsolationError> {
+        if self.process.is_some() {
+            return Err(spawn_binding_live());
+        }
+        self.app_secrets = Some((worker, resolver));
+        Ok(())
+    }
+
+    /// Arm the private managed-database guard socket for the NEXT spawn.
+    /// `origin` is the already-validated database origin the HOST knows (it
+    /// is never read from `SQLD_URL`, the manifest, the env or a header; the
+    /// bootstrap parses it with the native `URL` and fails closed). The
+    /// worker must declare `allowNet: []` (checked at spawn, before the
+    /// process exists). Refused while a process is live: a running process
+    /// keeps the state it was spawned with. The sink is the host's own
+    /// concession; nothing here creates a grant from the guest's config.
+    pub fn set_managed_database_egress(
+        &mut self,
+        sink: std::sync::Arc<dyn EgressListenerSink>,
+        worker: impl Into<String>,
+        version: impl Into<String>,
+        namespace: Option<String>,
+        origin: impl Into<String>,
+    ) -> Result<(), IsolationError> {
+        if self.process.is_some() {
+            return Err(IsolationError::new(
+                "UDS_MANAGED_DATABASE_LIVE",
+                "managed database egress cannot change while a worker process is live",
+            ));
+        }
+        let origin = origin.into();
+        check_managed_origin(&origin)?;
+        self.managed_database = Some(ManagedDatabaseBinding {
+            sink,
+            worker: worker.into(),
+            version: version.into(),
+            namespace,
+            origin,
+        });
+        Ok(())
+    }
+
+    /// Disarm the managed-database socket for the next spawn. Same live
+    /// process rule as the setter; state is untouched on error.
+    pub fn clear_managed_database_egress(&mut self) -> Result<(), IsolationError> {
+        if self.process.is_some() {
+            return Err(IsolationError::new(
+                "UDS_MANAGED_DATABASE_LIVE",
+                "managed database egress cannot change while a worker process is live",
+            ));
+        }
+        self.managed_database = None;
+        Ok(())
     }
 
     pub fn with_console(sender: ConsoleLogSender, context: ConsoleLogContext) -> Self {
@@ -3135,24 +3312,37 @@ impl DenoProcessIsolate {
                     }
                 }
             }
+            // Host fence: runs after EVERY secret above was resolved (also
+            // when none is declared) and before the spawn plan; the secrets
+            // are not resolved again after it.
+            if let Some(validator) = &self.spawn_validator {
+                validator.validate(config).await?;
+            }
             let env: &std::collections::HashMap<String, String> =
                 secret_env.as_ref().map_or(&config.env, |env| env);
             // (EDG-38) The guard is armed only for a version with
             // `egress.enabled` AND a wired-in service; the spawn does not
             // look at whether the version is the default (a staged version
             // gets it too).
-            let egress = match (&config.egress, &self.egress) {
-                (Some(settings), Some(binding)) => Some(EgressSpawn {
+            let egress = match (&self.managed_database, &config.egress, &self.egress) {
+                // A managed database spawn wins over the generic guard (one
+                // guard socket per process); general authority travels
+                // only when the manifest declared `egress`. The net rule
+                // is checked here, before any spawn.
+                (Some(managed), _, _) => Some(managed.plan_spawn(config)?),
+                (None, Some(settings), Some(binding)) => Some(EgressSpawn {
                     sink: Arc::clone(&binding.sink),
                     context: EgressListenerContext {
                         worker: binding.worker.clone(),
                         version: binding.version.clone(),
                         namespace: binding.namespace.clone(),
                         process_id: String::new(),
-                        settings: settings.clone(),
+                        settings: Some(settings.clone()),
+                        limits: settings.clone(),
                     },
+                    managed_origin: None,
                 }),
-                (Some(_), None) => {
+                (None, Some(_), None) => {
                     let (worker, version) = self
                         .console_context
                         .as_ref()
@@ -3164,7 +3354,7 @@ impl DenoProcessIsolate {
                     );
                     None
                 }
-                _ => None,
+                (None, None, _) => None,
             };
             let process = DenoWorkerProcess::spawn_with_policy(
                 worker_dir,
@@ -3208,13 +3398,19 @@ impl DenoProcessIsolate {
             .process
             .as_mut()
             .expect("process just set")
-            .request_with_detach(req, self.detach.as_ref())
+            .request_with_detach_marked(req, self.detach.as_ref())
             .await;
-        if result.is_err() {
-            // Drop the (possibly dead) process so the next request respawns.
-            self.process = None;
+        match result {
+            Ok((response, truncated)) => {
+                self.response_truncated |= truncated;
+                Ok(response)
+            }
+            Err(err) => {
+                // Drop the (possibly dead) process so the next request respawns.
+                self.process = None;
+                Err(err)
+            }
         }
-        result
     }
 
     async fn dispatch_stream(
@@ -3330,6 +3526,10 @@ impl Isolate for DenoProcessIsolate {
         self.dispatch_stream(req, config).await
     }
 
+    fn take_response_truncation(&mut self) -> bool {
+        std::mem::take(&mut self.response_truncated)
+    }
+
     async fn notify_idle(&mut self) -> Result<(), IsolationError> {
         Ok(())
     }
@@ -3379,6 +3579,116 @@ impl Isolate for DenoProcessIsolate {
             process_id: None,
             drained_count: None,
         })
+    }
+}
+
+#[cfg(all(test, unix))]
+mod per_worker_cache_symlink_tests {
+    use super::DenoWorkerProcess;
+    use crate::deno_sandbox_policy::worker_cache_key;
+    use std::collections::HashMap;
+    use std::os::unix::fs::symlink;
+    use std::time::Duration;
+
+    // Mutation captured: removing the refusal in `prepare_deno_dir` lets the
+    // spawn continue past the cache step and the error code changes.
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_refuses_a_symlinked_per_worker_cache_directory() {
+        let worker = tempfile::tempdir().unwrap();
+        std::fs::write(
+            worker.path().join("index.ts"),
+            "Deno.serve(() => new Response(\"x\"));",
+        )
+        .unwrap();
+        let cache_root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("canary"), "canary-secret-content").unwrap();
+        let key = worker_cache_key(&worker.path().canonicalize().unwrap());
+        symlink(outside.path(), cache_root.path().join(&key)).unwrap();
+
+        let result = DenoWorkerProcess::spawn(
+            worker.path(),
+            Some("index.ts"),
+            Duration::from_secs(5),
+            &HashMap::new(),
+            None,
+            Some(cache_root.path()),
+        )
+        .await;
+
+        let err = result
+            .err()
+            .expect("symlinked cache dir must refuse the spawn");
+        assert_eq!(err.code, "UDS_DENO_DIR_SYMLINK");
+        assert!(!err.message.contains("canary-secret-content"));
+        assert!(!err.message.contains(&outside.path().display().to_string()));
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("canary")).unwrap(),
+            "canary-secret-content"
+        );
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 1);
+    }
+
+    /// Removes the unique relative root a test names under the host cwd, even
+    /// when an assertion fails (it only exists if the bug is present).
+    struct HostRootCleanup(std::path::PathBuf);
+
+    impl Drop for HostRootCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    // R63: with a relative cache root the Deno child resolves it against its
+    // `current_dir` (the worker dir). The symlink is where the child looks;
+    // the same relative path is absent under the host cwd.
+    // Mutation captured: resolving the relative root against the host cwd
+    // checks an absent directory, creates it there and the spawn goes on.
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_refuses_a_symlink_under_a_relative_cache_root_in_the_worker_dir() {
+        let worker = tempfile::tempdir().unwrap();
+        std::fs::write(
+            worker.path().join("index.ts"),
+            "Deno.serve(() => new Response(\"x\"));",
+        )
+        .unwrap();
+        let root = format!(
+            "edg54-relroot-{}",
+            worker.path().file_name().unwrap().to_string_lossy()
+        );
+        let host_root = std::env::current_dir().unwrap().join(&root);
+        let _cleanup = HostRootCleanup(host_root.clone());
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("canary"), "canary-secret-content").unwrap();
+        let key = worker_cache_key(&worker.path().canonicalize().unwrap());
+        std::fs::create_dir(worker.path().join(&root)).unwrap();
+        symlink(outside.path(), worker.path().join(&root).join(&key)).unwrap();
+        assert!(!host_root.exists());
+
+        let result = DenoWorkerProcess::spawn(
+            worker.path(),
+            Some("index.ts"),
+            Duration::from_secs(5),
+            &HashMap::new(),
+            None,
+            Some(std::path::Path::new(&root)),
+        )
+        .await;
+
+        let err = result
+            .err()
+            .expect("symlinked cache dir under a relative root must refuse the spawn");
+        assert_eq!(err.code, "UDS_DENO_DIR_SYMLINK");
+        assert!(!err.message.contains("canary-secret-content"));
+        assert!(
+            !host_root.exists(),
+            "nothing may be created under the host cwd"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("canary")).unwrap(),
+            "canary-secret-content"
+        );
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 1);
     }
 }
 
@@ -4732,6 +5042,9 @@ mod stream_detach_tests {
             deno_cache_root: None,
             app_secrets: None,
             egress: None,
+            managed_database: None,
+            spawn_validator: None,
+            response_truncated: false,
         };
         (isolate, stream_b)
     }
@@ -4870,6 +5183,9 @@ mod stream_detach_tests {
             deno_cache_root: None,
             app_secrets: None,
             egress: None,
+            managed_database: None,
+            spawn_validator: None,
+            response_truncated: false,
         };
         (isolate, stream_b)
     }
@@ -4939,5 +5255,168 @@ mod stream_detach_tests {
             elapsed < Duration::from_millis(600),
             "the EOF is immediate — the terminate must finish under the ACK deadline: {elapsed:?}"
         );
+    }
+
+    use crate::egress::{EgressListenerContext, EgressListenerSink};
+
+    struct NopManagedSink;
+    impl EgressListenerSink for NopManagedSink {
+        fn serve(
+            &self,
+            _: tokio::net::UnixListener,
+            _: EgressListenerContext,
+        ) -> crate::egress::EgressServeFuture {
+            Box::pin(async {})
+        }
+    }
+
+    /// Set and clear change nothing while a process exists, and refuse
+    /// BEFORE altering the stored state; both work once it is gone.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn managed_database_set_and_clear_refuse_while_a_process_is_live() {
+        let sink: Arc<dyn EgressListenerSink> = Arc::new(NopManagedSink);
+        let (mut isolate, _peer) = idle_socket_process();
+        assert!(isolate.has_live_process());
+        let err = isolate
+            .set_managed_database_egress(Arc::clone(&sink), "w", "1", None, "http://sqld:8080")
+            .expect_err("set refused while live");
+        assert_eq!(err.code, "UDS_MANAGED_DATABASE_LIVE");
+        assert!(isolate.managed_database.is_none(), "state untouched");
+
+        // Armed while idle, then a process appears: clear is refused and
+        // the armed state survives.
+        let (mut idle, _peer2) = idle_socket_process();
+        let live = idle.process.take();
+        idle.set_managed_database_egress(Arc::clone(&sink), "w", "1", None, "http://sqld:8080")
+            .expect("set without a process");
+        idle.process = live;
+        assert!(idle.clear_managed_database_egress().is_err());
+        assert!(
+            idle.managed_database.is_some(),
+            "clear refused: still armed"
+        );
+        idle.process = None;
+        assert!(!idle.has_live_process());
+        idle.clear_managed_database_egress()
+            .expect("clear without a process");
+        assert!(idle.managed_database.is_none());
+        // An invalid host value is refused and leaves the state alone.
+        assert!(idle
+            .set_managed_database_egress(sink, "w", "1", None, "")
+            .is_err());
+        assert!(idle.managed_database.is_none());
+    }
+
+    struct TraceResolver {
+        events: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl edger_core::AppSecretResolver for TraceResolver {
+        async fn resolve_secret(&self, _worker: &str, name: &str) -> Option<String> {
+            self.events.lock().unwrap().push(name.to_owned());
+            Some("fixture".to_owned())
+        }
+    }
+
+    struct TraceValidator {
+        events: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl super::DenoSpawnValidator for TraceValidator {
+        async fn validate(
+            &self,
+            _config: &edger_core::WorkerConfig,
+        ) -> Result<(), edger_core::IsolationError> {
+            self.events.lock().unwrap().push("validate".to_owned());
+            Err(edger_core::IsolationError::new(
+                "FIXTURE_DENY",
+                "fixture denied",
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_fence_runs_after_all_secrets_and_when_empty() {
+        for names in [vec!["ONE", "TWO"], vec![]] {
+            let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let resolver = Arc::new(TraceResolver {
+                events: Arc::clone(&events),
+            });
+            let validator = Arc::new(TraceValidator {
+                events: Arc::clone(&events),
+            });
+            let dir = tempfile::tempdir().unwrap();
+            let mut config =
+                edger_core::parse_worker_config(&edger_core::WorkerManifest::default());
+            config.worker_dir = Some(dir.path().to_path_buf());
+            config.secrets = names.iter().map(|name| (*name).to_owned()).collect();
+            let mut isolate = DenoProcessIsolate::new();
+            isolate
+                .set_app_secret_resolver("worker".into(), resolver)
+                .unwrap();
+            isolate.set_spawn_validator(Some(validator)).unwrap();
+            let error = isolate.prepare(&config).await.unwrap_err();
+            assert_eq!(error.code, "FIXTURE_DENY");
+            assert!(!isolate.has_live_process());
+            let mut expected: Vec<String> = names.iter().map(|name| (*name).to_owned()).collect();
+            expected.push("validate".to_owned());
+            assert_eq!(*events.lock().unwrap(), expected);
+            assert_eq!(
+                std::fs::read_dir(dir.path()).unwrap().count(),
+                0,
+                "no spawn files"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_setters_do_not_replace_live_resolver_or_validator() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let old_resolver: Arc<dyn edger_core::AppSecretResolver> = Arc::new(TraceResolver {
+            events: Arc::clone(&events),
+        });
+        let new_resolver: Arc<dyn edger_core::AppSecretResolver> = Arc::new(TraceResolver {
+            events: Arc::clone(&events),
+        });
+        let old_validator: Arc<dyn super::DenoSpawnValidator> = Arc::new(TraceValidator {
+            events: Arc::clone(&events),
+        });
+        let new_validator: Arc<dyn super::DenoSpawnValidator> = Arc::new(TraceValidator { events });
+        let (mut isolate, _peer) = idle_socket_process();
+        let process = isolate.process.take();
+        isolate
+            .set_app_secret_resolver("old".into(), Arc::clone(&old_resolver))
+            .unwrap();
+        isolate
+            .set_spawn_validator(Some(Arc::clone(&old_validator)))
+            .unwrap();
+        isolate.process = process;
+        let resolver_error = isolate
+            .set_app_secret_resolver("new".into(), new_resolver)
+            .unwrap_err();
+        let validator_error = isolate
+            .set_spawn_validator(Some(new_validator))
+            .unwrap_err();
+        let clear_error = isolate.set_spawn_validator(None).unwrap_err();
+        let (worker, stored_resolver) = isolate.app_secrets.as_ref().unwrap();
+        let unchanged = worker == "old"
+            && Arc::ptr_eq(stored_resolver, &old_resolver)
+            && Arc::ptr_eq(isolate.spawn_validator.as_ref().unwrap(), &old_validator);
+        let mut process = isolate.process.take().unwrap();
+        let killed = process.child.start_kill();
+        let waited = tokio::time::timeout(Duration::from_secs(10), process.child.wait()).await;
+        drop(process);
+        assert!(
+            killed.is_ok() && matches!(waited, Ok(Ok(_))),
+            "fixture child reaped"
+        );
+        assert_eq!(resolver_error.code, "UDS_SPAWN_BINDING_LIVE");
+        assert_eq!(validator_error.code, "UDS_SPAWN_BINDING_LIVE");
+        assert_eq!(clear_error.code, "UDS_SPAWN_BINDING_LIVE");
+        assert!(unchanged, "live setters must not change either field");
     }
 }

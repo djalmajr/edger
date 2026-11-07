@@ -41,6 +41,8 @@ pub mod multiproc;
 pub mod wasm;
 
 pub use backend::{create_isolate, IsolationBackend};
+#[cfg(feature = "multiproc")]
+pub use deno_sandbox_policy::deno_cache_protection_roots;
 pub use error::IsolationBackendError;
 pub use fullstack::{
     dispatch_fullstack_buffered, dispatch_fullstack_stream, prepare_fullstack_request,
@@ -65,7 +67,8 @@ pub use guard_env::{is_reserved_guard_env, EGRESS_HOST_ENV, EGRESS_SOCKET_ENV};
 #[cfg(feature = "multiproc")]
 pub use multiproc::{
     AbandonDrain, ConsoleLogContext, ConsoleLogRecord, ConsoleLogSender, ConsoleStream,
-    DenoProcessIsolate, DenoWorkerProcess, StreamDetach, StreamDetachBudget, StreamDetachStats,
+    DenoProcessIsolate, DenoSpawnValidator, DenoWorkerProcess, StreamDetach, StreamDetachBudget,
+    StreamDetachStats,
 };
 
 #[cfg(feature = "wasm")]

@@ -602,6 +602,89 @@ pub fn egress_metrics_prometheus(metrics: &EgressMetrics) -> String {
     out
 }
 
+/// Prometheus rendering of the SSE broker (EDG-55):
+/// `edger_sse_connections{worker}` (gauge),
+/// `edger_sse_events_published_total{worker}`,
+/// `edger_sse_disconnects_total{worker,reason}` and
+/// `edger_sse_rejected_total{worker,reason}`. A worker appears after its
+/// first subscription attempt or publication, with every reason label.
+pub fn sse_metrics_prometheus(stats: &crate::sse_broker::SseStats) -> String {
+    let mut out = String::new();
+    push_metric_header(
+        &mut out,
+        "edger_sse_connections",
+        "gauge",
+        "SSE connections held by the host, by worker (a slot is held from the subscription to the end of the connection)",
+    );
+    for (worker, counters) in &stats.workers {
+        out.push_str("edger_sse_connections{worker=\"");
+        out.push_str(&escape_label_value(worker));
+        out.push_str("\"} ");
+        out.push_str(&counters.connections.to_string());
+        out.push('\n');
+    }
+    out.push('\n');
+    push_metric_header(
+        &mut out,
+        "edger_sse_events_published_total",
+        "counter",
+        "SSE events published by guests, by worker (one per event, whatever the number of subscribers)",
+    );
+    for (worker, counters) in &stats.workers {
+        out.push_str("edger_sse_events_published_total{worker=\"");
+        out.push_str(&escape_label_value(worker));
+        out.push_str("\"} ");
+        out.push_str(&counters.published.to_string());
+        out.push('\n');
+    }
+    out.push('\n');
+    push_metric_header(
+        &mut out,
+        "edger_sse_disconnects_total",
+        "counter",
+        "SSE connections ended, by worker and reason: client = the connection was dropped, ttl = the subscription lifetime ended, lagged = the subscriber queue overflowed, shutdown = the host is stopping",
+    );
+    for (worker, counters) in &stats.workers {
+        for (label, value) in [
+            ("client", counters.disconnect_client),
+            ("ttl", counters.disconnect_ttl),
+            ("lagged", counters.disconnect_lagged),
+            ("shutdown", counters.disconnect_shutdown),
+        ] {
+            out.push_str("edger_sse_disconnects_total{worker=\"");
+            out.push_str(&escape_label_value(worker));
+            out.push_str("\",reason=\"");
+            out.push_str(label);
+            out.push_str("\"} ");
+            out.push_str(&value.to_string());
+            out.push('\n');
+        }
+    }
+    out.push('\n');
+    push_metric_header(
+        &mut out,
+        "edger_sse_rejected_total",
+        "counter",
+        "SSE subscriptions refused, by worker and reason: capacity = the app or process ceiling is full, unavailable = the broker is disabled or shut down",
+    );
+    for (worker, counters) in &stats.workers {
+        for (label, value) in [
+            ("capacity", counters.rejected_capacity),
+            ("unavailable", counters.rejected_unavailable),
+        ] {
+            out.push_str("edger_sse_rejected_total{worker=\"");
+            out.push_str(&escape_label_value(worker));
+            out.push_str("\",reason=\"");
+            out.push_str(label);
+            out.push_str("\"} ");
+            out.push_str(&value.to_string());
+            out.push('\n');
+        }
+    }
+    out.push('\n');
+    out
+}
+
 fn escape_label_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }

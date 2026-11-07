@@ -3,6 +3,8 @@
 //! The adapter layer only handles manifest-declared static assets and request
 //! shape. SSR still runs through the existing fetch backend.
 
+mod wasm;
+
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -17,6 +19,9 @@ pub async fn dispatch_fullstack_buffered<I: Isolate + ?Sized>(
     req: SerializedRequest,
     config: &WorkerConfig,
 ) -> Result<SerializedResponse, IsolationError> {
+    if let Some(fullstack) = wasm::wasm_fullstack(config) {
+        return wasm::dispatch(isolate, req, config, fullstack).await;
+    }
     if let Some(asset) = try_serve_fullstack_asset(&req, config)? {
         return Ok(asset);
     }
@@ -29,6 +34,12 @@ pub async fn dispatch_fullstack_stream<I: Isolate + ?Sized>(
     req: SerializedRequest,
     config: &WorkerConfig,
 ) -> Result<WorkerResponse, IsolationError> {
+    // WASM answers are buffered for now (streaming guest output is EDG-55).
+    if let Some(fullstack) = wasm::wasm_fullstack(config) {
+        return wasm::dispatch(isolate, req, config, fullstack)
+            .await
+            .map(WorkerResponse::Buffered);
+    }
     if let Some(asset) = try_serve_fullstack_asset(&req, config)? {
         return Ok(WorkerResponse::Buffered(asset));
     }
@@ -43,6 +54,9 @@ pub fn try_serve_fullstack_asset(
     let Some(fullstack) = config.fullstack.as_ref() else {
         return Ok(None);
     };
+    if fullstack.adapter == edger_core::execution::WASM_FULLSTACK_ADAPTER {
+        return wasm::try_serve(req, config, fullstack);
+    }
     let Some(client_dir) = fullstack.client_dir.as_deref() else {
         return Ok(None);
     };

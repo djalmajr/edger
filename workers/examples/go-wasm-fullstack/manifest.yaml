@@ -1,0 +1,29 @@
+# EdgeR example: Vite SPA + Go (wasip1) backend in one fullstack package.
+#
+# The SPA is served from `clientDir`; every request under `apiPrefix` goes to
+# the WASM module over the HTTP ABI v1. The backend is the unmodified
+# workers/examples/go-wasm-http source, built to backend/index.wasm (see
+# README.md).
+#
+# The Go module imports `edger_http_v1.fetch` even for /inspect, so the guard
+# is enabled with an EMPTY allowNet. That GRANTS general HTTPS egress: the guard
+# does not read allowNet, so the guest can reach any HTTPS destination the guard
+# accepts (default port 443, IP classification, redirects, guard limits); the
+# empty allowNet only means no direct network for Deno. No private CIDRs, egress
+# hosts, SQLD settings, secrets or env are declared; /api/db answers 503
+# without configuration.
+name: go-wasm-fullstack
+version: "1.0.0"
+kind: fullstack
+adapter: wasm
+clientDir: dist
+wasmBackend:
+  entrypoint: backend/index.wasm
+  apiPrefix: /api
+visibility: public
+nameRoute: true
+allowNet: []
+egress:
+  enabled: true
+timeout: 30s
+maxBodySize: 4mb

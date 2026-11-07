@@ -1,0 +1,36 @@
+# EdgeR example worker: real Go (wasip1) over the WASM HTTP ABI (ABI v1).
+#
+# Build the entrypoint from inside this directory with Go 1.27.3
+# (stdlib only, no network, no go.sum):
+#
+#   GOOS=wasip1 GOARCH=wasm GOTOOLCHAIN=local GOWORK=off GOPROXY=off \
+#     go build -trimpath -buildmode=c-shared -ldflags='-s -w' -o index.wasm .
+#
+# The c-shared build is a reactor: it exports memory, edger_alloc,
+# edger_handle and the toolchain _initialize, and imports
+# edger_http_v1.fetch as its only outbound path (no sockets).
+#
+# The host is the authority for network and provisioning. Manifest
+# metadata and secrets declare intent only; they grant no network by
+# themselves. There is no general egress grant here and no invented SQLD
+# hostname: SQLD_URL is empty until the managed database (EDGER_SQLD_*,
+# PUT /api/admin/workers/{name}/database) binds this worker, and
+# SQLD_TOKEN is resolved by the host per execution into the private WASI
+# env. Without EDGER_SQLD_* this module needs allowNet: [] plus
+# egress.enabled: true, or its requests answer WASM_IMPORT_DENIED.
+# Declare a ttl to avoid recompiling the module per request; see
+# planning/edger/docs/wasm-abi.md.
+name: go-wasm-http
+version: "1.0.0"
+kind: wasm
+entrypoint: index.wasm
+secrets:
+  # Resolved by the host per execution; never present in this manifest.
+  - SQLD_TOKEN
+env:
+  # Non-secret service base URL (http/https with a host only, no path).
+  SQLD_URL: ""
+# Worker execution budget (ms) and response body cap, same forms the
+# core schema parses.
+timeout: 30s
+maxBodySize: 4mb

@@ -648,6 +648,7 @@ pub fn install_worker_from_zip(
         load_worker_manifest_with_name_fallback(&package_dir, package_name_hint.as_deref())?;
     validate_package_manifest(
         &manifest,
+        &package_dir,
         package_dir != staging.path()
             || package_name_hint.is_some()
             || package_declares_name(&package_dir)?,
@@ -1690,6 +1691,7 @@ fn package_root(staging: &Path) -> Result<PathBuf, CoreError> {
 
 fn validate_package_manifest(
     manifest: &WorkerManifest,
+    package_dir: &Path,
     has_stable_name: bool,
 ) -> Result<(), CoreError> {
     if !has_stable_name || manifest.name.trim().is_empty() {
@@ -1698,6 +1700,37 @@ fn validate_package_manifest(
             "package name could not be inferred; include a name in manifest.yaml or package.json, wrap the files in a named folder, or send x-edger-package-name",
         ));
     }
+    // EDG-53: `fullstack` + `adapter: wasm` is judged ONLY by its nested
+    // contract (`wasmBackend.entrypoint` + `clientDir/index.html`, both
+    // present in the package) — the dispatcher executes the nested backend,
+    // so a top-level `entrypoint`/`ssrEntrypoint` or a root `index.*` neither
+    // satisfies nor is required by this mode. The contract itself comes from
+    // Core (`fullstack_config_from_manifest`, already validated by the
+    // manifest loader), not from a second normalization here.
+    if let Some(fullstack) = edger_core::config::fullstack_config_from_manifest(manifest)
+        .filter(|fullstack| fullstack.adapter == edger_core::execution::WASM_FULLSTACK_ADAPTER)
+    {
+        let backend_ok = fullstack
+            .wasm_backend
+            .as_ref()
+            .is_some_and(|backend| is_regular_package_file(package_dir, &backend.entrypoint));
+        if !backend_ok {
+            return Err(CoreError::new(
+                "DEPLOY_INVALID_PACKAGE",
+                "package is missing the wasmBackend.entrypoint file",
+            ));
+        }
+        let index_ok = fullstack.client_dir.as_deref().is_some_and(|client_dir| {
+            is_regular_package_file(package_dir, &format!("{client_dir}/index.html"))
+        });
+        if !index_ok {
+            return Err(CoreError::new(
+                "DEPLOY_INVALID_PACKAGE",
+                "package is missing clientDir/index.html",
+            ));
+        }
+        return Ok(());
+    }
     if manifest.entrypoint.is_none() && manifest.ssr_entrypoint.is_none() {
         return Err(CoreError::new(
             "DEPLOY_INVALID_PACKAGE",
@@ -1705,6 +1738,28 @@ fn validate_package_manifest(
         ));
     }
     Ok(())
+}
+
+/// `rel` names a regular file inside `root`: relative, no `..`/absolute
+/// component, and no component (directory or file) that is a symlink.
+fn is_regular_package_file(root: &Path, rel: &str) -> bool {
+    let mut current = root.to_path_buf();
+    let mut components = 0;
+    for part in rel.split('/') {
+        if part.is_empty() || part == "." || part == ".." || part.contains(['\\', '\0']) {
+            return false;
+        }
+        current.push(part);
+        components += 1;
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if !meta.file_type().is_symlink() => {}
+            _ => return false,
+        }
+    }
+    components > 0
+        && fs::symlink_metadata(&current)
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
 }
 
 fn package_declares_name(dir: &Path) -> Result<bool, CoreError> {

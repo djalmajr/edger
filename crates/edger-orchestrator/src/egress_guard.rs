@@ -102,6 +102,7 @@ use bytes::Bytes;
 use edger_core::{
     classify_egress_ip, parse_egress_host, EgressBlock, EgressCidr, EgressHost, EgressSettings,
 };
+use edger_isolation::wasm::{WasmHttpError, WasmHttpRequest, WasmHttpResponse};
 use http::header::{
     HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE,
     COOKIE, HOST, LOCATION, PROXY_AUTHORIZATION, TRANSFER_ENCODING,
@@ -124,6 +125,7 @@ use tokio_rustls::TlsConnector;
 use tracing::{info, warn};
 use url::{Host, Url};
 
+use crate::egress_database::EgressDatabaseGrant;
 use crate::metrics::EgressMetrics;
 use crate::observability::{
     OperationalEventInput, OperationalEventLevel, OperationalEventSource, OperationalStore,
@@ -135,6 +137,15 @@ pub const EGRESS_GUARD_HOST: &str = edger_isolation::EGRESS_GUARD_HOST;
 
 /// The destination URL header of the guard protocol.
 pub const EGRESS_URL_HEADER: &str = "x-edger-egress-url";
+
+/// The guard refusal code header: seen by the caller only on the guard's
+/// own refusals (a destination cannot forge one — `forward_response`
+/// strips every `x-edger-egress-*` header from destination answers).
+const EGRESS_ERROR_HEADER: HeaderName = HeaderName::from_static("x-edger-egress-error");
+
+/// The SQLD namespace header of the private database authority (07d2b):
+/// the host injects the grant's own value and strips every guest one.
+const NAMESPACE_BIN_HEADER: HeaderName = HeaderName::from_static("x-namespace-bin");
 
 /// Inbound request body cap, buffered in full so 307/308 can replay it.
 pub const MAX_REQUEST_BODY_BYTES: u64 = 8 * 1024 * 1024;
@@ -162,6 +173,11 @@ pub const EGRESS_RESPONSE_TOO_LARGE: &str = "EGRESS_RESPONSE_TOO_LARGE";
 pub const EGRESS_TIMEOUT: &str = "EGRESS_TIMEOUT";
 pub const EGRESS_LIMIT: &str = "EGRESS_LIMIT";
 pub const EGRESS_REQUEST_TOO_LARGE: &str = "EGRESS_REQUEST_TOO_LARGE";
+/// (EDG-52/54 07d2b) the private SQLD authority refused the request
+/// (a foreign owner or origin, or a service redirect).
+pub const EGRESS_DATABASE_DENIED: &str = "EGRESS_DATABASE_DENIED";
+/// (EDG-52/54 07d2b) the SQLD credential cannot be produced.
+pub const EGRESS_DATABASE_AUTH_UNAVAILABLE: &str = "EGRESS_DATABASE_AUTH_UNAVAILABLE";
 
 /// The `worker.egress` outcome and the `edger_egress_requests_total` label.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -290,6 +306,30 @@ impl Refusal {
             code: EGRESS_REQUEST_TOO_LARGE,
             message: "request_body_over_limit".to_string(),
             outcome: EgressOutcome::Blocked,
+        }
+    }
+
+    /// (EDG-52/54 07d2b) The private SQLD authority refused the request
+    /// (a foreign owner, an origin other than the grant's, or a service
+    /// redirect): a static payload — no URL, no header, no credential.
+    fn database_denied() -> Self {
+        Self {
+            status: 403,
+            code: EGRESS_DATABASE_DENIED,
+            message: "database_denied".to_string(),
+            outcome: EgressOutcome::Blocked,
+        }
+    }
+
+    /// (EDG-52/54 07d2b) The SQLD credential cannot be produced (no
+    /// resolver, a missing/invalid value, or the vault deadline): a
+    /// static payload, never a secret value or a credential name.
+    fn database_auth_unavailable() -> Self {
+        Self {
+            status: 503,
+            code: EGRESS_DATABASE_AUTH_UNAVAILABLE,
+            message: "database_auth_unavailable".to_string(),
+            outcome: EgressOutcome::Error,
         }
     }
 }
@@ -456,6 +496,84 @@ pub struct EgressWorkerContext {
 
 type VersionKey = (String, String);
 
+/// What a socket serves (EDG-54 15b): the general egress only, or a
+/// MANAGED socket whose private database origin belongs ONLY to the
+/// authority and whose other destinations need the declared `general`
+/// settings.
+#[derive(Clone)]
+enum Route {
+    General(Arc<EgressSettings>),
+    Managed {
+        general: Option<Arc<EgressSettings>>,
+        limits: Arc<EgressSettings>,
+        authority: Arc<dyn DatabaseAuthority>,
+    },
+}
+
+/// The credentials a private database authority imposes on ONE call: the
+/// SQLD namespace header and the (sensitive) bearer header.
+pub(crate) struct DatabaseCredentials {
+    pub(crate) namespace: HeaderValue,
+    pub(crate) authorization: HeaderValue,
+}
+
+/// Why an authority produced no credentials. Static classes only: never a
+/// value, a name, an origin or an owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DatabaseAuthorityError {
+    /// The caller or the binding is not entitled (foreign identity, a
+    /// binding that is not `Ready`).
+    Denied,
+    /// The credentials cannot be produced right now (a lookup error, a
+    /// missing/expired/foreign secret, a refused renewal).
+    Unavailable,
+}
+
+/// A PRIVATE database authority as the guard consumes it: the static
+/// [`EgressDatabaseGrant`] (manual, tests/legacy) or the dynamic,
+/// service-backed `ManagedDatabaseEgress`. `permits` and `origin` are pure
+/// (no I/O); `credentials` is the only async step and runs under the
+/// call's total deadline AFTER the call was admitted.
+#[async_trait]
+pub(crate) trait DatabaseAuthority: Send + Sync {
+    /// Exact identity AND origin of the request (pure predicate).
+    fn permits(&self, ctx: &EgressWorkerContext, request_url: &str) -> bool;
+    /// The fixed, normalized plain-HTTP origin of the database.
+    fn origin(&self) -> &Url;
+    /// The fresh credentials of this call.
+    async fn credentials(
+        &self,
+        ctx: &EgressWorkerContext,
+    ) -> Result<DatabaseCredentials, DatabaseAuthorityError>;
+}
+
+#[async_trait]
+impl DatabaseAuthority for EgressDatabaseGrant {
+    fn permits(&self, ctx: &EgressWorkerContext, request_url: &str) -> bool {
+        self.allows_request(ctx, request_url)
+    }
+
+    fn origin(&self) -> &Url {
+        EgressDatabaseGrant::origin(self)
+    }
+
+    async fn credentials(
+        &self,
+        ctx: &EgressWorkerContext,
+    ) -> Result<DatabaseCredentials, DatabaseAuthorityError> {
+        let authorization = self.authorization(ctx).await.map_err(|error| match error {
+            crate::egress_database::EgressDatabaseGrantError::Denied => {
+                DatabaseAuthorityError::Denied
+            }
+            _ => DatabaseAuthorityError::Unavailable,
+        })?;
+        Ok(DatabaseCredentials {
+            namespace: self.namespace_header(),
+            authorization,
+        })
+    }
+}
+
 /// The process backend hands each worker process's guard listener over
 /// here; the returned future is the `serve` of that listener, aborted by the
 /// backend when the process ends.
@@ -473,7 +591,18 @@ impl edger_isolation::EgressListenerSink for EgressGuard {
                 namespace,
                 process_id,
                 settings,
+                // Limits carry no authority: the generic guard serves the
+                // network only for a declared `settings`.
+                limits: _,
             } = context;
+            // A socket without a general-egress declaration belongs to a
+            // private seam (the managed database, a separate sink with its
+            // own host grant): this generic guard must not serve general
+            // network calls on it. Dropping the listener closes it.
+            let Some(settings) = settings else {
+                drop(listener);
+                return;
+            };
             guard
                 .serve(
                     listener,
@@ -561,6 +690,18 @@ impl EgressGuard {
         ctx: EgressWorkerContext,
         settings: EgressSettings,
     ) {
+        self.serve_route(listener, ctx, Route::General(Arc::new(settings)))
+            .await;
+    }
+
+    /// The listener loop shared by the general socket and the managed one
+    /// (EDG-54 15b): only the per-request route differs.
+    async fn serve_route(
+        &self,
+        listener: tokio::net::UnixListener,
+        ctx: EgressWorkerContext,
+        route: Route,
+    ) {
         if !self.config.allow_cidrs.is_empty()
             && self
                 .allow_warned
@@ -573,7 +714,6 @@ impl EgressGuard {
             );
         }
         let ctx = Arc::new(ctx);
-        let settings = Arc::new(settings);
         let mut connections: JoinSet<()> = JoinSet::new();
         loop {
             tokio::select! {
@@ -581,9 +721,9 @@ impl EgressGuard {
                     Ok((socket, _)) => {
                         let guard = self.clone();
                         let ctx = ctx.clone();
-                        let settings = settings.clone();
+                        let route = route.clone();
                         connections.spawn(async move {
-                            guard.serve_connection(socket, ctx, settings).await;
+                            guard.serve_connection(socket, ctx, route).await;
                         });
                     }
                     Err(err) => {
@@ -600,7 +740,7 @@ impl EgressGuard {
         &self,
         socket: UnixStream,
         ctx: Arc<EgressWorkerContext>,
-        settings: Arc<EgressSettings>,
+        route: Route,
     ) {
         let guard = self.clone();
         // The total-deadline supervisor of a streaming call signals this to
@@ -613,9 +753,9 @@ impl EgressGuard {
         let service = service_fn(move |request: Request<Incoming>| {
             let guard = guard.clone();
             let ctx = ctx.clone();
-            let settings = settings.clone();
+            let route = route.clone();
             let kill = kill.clone();
-            async move { Ok::<_, Infallible>(guard.handle(request, ctx, settings, kill).await) }
+            async move { Ok::<_, Infallible>(guard.handle_route(request, ctx, route, kill).await) }
         });
         let connection = server_builder().serve_connection(TokioIo::new(socket), service);
         tokio::pin!(connection);
@@ -643,6 +783,27 @@ impl EgressGuard {
         classify_egress_ip(ip, &self.config.block_cidrs)
     }
 
+    /// One request of a served socket, routed by the socket's kind.
+    async fn handle_route(
+        &self,
+        request: Request<Incoming>,
+        ctx: Arc<EgressWorkerContext>,
+        route: Route,
+        kill: Arc<Notify>,
+    ) -> Response<EgressBody> {
+        match route {
+            Route::General(settings) => self.handle(request, ctx, settings, kill).await,
+            Route::Managed {
+                general,
+                limits,
+                authority,
+            } => {
+                self.handle_managed(request, ctx, general, limits, authority, kill)
+                    .await
+            }
+        }
+    }
+
     /// One request: parse, take the concurrency slot, buffer the body, then
     /// dispatch. Every exit answers (a refusal, or the destination's
     /// response) and records exactly one event.
@@ -660,7 +821,7 @@ impl EgressGuard {
         // 1. The protocol checks (hyper already framed the request).
         let meta = match parse_request(&parts) {
             Ok(meta) => meta,
-            Err(refusal) => return self.refuse(&ctx, started, refusal, None, 0),
+            Err(refusal) => return self.refuse(&ctx, started, refusal, None, 0, None),
         };
 
         // 2. The concurrency slot (immediate 429 when none is free — no
@@ -668,7 +829,7 @@ impl EgressGuard {
         //    never buffers one.
         let Some(permit) = self.acquire_permit(&ctx, &settings) else {
             let target = hint_target(meta.destination_hint());
-            return self.refuse(&ctx, started, Refusal::limit(), target, 0);
+            return self.refuse(&ctx, started, Refusal::limit(), target, 0, None);
         };
         // From here the call is admitted: the guard reports it exactly once
         // — a refusal, the end of the response, or (dropped before any of
@@ -740,9 +901,10 @@ impl EgressGuard {
         refusal: Refusal,
         target: Option<HopTarget>,
         redirects: u32,
+        request_id: Option<&str>,
     ) -> Response<EgressBody> {
         let record = refusal_record(&refusal, target.as_ref(), redirects);
-        self.reporter.report(ctx, started, &record);
+        self.reporter.report(ctx, started, &record, request_id);
         error_response(&refusal)
     }
 
@@ -884,6 +1046,601 @@ impl EgressGuard {
                 }
             }
         }
+    }
+
+    /// (EDG-52 07b) The buffered WASM entry: the SAME tail as the socket
+    /// path — the (worker, version) slot, the call guard, the `dispatch`
+    /// with its hop/dial/cuts — but the request arrives as a host-trusted
+    /// frame and the response is collected IN FULL under
+    /// `min(response_body_limit, max_response_bytes)` (no unbounded buffer,
+    /// no second policy: the guard's DNS/IP/redirect/TLS/size rules are the
+    /// only ones). Every attempt — a refusal, a limit, a cut — records
+    /// exactly one event and one metrics sample, with the host-provided
+    /// request id (the guest frame carries no identity; an empty id is
+    /// `None`). No URL, query, header or body ever reaches an error or a
+    /// log line (the error classes are payload-free).
+    pub(crate) async fn fetch_wasm(
+        &self,
+        request: WasmHttpRequest,
+        ctx: Arc<EgressWorkerContext>,
+        settings: Arc<EgressSettings>,
+        response_body_limit: usize,
+    ) -> Result<WasmHttpResponse, WasmHttpError> {
+        let started = Instant::now();
+        let total_deadline = deadline_after(started, settings.total_timeout_ms);
+        // The host-provided request id (empty = `None`, like the Deno
+        // path's absence).
+        let request_id = (!request.request_id.is_empty()).then(|| request.request_id.clone());
+
+        // 1. The frame checks + the sanitized meta (a generic refusal when
+        //    invalid — before the slot, like the socket path).
+        let (meta, body) = match wasm_request_meta(&request) {
+            Ok(pair) => pair,
+            Err(refusal) => {
+                let error = wasm_error_for_code(refusal.code);
+                self.refuse(&ctx, started, refusal, None, 0, request_id.as_deref());
+                return Err(error);
+            }
+        };
+
+        // 2. The concurrency slot (the SAME (worker, version) semaphore;
+        //    immediate refusal, no queue).
+        let Some(permit) = self.acquire_permit(&ctx, &settings) else {
+            let refusal = Refusal::limit();
+            let error = wasm_error_for_code(refusal.code);
+            let target = hint_target(meta.destination_hint());
+            self.refuse(&ctx, started, refusal, target, 0, request_id.as_deref());
+            return Err(error);
+        };
+        // From here the call is admitted: reported exactly once (a refusal,
+        // the end of the body, or a drop) with the slot released.
+        let call = CallGuard::with_request_id(
+            self.reporter.clone(),
+            ctx.clone(),
+            started,
+            permit,
+            request_id,
+        );
+
+        // 3. The body is already buffered (the guest frame is capped); the
+        //    8 MiB defense still runs before the network.
+        if meta
+            .declared_length
+            .is_some_and(|length| length > MAX_REQUEST_BODY_BYTES)
+        {
+            let refusal = Refusal::request_too_large();
+            let error = wasm_error_for_code(refusal.code);
+            let target = hint_target(meta.destination_hint());
+            self.refuse_admitted(&call, refusal, target.as_ref(), 0);
+            return Err(error);
+        }
+        // The shared state, retained to report the GUEST-cap cut from
+        // outside the body (the body owns the call; the take-once keeps the
+        // event to one).
+        let shared = call.shared.clone();
+
+        // 4. The dispatch (validation, dial, TLS, redirects, streaming)
+        // under a per-call kill: there is no worker connection to tear
+        // down, and dropping the body tears the destination. The guard
+        // tail (the pre-head Content-Length refusal and the body's own
+        // size cap) must run under the SAME effective cap as the
+        // collection below — `min(response_body_limit,
+        // max_response_bytes)` — or a fixed-length body one byte over the
+        // guest cap would be reported complete (the take-once report)
+        // before the collection could cut it. A PRIVATE copy of the
+        // settings carries that min; the bridge's own settings, the
+        // policy, the semaphore and the Deno path are untouched.
+        let guest_cap: u64 = response_body_limit.try_into().unwrap_or(u64::MAX);
+        let dispatch_settings = EgressSettings {
+            max_response_bytes: settings.max_response_bytes.min(guest_cap),
+            ..(*settings).clone()
+        };
+        let response = self
+            .dispatch(
+                &dispatch_settings,
+                total_deadline,
+                meta,
+                body,
+                call,
+                Arc::new(Notify::new()),
+            )
+            .await;
+
+        // 5. The post-dispatch tail (the refusal header, the final headers
+        //    and the body to a CLEAN end) runs under the SAME effective cap
+        //    as the dispatch above.
+        collect_wasm_response(
+            response,
+            response_body_limit.min(settings.max_response_bytes as usize),
+            shared,
+        )
+        .await
+    }
+
+    /// (EDG-52/54 07d2b) The private SQLD entry: the SAME shared tail as
+    /// the WASM entry (slot, call guard, the effective
+    /// `min(guest, responseMax)` cap, one event per attempt with the host
+    /// request id) run over ONE plain-HTTP origin pinned by the grant.
+    /// The grant is the whole authority of this entry: the exact owner and
+    /// origin are checked BEFORE the credential lookup, DNS or the dial;
+    /// only that origin's host is resolved (absolute, the IP pinned on the
+    /// connection); private/loopback IPs need no `allow_cidrs` or
+    /// classifier change — the general egress path still refuses them;
+    /// the guest's `Authorization`/`Cookie`/`Proxy-Authorization`/
+    /// `x-namespace-bin` are removed and the grant's own sensitive
+    /// credential and namespace are imposed after the sanitization; no
+    /// service redirect is followed (every 3xx refuses and closes the
+    /// upstream); and no URL, header, body, path or credential ever
+    /// reaches an error, an event or a log line.
+    pub(crate) async fn fetch_database(
+        &self,
+        request: WasmHttpRequest,
+        ctx: Arc<EgressWorkerContext>,
+        settings: Arc<EgressSettings>,
+        grant: Arc<EgressDatabaseGrant>,
+        response_body_limit: usize,
+    ) -> Result<WasmHttpResponse, WasmHttpError> {
+        self.fetch_private(request, ctx, settings, grant, response_body_limit)
+            .await
+    }
+
+    /// (EDG-54 15b) The private database entry over ANY
+    /// [`DatabaseAuthority`] (the static grant above, or the dynamic
+    /// service-backed authority of `ManagedDatabaseEgress`). The flow is
+    /// the former `fetch_database` one: the pure owner/origin predicate,
+    /// then the (worker, version) slot, and only THEN the credential
+    /// lookup (which may hit the registry, the crypto and the vault),
+    /// run under the call's total deadline inside
+    /// [`Self::database_exchange`].
+    pub(crate) async fn fetch_private(
+        &self,
+        request: WasmHttpRequest,
+        ctx: Arc<EgressWorkerContext>,
+        settings: Arc<EgressSettings>,
+        authority: Arc<dyn DatabaseAuthority>,
+        response_body_limit: usize,
+    ) -> Result<WasmHttpResponse, WasmHttpError> {
+        let started = Instant::now();
+        // The TOTAL budget of the whole call: the credential lookup, the
+        // DNS, the TCP connect, the head and the body — no refill.
+        let total_deadline = deadline_after(started, settings.total_timeout_ms);
+        // The host-provided request id (empty = `None`, like the WASM
+        // entry; the guest frame carries no identity of its own).
+        let request_id = (!request.request_id.is_empty()).then(|| request.request_id.clone());
+
+        // 1. The frame checks + the sanitized meta (a generic refusal when
+        //    invalid — before the slot, like the socket path).
+        let (meta, body) = match wasm_request_meta(&request) {
+            Ok(pair) => pair,
+            Err(refusal) => {
+                let error = wasm_error_for_code(refusal.code);
+                self.refuse(&ctx, started, refusal, None, 0, request_id.as_deref());
+                return Err(error);
+            }
+        };
+
+        // 2. The exact owner AND origin of the authority — before any
+        //    credential lookup, DNS or dial (a pure predicate: no
+        //    network, no secret). A foreign owner, another origin, the
+        //    admin port, userinfo or a fragment all refuse statically.
+        if !authority.permits(&ctx, &request.url) {
+            let refusal = Refusal::database_denied();
+            let error = wasm_error_for_code(refusal.code);
+            self.refuse(
+                &ctx,
+                started,
+                refusal,
+                database_target_hint(&request.url),
+                0,
+                request_id.as_deref(),
+            );
+            return Err(error);
+        }
+
+        // 3. The concurrency slot (the SAME (worker, version) semaphore as
+        //    the general egress and every other bridge of this guard);
+        //    held until the body is consumed, cut, cancelled or dropped —
+        //    the credential lookup included.
+        let Some(permit) = self.acquire_permit(&ctx, &settings) else {
+            let refusal = Refusal::limit();
+            let error = wasm_error_for_code(refusal.code);
+            self.refuse(
+                &ctx,
+                started,
+                refusal,
+                database_target_hint(&request.url),
+                0,
+                request_id.as_deref(),
+            );
+            return Err(error);
+        };
+        // From here the call is admitted: reported exactly once (a refusal,
+        // the end of the body, or a drop) with the slot released.
+        let call = CallGuard::with_request_id(
+            self.reporter.clone(),
+            ctx.clone(),
+            started,
+            permit,
+            request_id,
+        );
+
+        // 4. The 8 MiB request-body defense (the guest frame is already
+        //    capped; the limit is preserved).
+        if meta
+            .declared_length
+            .is_some_and(|length| length > MAX_REQUEST_BODY_BYTES)
+        {
+            let refusal = Refusal::request_too_large();
+            let error = wasm_error_for_code(refusal.code);
+            let target = database_target_hint(&request.url);
+            self.refuse_admitted(&call, refusal, target.as_ref(), 0);
+            return Err(error);
+        }
+        // The shared state, retained to report the GUEST-cap cut from
+        // outside the body (the body owns the call; the take-once keeps
+        // the event to one).
+        let shared = call.shared.clone();
+
+        // 5. The effective cap: `min(guest, responseMax)` — a PRIVATE copy
+        //    of the settings, applied before the pre-head
+        //    `Content-Length` check and in the collection (the bridge's
+        //    settings, the policy, the semaphore and the general path are
+        //    untouched; no partial body is ever a success).
+        let guest_cap: u64 = response_body_limit.try_into().unwrap_or(u64::MAX);
+        let effective = EgressSettings {
+            max_response_bytes: settings.max_response_bytes.min(guest_cap),
+            ..(*settings).clone()
+        };
+
+        // 6. The shared streaming exchange (credentials under the total
+        //    budget, DNS, pinned dial, no redirect), then 7. the
+        //    collection to a CLEAN end under the SAME effective cap.
+        let response = self
+            .database_exchange(
+                authority.as_ref(),
+                &ctx,
+                &effective,
+                &request.url,
+                meta.method,
+                meta.headers,
+                body,
+                call,
+                total_deadline,
+                Arc::new(Notify::new()),
+            )
+            .await;
+        collect_wasm_response(response, effective.max_response_bytes as usize, shared).await
+    }
+
+    /// (EDG-54 15b) The private database exchange of an ADMITTED call: the
+    /// slot and the call guard are already owned (this never takes a
+    /// second one, never emits a second event). Steps, in this order: the
+    /// fresh credentials of the authority under the total budget (a
+    /// missing/invalid/denied authority or the deadline fails closed with
+    /// a static refusal — never a general fallback), the destination (the
+    /// authority's origin only: absolute DNS, first IP pinned, no
+    /// classifier), the sanitization (the guest's `Authorization`/
+    /// `Cookie`/`Proxy-Authorization`/`x-namespace-bin` removed, the
+    /// authority's own sensitive ones imposed), the plain-TCP dial with
+    /// the connect/head/total budgets and the shared HTTP exchange. Every
+    /// 3xx refuses and closes the upstream. The result is the STREAMING
+    /// `Response<EgressBody>` (a refusal is the guard's error answer);
+    /// the WASM entry collects it, the Deno socket entry forwards it.
+    #[allow(clippy::too_many_arguments)]
+    async fn database_exchange(
+        &self,
+        authority: &dyn DatabaseAuthority,
+        ctx: &EgressWorkerContext,
+        settings: &EgressSettings,
+        request_url: &str,
+        method: Method,
+        mut forwarded: HeaderMap,
+        body: Bytes,
+        call: CallGuard,
+        total_deadline: Option<Instant>,
+        kill: Arc<Notify>,
+    ) -> Response<EgressBody> {
+        // 1. The fresh per-call credentials (rotation per execution; the
+        //    token is never cached), under the total budget. A missing,
+        //    empty or invalid value, a non-Ready binding — or the
+        //    deadline — fails closed without any secret, name or URL in
+        //    the refusal.
+        let credentials = match timeout_at_opt(total_deadline, authority.credentials(ctx)).await {
+            Ok(Ok(credentials)) => credentials,
+            Ok(Err(DatabaseAuthorityError::Denied)) => {
+                let target = database_target_hint(request_url);
+                return self.refuse_admitted(&call, Refusal::database_denied(), target.as_ref(), 0);
+            }
+            _ => {
+                let target = database_target_hint(request_url);
+                return self.refuse_admitted(
+                    &call,
+                    Refusal::database_auth_unavailable(),
+                    target.as_ref(),
+                    0,
+                );
+            }
+        };
+
+        // 2. The destination: ONLY the authority's origin (already
+        //    checked by `permits`) — plain HTTP, the fixed port. The host
+        //    is resolved absolute (the trailing dot, like the general
+        //    hop) and the first IP is pinned on the connection — the name
+        //    is never resolved again. No classifier and no `allow_cidrs`
+        //    here: this authority alone admits the private/loopback
+        //    origin.
+        let Ok(url) = Url::parse(request_url) else {
+            let target = database_target_hint(request_url);
+            return self.refuse_admitted(&call, Refusal::database_denied(), target.as_ref(), 0);
+        };
+        let port = url.port().unwrap_or(80);
+        let (host_text, ip) = match url.host() {
+            Some(Host::Domain(domain)) => {
+                let resolve_name = if domain.ends_with('.') {
+                    domain.to_owned()
+                } else {
+                    format!("{domain}.")
+                };
+                let resolved = match timeout_at_opt(
+                    total_deadline,
+                    self.config.resolver.resolve(&resolve_name, port),
+                )
+                .await
+                {
+                    Ok(Ok(ips)) if !ips.is_empty() => ips,
+                    Ok(_) => {
+                        let target = database_target_hint(request_url);
+                        return self.refuse_admitted(
+                            &call,
+                            Refusal::dns_error(),
+                            target.as_ref(),
+                            0,
+                        );
+                    }
+                    Err(_) => {
+                        let target = database_target_hint(request_url);
+                        return self.refuse_admitted(&call, Refusal::timeout(), target.as_ref(), 0);
+                    }
+                };
+                (domain.to_owned(), resolved[0])
+            }
+            Some(Host::Ipv4(ip)) => (ip.to_string(), IpAddr::V4(ip)),
+            Some(Host::Ipv6(ip)) => (ip.to_string(), IpAddr::V6(ip)),
+            None => {
+                let target = database_target_hint(request_url);
+                return self.refuse_admitted(&call, Refusal::database_denied(), target.as_ref(), 0);
+            }
+        };
+        let target = HopTarget {
+            host: host_text.clone(),
+            port,
+            ip: Some(ip),
+        };
+        call.note_target(&target);
+
+        // 3. The request, sanitized: the guest's credential and SQLD
+        //    identity are removed, then the authority's own (sensitive)
+        //    ones are imposed — the guest's `Connection` already cannot
+        //    name them away (hop-stripped), and the host's own
+        //    `Connection: close` wins in the upstream request.
+        forwarded.remove(AUTHORIZATION);
+        forwarded.remove(COOKIE);
+        forwarded.remove(PROXY_AUTHORIZATION);
+        forwarded.remove(NAMESPACE_BIN_HEADER);
+        forwarded.insert(AUTHORIZATION, credentials.authorization);
+        forwarded.insert(NAMESPACE_BIN_HEADER, credentials.namespace);
+        let Some(upstream_request) = build_upstream_request(&method, &url, &forwarded, &body)
+        else {
+            return self.refuse_admitted(
+                &call,
+                Refusal::bad_target("invalid_egress_url"),
+                Some(&target),
+                0,
+            );
+        };
+
+        // 4. The plain TCP dial with the connect/head/total budgets
+        //    (the `connect` deadline bounds the TCP connect; the `head`
+        //    deadline bounds everything before the head; the total
+        //    deadline bounds all of it) — no TLS on this entry.
+        let socket_addr = SocketAddr::new(ip, port);
+        let hop_start = Instant::now();
+        let head_deadline = earliest(
+            deadline_after(hop_start, settings.headers_timeout_ms),
+            total_deadline,
+        );
+        let connect_deadline = earliest(
+            deadline_after(hop_start, settings.connect_timeout_ms),
+            head_deadline,
+        );
+        let tcp = match timeout_at_opt(connect_deadline, TcpStream::connect(socket_addr)).await {
+            Ok(Ok(tcp)) => tcp,
+            Ok(Err(_)) => {
+                return self.refuse_admitted(&call, Refusal::upstream_error(), Some(&target), 0);
+            }
+            Err(_) => {
+                return self.refuse_admitted(&call, Refusal::timeout(), Some(&target), 0);
+            }
+        };
+        let _ = tcp.set_nodelay(true);
+
+        // 5. The SAME HTTP exchange of the general hop (the `hyper`
+        //    handshake, the request write and the head read under
+        //    `head_deadline`, the redirect classification and the
+        //    pre-head `Content-Length` cap under the effective cap).
+        let outcome = exchange_http(tcp, upstream_request, settings, target, head_deadline).await;
+
+        // 6. The final state: zero redirects of the service — every 3xx
+        //    (with or without a `Location`) refuses and closes the
+        //    upstream (the parts drop with the refusal; the `Redirect`
+        //    ones already dropped in the exchange), no second hop. The
+        //    4xx/5xx answers are ordinary responses through the SAME
+        //    `forward_response` + `UpstreamBody` tail as the WASM entry.
+        match outcome {
+            HopOutcome::Refused(refusal, target) => {
+                self.refuse_admitted(&call, refusal, Some(&target), 0)
+            }
+            HopOutcome::Redirect { target, .. } => {
+                self.refuse_admitted(&call, Refusal::database_denied(), Some(&target), 0)
+            }
+            HopOutcome::Respond {
+                target,
+                status,
+                headers,
+                upstream,
+            } => {
+                call.note_target(&target);
+                if (300..=399).contains(&status.as_u16()) {
+                    self.refuse_admitted(&call, Refusal::database_denied(), Some(&target), 0)
+                } else {
+                    call.note_status(status.as_u16());
+                    forward_response(
+                        status,
+                        &headers,
+                        upstream,
+                        settings,
+                        total_deadline,
+                        call,
+                        kill,
+                    )
+                }
+            }
+        }
+    }
+
+    /// (EDG-54 15b) One request on a MANAGED socket (the Deno private
+    /// seam): the DB origin goes ONLY to the private authority (never to
+    /// the general path, on ANY failure); every other destination goes to
+    /// the general path ONLY when the socket declares `general` settings
+    /// (`Some`), else it is refused statically. The slot is taken from
+    /// the version's single semaphore with the socket's `limits` BEFORE
+    /// the request body is read and before the authority is consulted
+    /// (registry, crypto, vault). The answer is the STREAMING response
+    /// (no buffering of the response body).
+    async fn handle_managed(
+        &self,
+        request: Request<Incoming>,
+        ctx: Arc<EgressWorkerContext>,
+        general: Option<Arc<EgressSettings>>,
+        limits: Arc<EgressSettings>,
+        authority: Arc<dyn DatabaseAuthority>,
+        kill: Arc<Notify>,
+    ) -> Response<EgressBody> {
+        let started = Instant::now();
+        let (parts, body) = request.into_parts();
+
+        // 1. The protocol checks (hyper already framed the request).
+        let meta = match parse_request(&parts) {
+            Ok(meta) => meta,
+            Err(refusal) => return self.refuse(&ctx, started, refusal, None, 0, None),
+        };
+
+        // 2. The route: a pure comparison of the NORMALIZED origin with
+        //    the authority's (no DNS, no lookup). The DB origin never
+        //    falls through; the rest needs the declared general settings.
+        let db_origin = authority.origin().origin();
+        let to_db = meta
+            .egress_url
+            .as_deref()
+            .and_then(|text| Url::parse(text).ok())
+            .is_some_and(|url| url.origin() == db_origin);
+        if !to_db {
+            return match general {
+                Some(settings) => {
+                    self.handle(Request::from_parts(parts, body), ctx, settings, kill)
+                        .await
+                }
+                None => self.refuse(
+                    &ctx,
+                    started,
+                    Refusal::bad_target("egress_not_declared"),
+                    None,
+                    0,
+                    None,
+                ),
+            };
+        }
+        let url_text = meta.egress_url.clone().unwrap_or_default();
+        let total_deadline = deadline_after(started, limits.total_timeout_ms);
+
+        // 3. The exact identity + origin predicate (pure), then the slot.
+        if !authority.permits(&ctx, &url_text) {
+            let target = database_target_hint(&url_text);
+            return self.refuse(&ctx, started, Refusal::database_denied(), target, 0, None);
+        }
+        let Some(permit) = self.acquire_permit(&ctx, &limits) else {
+            let target = database_target_hint(&url_text);
+            return self.refuse(&ctx, started, Refusal::limit(), target, 0, None);
+        };
+        let call = CallGuard::new(self.reporter.clone(), ctx.clone(), started, permit);
+
+        // 4. The request body (8 MiB cap) — only after the slot.
+        if meta
+            .declared_length
+            .is_some_and(|length| length > MAX_REQUEST_BODY_BYTES)
+        {
+            let target = database_target_hint(&url_text);
+            return self.refuse_admitted(&call, Refusal::request_too_large(), target.as_ref(), 0);
+        }
+        let collected = timeout_at_opt(
+            total_deadline,
+            Limited::new(body, MAX_REQUEST_BODY_BYTES as usize).collect(),
+        )
+        .await;
+        let body = match collected {
+            Ok(Ok(collected)) => collected.to_bytes(),
+            Ok(Err(err)) => {
+                let refusal = if err.downcast_ref::<LengthLimitError>().is_some() {
+                    Refusal::request_too_large()
+                } else {
+                    Refusal::bad_target("invalid_request_body")
+                };
+                let target = database_target_hint(&url_text);
+                return self.refuse_admitted(&call, refusal, target.as_ref(), 0);
+            }
+            Err(_) => {
+                let target = database_target_hint(&url_text);
+                return self.refuse_admitted(&call, Refusal::timeout(), target.as_ref(), 0);
+            }
+        };
+
+        // 5. The shared streaming exchange.
+        self.database_exchange(
+            authority.as_ref(),
+            &ctx,
+            &limits,
+            &url_text,
+            meta.method,
+            meta.headers,
+            body,
+            call,
+            total_deadline,
+            kill,
+        )
+        .await
+    }
+
+    /// (EDG-54 15b) Serve a MANAGED socket (the Deno private seam): see
+    /// [`Self::handle_managed`]. Same listener/connection lifecycle as
+    /// [`Self::serve`] (it is the same loop, with another route).
+    pub(crate) async fn serve_managed(
+        &self,
+        listener: tokio::net::UnixListener,
+        ctx: EgressWorkerContext,
+        general: Option<EgressSettings>,
+        limits: EgressSettings,
+        authority: Arc<dyn DatabaseAuthority>,
+    ) {
+        self.serve_route(
+            listener,
+            ctx,
+            Route::Managed {
+                general: general.map(Arc::new),
+                limits: Arc::new(limits),
+                authority,
+            },
+        )
+        .await;
     }
 
     /// One hop: validate the destination, resolve + classify (every IP),
@@ -1031,56 +1788,152 @@ impl EgressGuard {
             Err(_) => return HopOutcome::Refused(Refusal::timeout(), target),
         };
 
-        let (mut sender, connection) = match hyper::client::conn::http1::Builder::new()
-            .max_buf_size(MAX_HEAD_BYTES)
-            .handshake::<_, Full<Bytes>>(TokioIo::new(tls))
-            .await
-        {
-            Ok(pair) => pair,
-            Err(_) => return HopOutcome::Refused(Refusal::upstream_error(), target),
-        };
-        let connection_task = AbortOnDrop(tokio::spawn(async move {
-            let _ = connection.await;
-        }));
+        exchange_http(tls, request, settings, target, head_deadline).await
+    }
+}
 
-        let response = match timeout_at_opt(head_deadline, sender.send_request(request)).await {
-            Ok(Ok(response)) => response,
-            Ok(Err(_)) => return HopOutcome::Refused(Refusal::upstream_error(), target),
-            Err(_) => return HopOutcome::Refused(Refusal::timeout(), target),
-        };
-        let (parts, incoming) = response.into_parts();
-        if matches!(parts.status.as_u16(), 301 | 302 | 303 | 307 | 308) {
-            if let Some(location) = single_header_value(&parts.headers, &LOCATION) {
-                // The 3xx body is discarded: the hop's connection closes
-                // (the task is aborted on drop) and the next one starts
-                // fresh (revalidated).
-                return HopOutcome::Redirect {
-                    target,
-                    location,
-                    status: parts.status.as_u16(),
-                };
-            }
-        }
-        // A `Content-Length` over the cap refuses the whole response BEFORE
-        // the head goes out.
-        if incoming
-            .size_hint()
-            .exact()
-            .is_some_and(|length| length > settings.max_response_bytes)
-        {
-            return HopOutcome::Refused(Refusal::response_too_large(), target);
-        }
-        HopOutcome::Respond {
-            target,
-            status: parts.status,
-            headers: parts.headers,
-            upstream: UpstreamParts {
-                incoming,
-                sender,
-                connection_task,
-            },
+/// The HTTP exchange of one hop over an established stream (the guard's
+/// TLS connection today): the `hyper` handshake with the head capped at
+/// [`MAX_HEAD_BYTES`], the request write and the head read under the
+/// caller's `head_deadline`, the error mapping, the redirect
+/// classification and the pre-head `Content-Length` cap. The stream is
+/// wrapped here; the caller owns the dial, the SNI, the roots and the
+/// deadlines.
+async fn exchange_http<I>(
+    stream: I,
+    request: Request<Full<Bytes>>,
+    settings: &EgressSettings,
+    target: HopTarget,
+    head_deadline: Option<Instant>,
+) -> HopOutcome
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let (mut sender, connection) = match hyper::client::conn::http1::Builder::new()
+        .max_buf_size(MAX_HEAD_BYTES)
+        .handshake::<_, Full<Bytes>>(TokioIo::new(stream))
+        .await
+    {
+        Ok(pair) => pair,
+        Err(_) => return HopOutcome::Refused(Refusal::upstream_error(), target),
+    };
+    let connection_task = AbortOnDrop(tokio::spawn(async move {
+        let _ = connection.await;
+    }));
+
+    let response = match timeout_at_opt(head_deadline, sender.send_request(request)).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(_)) => return HopOutcome::Refused(Refusal::upstream_error(), target),
+        Err(_) => return HopOutcome::Refused(Refusal::timeout(), target),
+    };
+    let (parts, incoming) = response.into_parts();
+    if matches!(parts.status.as_u16(), 301 | 302 | 303 | 307 | 308) {
+        if let Some(location) = single_header_value(&parts.headers, &LOCATION) {
+            // The 3xx body is discarded: the hop's connection closes
+            // (the task is aborted on drop) and the next one starts
+            // fresh (revalidated).
+            return HopOutcome::Redirect {
+                target,
+                location,
+                status: parts.status.as_u16(),
+            };
         }
     }
+    // A `Content-Length` over the cap refuses the whole response BEFORE
+    // the head goes out.
+    if incoming
+        .size_hint()
+        .exact()
+        .is_some_and(|length| length > settings.max_response_bytes)
+    {
+        return HopOutcome::Refused(Refusal::response_too_large(), target);
+    }
+    HopOutcome::Respond {
+        target,
+        status: parts.status,
+        headers: parts.headers,
+        upstream: UpstreamParts {
+            incoming,
+            sender,
+            connection_task,
+        },
+    }
+}
+
+/// The post-dispatch tail of the WASM entry: the refusal header (mapped,
+/// never forwarded), the status and the final headers (a non-text value
+/// records the `InvalidResponseHeaders` cut through the shared state
+/// BEFORE the response drops) and the body collected to a CLEAN end under
+/// `cap` — the checked sum runs BEFORE every extend, and no partial body
+/// is ever a success (both limits at 0 admit only an empty body).
+async fn collect_wasm_response(
+    response: Response<EgressBody>,
+    cap: usize,
+    shared: Arc<CallShared>,
+) -> Result<WasmHttpResponse, WasmHttpError> {
+    // An internal refusal answers with the code header (a destination
+    // cannot forge it: `forward_response` strips it); it is mapped, never
+    // forwarded as a normal response.
+    if let Some(code) = response
+        .headers()
+        .get(EGRESS_ERROR_HEADER)
+        .and_then(|value| value.to_str().ok())
+    {
+        return Err(wasm_error_for_code(code));
+    }
+
+    // The status and the final headers (already without hop-by-hop and
+    // guard protocol headers); a non-text value is the generic transport
+    // class, never the raw bytes.
+    let status = response.status().as_u16();
+    let headers = match wasm_response_headers(response.headers()) {
+        Ok(headers) => headers,
+        // The guest frame cannot carry a non-text value: record the
+        // conversion cut through the retained shared state BEFORE the
+        // response (and its body) drops — the body's own drop would
+        // otherwise count an empty body as fully delivered (`ok`) —
+        // and return the original static error class.
+        Err(error) => {
+            let bytes = shared.bytes.load(AtomicOrdering::Relaxed);
+            shared.finish_forwarded(Some(CutKind::InvalidResponseHeaders), bytes);
+            return Err(error);
+        }
+    };
+
+    let mut collected: Vec<u8> = Vec::new();
+    let mut body = response.into_body();
+    loop {
+        let frame = match body.frame().await {
+            Some(Ok(frame)) => frame,
+            Some(Err(CutError(kind))) => return Err(wasm_error_for_cut(kind)),
+            None => break,
+        };
+        let data = match frame.into_data() {
+            Ok(data) => data,
+            // Trailers are not forwarded (the socket path skips them).
+            Err(_) => continue,
+        };
+        if data.is_empty() {
+            continue;
+        }
+        match collected.len().checked_add(data.len()) {
+            Some(total) if total <= cap => collected.extend_from_slice(&data),
+            _ => {
+                // The guest cap is over: report the size cut ONCE through
+                // the retained shared state (take-once — the body's own
+                // drop then reports nothing), and drop the body (the
+                // destination goes with it).
+                let bytes = shared.bytes.load(AtomicOrdering::Relaxed);
+                shared.finish_forwarded(Some(CutKind::SizeLimit), bytes);
+                return Err(WasmHttpError::ResponseTooLarge);
+            }
+        }
+    }
+    Ok(WasmHttpResponse {
+        status,
+        headers,
+        body: Bytes::from(collected),
+    })
 }
 
 /// The `hyper` server builder of the worker side (shared by `serve` and the
@@ -1100,15 +1953,27 @@ struct Reporter {
 }
 
 impl Reporter {
-    fn report(&self, ctx: &EgressWorkerContext, started: Instant, record: &CallRecord) {
-        self.record_event(ctx, started, record);
+    fn report(
+        &self,
+        ctx: &EgressWorkerContext,
+        started: Instant,
+        record: &CallRecord,
+        request_id: Option<&str>,
+    ) {
+        self.record_event(ctx, started, record, request_id);
         self.metrics
             .record(&ctx.worker, record.outcome.as_str(), record.bytes);
     }
 
     /// The `worker.egress` event. The fields carry no header (name or
     /// value), no path, no query string and no body.
-    fn record_event(&self, ctx: &EgressWorkerContext, started: Instant, record: &CallRecord) {
+    fn record_event(
+        &self,
+        ctx: &EgressWorkerContext,
+        started: Instant,
+        record: &CallRecord,
+        request_id: Option<&str>,
+    ) {
         let duration_ms = (Instant::now() - started).as_millis() as u64;
         let level = if record.outcome == EgressOutcome::Ok {
             OperationalEventLevel::Info
@@ -1158,8 +2023,14 @@ impl Reporter {
             namespace: ctx.namespace.clone(),
             worker: Some(ctx.worker.clone()),
             version: Some(ctx.version.clone()),
-            process_id: Some(ctx.process_id.clone()),
-            request_id: None,
+            // (EDG-52 07b) the WASM path has no process id: an empty value
+            // is `None` (the Deno path's valid ids are preserved as-is).
+            process_id: if ctx.process_id.is_empty() {
+                None
+            } else {
+                Some(ctx.process_id.clone())
+            },
+            request_id: request_id.filter(|id| !id.is_empty()).map(str::to_string),
             trace_id: None,
             outcome: Some(outcome.to_string()),
             status,
@@ -1292,6 +2163,9 @@ enum CutKind {
     /// The worker went away (its connection closed or the response was
     /// dropped before the end).
     WorkerDisconnected,
+    /// The response header carried a non-text value the guest frame cannot
+    /// carry (the WASM entry's `to_str` conversion failed).
+    InvalidResponseHeaders,
 }
 
 fn cut_outcome(kind: CutKind) -> EgressOutcome {
@@ -1308,6 +2182,7 @@ fn cut_reason(kind: CutKind) -> &'static str {
         CutKind::SizeLimit => "response_size_limit",
         CutKind::UpstreamStreamError => "upstream_stream_error",
         CutKind::WorkerDisconnected => "worker_disconnected",
+        CutKind::InvalidResponseHeaders => "invalid_response_headers",
     }
 }
 
@@ -1345,6 +2220,9 @@ struct CallShared {
     /// Body bytes handed to the worker so far (read by the supervisor).
     bytes: AtomicU64,
     state: Mutex<Option<CallState>>,
+    /// The host-provided request id of the event (the WASM entry); `None`
+    /// on the Deno socket path.
+    request_id: Option<String>,
 }
 
 impl CallShared {
@@ -1360,7 +2238,8 @@ impl CallShared {
             return false;
         };
         let record = build(&state);
-        self.reporter.report(&self.ctx, self.started, &record);
+        self.reporter
+            .report(&self.ctx, self.started, &record, self.request_id.as_deref());
         // `state` (and the slot with it) drops after the report.
         true
     }
@@ -1420,6 +2299,18 @@ impl CallGuard {
         started: Instant,
         permit: OwnedSemaphorePermit,
     ) -> Self {
+        Self::with_request_id(reporter, ctx, started, permit, None)
+    }
+
+    /// The call with a host-provided request id (the WASM entry); the Deno
+    /// socket path never has one (`new` = `None`).
+    fn with_request_id(
+        reporter: Reporter,
+        ctx: Arc<EgressWorkerContext>,
+        started: Instant,
+        permit: OwnedSemaphorePermit,
+        request_id: Option<String>,
+    ) -> Self {
         Self {
             shared: Arc::new(CallShared {
                 reporter,
@@ -1432,6 +2323,7 @@ impl CallGuard {
                     redirects: 0,
                     target: None,
                 })),
+                request_id,
             }),
         }
     }
@@ -1728,6 +2620,26 @@ fn hint_target((host, port): (Option<String>, Option<u16>)) -> Option<HopTarget>
     })
 }
 
+/// (EDG-52/54 07d2b) The telemetry target of a database-entry refusal
+/// before the dial: the host and the port of the request URL (never a
+/// path, a query or a credential); `None` when the URL does not parse.
+fn database_target_hint(request_url: &str) -> Option<HopTarget> {
+    let Ok(url) = Url::parse(request_url) else {
+        return None;
+    };
+    let host = match url.host() {
+        Some(Host::Domain(domain)) => domain.to_string(),
+        Some(Host::Ipv4(ip)) => ip.to_string(),
+        Some(Host::Ipv6(ip)) => ip.to_string(),
+        None => return None,
+    };
+    Some(HopTarget {
+        host,
+        port: url.port_or_known_default().unwrap_or(80),
+        ip: None,
+    })
+}
+
 /// The protocol checks on a request `hyper` framed: HTTP/1.1 only, no
 /// `CONNECT`, every `Host` equal to the fake host (and the authority of an
 /// absolute-form target too), at most one distinct `x-edger-egress-url`, and
@@ -1789,6 +2701,44 @@ fn parse_request(parts: &http::request::Parts) -> Result<RequestMeta, Refusal> {
     })
 }
 
+/// (EDG-52 07b) The protocol checks on a guest-frame request: a token
+/// method (no `CONNECT`), every header name and value valid, and the
+/// destination taken from `request.url` ONLY (a reserved header can never
+/// name a destination). The headers are sanitized exactly as the socket
+/// path sanitizes them: no hop-by-hop (including the headers the
+/// `Connection` header names), no `Host`, no `Content-Length` (recomputed
+/// from the buffered body by the upstream request builder) and no guard
+/// protocol header at all. Every failure is the generic `EGRESS_BAD_TARGET`
+/// refusal with a fixed message — never the URL, a header value or the
+/// body.
+fn wasm_request_meta(request: &WasmHttpRequest) -> Result<(RequestMeta, Bytes), Refusal> {
+    let method = Method::from_bytes(request.method.as_bytes())
+        .map_err(|_| Refusal::bad_target("invalid_method"))?;
+    if method == Method::CONNECT {
+        return Err(Refusal::bad_target("invalid_method"));
+    }
+    let mut headers = HeaderMap::new();
+    for (name, value) in &request.headers {
+        let name = HeaderName::try_from(name.as_str())
+            .map_err(|_| Refusal::bad_target("invalid_request_headers"))?;
+        let value = HeaderValue::from_str(value)
+            .map_err(|_| Refusal::bad_target("invalid_request_headers"))?;
+        headers.append(name, value);
+    }
+    let mut headers = strip_guard_protocol_headers(&strip_hop_by_hop(&headers));
+    headers.remove(HOST);
+    headers.remove(CONTENT_LENGTH);
+    Ok((
+        RequestMeta {
+            method,
+            headers,
+            egress_url: Some(request.url.clone()),
+            declared_length: Some(request.body.len() as u64),
+        },
+        request.body.clone(),
+    ))
+}
+
 /// Build the upstream request: the request target (path plus query, the
 /// fragment never sent), the destination authority as `Host`, the forwarded
 /// headers and the buffered body. `Connection: close`: one request per
@@ -1832,7 +2782,9 @@ fn request_target(url: &Url) -> String {
 }
 
 /// The `Host` header of the upstream request: the destination authority
-/// (IPv6 bracketed), with the port only when it is not the 443 default.
+/// (IPv6 bracketed), with the port only when it is not the default of the
+/// URL's own scheme (`http` is 80, `https` is 443) — a plain-HTTP service
+/// on 443 keeps `:443`; omitting it would denote port 80 for `http`.
 fn request_authority(url: &Url) -> String {
     let Some(host) = url.host() else {
         return String::new();
@@ -1842,11 +2794,9 @@ fn request_authority(url: &Url) -> String {
         Host::Ipv4(ip) => ip.to_string(),
         Host::Ipv6(ip) => format!("[{ip}]"),
     };
-    let port = url.port_or_known_default();
-    if port == Some(443) {
-        host
-    } else {
-        format!("{host}:{}", port.unwrap_or(443))
+    match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
     }
 }
 
@@ -2019,6 +2969,46 @@ fn forward_response(
     response
 }
 
+/// (EDG-52 07b) The WASM error class of a guard refusal: the guard code is
+/// the discriminator (the `code` of a pre-head refusal, or the
+/// `x-edger-egress-error` header of a dispatched one — a destination cannot
+/// forge it). The refusal body is never handed to the guest as a normal
+/// response.
+fn wasm_error_for_code(code: &str) -> WasmHttpError {
+    match code {
+        EGRESS_BAD_TARGET | EGRESS_REQUEST_TOO_LARGE => WasmHttpError::InvalidRequest,
+        EGRESS_RESPONSE_TOO_LARGE => WasmHttpError::ResponseTooLarge,
+        // Port/host refusals, DNS, upstream errors, redirects, timeouts and
+        // the concurrency limit: the transport class.
+        _ => WasmHttpError::Transport,
+    }
+}
+
+/// (EDG-52 07b) The WASM error class of a post-head body cut.
+fn wasm_error_for_cut(kind: CutKind) -> WasmHttpError {
+    match kind {
+        CutKind::SizeLimit => WasmHttpError::ResponseTooLarge,
+        _ => WasmHttpError::Transport,
+    }
+}
+
+/// (EDG-52 07b) The response headers as the guest frame carries them (pairs
+/// of text): already without the hop-by-hop and guard protocol headers
+/// (`forward_response` strips them). A non-UTF-8 value is the generic
+/// transport failure — never the raw bytes.
+fn wasm_response_headers(headers: &HeaderMap) -> Result<Vec<(String, String)>, WasmHttpError> {
+    let mut pairs: Vec<(String, String)> = Vec::with_capacity(headers.len());
+    for (name, value) in headers {
+        pairs.push((
+            name.as_str().to_string(),
+            std::str::from_utf8(value.as_bytes())
+                .map_err(|_| WasmHttpError::Transport)?
+                .to_string(),
+        ));
+    }
+    Ok(pairs)
+}
+
 /// The guard's error answer: the code header, the JSON body and the fixed
 /// (value-free) message.
 fn error_body(refusal: &Refusal) -> String {
@@ -2037,10 +3027,7 @@ fn error_response(refusal: &Refusal) -> Response<EgressBody> {
         StatusCode::from_u16(refusal.status).unwrap_or(StatusCode::BAD_GATEWAY);
     let headers = response.headers_mut();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert(
-        HeaderName::from_static("x-edger-egress-error"),
-        HeaderValue::from_static(refusal.code),
-    );
+    headers.insert(EGRESS_ERROR_HEADER, HeaderValue::from_static(refusal.code));
     // The request may still have unread body bytes: do not reuse the
     // connection.
     headers.insert(CONNECTION, HeaderValue::from_static("close"));
@@ -2093,6 +3080,10 @@ fn target_fields(target: Option<&HopTarget>) -> (Option<String>, Option<u16>, Op
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::egress_wasm_bridge::EgressWasmBridge;
+    use crate::metrics::egress_metrics_prometheus;
+    use crate::observability::OperationalEventQuery;
+    use edger_isolation::wasm::WasmHttpTransport;
     use std::sync::atomic::AtomicUsize;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -2311,6 +3302,36 @@ mod tests {
         let names: Vec<&str> = out.keys().map(HeaderName::as_str).collect();
         assert_eq!(names.len(), 2, "{names:?}");
         assert!(names.contains(&"content-type") && names.contains(&"x-app"));
+    }
+
+    #[test]
+    fn wasm_response_headers_delivers_valid_utf8_server_timing_intact() {
+        // Real SQLD sends `Server-Timing` with a micro sign (UTF-8 C2B5);
+        // the guest frame carries header values as text pairs, so a valid
+        // UTF-8 value must arrive intact.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "server-timing",
+            HeaderValue::from_str("db=12.543µs; desc=fetch").unwrap(),
+        );
+        let out = wasm_response_headers(&headers).expect("valid UTF-8 is delivered");
+        assert_eq!(
+            out,
+            vec![(
+                "server-timing".to_string(),
+                "db=12.543µs; desc=fetch".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn wasm_response_headers_rejects_non_utf8_value() {
+        // A value with invalid UTF-8 bytes is still the generic transport
+        // refusal (502 to the guest), never a silent drop or lossy text.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-raw", HeaderValue::from_bytes(b"\xc2(").unwrap());
+        let err = wasm_response_headers(&headers).unwrap_err();
+        assert!(matches!(err, WasmHttpError::Transport));
     }
 
     #[test]
@@ -2542,6 +3563,62 @@ mod tests {
         assert_eq!(request.headers().get(CONNECTION).unwrap(), "close");
         assert_eq!(request.headers().get("x-app").unwrap(), "1");
         assert!(!request.headers().contains_key(EGRESS_URL_HEADER));
+    }
+
+    #[test]
+    fn upstream_request_host_omits_only_the_scheme_default_port() {
+        // The private HTTP entry admits e.g. `http://sqld.local:443/`: 443
+        // is the default of `https`, not of `http`, so the `Host` of the
+        // upstream request must keep `:443` there. Only the default of the
+        // URL's own scheme (80 for `http`, 443 for `https`) is omitted,
+        // the way `Url` normalizes it.
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "http://sqld.local:443/path?q=1",
+                "sqld.local:443",
+                "/path?q=1",
+            ),
+            ("http://sqld.local:80/path", "sqld.local", "/path"),
+            ("http://sqld.local/path", "sqld.local", "/path"),
+            ("https://sqld.local/path", "sqld.local", "/path"),
+            ("https://sqld.local:443/path", "sqld.local", "/path"),
+            ("https://sqld.local:8443/path", "sqld.local:8443", "/path"),
+        ];
+        for &(text, expected_host, expected_uri) in cases {
+            let url = Url::parse(text).unwrap();
+            let request =
+                build_upstream_request(&Method::GET, &url, &HeaderMap::new(), &Bytes::new())
+                    .expect("builds");
+            assert_eq!(
+                request.headers().get(HOST).unwrap(),
+                expected_host,
+                "Host for {text}"
+            );
+            assert_eq!(request.uri().to_string(), expected_uri, "URI for {text}");
+        }
+    }
+
+    #[test]
+    fn upstream_request_host_keeps_ipv6_brackets_with_scheme_defaults() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("http://[2001:db8::7]:443/x", "[2001:db8::7]:443", "/x"),
+            ("http://[2001:db8::7]:80/x", "[2001:db8::7]", "/x"),
+            ("http://[2001:db8::7]/x", "[2001:db8::7]", "/x"),
+            ("https://[2001:db8::7]/x", "[2001:db8::7]", "/x"),
+            ("https://[2001:db8::7]:8443/x", "[2001:db8::7]:8443", "/x"),
+        ];
+        for &(text, expected_host, expected_uri) in cases {
+            let url = Url::parse(text).unwrap();
+            let request =
+                build_upstream_request(&Method::GET, &url, &HeaderMap::new(), &Bytes::new())
+                    .expect("builds");
+            assert_eq!(
+                request.headers().get(HOST).unwrap(),
+                expected_host,
+                "Host for {text}"
+            );
+            assert_eq!(request.uri().to_string(), expected_uri, "URI for {text}");
+        }
     }
 
     #[test]
@@ -2798,6 +3875,180 @@ mod tests {
                 exchange.line
             );
             assert_eq!(exchange.calls, 0);
+        }
+    }
+
+    // -- (EDG-52 07b) the buffered WASM entry -------------------------------
+
+    #[test]
+    fn buffered_wasm_request_meta_is_sanitized_and_preserved() {
+        let body = Bytes::from_static(b"hello=body");
+        let request = WasmHttpRequest {
+            method: "POST".into(),
+            url: "https://a.local/v1?q=1".into(),
+            headers: vec![
+                ("authorization".into(), "Bearer sk-teste-segredo-123".into()),
+                ("Host".into(), "a.local".into()),
+                ("CONTENT-LENGTH".into(), "12".into()),
+                ("x-edger-egress-url".into(), "https://evil.local/".into()),
+                ("X-Edger-Egress-Error".into(), "EGRESS_HOST_BLOCKED".into()),
+                ("connection".into(), "close, x-fragile".into()),
+                ("x-fragile".into(), "1".into()),
+                ("keep-alive".into(), "timeout=5".into()),
+                ("content-type".into(), "application/json".into()),
+            ],
+            body: body.clone(),
+            request_id: "req-1".into(),
+        };
+        let (meta, meta_body) = wasm_request_meta(&request).expect("sanitizes");
+        // The method and the destination are preserved (the URL comes from
+        // the frame field, never from a header).
+        assert_eq!(meta.method, Method::POST);
+        assert_eq!(meta.egress_url.as_deref(), Some("https://a.local/v1?q=1"));
+        // The body is handed over untouched and the declared length is the
+        // buffered body's own (recomputed, never the guest's header).
+        assert_eq!(meta_body, body);
+        assert_eq!(meta.declared_length, Some(body.len() as u64));
+        // The app's credential header survives (the cross-origin removal is
+        // the dispatch's job, as on the socket path).
+        assert_eq!(
+            meta.headers.get(AUTHORIZATION).unwrap(),
+            "Bearer sk-teste-segredo-123"
+        );
+        assert_eq!(
+            meta.headers.get("content-type").unwrap(),
+            "application/json"
+        );
+        // Hop-by-hop (including the `Connection` tokens), `Host`,
+        // `Content-Length` and EVERY guard protocol header are gone.
+        for gone in [
+            "host",
+            "content-length",
+            "x-edger-egress-url",
+            "x-edger-egress-error",
+            "connection",
+            "x-fragile",
+            "keep-alive",
+        ] {
+            assert!(!meta.headers.contains_key(gone), "{gone} must be stripped");
+        }
+        // Invalid input answers the generic refusal (no URL/header/body
+        // echo in the message).
+        let bad_cases: [(&str, Vec<(&str, &str)>); 4] = [
+            ("CONNECT", vec![]),
+            ("not a method", vec![]),
+            ("GET", vec![("bad name", "1")]),
+            ("GET", vec![("x", "bad\r\nvalue")]),
+        ];
+        for (method, pairs) in bad_cases {
+            let bad = WasmHttpRequest {
+                method: method.to_string(),
+                url: "https://a.local/".to_string(),
+                headers: pairs
+                    .into_iter()
+                    .map(|(name, value)| (name.to_string(), value.to_string()))
+                    .collect(),
+                body: Bytes::new(),
+                request_id: String::new(),
+            };
+            let refusal = wasm_request_meta(&bad).unwrap_err();
+            assert_eq!(refusal.code, EGRESS_BAD_TARGET, "{method}");
+            assert_eq!(refusal.status, 400, "{method}");
+        }
+    }
+
+    /// Resolves every name to the loopback: with ZERO allow CIDRs the
+    /// classification refuses it before the dial (no server needed).
+    struct BufferedWasmLoopbackResolver;
+
+    #[async_trait]
+    impl EgressResolver for BufferedWasmLoopbackResolver {
+        async fn resolve(&self, _host: &str, _port: u16) -> io::Result<Vec<IpAddr>> {
+            Ok(vec!["127.0.0.1".parse().unwrap()])
+        }
+    }
+
+    #[tokio::test]
+    async fn buffered_wasm_bridge_refuses_a_blocked_host_with_one_event() {
+        let guard = EgressGuard::new(EgressGuardConfig {
+            block_cidrs: default_block_cidrs(),
+            allow_cidrs: Vec::new(),
+            resolver: Arc::new(BufferedWasmLoopbackResolver),
+            tls_roots: webpki_roots(),
+        });
+        let store = OperationalStore::default();
+        let guard = guard.with_event_store(store.clone());
+        let metrics = guard.metrics().clone();
+        let ctx = Arc::new(EgressWorkerContext {
+            worker: "wasm-worker".into(),
+            version: "1.0.0".into(),
+            namespace: Some("ns".into()),
+            process_id: String::new(), // the WASM path has no process id
+        });
+        let settings = Arc::new(EgressSettings {
+            ports: vec![443],
+            connect_timeout_ms: 5_000,
+            headers_timeout_ms: 10_000,
+            idle_timeout_ms: 300_000,
+            total_timeout_ms: 300_000,
+            max_response_bytes: 10 * 1024 * 1024,
+            max_concurrent: 8,
+        });
+        // Through the REAL trait the guest import consumes (the host-
+        // trusted binding), not the guard's internal entry.
+        let bridge = EgressWasmBridge::new(Arc::new(guard), ctx, settings);
+        let transport: Arc<dyn WasmHttpTransport> = Arc::new(bridge);
+        let request = WasmHttpRequest {
+            method: "GET".into(),
+            url: "https://blocked.local/".into(),
+            headers: vec![("authorization".into(), "Bearer sk-teste".into())],
+            body: Bytes::new(),
+            request_id: "req-wasm-1".into(),
+        };
+        let error = match transport.fetch(request, 1024).await {
+            Ok(_) => panic!("a blocked host must not answer a normal response"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            WasmHttpError::Transport,
+            "a policy refusal is the transport class"
+        );
+        // EXACTLY one event for the attempt (the refusal) ...
+        let events = store
+            .query(OperationalEventQuery {
+                kind: Some("worker.egress".into()),
+                ..Default::default()
+            })
+            .events;
+        assert_eq!(events.len(), 1, "one event per attempt, refusals included");
+        let event = &events[0];
+        assert_eq!(event.worker.as_deref(), Some("wasm-worker"));
+        assert_eq!(event.version.as_deref(), Some("1.0.0"));
+        assert_eq!(event.namespace.as_deref(), Some("ns"));
+        assert_eq!(event.process_id, None, "an empty process id is None");
+        assert_eq!(
+            event.request_id.as_deref(),
+            Some("req-wasm-1"),
+            "the host-provided id rides the event"
+        );
+        assert_eq!(event.outcome.as_deref(), Some("blocked"));
+        assert_eq!(event.code.as_deref(), Some(EGRESS_HOST_BLOCKED));
+        assert_eq!(event.status, Some(403));
+        // ... and exactly one metrics sample (the refusal: blocked=1, the
+        // other outcomes 0).
+        let rendered = egress_metrics_prometheus(&metrics);
+        for (outcome, count) in [
+            ("ok", 0),
+            ("blocked", 1),
+            ("error", 0),
+            ("timeout", 0),
+            ("limit", 0),
+        ] {
+            let line = format!(
+                "edger_egress_requests_total{{worker=\"wasm-worker\",outcome=\"{outcome}\"}} {count}"
+            );
+            assert!(rendered.contains(&line), "{line} missing");
         }
     }
 }

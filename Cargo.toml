@@ -48,6 +48,11 @@ sha2 = "0.10"
 # the cipher zeroize its internal key copy on drop (F4).
 chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 zeroize = "1"
-wasmtime = { version = "49.0.5", default-features = false, features = ["anyhow", "cranelift", "runtime", "std", "wat"] }
+wasmtime = { version = "49.0.5", default-features = false, features = ["anyhow", "cranelift", "runtime", "std", "wat", "async"] }
 wasmtime-wasi = { version = "49.0.5", default-features = false, features = ["p1"] }
 wat = "1.261"
+
+# Keep the Wasm JIT compiler fast in development builds, including Go
+# reactor fixtures. This does not change guest or release optimization.
+[profile.dev.package.cranelift-codegen]
+opt-level = 3

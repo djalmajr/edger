@@ -57,6 +57,63 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
 
 ### Added
 
+- Host-held SSE (EDG-55): a manifest `sse: {subscribe, publish, ttl,
+  maxConnections}` lets a worker authorize and publish in short executions
+  while the host keeps every browser connection, so no process slot, WASM
+  `Store` or task is held per subscriber. A guest authorizes a `GET` on a
+  `subscribe` route with `x-edger-sse-subscribe` and publishes with
+  `x-edger-sse-publish` directives on a `publish` route; the in-memory
+  per-process broker handles queues (64 events / 256 KiB per subscriber),
+  heartbeat, TTL with a `retry:` jitter and capacity. Variables
+  `EDGER_SSE_MAX_CONNECTIONS`, `EDGER_SSE_MAX_CONNECTIONS_PER_APP` and
+  `EDGER_SSE_HEARTBEAT_MS`; metrics `edger_sse_*`; examples `sse-deno` and
+  `sse-go-wasm`. Known limits: no history, replay or fan-out across replicas;
+  a client that stopped reading holds its capacity slot until its TCP
+  connection ends; revocation applies on the next reconnect (open
+  subscriptions end at their TTL); SSE error replies do not emit the
+  `dispatch` event. See `planning/edger/docs/sse.md`.
+- WASM HTTP and Go guests (EDG-52): the `edger_http_v1.fetch` import for WASM
+  modules (granted per execution through the egress guard or a private
+  service transport), a response capacity derived from `maxBodySize`, an
+  optional `_initialize` call for reactor modules, app secrets injected per
+  execution, and the stdlib-only `go-wasm-http` example. A `kind: wasm`
+  worker without `ttl` is ephemeral and recompiles its module on every
+  request (about 9 s per request on the dev profile with a 6.6 MB module; the
+  release cost was not measured), so declare `ttl` for Go guests. See
+  `planning/edger/docs/wasm-abi.md`.
+- Bounded HTTP drain on shutdown: `EDGER_HTTP_DRAIN_MS` (default `10000`, from
+  the signal; `0` waits without limit, as before; an invalid value warns and uses
+  the default) caps how long the HTTP server drains open connections. After the
+  limit the remaining connections die with the process, after a `warn`; cron and
+  the pool still shut down normally and the exit is successful. It applies to
+  every HTTP connection, not only SSE. The default budgets (drain 10 s, cron
+  7 s, pool up to 15 s, 32 s in total) exceed the Kubernetes default
+  `terminationGracePeriodSeconds` of 30 s, which the Helm chart does not set.
+  That sum is not a guaranteed ceiling: after aborting the cron supervisor the
+  process waits for it to end without a deadline.
+- On the short SSE execution path, a guest response cut by
+  `EDGER_STREAM_MAX_BYTES` counts as an unsuccessful execution: it neither
+  subscribes nor publishes, and a body of exactly that size is refused too. The
+  ordinary path keeps the clean cut.
+- WASM fullstack (EDG-53): `kind: fullstack` with `adapter: wasm`, `clientDir`
+  and `wasmBackend: {entrypoint, apiPrefix}` serves a SPA and a WASM API in
+  one package (the prefix is stripped before the guest); example
+  `go-wasm-fullstack`.
+- Managed SQLD database (EDG-54): the EdgeR manages one namespace per app on
+  an external `sqld` (it does not start one) through
+  `GET|PUT /api/admin/workers/{name}/database` and
+  `POST /api/admin/workers/{name}/database/backup`, with an immutable quota, a
+  sealed per-app signing key, a 12 h token renewed in the app vault as
+  `SQLD_TOKEN`, and a private host-authorized path for Deno and WASM apps.
+  Enabled by seven all-or-none variables `EDGER_SQLD_ADMIN_URL`,
+  `EDGER_SQLD_ADMIN_KEY_FILE`, `EDGER_SQLD_USER_URL`, `EDGER_SQLD_REGISTRY_DB`,
+  `EDGER_SQLD_SIGNER_KEY_FILE`, `EDGER_SQLD_MANAGED_BUDGET_BYTES` and
+  `EDGER_SQLD_BACKUP_DIR`; a partial set stops the boot. No restore route, no
+  delete route and no signing-key rotation. Token renewal inside a live
+  process is proven by component tests only (the binary proves renewal on the
+  next spawn), and the two-process race branch "stable 409 then 200" was not
+  exercised (both runs returned 200). The Helm chart does not expose these
+  variables. See `planning/edger/docs/sqld-managed.md`.
 - Console admin role (EDG-45, EDG-46, EDG-47): a non-root console user with
   role `admin`, signed in with a console session, manages the operators it
   covers (every permission, namespace and worker literally within its own,

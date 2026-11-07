@@ -30,6 +30,14 @@ pub enum WorkerError {
     // retirement (that path terminates + removes without surfacing an error).
     #[error("worker unavailable (no idle instance and process capacity reached)")]
     Retired,
+    #[error("completed execution refused: response not produced by the guest")]
+    CompletedNotGuest,
+    #[error("completed execution body exceeds the size limit")]
+    CompletedBodyTooLarge { limit: usize },
+    #[error("completed execution stream failed before a clean end")]
+    CompletedStreamFailed,
+    #[error("completed execution timed out")]
+    CompletedTimeout,
     #[error("isolation error: {0}")]
     Isolation(#[from] edger_core::IsolationError),
 }

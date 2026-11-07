@@ -4,8 +4,8 @@
 pela Story 17.F (`planning/edger/epics/17-edger-minimalista/06-deployment-k8s.md`).
 
 O chart vive em `charts/edger/` e segue o formato Rancher Apps & Marketplace com
-`questions.yaml`. Usa Deployment, Service, ConfigMap, Secrets opcionais, Ingress
-e HPA opcionais. Com `userWorkers.persistence.enabled`, os workers e o SQLite
+`questions.yaml`. Usa Deployment, Service, ConfigMap, Secrets opcionais (inclusive
+o cofre de segredos de apps, `appSecrets`), Ingress e HPA opcionais. Com `userWorkers.persistence.enabled`, os workers e o SQLite
 do plano de controle ficam no PVC RWO; o Deployment usa `Recreate` e uma
 réplica. Sem persistência, o estado local não sobrevive à substituição do Pod.
 
@@ -89,6 +89,71 @@ Limites (sem afirmação de produção):
   distribuir ainda.
 - Não assumir que `traffic`/allowlist já está publicado: sem política, vale o
   roteamento atual.
+
+## SSE, WASM e banco gerenciado
+
+Esta seção descreve o que muda para quem opera, a partir do que o chart expõe
+hoje. Os recursos abaixo estão implementados neste branch (EDG-52 a EDG-56), sem
+commit e sem release; nada aqui afirma que algum ambiente já os executa.
+
+**SSE mantido pelo host** ([sse.md](sse.md)). Três variáveis, lidas uma vez no
+boot, sem teto superior; valor inválido gera `warn` e usa o padrão:
+
+- `EDGER_SSE_MAX_CONNECTIONS` (padrão `1024`, total no processo; `0` mantém o
+  broker registrado mas desligado, e toda assinatura autorizada dá
+  `503 SSE_UNAVAILABLE`).
+- `EDGER_SSE_MAX_CONNECTIONS_PER_APP` (padrão `256`, mínimo `1`; teto sobre o
+  `sse.maxConnections` do manifest).
+- `EDGER_SSE_HEARTBEAT_MS` (padrão `15000`, mínimo `1000`; também é a
+  granularidade do TTL das assinaturas).
+
+O chart **não tem valor dedicado** para elas: hoje só chegam ao Pod por
+`extraEnv` ou `extraEnvFrom`. Para o operador, o que importa: o broker é por
+processo e o chart é de uma réplica, então não há fan-out entre pods; um cliente
+que parou de ler segura a vaga até o TCP acabar; e desabilitar ou apagar um worker
+não derruba assinaturas abertas (só o TTL delas). Métricas em `/metrics`:
+`edger_sse_connections`, `edger_sse_events_published_total`,
+`edger_sse_disconnects_total` e `edger_sse_rejected_total`.
+
+**Banco SQLD gerenciado** ([sqld-managed.md](sqld-managed.md)). O EdgeR gerencia
+namespaces de um `sqld` **externo**; o chart não inclui `sqld` e não expõe as sete
+variáveis `EDGER_SQLD_ADMIN_URL`, `EDGER_SQLD_ADMIN_KEY_FILE`,
+`EDGER_SQLD_USER_URL`, `EDGER_SQLD_REGISTRY_DB`, `EDGER_SQLD_SIGNER_KEY_FILE`,
+`EDGER_SQLD_MANAGED_BUDGET_BYTES` e `EDGER_SQLD_BACKUP_DIR`. Todas sem padrão e
+todas ou nenhuma: com parte delas, o `edger` não sobe. Além delas, o recurso
+exige o cofre de segredos (`appSecrets.enabled` com `appSecrets.keySecret.*`).
+Como o chart usa `readOnlyRootFilesystem` e não monta volumes para o ledger, as
+chaves e os backups (diretórios `0700` do usuário do processo), usar o recurso em
+Kubernetes pelo chart não é suportado hoje; é uma lacuna a fechar.
+Os manifestos de `deploy/production/sqld.yaml` mantêm o admin do `sqld` em
+`127.0.0.1:9090` dentro do pod dele, inalcançável pelo `edger`.
+
+**Segredos e egress já expostos pelo chart.** `appSecrets.*` vira
+`EDGER_APP_SECRETS_DB` e `EDGER_SECRETS_KEY_FILE` (a chave vem de um Secret
+existente, nunca do chart) e `egress.blockCidrs` vira `EDGER_EGRESS_BLOCK_CIDRS`
+(o IP do nó entra sozinho em `EDGER_NODE_IP`). O WASM usa os mesmos recursos:
+segredos por execução e o guard de egress pelo import `edger_http_v1.fetch`
+([wasm-abi.md](wasm-abi.md)).
+
+**Encerramento do Pod.** A parada do `edger` (SIGTERM) drena as conexões HTTP
+por no máximo `EDGER_HTTP_DRAIN_MS` (padrão `10000`, contado a partir do sinal;
+`0` desliga o limite e a espera volta a ser sem fim; valor inválido gera `warn` e
+vale o padrão). Ao expirar, as conexões que sobraram morrem com o processo, depois
+de um `warn`; o cron e o pool encerram normalmente e a saída é com sucesso. Vale
+para todas as conexões HTTP, não só o SSE. Os prazos padrão somam a drenagem
+(10 s), o cron (7 s: 5 de graça, 1 de abort e 1 de margem) e o pool (até 15 s), ou
+seja 32 s. Essa soma **não é um teto garantido**: depois de abortar o supervisor
+do cron, o processo espera ele terminar sem prazo, e uma passada de reconciliação
+em andamento não é interrompida pelo abort. O chart **não define**
+`terminationGracePeriodSeconds`, então vale o padrão de 30 s do Kubernetes,
+**menor** que essa soma: quando os prazos se esgotam, o kubelet envia SIGKILL antes
+de o `edger` terminar sozinho. Esta seção descreve a conta a partir
+do código; não houve teste em cluster. O chart não expõe a variável; ela só chega
+ao Pod por `extraEnv`.
+
+**WASM efêmero.** Um `kind: wasm` sem `ttl` recompila o módulo a cada pedido
+(cerca de 9 s no perfil `dev` com um módulo Go de 6,6 MB; release não medido).
+Declare `ttl` nos guests Go.
 
 ## Operação
 

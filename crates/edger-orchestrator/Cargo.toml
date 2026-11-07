@@ -74,6 +74,12 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"
 url = "2"
 webpki-roots = "1"
 jsonwebtoken = "9"
+# EDG-54: Ed25519 PKCS#8 generation/signing; the same ring already locked
+# through rustls. No new version or alternate cryptographic provider.
+ring = "0.17"
+# EDG-54: standard SPKI/PEM decoding of the remote Ed25519 public key.
+# Already locked through rsa/pkcs8; no new version or hand-written DER.
+spki = { version = "0.7.3", features = ["pem"] }
 uuid.workspace = true
 rusqlite.workspace = true
 sha2.workspace = true
@@ -82,6 +88,9 @@ sha2.workspace = true
 # dependency via rustls; promoted to direct here, no new lock entry).
 chacha20poly1305.workspace = true
 zeroize.workspace = true
+# EDG-54: constant-time comparison of the signer master against the vault master;
+# 2.6.1 is already locked (transitive), promoted to a direct dependency.
+subtle = "=2.6.1"
 semver.workspace = true
 zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 base64 = "0.23"
@@ -91,7 +100,7 @@ tempfile = "3"
 # EDG-40: the files upload writes through directory descriptors (`openat` with
 # `O_NOFOLLOW` and the other `*at` calls); already in Cargo.lock via tempfile.
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1", features = ["fs"] }
+rustix = { version = "1", features = ["fs", "process"] }
 
 [dev-dependencies]
 base64 = "0.23"
