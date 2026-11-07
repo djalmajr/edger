@@ -1,9 +1,9 @@
 //! Normalized worker configuration and parsers.
 
-use crate::execution::{normalize_fullstack_adapter, ExecutionKind};
+use crate::execution::{normalize_fullstack_adapter, ExecutionKind, WASM_FULLSTACK_ADAPTER};
 use crate::manifest::{
-    DenoCacheMode, DurationValue, EgressManifest, WorkerHealthCheckMode, WorkerIsolation,
-    WorkerManifest, WorkerVisibility,
+    DenoCacheMode, DurationValue, EgressManifest, SseManifest, WorkerHealthCheckMode,
+    WorkerIsolation, WorkerManifest, WorkerVisibility,
 };
 
 /// Runtime-normalized worker configuration.
@@ -36,6 +36,9 @@ pub struct WorkerConfig {
     /// declares `egress.enabled: true`; every default is resolved here, so
     /// the guard (S2) never sees an unset field.
     pub egress: Option<EgressSettings>,
+    /// Host-held SSE settings (EDG-55): present whenever the manifest
+    /// declares `sse`; every default is resolved here.
+    pub sse: Option<SseSettings>,
     /// App secret names (EDG-38), from the manifest `secrets`; the values
     /// are injected from the EdgeR vault into the worker's `env` at spawn.
     pub secrets: Vec<String>,
@@ -114,6 +117,123 @@ pub struct EgressSettings {
     pub max_concurrent: u32,
 }
 
+/// Normalized host-held SSE settings (EDG-55), present in the `WorkerConfig`
+/// whenever the manifest declares `sse`. The manifest validation rejected
+/// every invalid value earlier; the fallbacks only cover absent fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SseSettings {
+    /// Maximum simultaneous subscribers of this app (the host ceiling is
+    /// applied by the broker, not here).
+    pub max_connections: u32,
+    /// Routes that accept `publish` directives.
+    pub publish: Vec<SseRoutePattern>,
+    /// Routes that open a subscription.
+    pub subscribe: Vec<SseRoutePattern>,
+    /// Subscription lifetime before the client is told to reconnect.
+    pub ttl_ms: u64,
+}
+
+/// Why an SSE route was refused. The messages are static and never echo the
+/// input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SseRoutePatternError {
+    /// Empty route, or one that does not start with `/`.
+    NotAbsolute,
+    /// Control character (including DEL).
+    ControlCharacter,
+    /// One of `%`, `?`, `#`.
+    ForbiddenCharacter,
+    /// `*` anywhere but the final `/*`.
+    MisplacedWildcard,
+    /// A `:param` segment.
+    ParamSegment,
+}
+
+impl SseRoutePatternError {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::NotAbsolute => "sse routes must start with /",
+            Self::ControlCharacter => "sse routes must not contain control characters",
+            Self::ForbiddenCharacter => "sse routes must not contain %, ? or #",
+            Self::MisplacedWildcard => "sse routes may use * only as the final /* segment",
+            Self::ParamSegment => "sse routes must not use :param segments",
+        }
+    }
+}
+
+/// A worker-relative SSE route (EDG-55). Without `*` it matches by equality;
+/// a final `/*` matches by whole segments (`/a/*` matches `/a/b` and
+/// `/a/b/c`, never `/a`, `/a/` or `/ab`). The path is compared as received,
+/// without percent-decoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SseRoutePattern {
+    /// Literal route, or for a wildcard the prefix including its final `/`.
+    base: String,
+    wildcard: bool,
+}
+
+impl SseRoutePattern {
+    pub fn parse(input: &str) -> Result<Self, SseRoutePatternError> {
+        if !input.starts_with('/') {
+            return Err(SseRoutePatternError::NotAbsolute);
+        }
+        if input.chars().any(char::is_control) {
+            return Err(SseRoutePatternError::ControlCharacter);
+        }
+        if input.contains(['%', '?', '#']) {
+            return Err(SseRoutePatternError::ForbiddenCharacter);
+        }
+        let (literal, wildcard) = match input.strip_suffix("/*") {
+            Some(head) => (head, true),
+            None => (input, false),
+        };
+        if literal.contains('*') {
+            return Err(SseRoutePatternError::MisplacedWildcard);
+        }
+        if literal.split('/').any(|segment| segment.starts_with(':')) {
+            return Err(SseRoutePatternError::ParamSegment);
+        }
+        let base = if wildcard {
+            format!("{literal}/")
+        } else {
+            literal.to_string()
+        };
+        Ok(Self { base, wildcard })
+    }
+
+    /// Pure match of an already worker-relative, still percent-encoded path.
+    pub fn matches(&self, path: &str) -> bool {
+        if self.wildcard {
+            path.len() > self.base.len() && path.starts_with(&self.base)
+        } else {
+            path == self.base
+        }
+    }
+
+    /// Whether every path this route can match lies under `prefix` (a
+    /// canonical API prefix such as `/api`), by whole segments.
+    pub fn is_under(&self, prefix: &str) -> bool {
+        let literal = if self.wildcard {
+            &self.base[..self.base.len() - 1]
+        } else {
+            self.base.as_str()
+        };
+        literal == prefix
+            || literal
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('/'))
+    }
+
+    /// The route as written in the manifest.
+    pub fn to_route_string(&self) -> String {
+        if self.wildcard {
+            format!("{}*", self.base)
+        } else {
+            self.base.clone()
+        }
+    }
+}
+
 /// Normalized opt-in process warmup (EDG-15).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerWarmupConfig {
@@ -130,6 +250,39 @@ pub struct FullstackConfig {
     pub client_dir: Option<String>,
     pub asset_prefixes: Vec<String>,
     pub base_path: FullstackBasePath,
+    /// Normalized WASM backend (EDG-53); `Some` only for `adapter: wasm`
+    /// with a complete `wasmBackend` manifest object.
+    pub wasm_backend: Option<WasmBackendConfig>,
+}
+
+/// Normalized `wasmBackend` of a fullstack SPA (EDG-53). Values come from a
+/// manifest that already passed `validate_worker_manifest`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WasmBackendConfig {
+    pub entrypoint: String,
+    pub api_prefix: String,
+}
+
+impl WasmBackendConfig {
+    /// Pure per-segment API predicate over a request *pathname* (no query):
+    /// `/api` and `/api/...` match, `/apix` does not.
+    pub fn is_api_path(&self, path: &str) -> bool {
+        self.strip_api_prefix(path).is_some()
+    }
+
+    /// Pathname handed to the WASM handler: the prefix is removed and `/api`
+    /// becomes `/`. `None` when `path` is outside the API prefix. Query and
+    /// other request fields are the caller's; no HTTP parsing happens here.
+    pub fn strip_api_prefix<'a>(&self, path: &'a str) -> Option<&'a str> {
+        let rest = path.strip_prefix(self.api_prefix.as_str())?;
+        if rest.is_empty() {
+            Some("/")
+        } else if rest.starts_with('/') {
+            Some(rest)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,15 +424,34 @@ pub fn fullstack_config_from_manifest(manifest: &WorkerManifest) -> Option<Fulls
             .collect()
     };
 
+    // The WASM adapter keeps its backend in `wasmBackend`; the top-level
+    // `entrypoint`/`ssrEntrypoint` are never converted into an SSR JS entry.
+    let is_wasm = adapter == WASM_FULLSTACK_ADAPTER;
+    let wasm_backend = if is_wasm {
+        manifest.wasm_backend.as_ref().and_then(|backend| {
+            Some(WasmBackendConfig {
+                entrypoint: backend.entrypoint.clone()?,
+                api_prefix: backend.api_prefix.clone()?,
+            })
+        })
+    } else {
+        None
+    };
+
     Some(FullstackConfig {
         adapter,
-        ssr_entrypoint: manifest
-            .ssr_entrypoint
-            .clone()
-            .or_else(|| manifest.entrypoint.clone()),
+        ssr_entrypoint: if is_wasm {
+            None
+        } else {
+            manifest
+                .ssr_entrypoint
+                .clone()
+                .or_else(|| manifest.entrypoint.clone())
+        },
         client_dir: manifest.client_dir.clone(),
         asset_prefixes,
         base_path: normalize_fullstack_base_path(manifest.base_path.as_deref()),
+        wasm_backend,
     })
 }
 
@@ -425,6 +597,34 @@ fn normalize_egress(manifest: &EgressManifest) -> Option<EgressSettings> {
             .max_concurrent
             .unwrap_or(DEFAULT_EGRESS_MAX_CONCURRENT),
     })
+}
+
+// SSE defaults (EDG-55): 5 min subscription lifetime, 256 subscribers per app.
+pub const DEFAULT_SSE_TTL_MS: u64 = 300_000;
+pub const DEFAULT_SSE_MAX_CONNECTIONS: u32 = 256;
+
+/// Normalize the manifest `sse` field: present whenever declared; absent
+/// fields resolve to the defaults (invalid values are rejected by the
+/// manifest validation before this runs, so an unparseable route is dropped
+/// here only defensively).
+fn normalize_sse(manifest: &SseManifest) -> SseSettings {
+    let routes = |list: &[String]| {
+        list.iter()
+            .filter_map(|route| SseRoutePattern::parse(route).ok())
+            .collect::<Vec<_>>()
+    };
+    SseSettings {
+        max_connections: manifest
+            .max_connections
+            .unwrap_or(DEFAULT_SSE_MAX_CONNECTIONS),
+        publish: routes(&manifest.publish),
+        subscribe: routes(&manifest.subscribe),
+        ttl_ms: manifest
+            .ttl
+            .as_ref()
+            .and_then(parse_duration_to_ms)
+            .unwrap_or(DEFAULT_SSE_TTL_MS),
+    }
 }
 
 pub fn effective_max_body_size_bytes(config: &WorkerConfig) -> u64 {
@@ -604,6 +804,7 @@ pub fn parse_worker_config(manifest: &WorkerManifest) -> WorkerConfig {
             .map(normalize_allow_net)
             .or_else(|| manifest.allow_net.as_ref().map(|_| Vec::new())),
         egress: manifest.egress.as_ref().and_then(normalize_egress),
+        sse: manifest.sse.as_ref().map(normalize_sse),
         secrets: manifest.secrets.clone().unwrap_or_default(),
         ttl_ms,
         stream_max_duration_ms,
@@ -853,5 +1054,310 @@ env:
         );
         assert_eq!(parse_size_to_bytes("18446744073709551615"), Some(u64::MAX));
         assert_eq!(parse_size_to_bytes("18446744073709551615b"), Some(u64::MAX));
+    }
+}
+
+#[cfg(test)]
+mod wasm_backend_config_tests {
+    use super::*;
+
+    fn parse(yaml: &str) -> WorkerManifest {
+        serde_saphyr::from_str_with_options(
+            yaml,
+            serde_saphyr::options! {
+                strict_booleans: true,
+                merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+                duplicate_keys: serde_saphyr::DuplicateKeyPolicy::LastWins,
+                with_snippet: false,
+            },
+        )
+        .expect("the yaml parses")
+    }
+
+    const WASM_YAML: &str = r#"
+name: spa-wasm
+version: "1.0.0"
+kind: fullstack
+adapter: wasm
+clientDir: dist
+wasmBackend:
+  entrypoint: backend/index.wasm
+  apiPrefix: /rpc/v1
+"#;
+
+    fn backend(prefix: &str) -> WasmBackendConfig {
+        WasmBackendConfig {
+            entrypoint: "backend/index.wasm".into(),
+            api_prefix: prefix.into(),
+        }
+    }
+
+    #[test]
+    fn yaml_manifest_normalizes_to_fullstack_wasm_with_custom_prefix() {
+        let manifest = parse(WASM_YAML);
+        crate::worker_ref::validate_worker_manifest(&manifest).expect("valid");
+        let config = parse_worker_config(&manifest);
+        assert_eq!(
+            config.kind,
+            Some(ExecutionKind::Fullstack {
+                adapter: "wasm".into()
+            })
+        );
+        let fullstack = config.fullstack.expect("fullstack config");
+        assert_eq!(fullstack.adapter, "wasm");
+        assert_eq!(fullstack.client_dir.as_deref(), Some("dist"));
+        assert_eq!(fullstack.wasm_backend, Some(backend("/rpc/v1")));
+        assert_eq!(fullstack.ssr_entrypoint, None);
+        assert!(fullstack.asset_prefixes.is_empty());
+        // The nested entrypoint is not turned into a JS/SSR entrypoint.
+        assert_eq!(config.entrypoint, None);
+        assert!(!config.kind.expect("kind").uses_process_backend());
+    }
+
+    #[test]
+    fn top_level_entrypoints_are_not_inferred_as_the_wasm_backend() {
+        let manifest = parse(
+            r#"
+name: spa-wasm
+kind: fullstack
+adapter: wasm
+clientDir: dist
+entrypoint: index.html
+ssrEntrypoint: server/entry.js
+wasmBackend:
+  entrypoint: backend/index.wasm
+  apiPrefix: /api
+"#,
+        );
+        let fullstack = fullstack_config_from_manifest(&manifest).expect("fullstack");
+        assert_eq!(fullstack.ssr_entrypoint, None);
+        assert_eq!(
+            fullstack
+                .wasm_backend
+                .as_ref()
+                .map(|b| b.entrypoint.as_str()),
+            Some("backend/index.wasm")
+        );
+    }
+
+    #[test]
+    fn manifest_serde_round_trip_keeps_the_wasm_backend_camel_case() {
+        let manifest = parse(WASM_YAML);
+        let json = serde_json::to_value(&manifest).expect("serialize");
+        assert_eq!(
+            json["wasmBackend"],
+            serde_json::json!({"entrypoint": "backend/index.wasm", "apiPrefix": "/rpc/v1"})
+        );
+        let back: WorkerManifest = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, manifest);
+    }
+
+    #[test]
+    fn unknown_wasm_backend_field_is_a_parse_error() {
+        let result: Result<WorkerManifest, _> = serde_json::from_str(
+            r#"{"name":"x","wasmBackend":{"entrypoint":"a.wasm","apiPrefix":"/api","extra":1}}"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn js_fullstack_and_absent_wasm_backend_are_unchanged() {
+        let manifest = parse(
+            r#"
+name: next-app
+kind: fullstack
+adapter: nextjs
+ssrEntrypoint: server.js
+clientDir: static
+"#,
+        );
+        crate::worker_ref::validate_worker_manifest(&manifest).expect("valid");
+        let fullstack = fullstack_config_from_manifest(&manifest).expect("fullstack");
+        assert_eq!(fullstack.adapter, "nextjs");
+        assert_eq!(fullstack.ssr_entrypoint.as_deref(), Some("server.js"));
+        assert_eq!(fullstack.wasm_backend, None);
+        let config = parse_worker_config(&manifest);
+        assert_eq!(config.entrypoint.as_deref(), Some("server.js"));
+        assert!(config.kind.expect("kind").uses_process_backend());
+    }
+
+    #[test]
+    fn api_prefix_matches_by_segment_not_by_string_prefix() {
+        let api = backend("/api");
+        assert!(api.is_api_path("/api"));
+        assert!(api.is_api_path("/api/"));
+        assert!(api.is_api_path("/api/users/1"));
+        assert!(!api.is_api_path("/apix"));
+        assert!(!api.is_api_path("/apix/users"));
+        assert!(!api.is_api_path("/ap"));
+        assert!(!api.is_api_path("/"));
+        assert!(!api.is_api_path("/other/api"));
+        assert!(!api.is_api_path("api"));
+        let rpc = backend("/rpc/v1");
+        assert!(rpc.is_api_path("/rpc/v1/x"));
+        assert!(!rpc.is_api_path("/rpc"));
+        assert!(!rpc.is_api_path("/rpc/v10"));
+    }
+
+    #[test]
+    fn api_prefix_is_stripped_for_the_wasm_handler() {
+        let api = backend("/api");
+        assert_eq!(api.strip_api_prefix("/api"), Some("/"));
+        assert_eq!(api.strip_api_prefix("/api/"), Some("/"));
+        assert_eq!(api.strip_api_prefix("/api/users/1"), Some("/users/1"));
+        assert_eq!(api.strip_api_prefix("/apix"), None);
+        assert_eq!(api.strip_api_prefix("/static/app.js"), None);
+        assert_eq!(backend("/rpc/v1").strip_api_prefix("/rpc/v1/a"), Some("/a"));
+    }
+}
+
+#[cfg(test)]
+mod sse_tests {
+    use super::*;
+
+    fn pattern(input: &str) -> SseRoutePattern {
+        SseRoutePattern::parse(input).expect("valid sse route")
+    }
+
+    #[test]
+    fn exact_route_matches_only_the_same_path() {
+        let route = pattern("/api/events");
+        assert!(route.matches("/api/events"));
+        assert!(!route.matches("/api/events/"));
+        assert!(!route.matches("/api/events/x"));
+        assert!(!route.matches("/api/event"));
+        assert!(!route.matches("/API/events"));
+        assert!(!route.matches("/api/events?x=1"));
+        assert!(pattern("/").matches("/"));
+        assert!(!pattern("/").matches("/a"));
+    }
+
+    #[test]
+    fn wildcard_route_matches_by_whole_segments() {
+        let route = pattern("/a/*");
+        assert!(route.matches("/a/b"));
+        assert!(route.matches("/a/b/c"));
+        assert!(route.matches("/a/b/"));
+        assert!(!route.matches("/a"));
+        assert!(!route.matches("/a/"));
+        assert!(!route.matches("/ab"));
+        assert!(!route.matches("/ab/c"));
+        assert!(!route.matches("/b/a/c"));
+        let root = pattern("/*");
+        assert!(root.matches("/x"));
+        assert!(root.matches("/x/y"));
+        assert!(!root.matches("/"));
+    }
+
+    #[test]
+    fn routes_are_matched_without_percent_decoding() {
+        let route = pattern("/a/b");
+        assert!(!route.matches("/a%2Fb"));
+        assert!(!route.matches("/%61/b"));
+        assert!(!pattern("/a/*").matches("/a%2Fb"));
+    }
+
+    #[test]
+    fn every_invalid_route_form_is_refused_with_a_static_message() {
+        let cases: [(&str, SseRoutePatternError); 16] = [
+            ("", SseRoutePatternError::NotAbsolute),
+            ("api", SseRoutePatternError::NotAbsolute),
+            (" /api", SseRoutePatternError::NotAbsolute),
+            ("/a\nb", SseRoutePatternError::ControlCharacter),
+            ("/a\0b", SseRoutePatternError::ControlCharacter),
+            ("/a\u{7f}b", SseRoutePatternError::ControlCharacter),
+            ("/a\tb", SseRoutePatternError::ControlCharacter),
+            ("/a%2Fb", SseRoutePatternError::ForbiddenCharacter),
+            ("/a?x=1", SseRoutePatternError::ForbiddenCharacter),
+            ("/a#frag", SseRoutePatternError::ForbiddenCharacter),
+            ("*", SseRoutePatternError::NotAbsolute),
+            ("/a*", SseRoutePatternError::MisplacedWildcard),
+            ("/a/*/b", SseRoutePatternError::MisplacedWildcard),
+            ("/a/**", SseRoutePatternError::MisplacedWildcard),
+            ("/*/a", SseRoutePatternError::MisplacedWildcard),
+            ("/a/:id", SseRoutePatternError::ParamSegment),
+        ];
+        for (input, expected) in cases {
+            let error = SseRoutePattern::parse(input).expect_err(input);
+            assert_eq!(error, expected, "{input:?}");
+        }
+        assert_eq!(
+            SseRoutePattern::parse("/:id/*").expect_err("param before wildcard"),
+            SseRoutePatternError::ParamSegment
+        );
+    }
+
+    #[test]
+    fn route_is_under_an_api_prefix_by_segment() {
+        assert!(pattern("/api").is_under("/api"));
+        assert!(pattern("/api/events").is_under("/api"));
+        assert!(pattern("/api/*").is_under("/api"));
+        assert!(pattern("/rpc/v1/x").is_under("/rpc/v1"));
+        assert!(!pattern("/apix").is_under("/api"));
+        assert!(!pattern("/apix/*").is_under("/api"));
+        assert!(!pattern("/events").is_under("/api"));
+        assert!(!pattern("/ap/*").is_under("/api"));
+        assert!(!pattern("/api").is_under("/api/v1"));
+        assert!(!pattern("/*").is_under("/api"));
+    }
+
+    #[test]
+    fn route_round_trips_to_its_manifest_form() {
+        assert_eq!(pattern("/a/b").to_route_string(), "/a/b");
+        assert_eq!(pattern("/a/*").to_route_string(), "/a/*");
+        assert_eq!(pattern("/*").to_route_string(), "/*");
+    }
+
+    fn manifest(yaml: &str) -> WorkerManifest {
+        serde_saphyr::from_str(yaml).expect("the manifest yaml parses")
+    }
+
+    #[test]
+    fn manifest_without_sse_has_no_sse_settings() {
+        let config = parse_worker_config(&manifest("name: plain\nentrypoint: index.ts\n"));
+        assert_eq!(config.sse, None);
+    }
+
+    #[test]
+    fn sse_defaults_resolve_in_the_normalized_config() {
+        let config = parse_worker_config(&manifest(
+            "name: hub\nentrypoint: index.ts\nsse:\n  subscribe: [\"/api/events\"]\n",
+        ));
+        assert_eq!(
+            config.sse,
+            Some(SseSettings {
+                max_connections: 256,
+                publish: vec![],
+                subscribe: vec![pattern("/api/events")],
+                ttl_ms: 300_000,
+            })
+        );
+    }
+
+    #[test]
+    fn sse_present_fields_override_the_defaults() {
+        let config = parse_worker_config(&manifest(
+            "name: hub\nentrypoint: index.ts\nsse:\n  subscribe: [\"/s\"]\n  publish: [\"/api/rooms/*\", \"/p\"]\n  ttl: 90s\n  maxConnections: 12\n",
+        ));
+        let sse = config.sse.expect("sse");
+        assert_eq!(sse.subscribe, vec![pattern("/s")]);
+        assert_eq!(sse.publish, vec![pattern("/api/rooms/*"), pattern("/p")]);
+        assert_eq!(sse.ttl_ms, 90_000);
+        assert_eq!(sse.max_connections, 12);
+    }
+
+    #[test]
+    fn sse_ttl_accepts_the_same_forms_as_the_worker_ttl() {
+        for (ttl, expected) in [
+            ("30", 30_000),
+            ("5s", 5_000),
+            ("2m", 120_000),
+            ("1h", 3_600_000),
+        ] {
+            let config = parse_worker_config(&manifest(&format!(
+                "name: hub\nentrypoint: index.ts\nsse:\n  subscribe: [\"/s\"]\n  ttl: {ttl}\n"
+            )));
+            assert_eq!(config.sse.expect("sse").ttl_ms, expected, "{ttl}");
+        }
     }
 }

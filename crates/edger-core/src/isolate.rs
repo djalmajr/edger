@@ -93,6 +93,17 @@ pub trait Isolate: Send + Sync {
             .map(WorkerResponse::Buffered)
     }
 
+    /// Host-held truncation mark of the buffered calls since the last time it
+    /// was taken (EDG-55): `true` when the host itself cut a response body at
+    /// its byte cap (`EDGER_STREAM_MAX_BYTES`) while buffering it for
+    /// `execute_fetch` / `execute_routes`. The mark is never derived from the
+    /// guest response, so a guest cannot forge or erase it. Reading it clears
+    /// it. The default is `false`: a backend that cannot truncate needs no
+    /// override, and a wrapper around a backend that can MUST forward it.
+    fn take_response_truncation(&mut self) -> bool {
+        false
+    }
+
     async fn notify_idle(&mut self) -> Result<(), IsolationError> {
         Ok(())
     }

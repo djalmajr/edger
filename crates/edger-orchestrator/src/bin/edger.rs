@@ -30,6 +30,8 @@
 //!   default `<primeiro diretório de workers>/.edger/app-secrets.db`) — o
 //!   valor dos segredos fica cifrado (ChaCha20-Poly1305) com a chave mestra
 //!   abaixo e é injetado só no env do processo do worker que declara o nome
+//!   (ou, nos workers WASM — EDG-52 — só no WASI env do Store fresco de
+//!   cada request daquele worker)
 //! - `EDGER_SECRETS_KEY_FILE` — chave mestra do cofre de segredos (EDG-38):
 //!   32 bytes em base64 ou crus. Sem ela o cofre fica INDISPONÍVEL: as rotas
 //!   de segredos respondem 503 `SECRETS_UNAVAILABLE`, nada é injetado e um
@@ -44,10 +46,13 @@ use anyhow::Context;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[path = "edger/managed_database_boot.rs"]
+mod managed_database_boot;
+
 use edger_core::ExecutionKind;
 use edger_isolation::{
     ConsoleLogContext, ConsoleLogSender, ConsoleStream, DenoFacade, DenoIsolate,
-    DenoProcessIsolate, StreamDetachBudget, WasiConfig, WasmIsolate,
+    DenoProcessIsolate, StreamDetachBudget,
 };
 use edger_orchestrator::compression::{CompressionConfig, MIN_COMPRESSIBLE_BYTES};
 use edger_orchestrator::observability::{
@@ -55,10 +60,10 @@ use edger_orchestrator::observability::{
 };
 use edger_orchestrator::tenant_identity::TenantIdentityClient;
 use edger_orchestrator::{
-    bind_ip_from_env, build_pipeline, init_tracing_from_env, load_manifests_from_roots,
-    parse_runtime_worker_dirs, port_from_env, prewarm_min_process_workers,
-    run_pending_releases_with_events, serve, ControlAuth, CronScheduler, CronSchedulerConfig,
-    OrchestratorState, ServerConfig, ServerState,
+    assemble_wasm_isolate, bind_ip_from_env, build_pipeline, init_tracing_from_env,
+    load_manifests_from_roots, parse_runtime_worker_dirs, port_from_env,
+    prewarm_min_process_workers, run_pending_releases_with_events, serve, ControlAuth,
+    CronScheduler, CronSchedulerConfig, OrchestratorState, ServerConfig, ServerState,
 };
 use edger_worker::{
     IsolateFactory, LifecycleEventSender, PoolConfig, WorkerLifecycleEvent,
@@ -82,11 +87,15 @@ struct RuntimeIsolateFactory {
     /// daqui — `None` = cofre indisponível (nada é injetado; um warn por
     /// worker e nome).
     app_secret_resolver: Option<Arc<dyn edger_core::AppSecretResolver>>,
-    /// (EDG-38) Egress guard: ONE service for the whole `edger` process
-    /// (the per-version concurrency limit and the metrics are shared by all
-    /// the processes of a version). The process backend hands it one
-    /// listener per worker process of a version with `egress.enabled`.
-    egress_sink: Arc<dyn edger_isolation::EgressListenerSink>,
+    /// (EDG-38/EDG-52) Egress guard: ONE service for the whole `edger`
+    /// process (the per-version concurrency limit and the metrics are
+    /// shared by all the processes of a version). The process backend
+    /// hands it one listener per worker process of a version with
+    /// `egress.enabled` (the typed `Arc` coerces to the sink); the WASM
+    /// backend binds the SAME instance as the guest HTTP transport of
+    /// the `edger_http_v1.fetch` import (EDG-52 07c).
+    egress_guard: Arc<edger_orchestrator::EgressGuard>,
+    managed: Option<edger_orchestrator::sqld_managed_config::SqldManagedEnabled>,
 }
 
 /// `EDGER_STREAM_DETACH_MAX_BYTES` default: 8 MiB per-response buffered tail.
@@ -95,6 +104,41 @@ const DEFAULT_STREAM_DETACH_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_STREAM_DETACH_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 /// `EDGER_STREAM_MAX_DURATION_MS` default: five minutes per streamed response.
 const DEFAULT_STREAM_MAX_DURATION_MS: u64 = 300_000;
+
+/// `EDGER_HTTP_DRAIN_MS` default: ten seconds for the HTTP server to finish
+/// its in-flight connections after the shutdown signal.
+const DEFAULT_HTTP_DRAIN_MS: u64 = 10_000;
+
+/// The HTTP drain limit from the raw `EDGER_HTTP_DRAIN_MS` value (EDG-55):
+/// unset is the default, `0` disables the limit (`None`: wait as long as it
+/// takes), a number is milliseconds. The flag is true when the value was
+/// invalid (non-numeric, negative, empty) and the default was used instead.
+fn http_drain_limit(raw: Option<&str>) -> (Option<std::time::Duration>, bool) {
+    let (millis, invalid) = match raw {
+        None => (DEFAULT_HTTP_DRAIN_MS, false),
+        Some(value) => match value.trim().parse::<u64>() {
+            Ok(parsed) => (parsed, false),
+            Err(_) => (DEFAULT_HTTP_DRAIN_MS, true),
+        },
+    };
+    let limit = (millis > 0).then(|| std::time::Duration::from_millis(millis));
+    (limit, invalid)
+}
+
+/// Read `EDGER_HTTP_DRAIN_MS`; an invalid value logs a `warn` and uses the
+/// default, like `EDGER_STREAM_MAX_DURATION_MS`.
+fn http_drain_limit_from_env() -> Option<std::time::Duration> {
+    let raw = std::env::var("EDGER_HTTP_DRAIN_MS").ok();
+    let (limit, invalid) = http_drain_limit(raw.as_deref());
+    if invalid {
+        tracing::warn!(
+            var = "EDGER_HTTP_DRAIN_MS",
+            default = DEFAULT_HTTP_DRAIN_MS,
+            "invalid EDGER_HTTP_DRAIN_MS; using the default"
+        );
+    }
+    limit
+}
 
 /// Parse a detach-bytes env var: invalid values (including empty or negative
 /// text) fall back to the default with a warning; `0` is a valid disable.
@@ -115,7 +159,8 @@ impl RuntimeIsolateFactory {
     fn from_env(
         console_sender: Option<ConsoleLogSender>,
         app_secrets: Option<Arc<edger_orchestrator::app_secrets::AppSecretVault>>,
-        egress_sink: Arc<dyn edger_isolation::EgressListenerSink>,
+        egress_guard: Arc<edger_orchestrator::EgressGuard>,
+        managed: Option<edger_orchestrator::sqld_managed_config::SqldManagedEnabled>,
     ) -> Self {
         let js_uses_process = std::env::var("EDGER_JS_RUNTIME")
             .map(|value| !value.trim().eq_ignore_ascii_case("bridge"))
@@ -153,25 +198,56 @@ impl RuntimeIsolateFactory {
             stream_max_duration_ms,
             app_secret_resolver: app_secrets
                 .map(|vault| -> Arc<dyn edger_core::AppSecretResolver> { vault }),
-            egress_sink,
+            egress_guard,
+            managed,
         }
+    }
+}
+
+/// Kinds whose backend is the WASM isolate: the plain `wasm` module and the
+/// fullstack kind with `adapter: wasm` (EDG-53 11b).
+fn uses_wasm_assembly(kind: &ExecutionKind) -> bool {
+    match kind {
+        ExecutionKind::WasmModule { .. } => true,
+        ExecutionKind::Fullstack { adapter } => {
+            adapter == edger_core::execution::WASM_FULLSTACK_ADAPTER
+        }
+        _ => false,
     }
 }
 
 impl IsolateFactory for RuntimeIsolateFactory {
     fn create_isolate(&self, worker_ref: &edger_core::WorkerRef) -> Box<dyn edger_core::Isolate> {
-        match worker_ref.kind {
-            ExecutionKind::WasmModule { .. } => {
-                if worker_ref.config.egress.is_some() {
-                    edger_isolation::warn_egress_unavailable_once(
-                        &worker_ref.name,
-                        &worker_ref.version,
-                        "wasm workers have no egress guard (only the persistent process runtime serves it)",
+        match &worker_ref.kind {
+            // (EDG-53 11b) `WasmModule` and `fullstack` + `adapter: wasm` take
+            // this ONE assembly with the SAME `WorkerRef` (never converted to
+            // another kind): for the fullstack kind the pipeline hands the
+            // isolate only the API calls (already converted to the WASM
+            // entrypoint by the fullstack dispatch) and no JS process is
+            // spawned. The ten JS/TS adapters keep their process backend below.
+            kind if uses_wasm_assembly(kind) => {
+                if let Some(managed) = &self.managed {
+                    return Box::new(
+                        edger_orchestrator::managed_database_isolate::ManagedDatabaseIsolate::wasm(
+                            worker_ref,
+                            Arc::clone(managed.service()),
+                            Arc::clone(&self.egress_guard),
+                            managed.data_origin(),
+                        ),
                     );
                 }
-                Box::new(WasmIsolate::new(WasiConfig::from_worker_config(
-                    &worker_ref.config,
-                )))
+                // (EDG-52 07c) the shared factory assembly: this branch and
+                // the integration tests run the SAME code — the app secrets
+                // binding with the trusted `WorkerRef` identity and the
+                // egress guard as the guest HTTP transport, bound only with
+                // the per-call grant AND this process's guard instance. The
+                // `Box::new` is only the factory's type erasure of the
+                // concrete isolate the shared assembly returns.
+                Box::new(assemble_wasm_isolate(
+                    worker_ref,
+                    self.app_secret_resolver.as_ref().map(Arc::clone),
+                    Some(Arc::clone(&self.egress_guard)),
+                ))
             }
             _ if self.js_uses_process => {
                 let isolate = match self.console_sender.as_ref() {
@@ -198,26 +274,36 @@ impl IsolateFactory for RuntimeIsolateFactory {
                 // variáveis só existem quando o backend consegue abrir o
                 // listener daquele processo.
                 let isolate = isolate.with_egress(
-                    Arc::clone(&self.egress_sink),
+                    self.egress_guard.clone(),
                     worker_ref.name.clone(),
                     worker_ref.version.clone(),
                     worker_ref.namespace.clone(),
                 );
-                Box::new(
-                    isolate
-                        .with_stream_detach(
-                            self.stream_detach_max_bytes,
-                            Arc::clone(&self.stream_detach_budget),
-                        )
-                        // EDG-9: on consumer loss, drain the abandoned response
-                        // (discard-mode to a clean end frame) instead of
-                        // poisoning the socket and recycling the process.
-                        .with_abandon_drain_limits(
-                            self.abandon_drain_max_bytes,
-                            self.abandon_drain_max_ms,
-                        )
-                        .with_stream_max_duration_default_ms(self.stream_max_duration_ms),
-                )
+                let isolate = isolate
+                    .with_stream_detach(
+                        self.stream_detach_max_bytes,
+                        Arc::clone(&self.stream_detach_budget),
+                    )
+                    // EDG-9: on consumer loss, drain the abandoned response
+                    // (discard-mode to a clean end frame) instead of
+                    // poisoning the socket and recycling the process.
+                    .with_abandon_drain_limits(
+                        self.abandon_drain_max_bytes,
+                        self.abandon_drain_max_ms,
+                    )
+                    .with_stream_max_duration_default_ms(self.stream_max_duration_ms);
+                match &self.managed {
+                    Some(managed) => Box::new(
+                        edger_orchestrator::managed_database_isolate::ManagedDatabaseIsolate::deno(
+                            isolate,
+                            worker_ref,
+                            Arc::clone(managed.service()),
+                            Arc::clone(&self.egress_guard),
+                            managed.data_origin(),
+                        ),
+                    ),
+                    None => Box::new(isolate),
+                }
             }
             _ => {
                 // (EDG-38) modo bridge (legacy emergency fallback): a
@@ -243,7 +329,13 @@ impl IsolateFactory for RuntimeIsolateFactory {
                         "EDGER_JS_RUNTIME=bridge has no egress guard (only the persistent process runtime serves it)",
                     );
                 }
-                Box::new(DenoIsolate::new(DenoFacade::new()))
+                let inner = Box::new(DenoIsolate::new(DenoFacade::new()));
+                match &self.managed {
+                    Some(managed) => Box::new(edger_orchestrator::managed_database_isolate::ManagedDatabaseIsolate::bridge(
+                        inner, worker_ref, Arc::clone(managed.service()),
+                    )),
+                    None => inner,
+                }
             }
         }
     }
@@ -253,6 +345,12 @@ impl IsolateFactory for RuntimeIsolateFactory {
 async fn main() -> anyhow::Result<()> {
     let _tracing = init_tracing_from_env()?;
     let auth = ControlAuth::from_env()?;
+    let managed_settings =
+        edger_orchestrator::sqld_managed_config::sqld_managed_settings_from_env()?;
+    let configured = matches!(
+        &managed_settings,
+        edger_orchestrator::sqld_managed_config::SqldManagedSettings::Configured(_)
+    );
 
     let port = port_from_env();
     let config = ServerConfig::from_bind(bind_ip_from_env().map_err(anyhow::Error::msg)?, port);
@@ -277,6 +375,14 @@ async fn main() -> anyhow::Result<()> {
     // boot. Falha de open do store também falha fechada (warn, instância
     // segue servindo) — o valor nunca vai para o log.
     let worker_dirs = worker_dirs_from_env();
+    let core_worker_dir = core_worker_dir_from_env();
+    if configured {
+        for root in worker_dirs.iter().chain(std::iter::once(&core_worker_dir)) {
+            root.canonicalize()
+                .context("managed sqld requires existing worker roots")?;
+        }
+    }
+    let mut master_evidence = None;
     let app_secrets: Option<std::sync::Arc<edger_orchestrator::app_secrets::AppSecretVault>> = {
         let db_path = std::env::var("EDGER_APP_SECRETS_DB")
             .ok()
@@ -322,6 +428,18 @@ async fn main() -> anyhow::Result<()> {
                         None
                     }
                     Ok(key) => {
+                        if configured {
+                            let path = if key_path.is_absolute() {
+                                key_path.clone()
+                            } else {
+                                std::env::current_dir()?.join(&key_path)
+                            };
+                            master_evidence = Some(
+                                edger_orchestrator::sqld_managed_config::SqldVaultMasterEvidence::new(
+                                    key.clone(), path,
+                                ),
+                            );
+                        }
                         match edger_orchestrator::app_secrets::AppSecretVault::open(&db_path, key) {
                             Ok(vault) => {
                                 tracing::info!(path = %db_path.display(), "app secrets vault ready");
@@ -340,6 +458,44 @@ async fn main() -> anyhow::Result<()> {
     if let Some(vault) = &app_secrets {
         server.set_app_secrets(std::sync::Arc::clone(vault));
     }
+    let core_overlay_dir = core_overlay_dir_from_env();
+    let index = load_manifests_from_roots(
+        std::slice::from_ref(&core_worker_dir),
+        Some(&core_overlay_dir),
+        &worker_dirs,
+    )?;
+    let managed = if configured {
+        let vault = app_secrets
+            .as_ref()
+            .context("managed sqld requires an available app vault")?;
+        let evidence = master_evidence.context("managed sqld requires a loaded vault master")?;
+        let roots = managed_database_boot::protection_roots(
+            &worker_dirs,
+            &core_worker_dir,
+            &core_overlay_dir,
+            &index,
+        )?;
+        match edger_orchestrator::sqld_managed_config::load_sqld_managed(
+            managed_settings,
+            Arc::clone(vault),
+            evidence,
+            roots,
+        )
+        .await?
+        {
+            edger_orchestrator::sqld_managed_config::SqldManagedRuntime::Enabled(enabled) => {
+                Some(enabled)
+            }
+            edger_orchestrator::sqld_managed_config::SqldManagedRuntime::Off => {
+                anyhow::bail!("managed sqld unexpectedly disabled")
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(enabled) = &managed {
+        server.set_sqld_managed(Arc::clone(enabled.service()), enabled.data_origin());
+    }
     // EDG-9: the pool's completion wait must mirror the isolates'
     // `EDGER_STREAM_ABANDON_DRAIN_MAX_MS` (the drain's own deadline is
     // measured from the consumer loss, which happens before the body's drop
@@ -356,8 +512,21 @@ async fn main() -> anyhow::Result<()> {
     .with_event_store(server.operational_events());
     // Os contadores `edger_egress_*` saem no `/metrics`.
     server.set_egress_metrics(egress_guard.metrics().clone());
-    let isolate_factory =
-        RuntimeIsolateFactory::from_env(console_sender, app_secrets, Arc::new(egress_guard));
+    // (EDG-55) Broker SSE do host: UMA instância por processo, com os tetos
+    // lidos uma vez (`EDGER_SSE_MAX_CONNECTIONS`,
+    // `EDGER_SSE_MAX_CONNECTIONS_PER_APP`, `EDGER_SSE_HEARTBEAT_MS`). Com
+    // `EDGER_SSE_MAX_CONNECTIONS=0` ele existe mas recusa toda assinatura
+    // (`SSE_UNAVAILABLE`) e não cria o tick.
+    let sse_broker = edger_orchestrator::sse_broker::SseBroker::new(
+        edger_orchestrator::sse_broker::SseLimits::from_env(),
+    );
+    server.set_sse_broker(Arc::clone(&sse_broker));
+    let isolate_factory = RuntimeIsolateFactory::from_env(
+        console_sender,
+        app_secrets,
+        Arc::new(egress_guard),
+        managed,
+    );
     // Only the multiproc backend wires the detach pipeline into the isolates
     // (and therefore feeds the shared budget's counters). With the legacy
     // bridge backend there is no budget snapshot to expose, so the
@@ -376,13 +545,6 @@ async fn main() -> anyhow::Result<()> {
         abandon_drain,
     );
     server.mark_ready(pool.clone());
-    let core_worker_dir = core_worker_dir_from_env();
-    let core_overlay_dir = core_overlay_dir_from_env();
-    let index = load_manifests_from_roots(
-        std::slice::from_ref(&core_worker_dir),
-        Some(&core_overlay_dir),
-        &worker_dirs,
-    )?;
     // Run each worker's release command (migrations) once per version before serving.
     run_pending_releases_with_events(&index, &server.operational_events()).await?;
     prewarm_min_process_workers(&index, &pool).await?;
@@ -492,7 +654,45 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    let serve_result = serve(config, app, shutdown_signal()).await;
+    // O desligamento graceful do axum espera as conexões abertas acabarem, e
+    // uma conexão SSE nunca acaba sozinha: o broker encerra os streams no
+    // próprio sinal, antes de o servidor esperar por eles (EDG-55).
+    //
+    // Um cliente que parou de ler mantém uma escrita pendente no socket e o
+    // broker não consegue destravá-la; o relógio de `EDGER_HTTP_DRAIN_MS`
+    // começa no sinal e, ao vencer, o desligamento segue (broker, cron, pool)
+    // e as conexões restantes morrem com o processo.
+    let sse_shutdown = Arc::clone(&sse_broker);
+    let (signalled_tx, signalled_rx) = tokio::sync::oneshot::channel::<()>();
+    let serve_future = serve(config, app, async move {
+        shutdown_signal().await;
+        sse_shutdown.shutdown();
+        let _ = signalled_tx.send(());
+    });
+    tokio::pin!(serve_future);
+    let serve_result = match http_drain_limit_from_env() {
+        None => serve_future.await,
+        Some(limit) => {
+            let deadline = async move {
+                if signalled_rx.await.is_ok() {
+                    tokio::time::sleep(limit).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+            tokio::select! {
+                result = &mut serve_future => result,
+                () = deadline => {
+                    tracing::warn!(
+                        drain_ms = limit.as_millis() as u64,
+                        "HTTP drain deadline reached; closing the remaining connections"
+                    );
+                    Ok(())
+                }
+            }
+        }
+    };
+    sse_broker.shutdown();
     tracing::info!("HTTP server stopped; shutting down cron scheduler and worker pool");
     if let Some(mut cron_scheduler) = cron_scheduler {
         cron_scheduler.shutdown().await;
@@ -875,6 +1075,35 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn the_http_drain_limit_defaults_disables_with_zero_and_flags_invalid_values() {
+        use std::time::Duration;
+        // Unset: the default, ten seconds, not invalid.
+        assert_eq!(
+            http_drain_limit(None),
+            (Some(Duration::from_millis(10_000)), false)
+        );
+        // A number is milliseconds (whitespace tolerated).
+        assert_eq!(
+            http_drain_limit(Some("250")),
+            (Some(Duration::from_millis(250)), false)
+        );
+        assert_eq!(
+            http_drain_limit(Some(" 1500 ")),
+            (Some(Duration::from_millis(1500)), false)
+        );
+        // `0` turns the limit off: no deadline, and it is not an invalid value.
+        assert_eq!(http_drain_limit(Some("0")), (None, false));
+        // Invalid: the default with the invalid flag (the caller logs a warn).
+        for bad in ["", "abc", "-1", "1.5", "10s", "99999999999999999999999"] {
+            assert_eq!(
+                http_drain_limit(Some(bad)),
+                (Some(Duration::from_millis(10_000)), true),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

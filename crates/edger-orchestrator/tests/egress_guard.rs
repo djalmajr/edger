@@ -35,12 +35,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use edger_core::config::EgressSettings;
 use edger_core::egress::EgressCidr;
+use edger_isolation::wasm::{WasmHttpError, WasmHttpRequest, WasmHttpResponse, WasmHttpTransport};
 use edger_orchestrator::observability::{
     OperationalEvent, OperationalEventQuery, OperationalStore,
 };
 use edger_orchestrator::{
-    egress_metrics_prometheus, EgressGuard, EgressGuardConfig, EgressResolver, EgressWorkerContext,
-    EGRESS_GUARD_HOST,
+    egress_metrics_prometheus, EgressGuard, EgressGuardConfig, EgressResolver, EgressWasmBridge,
+    EgressWorkerContext, EGRESS_GUARD_HOST,
 };
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -355,6 +356,26 @@ async fn respond_upstream(
         }
         "/ok" => {
             write_cl_response(tls, 200, &[("content-type", "text/plain")], b"hello-egress").await;
+        }
+        "/status500" => {
+            write_cl_response(tls, 500, &[], b"upstream-500").await;
+        }
+        // A 200 with an EMPTY body (Content-Length 0): the only body a
+        // zero cap admits.
+        "/empty" => {
+            write_cl_response(tls, 200, &[], b"").await;
+        }
+        // A 200 with an EMPTY body and an obs-text `x-obs` value (a 0x80
+        // byte): valid HTTP, not UTF-8. The socket path forwards the raw
+        // value; the WASM bridge's to_str conversion is where it fails.
+        "/obs-empty" => {
+            let head = b"HTTP/1.1 200 OK\r\nx-obs: fixture-header-canary-\x80\r\n";
+            if tls.write_all(head).await.is_err() {
+                return false;
+            }
+            let _ = tls
+                .write_all(b"content-length: 0\r\nconnection: close\r\n\r\n")
+                .await;
         }
         // A destination that forges the guard's protocol headers (one in
         // mixed case) plus a plain app header: the guard must strip the
@@ -2570,5 +2591,2234 @@ async fn invalid_redirect_locations_are_refused_at_the_hop() {
         upstream.accepts.load(Ordering::SeqCst),
         3,
         "only the initial hops were dialed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests: the WASM bridge (EDG-52 07b) — the real `EgressWasmBridge` over the
+// real guard, the real TLS and the local upstream
+// ---------------------------------------------------------------------------
+
+/// The 1 MiB per-call body cap of these tests (every test body is smaller;
+/// the caps/cuts matrix belongs to the next slice).
+const WASM_BODY_LIMIT: usize = 1024 * 1024;
+
+/// The host-trusted worker identity of the bridge: the WASM path has no
+/// process id (an empty string is `None` in the events); the request id is
+/// host-provided per call (the guest frame carries no identity).
+fn wasm_ctx() -> EgressWorkerContext {
+    EgressWorkerContext {
+        worker: "egress-test".into(),
+        version: "1.0.0".into(),
+        namespace: Some("ns".into()),
+        process_id: String::new(),
+    }
+}
+
+/// The real trait the guest import consumes, bound to the harness's guard
+/// (the clone shares the semaphores, the metrics and the event store).
+fn wasm_bridge(harness: &Harness, settings: EgressSettings) -> Arc<dyn WasmHttpTransport> {
+    Arc::new(EgressWasmBridge::new(
+        Arc::new(harness.guard.clone()),
+        Arc::new(wasm_ctx()),
+        Arc::new(settings),
+    ))
+}
+
+/// One guest request as the host builds it: the frame fields plus the
+/// host-provided request id.
+fn wasm_request(
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+    request_id: &str,
+) -> WasmHttpRequest {
+    WasmHttpRequest {
+        method: method.to_string(),
+        url: url.to_string(),
+        headers: headers
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect(),
+        body: Bytes::copy_from_slice(body),
+        request_id: request_id.to_string(),
+    }
+}
+
+/// One bridge call under the shared watchdog.
+async fn wasm_fetch(
+    bridge: Arc<dyn WasmHttpTransport>,
+    request: WasmHttpRequest,
+) -> Result<WasmHttpResponse, WasmHttpError> {
+    within("the bridge fetch", bridge.fetch(request, WASM_BODY_LIMIT)).await
+}
+
+/// One bridge call with the guest's per-call cap (`WasmHttpTransport::fetch`
+///'s `response_body_limit`) under the shared watchdog. The shared
+/// `wasm_fetch` fixes 1 MiB: a cap under test goes through this one.
+async fn wasm_fetch_capped(
+    bridge: Arc<dyn WasmHttpTransport>,
+    request: WasmHttpRequest,
+    response_body_limit: usize,
+) -> Result<WasmHttpResponse, WasmHttpError> {
+    within(
+        "the bridge fetch under the guest cap",
+        bridge.fetch(request, response_body_limit),
+    )
+    .await
+}
+
+/// The response header by case-insensitive name (the bridge answers with a
+/// flat name/value list).
+fn wasm_response_header<'a>(response: &'a WasmHttpResponse, name: &str) -> Option<&'a str> {
+    response
+        .headers
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_str())
+}
+
+/// The error class of a bridge refusal (a normal response is impossible for
+/// the cases under test; the response DTO does not implement `Debug`, so
+/// the match stays payload-free).
+fn wasm_refusal(result: Result<WasmHttpResponse, WasmHttpError>, what: &str) -> WasmHttpError {
+    match result {
+        Ok(_) => panic!("{what} must be a refusal, not a normal response"),
+        Err(error) => error,
+    }
+}
+
+/// Wait until the store holds exactly `count` egress events (each attempt
+/// records its event before the caller observes the outcome).
+async fn wait_event_count(store: &OperationalStore, count: usize) {
+    for _ in 0..5_000 {
+        if egress_events(store).len() == count {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    panic!(
+        "the store never reached {count} egress events ({} so far)",
+        egress_events(store).len()
+    );
+}
+
+#[tokio::test]
+async fn wasm_bridge_ok_paths_preserve_status_body_and_headers() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    let harness = spawn_guard(ScriptedResolver::none(), true, default_settings(port)).await;
+    let url = url_of(&upstream);
+    let bridge = wasm_bridge(&harness, default_settings(port));
+
+    // Content-Length framing: the destination's status, body and headers
+    // survive the bridge.
+    let response = wasm_fetch(
+        bridge.clone(),
+        wasm_request("GET", &format!("{url}/ok"), &[], &[], "wasm-req-ok"),
+    )
+    .await
+    .expect("the ok path answers");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_ref(), b"hello-egress" as &[u8]);
+    assert_eq!(
+        wasm_response_header(&response, "content-type"),
+        Some("text/plain")
+    );
+    assert_eq!(
+        wasm_response_header(&response, "content-length"),
+        Some("12")
+    );
+    // The destination's hop-by-hop framing does not leak through.
+    assert!(wasm_response_header(&response, "connection").is_none());
+
+    // The close-delimited and the chunked upstream bodies are collected
+    // intact (no Content-Length: the guard re-frames them).
+    for (path, body) in [
+        ("/eof", b"eof-body" as &[u8]),
+        ("/chunked", b"chunked-body" as &[u8]),
+    ] {
+        let response = wasm_fetch(
+            bridge.clone(),
+            wasm_request("GET", &format!("{url}{path}"), &[], &[], "wasm-req-body"),
+        )
+        .await
+        .expect("the body path answers");
+        assert_eq!((response.status, response.body.as_ref()), (200, body));
+        assert!(wasm_response_header(&response, "content-length").is_none());
+    }
+
+    // POST /echo with a query, a body and credentials: the upstream Hit
+    // sees the exact method/target/body, with the Host derived from the
+    // destination and the Content-Length recomputed.
+    let echo_body = b"echo-bridge-body-42";
+    let response = wasm_fetch(
+        bridge.clone(),
+        wasm_request(
+            "POST",
+            &format!("{url}/echo?source=bridge&n=7"),
+            &[
+                ("authorization", "Bearer sk-bridge-ok"),
+                ("cookie", "session=bridge-ok"),
+                ("Host", "forged.example"),
+                ("Content-Length", "99999"),
+                ("x-edger-egress-url", "https://127.0.0.2:1/elsewhere"),
+                ("x-edger-egress-error", "EGRESS_HOST_BLOCKED"),
+                ("Connection", "keep-alive, x-remove"),
+                ("x-remove", "1"),
+                ("content-type", "application/json"),
+            ],
+            echo_body,
+            "wasm-req-echo",
+        ),
+    )
+    .await
+    .expect("the echo path answers");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_ref(), echo_body as &[u8]);
+    let hit = upstream
+        .hits_to("/echo")
+        .pop()
+        .expect("the upstream was reached");
+    assert_eq!(hit.method, "POST");
+    // The URL is request.url only: the guest's malicious destination header
+    // pointed at a different (unreleased) host and was ignored.
+    assert_eq!(hit.target, "/echo?source=bridge&n=7");
+    assert_eq!(hit.body, echo_body);
+    assert_eq!(
+        hit.host_header.as_deref(),
+        Some(format!("127.0.0.1:{port}").as_str()),
+        "the Host derives from the destination, not the guest's"
+    );
+    assert_eq!(
+        hit.header("content-length"),
+        Some(echo_body.len().to_string().as_str()),
+        "the Content-Length is recomputed, not the guest's 99999"
+    );
+    // The guest's framing headers do not arrive as provided: the guard's
+    // own `Connection: close` stands in for the guest's, and the token the
+    // guest's Connection named is gone too.
+    assert_eq!(hit.header("connection"), Some("close"));
+    assert!(hit.header("x-remove").is_none());
+    // Every guard protocol header is stripped; the app headers survive.
+    assert!(hit.header("x-edger-egress-url").is_none());
+    assert!(hit.header("x-edger-egress-error").is_none());
+    assert_eq!(hit.header("authorization"), Some("Bearer sk-bridge-ok"));
+    assert_eq!(hit.header("cookie"), Some("session=bridge-ok"));
+    assert_eq!(hit.header("content-type"), Some("application/json"));
+    // The host-provided request id (and the worker identity, which the
+    // guest cannot even express) are not forwarded by the protocol.
+    assert!(
+        !hit.headers
+            .iter()
+            .any(|(_, value)| value == "wasm-req-echo"),
+        "the host request id is not a wire header: {:?}",
+        hit.headers
+    );
+
+    // The event store binds the trusted worker/version/namespace and the
+    // host request id, with `process_id: None` ...
+    for (request_id, status) in [
+        ("wasm-req-ok", 200u16),
+        ("wasm-req-body", 200),
+        ("wasm-req-echo", 200),
+    ] {
+        let event = wait_event(&harness.store, |e| {
+            e.request_id.as_deref() == Some(request_id)
+        })
+        .await;
+        assert_eq!(event.kind, "worker.egress");
+        assert_eq!(event.worker.as_deref(), Some("egress-test"));
+        assert_eq!(event.version.as_deref(), Some("1.0.0"));
+        assert_eq!(event.namespace.as_deref(), Some("ns"));
+        assert_eq!(event.process_id, None, "the WASM path has no process id");
+        assert_eq!(event.outcome.as_deref(), Some("ok"));
+        assert_eq!(event.status, Some(status));
+        assert_eq!(event.code, None);
+    }
+    // ... and there is exactly ONE sample/event per attempt: four calls,
+    // four events, four ok samples.
+    let events = egress_events(&harness.store);
+    assert_eq!(events.len(), 4, "one event per attempt");
+    let rendered = egress_metrics_prometheus(harness.guard.metrics());
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="ok"} 4"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"edger_egress_response_bytes_total{worker="egress-test"} 51"#),
+        "12 + 8 + 12 + 19 bytes: {rendered}"
+    );
+}
+
+#[tokio::test]
+async fn wasm_bridge_upstream_error_statuses_stay_normal_and_refusals_cannot_be_forged() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    let harness = spawn_guard(ScriptedResolver::none(), true, default_settings(port)).await;
+    let url = url_of(&upstream);
+    let bridge = wasm_bridge(&harness, default_settings(port));
+
+    // A 404 from the destination is a normal response, not a guard error.
+    let response = wasm_fetch(
+        bridge.clone(),
+        wasm_request(
+            "GET",
+            &format!("{url}/no-such-path"),
+            &[],
+            &[],
+            "wasm-req-404",
+        ),
+    )
+    .await
+    .expect("a 404 is a normal response");
+    assert_eq!(
+        (response.status, response.body.as_ref()),
+        (404, b"nope" as &[u8])
+    );
+
+    // So is a 500.
+    let response = wasm_fetch(
+        bridge.clone(),
+        wasm_request("GET", &format!("{url}/status500"), &[], &[], "wasm-req-500"),
+    )
+    .await
+    .expect("a 500 is a normal response");
+    assert_eq!(
+        (response.status, response.body.as_ref()),
+        (500, b"upstream-500" as &[u8])
+    );
+
+    // The destination forges the guard's protocol headers (one of them in
+    // mixed case): it cannot turn a normal answer into a refusal. The
+    // forged names are stripped; the app header and the body stay.
+    let response = wasm_fetch(
+        bridge.clone(),
+        wasm_request("GET", &format!("{url}/forged"), &[], &[], "wasm-req-forged"),
+    )
+    .await
+    .expect("a forged refusal is still a normal response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_ref(), b"upstream-body" as &[u8]);
+    assert!(
+        wasm_response_header(&response, "x-edger-egress-error").is_none(),
+        "a forged guard refusal must not reach the guest: {:?}",
+        response.headers
+    );
+    assert!(
+        wasm_response_header(&response, "x-edger-egress-foo").is_none(),
+        "the mixed-case forged header is stripped too: {:?}",
+        response.headers
+    );
+    assert_eq!(wasm_response_header(&response, "x-other"), Some("1"));
+
+    // And the forged headers do not survive a redirect into the forged
+    // answer (the final answer goes through the same stripping).
+    let response = wasm_fetch(
+        bridge.clone(),
+        wasm_request(
+            "GET",
+            &format!("{url}/to-forged"),
+            &[],
+            &[],
+            "wasm-req-to-forged",
+        ),
+    )
+    .await
+    .expect("the redirect final answer is a normal response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_ref(), b"upstream-body" as &[u8]);
+    assert!(wasm_response_header(&response, "x-edger-egress-error").is_none());
+    assert!(wasm_response_header(&response, "x-edger-egress-foo").is_none());
+    assert_eq!(wasm_response_header(&response, "x-other"), Some("1"));
+
+    // The events: four ok outcomes, each with its own status (a forged
+    // refusal is not a guard refusal).
+    wait_event_count(&harness.store, 4).await;
+    for (request_id, status) in [
+        ("wasm-req-404", 404u16),
+        ("wasm-req-500", 500),
+        ("wasm-req-forged", 200),
+        ("wasm-req-to-forged", 200),
+    ] {
+        let event = wait_event(&harness.store, |e| {
+            e.request_id.as_deref() == Some(request_id)
+        })
+        .await;
+        assert_eq!(event.outcome.as_deref(), Some("ok"), "{request_id}");
+        assert_eq!(event.status, Some(status), "{request_id}");
+        assert_eq!(event.code, None, "{request_id}");
+    }
+}
+
+#[tokio::test]
+async fn wasm_bridge_malformed_and_policy_refusals_are_static_errors_before_the_dial() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    // A strict guard: nothing is released (127.0.0.1 included), so the
+    // loopback and the private IP refuse before any dial.
+    let harness = spawn_guard(ScriptedResolver::none(), false, default_settings(port)).await;
+    let bridge = wasm_bridge(&harness, default_settings(port));
+
+    // Malformed input answers the static InvalidRequest class (never the
+    // raw parse error, never a dial).
+    for (what, request) in [
+        (
+            "a non-https scheme",
+            wasm_request("GET", "http://127.0.0.1/", &[], &[], "wasm-req-scheme"),
+        ),
+        (
+            "userinfo in the destination",
+            wasm_request(
+                "GET",
+                &format!("https://user:pass@127.0.0.1:{port}/"),
+                &[],
+                &[],
+                "wasm-req-userinfo",
+            ),
+        ),
+        (
+            "the CONNECT method",
+            wasm_request(
+                "CONNECT",
+                &format!("https://127.0.0.1:{port}/"),
+                &[],
+                &[],
+                "wasm-req-connect",
+            ),
+        ),
+        (
+            "an invalid header name",
+            wasm_request(
+                "GET",
+                &format!("https://127.0.0.1:{port}/"),
+                &[("bad name", "1")],
+                &[],
+                "wasm-req-bad-name",
+            ),
+        ),
+        (
+            "an invalid header value",
+            wasm_request(
+                "GET",
+                &format!("https://127.0.0.1:{port}/"),
+                &[("x-a", "bad\r\nvalue")],
+                &[],
+                "wasm-req-bad-value",
+            ),
+        ),
+    ] {
+        let error = wasm_refusal(wasm_fetch(bridge.clone(), request).await, what);
+        assert_eq!(error, WasmHttpError::InvalidRequest, "{what}");
+    }
+
+    // Policy refusals answer the static Transport class.
+    for (what, request) in [
+        (
+            "a loopback IP without an allow",
+            wasm_request(
+                "GET",
+                &format!("https://127.0.0.1:{port}/ok"),
+                &[],
+                &[],
+                "wasm-req-loopback",
+            ),
+        ),
+        (
+            "a private IP",
+            wasm_request("GET", "https://10.0.0.7/", &[], &[], "wasm-req-private"),
+        ),
+        (
+            "a port outside the settings",
+            wasm_request("GET", "https://127.0.0.1:8443/", &[], &[], "wasm-req-port"),
+        ),
+    ] {
+        let error = wasm_refusal(wasm_fetch(bridge.clone(), request).await, what);
+        assert_eq!(error, WasmHttpError::Transport, "{what}");
+    }
+
+    // Nothing was dialed and nothing reached the upstream.
+    assert_eq!(
+        upstream.accepts.load(Ordering::SeqCst),
+        0,
+        "no refusal opened a connection"
+    );
+    assert!(upstream.hits.lock().unwrap().is_empty());
+
+    // The events: eight refusals with the guard's own codes and statuses,
+    // never an ok — a refusal is not confused with a success.
+    wait_event_count(&harness.store, 8).await;
+    let events = egress_events(&harness.store);
+    assert_eq!(events.len(), 8);
+    for event in &events {
+        assert_ne!(event.outcome.as_deref(), Some("ok"));
+        match event.code.as_deref() {
+            Some("EGRESS_BAD_TARGET") => assert_eq!(event.status, Some(400)),
+            Some("EGRESS_HOST_BLOCKED") => assert_eq!(event.status, Some(403)),
+            Some("EGRESS_PORT_BLOCKED") => assert_eq!(event.status, Some(403)),
+            other => panic!("an unexpected refusal code: {other:?}"),
+        }
+    }
+    let rendered = egress_metrics_prometheus(harness.guard.metrics());
+    assert!(
+        rendered
+            .contains(r#"edger_egress_requests_total{worker="egress-test",outcome="blocked"} 8"#),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn wasm_bridge_dns_uses_absolute_names_classifies_every_ip_and_pins_the_dial() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+
+    // A mix of a released and a blocked answer: the blocked IP refuses the
+    // WHOLE request before any dial, with exactly one resolution.
+    let resolver = ScriptedResolver::new(&[("rebind.test.", vec![vec!["127.0.0.1", "10.0.0.5"]])]);
+    let harness = spawn_guard(resolver.clone(), true, default_settings(port)).await;
+    let bridge = wasm_bridge(&harness, default_settings(port));
+    let error = wasm_refusal(
+        wasm_fetch(
+            bridge.clone(),
+            wasm_request(
+                "GET",
+                &format!("https://rebind.test:{port}/ok"),
+                &[],
+                &[],
+                "wasm-req-mix",
+            ),
+        )
+        .await,
+        "the mixed DNS answer",
+    );
+    assert_eq!(error, WasmHttpError::Transport);
+    assert_eq!(
+        resolver.calls_for("rebind.test."),
+        1,
+        "resolved once, nothing dialed"
+    );
+    assert_eq!(
+        resolver.calls_for("rebind.test"),
+        0,
+        "the name is absolute, never bare"
+    );
+    assert_eq!(
+        upstream.accepts.load(Ordering::SeqCst),
+        0,
+        "nothing was dialed"
+    );
+    let event = wait_event(&harness.store, |e| {
+        e.code.as_deref() == Some("EGRESS_HOST_BLOCKED")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("blocked"));
+    assert_eq!(event.request_id.as_deref(), Some("wasm-req-mix"));
+    let message = event.message.clone().unwrap();
+    assert!(message.contains("host=rebind.test"), "{message}");
+    assert!(message.contains("ip=10.0.0.5"), "{message}");
+
+    // The dial is pinned to the classified IP: the first (released) answer
+    // is dialed and the name is not resolved again for that attempt.
+    let resolver =
+        ScriptedResolver::new(&[("a.local.", vec![vec!["127.0.0.1"], vec!["10.0.0.5"]])]);
+    let harness = spawn_guard(resolver.clone(), true, default_settings(port)).await;
+    let bridge = wasm_bridge(&harness, default_settings(port));
+    let response = wasm_fetch(
+        bridge.clone(),
+        wasm_request(
+            "GET",
+            &format!("https://a.local:{port}/ok"),
+            &[],
+            &[],
+            "wasm-req-pinned",
+        ),
+    )
+    .await
+    .expect("the released IP is dialed");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_ref(), b"hello-egress" as &[u8]);
+    assert_eq!(
+        resolver.calls_for("a.local."),
+        1,
+        "resolved once, not re-resolved"
+    );
+    assert_eq!(
+        resolver.calls_for("a.local"),
+        0,
+        "the name is absolute, never bare"
+    );
+    assert_eq!(
+        upstream.accepts.load(Ordering::SeqCst),
+        1,
+        "the classified IP was dialed"
+    );
+
+    // The next attempt resolves again (the cache is not ours) and now gets
+    // the private IP: refused before the dial, and nothing new is dialed.
+    let error = wasm_refusal(
+        wasm_fetch(
+            bridge,
+            wasm_request(
+                "GET",
+                &format!("https://a.local:{port}/ok"),
+                &[],
+                &[],
+                "wasm-req-pinned-2",
+            ),
+        )
+        .await,
+        "the second resolution",
+    );
+    assert_eq!(error, WasmHttpError::Transport);
+    assert_eq!(resolver.calls_for("a.local."), 2);
+    assert_eq!(
+        upstream.accepts.load(Ordering::SeqCst),
+        1,
+        "the refusal dialed nothing"
+    );
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-req-pinned-2")
+    })
+    .await;
+    assert_eq!(event.code.as_deref(), Some("EGRESS_HOST_BLOCKED"));
+    assert_eq!(event.outcome.as_deref(), Some("blocked"));
+}
+
+#[tokio::test]
+async fn wasm_bridge_redirects_follow_the_guard_contract() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    let resolver = ScriptedResolver::new(&[
+        ("a.local.", vec![vec!["127.0.0.1"]]),
+        ("b.local.", vec![vec!["127.0.0.1"]]),
+    ]);
+    let harness = spawn_guard(resolver, true, default_settings(port)).await;
+    let bridge = wasm_bridge(&harness, default_settings(port));
+    let url = url_of(&upstream);
+
+    // 302 on a GET: the relative Location is followed, the method is kept.
+    let response = wasm_fetch(
+        bridge.clone(),
+        wasm_request("GET", &format!("{url}/r302"), &[], &[], "wasm-req-302"),
+    )
+    .await
+    .expect("the 302 answer");
+    assert_eq!(
+        (response.status, response.body.as_ref()),
+        (200, b"final" as &[u8])
+    );
+    assert_eq!(
+        upstream.hits_to("/r302-target").pop().unwrap().method,
+        "GET"
+    );
+
+    // 307 on a POST: the method and the body are replayed unchanged, and
+    // the same-origin credentials stay.
+    let body = b"bridge-307-body";
+    let response = wasm_fetch(
+        bridge.clone(),
+        wasm_request(
+            "POST",
+            &format!("{url}/r307"),
+            &[("authorization", "Bearer sk-bridge-307")],
+            body,
+            "wasm-req-307",
+        ),
+    )
+    .await
+    .expect("the 307 answer");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_ref(), body as &[u8]);
+    let hit = upstream
+        .hits_to("/r307-target")
+        .pop()
+        .expect("the redirect target was hit");
+    assert_eq!(hit.method, "POST");
+    assert_eq!(hit.body, body);
+    assert_eq!(hit.header("authorization"), Some("Bearer sk-bridge-307"));
+    assert_eq!(
+        hit.host_header.as_deref(),
+        Some(format!("127.0.0.1:{port}").as_str()),
+        "the Host is the destination authority"
+    );
+
+    // 303 and 301 from a POST become bodyless GETs (the existing
+    // semantics).
+    for (path, final_body) in [
+        ("/r303", b"done303" as &[u8]),
+        ("/r301", b"done301" as &[u8]),
+    ] {
+        let response = wasm_fetch(
+            bridge.clone(),
+            wasm_request(
+                "POST",
+                &format!("{url}{path}"),
+                &[],
+                b"gone",
+                "wasm-req-303-301",
+            ),
+        )
+        .await
+        .expect("the redirect answer");
+        assert_eq!((response.status, response.body.as_ref()), (200, final_body));
+        let hit = upstream.hits_to(&format!("{path}-target")).pop().unwrap();
+        assert_eq!(hit.method, "GET");
+        assert!(hit.body.is_empty(), "the 3xx drops the POST body");
+    }
+
+    // Cross-origin (the existing a.local/b.local certificates): the
+    // credentials do not follow the hop, but the first hit may have them;
+    // the hop-by-hop headers never ride even the first hop.
+    let response = wasm_fetch(
+        bridge.clone(),
+        wasm_request(
+            "GET",
+            &format!("https://a.local:{port}/to-b"),
+            &[
+                ("authorization", "Bearer sk-bridge-cross"),
+                ("cookie", "session=bridge-cross"),
+                ("proxy-authorization", "Basic abc"),
+                ("x-app", "kept"),
+            ],
+            &[],
+            "wasm-req-cross",
+        ),
+    )
+    .await
+    .expect("the cross-origin answer");
+    assert_eq!(response.status, 200);
+    // The first hop had the credentials ...
+    let first = upstream.hits_to("/to-b").pop().unwrap();
+    assert_eq!(
+        first.header("authorization"),
+        Some("Bearer sk-bridge-cross")
+    );
+    assert_eq!(first.header("cookie"), Some("session=bridge-cross"));
+    assert!(
+        first.header("proxy-authorization").is_none(),
+        "hop-by-hop does not even ride the first hop"
+    );
+    // ... the other origin did not, but the plain app header went along.
+    let second = upstream.hits_to("/ok").pop().unwrap();
+    assert_eq!(
+        second.host_header.as_deref(),
+        Some(format!("b.local:{port}").as_str())
+    );
+    assert!(second.header("authorization").is_none());
+    assert!(second.header("cookie").is_none());
+    assert_eq!(second.header("x-app"), Some("kept"));
+
+    // One ok event per attempt; the followed answers carry the redirect
+    // count.
+    wait_event_count(&harness.store, 5).await;
+    let events = egress_events(&harness.store);
+    assert_eq!(events.len(), 5);
+    assert!(
+        events.iter().all(|e| e.outcome.as_deref() == Some("ok")),
+        "every followed redirect answered ok"
+    );
+    let cross = events
+        .iter()
+        .find(|e| e.request_id.as_deref() == Some("wasm-req-cross"))
+        .unwrap();
+    assert!(cross.message.as_deref().unwrap().contains("redirects=1"));
+}
+
+#[tokio::test]
+async fn wasm_bridge_refused_redirect_hops_are_static_errors() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    let resolver = ScriptedResolver::new(&[("internal.test.", vec![vec!["10.0.0.5"]])]);
+    let harness = spawn_guard(resolver.clone(), true, default_settings(port)).await;
+    let bridge = wasm_bridge(&harness, default_settings(port));
+    let url = url_of(&upstream);
+
+    // A hop into an IP the test did not release: refused at the hop.
+    let error = wasm_refusal(
+        wasm_fetch(
+            bridge.clone(),
+            wasm_request(
+                "GET",
+                &format!("{url}/to-blocked-ip"),
+                &[],
+                &[],
+                "wasm-req-hop-ip",
+            ),
+        )
+        .await,
+        "the refused IP hop",
+    );
+    assert_eq!(error, WasmHttpError::Transport);
+    // A hop into a port outside the settings.
+    let error = wasm_refusal(
+        wasm_fetch(
+            bridge.clone(),
+            wasm_request(
+                "GET",
+                &format!("{url}/to-blocked-port"),
+                &[],
+                &[],
+                "wasm-req-hop-port",
+            ),
+        )
+        .await,
+        "the refused port hop",
+    );
+    assert_eq!(error, WasmHttpError::Transport);
+    // A hop into a Location with credentials is malformed input.
+    let error = wasm_refusal(
+        wasm_fetch(
+            bridge.clone(),
+            wasm_request(
+                "GET",
+                &format!("{url}/to-userinfo"),
+                &[],
+                &[],
+                "wasm-req-hop-userinfo",
+            ),
+        )
+        .await,
+        "the refused Location",
+    );
+    assert_eq!(error, WasmHttpError::InvalidRequest);
+    assert_eq!(
+        upstream.accepts.load(Ordering::SeqCst),
+        3,
+        "only the first hops were dialed"
+    );
+
+    // The loop: the initial hop plus the five followed hops dial; the sixth
+    // redirect refuses without a dial.
+    let error = wasm_refusal(
+        wasm_fetch(
+            bridge.clone(),
+            wasm_request("GET", &format!("{url}/loop"), &[], &[], "wasm-req-loop"),
+        )
+        .await,
+        "the redirect loop",
+    );
+    assert_eq!(error, WasmHttpError::Transport);
+    assert_eq!(
+        upstream.accepts.load(Ordering::SeqCst),
+        9,
+        "the loop dialed its six hops and nothing more"
+    );
+
+    // The events: one per refused attempt, with the guard's code, never ok.
+    wait_event_count(&harness.store, 4).await;
+    let events = egress_events(&harness.store);
+    let codes: Vec<&str> = events.iter().map(|e| e.code.as_deref().unwrap()).collect();
+    assert_eq!(codes.len(), 4);
+    for code in [
+        "EGRESS_TOO_MANY_REDIRECTS",
+        "EGRESS_HOST_BLOCKED",
+        "EGRESS_PORT_BLOCKED",
+        "EGRESS_BAD_TARGET",
+    ] {
+        assert!(codes.contains(&code), "{code} missing: {codes:?}");
+    }
+    assert!(
+        !events.iter().any(|e| e.outcome.as_deref() == Some("ok")),
+        "a refused hop is not a success"
+    );
+    let loop_event = events
+        .iter()
+        .find(|e| e.code.as_deref() == Some("EGRESS_TOO_MANY_REDIRECTS"))
+        .unwrap();
+    assert_eq!(loop_event.outcome.as_deref(), Some("error"));
+    assert!(loop_event
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("redirects=5"));
+}
+
+#[tokio::test]
+async fn wasm_bridge_canaries_do_not_leak_into_events_or_logs() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    let harness = spawn_guard(ScriptedResolver::none(), true, default_settings(port)).await;
+    let bridge = wasm_bridge(&harness, default_settings(port));
+    let url = url_of(&upstream);
+    let sink = log_sink();
+    sink.lock().unwrap().clear();
+
+    // A positive call and a refusal, each with its own fictitious canaries
+    // in the query, the body and the credentials; the guest also tries to
+    // forge the identity with an app header.
+    const OK_QUERY: &str = "bridge-canary-query-ok";
+    const OK_BODY: &str = "bridge-canary-body-ok";
+    const OK_AUTH: &str = "Bearer bridge-canary-auth-ok";
+    const BAD_QUERY: &str = "bridge-canary-query-bad";
+    const BAD_BODY: &str = "bridge-canary-body-bad";
+    const BAD_AUTH: &str = "Bearer bridge-canary-auth-bad";
+    const FORGED_ID: &str = "bridge-canary-identity";
+
+    let response = wasm_fetch(
+        bridge.clone(),
+        wasm_request(
+            "POST",
+            &format!("{url}/echo?q={OK_QUERY}"),
+            &[("authorization", OK_AUTH), ("x-request-id", FORGED_ID)],
+            OK_BODY.as_bytes(),
+            "wasm-req-canary-ok",
+        ),
+    )
+    .await
+    .expect("the canary success answers");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body, OK_BODY.as_bytes());
+
+    let error = wasm_refusal(
+        wasm_fetch(
+            bridge.clone(),
+            wasm_request(
+                "POST",
+                &format!("https://10.0.0.7/canary-path?q={BAD_QUERY}"),
+                &[("authorization", BAD_AUTH), ("x-request-id", FORGED_ID)],
+                BAD_BODY.as_bytes(),
+                "wasm-req-canary-bad",
+            ),
+        )
+        .await,
+        "the private IP",
+    );
+    assert_eq!(error, WasmHttpError::Transport);
+
+    // The events (their full serialized form) carry the trusted identity
+    // and the host ids only: no query, body, credential or forged text.
+    wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-req-canary-ok")
+    })
+    .await;
+    wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-req-canary-bad")
+    })
+    .await;
+    let events = egress_events(&harness.store);
+    assert_eq!(events.len(), 2);
+    let canaries = [
+        OK_QUERY, OK_BODY, OK_AUTH, BAD_QUERY, BAD_BODY, BAD_AUTH, FORGED_ID,
+    ];
+    for event in &events {
+        assert!(
+            !event.message.as_deref().unwrap_or("").contains("q="),
+            "no query string in the message"
+        );
+        let json = serde_json::to_string(event).unwrap();
+        for canary in canaries {
+            assert!(
+                !json
+                    .to_ascii_lowercase()
+                    .contains(&canary.to_ascii_lowercase()),
+                "the event must not contain {canary:?}: {json}"
+            );
+        }
+        // The identity is the trusted ctx, not the guest's forged header.
+        assert_eq!(event.worker.as_deref(), Some("egress-test"));
+        assert_eq!(event.version.as_deref(), Some("1.0.0"));
+        assert_eq!(event.namespace.as_deref(), Some("ns"));
+        assert_eq!(event.process_id, None);
+    }
+    let ok_event = events
+        .iter()
+        .find(|e| e.request_id.as_deref() == Some("wasm-req-canary-ok"))
+        .unwrap();
+    let bad_event = events
+        .iter()
+        .find(|e| e.request_id.as_deref() == Some("wasm-req-canary-bad"))
+        .unwrap();
+    assert_eq!(ok_event.outcome.as_deref(), Some("ok"));
+    assert_eq!(bad_event.outcome.as_deref(), Some("blocked"));
+    assert_eq!(bad_event.status, Some(403));
+
+    // The log: the guard's lines are there (the capture works), but no
+    // canary of any kind is.
+    let logs = String::from_utf8_lossy(sink.lock().unwrap().as_slice()).to_string();
+    assert!(
+        logs.contains("worker.egress"),
+        "the guard's worker.egress line must reach the log: {logs}"
+    );
+    for canary in canaries {
+        assert!(
+            !logs
+                .to_ascii_lowercase()
+                .contains(&canary.to_ascii_lowercase()),
+            "the log must not contain {canary:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests: the WASM bridge size limits (EDG-52 07b2B1) — the request cap
+// defense and the response cap as the MIN of the guest's per-call cap and
+// the guard's `max_response_bytes`, each attempt exactly one event and one
+// metrics sample (the size category is `error`, never `ok` and never the
+// concurrency `limit`)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn wasm_bridge_limits_request_cap_eight_mib_is_defended_before_the_network() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    let harness = spawn_guard(ScriptedResolver::none(), true, default_settings(port)).await;
+    let url = url_of(&upstream);
+    let bridge = wasm_bridge(&harness, default_settings(port));
+
+    // The defense is proved on trusted direct input only: the host builds
+    // the frame, so an 8 MiB body is the largest the guard may accept.
+    // (The WASM runtime's own frames are smaller; nothing here claims a
+    // bigger guest frame would be admitted.)
+    let exact = vec![0x5Au8; 8 * 1024 * 1024];
+    let response = wasm_fetch_capped(
+        bridge.clone(),
+        wasm_request(
+            "POST",
+            &format!("{url}/echo"),
+            &[],
+            &exact,
+            "wasm-lim-req-8mib",
+        ),
+        8 * 1024 * 1024,
+    )
+    .await
+    .expect("a body at the cap is accepted, not refused");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.len(), exact.len());
+    // A size plus a byte predicate — never a whole-vector assert_eq (the
+    // failure output would be megabytes).
+    assert!(
+        response.body.iter().all(|&byte| byte == 0x5A),
+        "the echo answered the exact 8 MiB"
+    );
+    let hit = upstream
+        .hits_to("/echo")
+        .pop()
+        .expect("the 8 MiB request reached the upstream");
+    assert_eq!(hit.body.len(), 8 * 1024 * 1024);
+
+    // One byte over: refused as InvalidRequest BEFORE the network — no
+    // extra dial, no extra hit.
+    let over = vec![0x5Au8; 8 * 1024 * 1024 + 1];
+    let error = wasm_refusal(
+        wasm_fetch_capped(
+            bridge.clone(),
+            wasm_request(
+                "POST",
+                &format!("{url}/echo"),
+                &[],
+                &over,
+                "wasm-lim-req-8mib-plus1",
+            ),
+            8 * 1024 * 1024,
+        )
+        .await,
+        "the 8 MiB + 1 request",
+    );
+    assert_eq!(error, WasmHttpError::InvalidRequest);
+    assert_eq!(
+        upstream.accepts.load(Ordering::SeqCst),
+        1,
+        "the over-cap request opened no connection"
+    );
+    assert_eq!(
+        upstream.hits_to("/echo").len(),
+        1,
+        "the over-cap request never reached the upstream"
+    );
+
+    // Two attempts, two events, exactly one sample each: the success is ok,
+    // the refusal the guard's own request-cap code.
+    wait_event_count(&harness.store, 2).await;
+    let events = egress_events(&harness.store);
+    assert_eq!(events.len(), 2);
+    let ok_event = events
+        .iter()
+        .find(|e| e.request_id.as_deref() == Some("wasm-lim-req-8mib"))
+        .expect("the 8 MiB success event");
+    assert_eq!(ok_event.outcome.as_deref(), Some("ok"));
+    assert_eq!(ok_event.status, Some(200));
+    assert_eq!(ok_event.code, None);
+    let refusal = events
+        .iter()
+        .find(|e| e.request_id.as_deref() == Some("wasm-lim-req-8mib-plus1"))
+        .expect("the over-cap refusal event");
+    assert_eq!(refusal.outcome.as_deref(), Some("blocked"));
+    assert_eq!(refusal.code.as_deref(), Some("EGRESS_REQUEST_TOO_LARGE"));
+    assert_eq!(refusal.status, Some(413));
+    let rendered = egress_metrics_prometheus(harness.guard.metrics());
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="ok"} 1"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered
+            .contains(r#"edger_egress_requests_total{worker="egress-test",outcome="blocked"} 1"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"edger_egress_response_bytes_total{worker="egress-test"} 8388608"#),
+        "exactly the 8 MiB of the accepted echo: {rendered}"
+    );
+}
+
+#[tokio::test]
+async fn wasm_bridge_limits_content_length_cap_applies_the_min_of_guest_and_guard() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    let harness = spawn_guard(ScriptedResolver::none(), true, default_settings(port)).await;
+    let url = url_of(&upstream);
+    let bridge = wasm_bridge(&harness, default_settings(port));
+
+    // /ok is a 12-byte Content-Length body ("hello-egress").
+    // Guest cap 12: the exact cap is a success with the whole body.
+    let response = wasm_fetch_capped(
+        bridge.clone(),
+        wasm_request("GET", &format!("{url}/ok"), &[], &[], "wasm-lim-cl-guest12"),
+        12,
+    )
+    .await
+    .expect("the exact cap admits the whole body");
+    assert_eq!(
+        (response.status, response.body.as_ref()),
+        (200, b"hello-egress" as &[u8])
+    );
+    assert_eq!(
+        wasm_response_header(&response, "content-length"),
+        Some("12")
+    );
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lim-cl-guest12")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("ok"));
+
+    // Guest cap 11: the SAME body is a ResponseTooLarge refusal, and the
+    // ATTEMPT records exactly one event/sample as an error with the guard's
+    // code — never as ok (the take-once report must be the refusal, not the
+    // body's premature completion).
+    let error = wasm_refusal(
+        wasm_fetch_capped(
+            bridge.clone(),
+            wasm_request("GET", &format!("{url}/ok"), &[], &[], "wasm-lim-cl-guest11"),
+            11,
+        )
+        .await,
+        "the 11-byte guest cap",
+    );
+    assert_eq!(error, WasmHttpError::ResponseTooLarge);
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lim-cl-guest11")
+    })
+    .await;
+    assert_eq!(
+        event.outcome.as_deref(),
+        Some("error"),
+        "the cap refusal is an error, never ok"
+    );
+    assert_eq!(event.code.as_deref(), Some("EGRESS_RESPONSE_TOO_LARGE"));
+    assert_eq!(event.status, Some(502));
+    let rendered = egress_metrics_prometheus(harness.guard.metrics());
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="ok"} 1"#),
+        "the 11-byte attempt added no ok sample: {rendered}"
+    );
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="error"} 1"#),
+        "exactly one sample for the 11-byte attempt: {rendered}"
+    );
+
+    // Guest cap 0: the refusal is the same.
+    let error = wasm_refusal(
+        wasm_fetch_capped(
+            bridge.clone(),
+            wasm_request("GET", &format!("{url}/ok"), &[], &[], "wasm-lim-cl-guest0"),
+            0,
+        )
+        .await,
+        "the zero guest cap",
+    );
+    assert_eq!(error, WasmHttpError::ResponseTooLarge);
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lim-cl-guest0")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("error"));
+    assert_eq!(event.code.as_deref(), Some("EGRESS_RESPONSE_TOO_LARGE"));
+
+    // The MIN is real: the GUARD cap alone gives the same results with a
+    // large guest cap.
+    let bridge = wasm_bridge(
+        &harness,
+        settings(&[443, port], 5_000, 10_000, 300_000, 300_000, 12, 8),
+    );
+    let response = wasm_fetch_capped(
+        bridge.clone(),
+        wasm_request("GET", &format!("{url}/ok"), &[], &[], "wasm-lim-cl-guard12"),
+        WASM_BODY_LIMIT,
+    )
+    .await
+    .expect("the guard cap 12 admits the 12-byte body");
+    assert_eq!(
+        (response.status, response.body.as_ref()),
+        (200, b"hello-egress" as &[u8])
+    );
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lim-cl-guard12")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("ok"));
+
+    for (guard_cap, request_id) in [(11, "wasm-lim-cl-guard11"), (0, "wasm-lim-cl-guard0")] {
+        let bridge = wasm_bridge(
+            &harness,
+            settings(&[443, port], 5_000, 10_000, 300_000, 300_000, guard_cap, 8),
+        );
+        let error = wasm_refusal(
+            wasm_fetch_capped(
+                bridge.clone(),
+                wasm_request("GET", &format!("{url}/ok"), &[], &[], request_id),
+                WASM_BODY_LIMIT,
+            )
+            .await,
+            "the guard cap below the body",
+        );
+        assert_eq!(error, WasmHttpError::ResponseTooLarge);
+        let event = wait_event(&harness.store, |e| {
+            e.request_id.as_deref() == Some(request_id)
+        })
+        .await;
+        assert_eq!(event.outcome.as_deref(), Some("error"));
+        assert_eq!(event.code.as_deref(), Some("EGRESS_RESPONSE_TOO_LARGE"));
+    }
+
+    // A zero cap admits exactly one body: the empty one (200, zero bytes).
+    let response = wasm_fetch_capped(
+        bridge.clone(),
+        wasm_request(
+            "GET",
+            &format!("{url}/empty"),
+            &[],
+            &[],
+            "wasm-lim-empty-guest0",
+        ),
+        0,
+    )
+    .await
+    .expect("the empty body is the only one a zero guest cap admits");
+    assert_eq!((response.status, response.body.len()), (200, 0));
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lim-empty-guest0")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("ok"));
+    assert_eq!(event.status, Some(200));
+
+    // ... and the same under a zero GUARD cap with a large guest cap.
+    let bridge = wasm_bridge(
+        &harness,
+        settings(&[443, port], 5_000, 10_000, 300_000, 300_000, 0, 8),
+    );
+    let response = wasm_fetch_capped(
+        bridge.clone(),
+        wasm_request(
+            "GET",
+            &format!("{url}/empty"),
+            &[],
+            &[],
+            "wasm-lim-empty-guard0",
+        ),
+        WASM_BODY_LIMIT,
+    )
+    .await
+    .expect("the empty body is the only one a zero guard cap admits");
+    assert_eq!((response.status, response.body.len()), (200, 0));
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lim-empty-guard0")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("ok"));
+
+    // Eight attempts, exactly one event and one sample each: four ok (the
+    // two exact caps and the two empty bodies) and four error. A cap
+    // refusal is an error, never ok and never the concurrency `limit`; a
+    // refusal carries no body, so a partial response can never be a
+    // success.
+    wait_event_count(&harness.store, 8).await;
+    let events = egress_events(&harness.store);
+    assert_eq!(events.len(), 8);
+    for event in &events {
+        assert_ne!(event.outcome.as_deref(), Some("limit"));
+    }
+    let rendered = egress_metrics_prometheus(harness.guard.metrics());
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="ok"} 4"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="error"} 4"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"edger_egress_response_bytes_total{worker="egress-test"} 24"#),
+        "12 + 12 bytes: the refusals handed out nothing: {rendered}"
+    );
+}
+
+#[tokio::test]
+async fn wasm_bridge_limits_chunked_eof_and_stream_bodies_cut_at_the_cap_with_one_error_event() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    let harness = spawn_guard(ScriptedResolver::none(), true, default_settings(port)).await;
+    let url = url_of(&upstream);
+    let bridge = wasm_bridge(&harness, default_settings(port));
+
+    // /chunked is a 12-byte chunked body: the exact cap is a clean success
+    // to the end (the guard re-frames it, so no Content-Length is kept).
+    let response = wasm_fetch_capped(
+        bridge.clone(),
+        wasm_request(
+            "GET",
+            &format!("{url}/chunked"),
+            &[],
+            &[],
+            "wasm-lim-chunked-cap12",
+        ),
+        12,
+    )
+    .await
+    .expect("the exact cap admits the whole chunked body");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_ref(), b"chunked-body" as &[u8]);
+    assert!(wasm_response_header(&response, "content-length").is_none());
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lim-chunked-cap12")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("ok"));
+
+    // One byte under: a ResponseTooLarge cut, ONE error event with the size
+    // reason and the bytes handed out — no partial success (the refusal
+    // carries no body at all).
+    let error = wasm_refusal(
+        wasm_fetch_capped(
+            bridge.clone(),
+            wasm_request(
+                "GET",
+                &format!("{url}/chunked"),
+                &[],
+                &[],
+                "wasm-lim-chunked-cap11",
+            ),
+            11,
+        )
+        .await,
+        "the 11-byte guest cap on the chunked body",
+    );
+    assert_eq!(error, WasmHttpError::ResponseTooLarge);
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lim-chunked-cap11")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("error"));
+    assert_eq!(event.code, None, "a post-head cut carries no guard code");
+    assert_eq!(event.status, Some(200));
+    assert!(
+        event
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("reason=response_size_limit"),
+        "{:?}",
+        event.message
+    );
+    assert!(event.message.as_deref().unwrap().contains("bytes=11"));
+
+    // /eof is a close-delimited 8-byte body: the same semantics.
+    let response = wasm_fetch_capped(
+        bridge.clone(),
+        wasm_request("GET", &format!("{url}/eof"), &[], &[], "wasm-lim-eof-cap8"),
+        8,
+    )
+    .await
+    .expect("the exact cap admits the whole close-delimited body");
+    assert_eq!(response.body.as_ref(), b"eof-body" as &[u8]);
+    let error = wasm_refusal(
+        wasm_fetch_capped(
+            bridge.clone(),
+            wasm_request("GET", &format!("{url}/eof"), &[], &[], "wasm-lim-eof-cap7"),
+            7,
+        )
+        .await,
+        "the 7-byte guest cap on the close-delimited body",
+    );
+    assert_eq!(error, WasmHttpError::ResponseTooLarge);
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lim-eof-cap7")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("error"));
+    assert!(event.message.as_deref().unwrap().contains("bytes=7"));
+
+    // The GUARD cap alone cuts the same way with a large guest cap (the min
+    // is not the guest cap alone).
+    for (path, cap, request_id) in [
+        ("/chunked", 11u64, "wasm-lim-guard-chunked11"),
+        ("/eof", 7, "wasm-lim-guard-eof7"),
+    ] {
+        let bridge = wasm_bridge(
+            &harness,
+            settings(&[443, port], 5_000, 10_000, 300_000, 300_000, cap, 8),
+        );
+        let error = wasm_refusal(
+            wasm_fetch_capped(
+                bridge.clone(),
+                wasm_request("GET", &format!("{url}{path}"), &[], &[], request_id),
+                WASM_BODY_LIMIT,
+            )
+            .await,
+            "the guard cap below the body",
+        );
+        assert_eq!(error, WasmHttpError::ResponseTooLarge);
+        let event = wait_event(&harness.store, |e| {
+            e.request_id.as_deref() == Some(request_id)
+        })
+        .await;
+        assert_eq!(event.outcome.as_deref(), Some("error"));
+        assert!(event
+            .message
+            .as_deref()
+            .unwrap()
+            .contains(&format!("bytes={cap}")));
+    }
+
+    // /streambig is a 300 KiB close-delimited body: it crosses many frames
+    // and is refused at the cap without a partial success.
+    let error = wasm_refusal(
+        wasm_fetch_capped(
+            bridge.clone(),
+            wasm_request(
+                "GET",
+                &format!("{url}/streambig"),
+                &[],
+                &[],
+                "wasm-lim-streambig-cap100k",
+            ),
+            100 * 1024,
+        )
+        .await,
+        "the 100 KiB guest cap on the 300 KiB body",
+    );
+    assert_eq!(error, WasmHttpError::ResponseTooLarge);
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lim-streambig-cap100k")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("error"));
+    assert!(event.message.as_deref().unwrap().contains("bytes=102400"));
+
+    // Seven attempts, exactly one event and one sample each: two ok (the
+    // exact caps) and five error (the size category is error, not the
+    // concurrency limit and not ok).
+    wait_event_count(&harness.store, 7).await;
+    let events = egress_events(&harness.store);
+    assert_eq!(events.len(), 7);
+    for event in &events {
+        assert_ne!(event.outcome.as_deref(), Some("limit"));
+    }
+    let rendered = egress_metrics_prometheus(harness.guard.metrics());
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="ok"} 2"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="error"} 5"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"edger_egress_response_bytes_total{worker="egress-test"} 102456"#),
+        "12 + 11 + 8 + 7 + 11 + 7 + 102400 bytes: {rendered}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests: the WASM bridge lifecycle (EDG-52 07b2B2) — the temporal cuts and
+// the stream drop over the bridge, the connect/headers budgets on a silent
+// TLS peer, the (worker, version) slot shared with the Deno socket path, and
+// the pre-head cancellation of a bridge call. The same guard, the same real
+// TLS upstream and the real `EgressWasmBridge` trait; every attempt records
+// exactly one event and one metrics sample, with the host request id and
+// `process_id: None`.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn wasm_bridge_lifecycle_temporal_cuts_and_stream_drop_are_transport_errors_with_one_event_each(
+) {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    // ONE slot per (worker, version): the harness's serve and every bridge
+    // share the same semaphore, so a /ok after each cut proves the slot
+    // came back.
+    let harness = spawn_guard(
+        ScriptedResolver::none(),
+        true,
+        settings(
+            &[443, port],
+            5_000,
+            10_000,
+            300_000,
+            300_000,
+            1024 * 1024,
+            1,
+        ),
+    )
+    .await;
+    let url = url_of(&upstream);
+
+    // Each subcase shortens EXACTLY ONE budget; every other one stays long
+    // so it cannot mask the cause. The pre-head refusal keeps the guard's
+    // EGRESS_TIMEOUT code; the post-head cuts have no code.
+    for (request_id, path, settings, outcome, code, status, reason) in [
+        (
+            "wasm-lc-slow-head",
+            "/slow-head",
+            // headers 150 ms is the only short budget (connect 5 s, idle
+            // and total 5 min): the pre-head refusal.
+            settings(&[443, port], 5_000, 150, 300_000, 300_000, 1024 * 1024, 1),
+            "timeout",
+            Some("EGRESS_TIMEOUT"),
+            504,
+            None,
+        ),
+        (
+            "wasm-lc-stall",
+            "/stall",
+            // idle 150 ms is the only short budget: the post-head idle cut.
+            settings(&[443, port], 5_000, 10_000, 150, 300_000, 1024 * 1024, 1),
+            "timeout",
+            None,
+            200,
+            Some("reason=idle_timeout"),
+        ),
+        (
+            "wasm-lc-cl-stall",
+            "/cl-stall",
+            // a Content-Length body that goes silent after 5 of 100 bytes.
+            settings(&[443, port], 5_000, 10_000, 150, 300_000, 1024 * 1024, 1),
+            "timeout",
+            None,
+            200,
+            Some("reason=idle_timeout"),
+        ),
+        (
+            "wasm-lc-steady",
+            "/steady",
+            // total 300 ms is the only short budget: the trickle (2 KiB /
+            // 50 ms) never trips the idle one (1 s).
+            settings(&[443, port], 5_000, 10_000, 1_000, 300, 1024 * 1024, 1),
+            "timeout",
+            None,
+            200,
+            Some("reason=total_timeout"),
+        ),
+        (
+            "wasm-lc-drop",
+            "/drop",
+            // a long idle and total: the abrupt connection cut, not a
+            // budget, is the cause.
+            settings(
+                &[443, port],
+                5_000,
+                10_000,
+                300_000,
+                300_000,
+                1024 * 1024,
+                1,
+            ),
+            "error",
+            None,
+            200,
+            Some("reason=upstream_stream_error"),
+        ),
+    ] {
+        let bridge = wasm_bridge(&harness, settings);
+        // A cut or a pre-head timeout is never a normal response: no
+        // partial status or body is a success.
+        let error = wasm_refusal(
+            wasm_fetch(
+                bridge.clone(),
+                wasm_request("GET", &format!("{url}{path}"), &[], &[], request_id),
+            )
+            .await,
+            "the cut",
+        );
+        assert_eq!(error, WasmHttpError::Transport, "{path}");
+        let event = wait_event(&harness.store, |e| {
+            e.request_id.as_deref() == Some(request_id)
+        })
+        .await;
+        assert_eq!(event.process_id, None, "the WASM path has no process id");
+        assert_eq!(event.outcome.as_deref(), Some(outcome), "{path}");
+        assert_eq!(event.code.as_deref(), code, "{path}");
+        assert_eq!(event.status, Some(status), "{path}");
+        if let Some(needle) = reason {
+            assert!(
+                event.message.as_deref().unwrap().contains(needle),
+                "{path}: {}",
+                event.message.as_deref().unwrap()
+            );
+        }
+        // The slot is back after every cut: a /ok through the same bridge.
+        let response = wasm_fetch(
+            bridge,
+            wasm_request(
+                "GET",
+                &format!("{url}/ok"),
+                &[],
+                &[],
+                &format!("{request_id}-ok"),
+            ),
+        )
+        .await
+        .expect("the cut released the slot");
+        assert_eq!(response.status, 200, "{path}: the slot was released");
+    }
+
+    // Five cuts and five recoveries: ten events, one per attempt, and the
+    // metrics agree (no double count, no ok for a cut).
+    wait_event_count(&harness.store, 10).await;
+    let events = egress_events(&harness.store);
+    assert_eq!(events.len(), 10);
+    let rendered = egress_metrics_prometheus(harness.guard.metrics());
+    assert!(
+        rendered
+            .contains(r#"edger_egress_requests_total{worker="egress-test",outcome="timeout"} 4"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="error"} 1"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="ok"} 5"#),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn wasm_bridge_lifecycle_silent_tls_peer_bounds_connect_and_headers_over_the_bridge() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    let harness = spawn_guard(
+        ScriptedResolver::none(),
+        true,
+        settings(
+            &[443, port],
+            5_000,
+            10_000,
+            300_000,
+            300_000,
+            1024 * 1024,
+            1,
+        ),
+    )
+    .await;
+
+    // A: the CONNECT budget (200 ms) is the shortest: it bounds TCP + TLS
+    // against the silent peer even though the headers budget (10 s) is far
+    // longer. (A slow DNS is not the connect proof: a name would resolve
+    // under the total deadline only.)
+    let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let silent_port = silent.local_addr().unwrap().port();
+    let peer = tokio::spawn(async move {
+        let (mut socket, _) = silent.accept().await.unwrap();
+        let mut bytes = [0u8; 4096];
+        while matches!(socket.read(&mut bytes).await, Ok(n) if n > 0) {}
+    });
+    let bridge = wasm_bridge(
+        &harness,
+        settings(
+            &[443, silent_port],
+            200,
+            10_000,
+            300_000,
+            300_000,
+            1024 * 1024,
+            1,
+        ),
+    );
+    let started = std::time::Instant::now();
+    let error = wasm_refusal(
+        wasm_fetch(
+            bridge.clone(),
+            wasm_request(
+                "GET",
+                &format!("https://127.0.0.1:{silent_port}/"),
+                &[],
+                &[],
+                "wasm-lc-silent-connect",
+            ),
+        )
+        .await,
+        "the silent TLS peer",
+    );
+    let elapsed = started.elapsed();
+    assert_eq!(error, WasmHttpError::Transport);
+    assert!(
+        elapsed < Duration::from_millis(1_000),
+        "the connect budget (200 ms) bounded the exchange, took {elapsed:?}"
+    );
+    within("the silent peer A to see the close", peer)
+        .await
+        .unwrap();
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lc-silent-connect")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("timeout"));
+    assert_eq!(event.code.as_deref(), Some("EGRESS_TIMEOUT"));
+    assert_eq!(event.status, Some(504));
+    assert_eq!(event.process_id, None);
+
+    // B: the HEADERS budget (100 ms) is shorter than the connect one (600
+    // ms) and bounds the pre-head exchange too (the same silent-peer shape
+    // as `head_budget_bounds_a_silent_tls_peer`, through the bridge).
+    let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let silent_port = silent.local_addr().unwrap().port();
+    let peer = tokio::spawn(async move {
+        let (mut socket, _) = silent.accept().await.unwrap();
+        let mut bytes = [0u8; 4096];
+        while matches!(socket.read(&mut bytes).await, Ok(n) if n > 0) {}
+    });
+    let bridge = wasm_bridge(
+        &harness,
+        settings(&[443, silent_port], 600, 100, 1_000, 2_000, 1024, 1),
+    );
+    let started = std::time::Instant::now();
+    let error = wasm_refusal(
+        wasm_fetch(
+            bridge.clone(),
+            wasm_request(
+                "GET",
+                &format!("https://127.0.0.1:{silent_port}/"),
+                &[],
+                &[],
+                "wasm-lc-silent-headers",
+            ),
+        )
+        .await,
+        "the silent TLS peer",
+    );
+    let elapsed = started.elapsed();
+    assert_eq!(error, WasmHttpError::Transport);
+    assert!(
+        elapsed < Duration::from_millis(400),
+        "the head budget (100 ms) bounded the exchange, took {elapsed:?}"
+    );
+    within("the silent peer B to see the close", peer)
+        .await
+        .unwrap();
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lc-silent-headers")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("timeout"));
+    assert_eq!(event.code.as_deref(), Some("EGRESS_TIMEOUT"));
+    assert_eq!(event.status, Some(504));
+
+    // The slot survived both cuts: the real upstream still answers.
+    let recover = wasm_bridge(
+        &harness,
+        settings(
+            &[443, port],
+            5_000,
+            10_000,
+            300_000,
+            300_000,
+            1024 * 1024,
+            1,
+        ),
+    );
+    let response = wasm_fetch(
+        recover,
+        wasm_request(
+            "GET",
+            &format!("https://127.0.0.1:{port}/ok"),
+            &[],
+            &[],
+            "wasm-lc-silent-recover",
+        ),
+    )
+    .await
+    .expect("the slot is free after the cuts");
+    assert_eq!(response.status, 200);
+
+    // Three attempts, three events, no double count.
+    wait_event_count(&harness.store, 3).await;
+}
+
+#[tokio::test]
+async fn wasm_bridge_lifecycle_shares_the_version_slot_with_the_deno_socket_path() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    // ONE slot per (worker, version): the harness's serve (the Deno socket
+    // path) and every bridge share the same semaphore — no per-bridge
+    // semaphore.
+    // A short head budget (500 ms): with the long idle/total budgets
+    // (300 s) the explicit poll below can tell a future waiting on the head
+    // from one waiting on the body (the head deadline is past by then, the
+    // body budgets are not).
+    let shared = settings(&[443, port], 5_000, 500, 300_000, 300_000, 1024 * 1024, 1);
+    let harness = spawn_guard(ScriptedResolver::none(), true, shared.clone()).await;
+    let url = url_of(&upstream);
+    let bridge = wasm_bridge(&harness, shared);
+
+    // The Deno socket path holds the only slot on /hold (the same
+    // protocol/socket a Deno process would use — no Deno is executed).
+    let hold_path = harness.sock_path.clone();
+    let hold_url = format!("{url}/hold");
+    let deno_hold = tokio::spawn(async move { call_path(&hold_path, Call::get(hold_url)).await });
+    within(
+        "the hold to reach the upstream",
+        upstream.hold_started.notified(),
+    )
+    .await;
+
+    // The bridge's /ok is refused by the SAME slot: immediately (no queue),
+    // nothing dialed, nothing hit.
+    let started = std::time::Instant::now();
+    let error = wasm_refusal(
+        wasm_fetch(
+            bridge.clone(),
+            wasm_request(
+                "GET",
+                &format!("{url}/ok"),
+                &[],
+                &[],
+                "wasm-lc-share-bridge-ok",
+            ),
+        )
+        .await,
+        "the bridge /ok while the socket path holds the slot",
+    );
+    assert_eq!(error, WasmHttpError::Transport);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "no queue: the refusal is immediate"
+    );
+    assert_eq!(
+        upstream.accepts.load(Ordering::SeqCst),
+        1,
+        "the refusal dialed nothing"
+    );
+    assert!(
+        upstream.hits_to("/ok").is_empty(),
+        "the refused call never reached the upstream"
+    );
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lc-share-bridge-ok")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("limit"));
+    assert_eq!(event.code.as_deref(), Some("EGRESS_LIMIT"));
+    assert_eq!(event.status, Some(429));
+    assert_eq!(event.process_id, None, "the WASM path has no process id");
+    // The identity is the host-trusted ctx, never a guest header.
+    assert_eq!(event.worker.as_deref(), Some("egress-test"));
+    assert_eq!(event.version.as_deref(), Some("1.0.0"));
+    assert_eq!(event.namespace.as_deref(), Some("ns"));
+
+    // Release the hold: it completes.
+    upstream.hold_release.notify_one();
+    let hold_reply = within("the hold to finish", deno_hold).await.unwrap();
+    assert_eq!(hold_reply.status, 200);
+    assert_eq!(hold_reply.body, b"Z");
+
+    // The bridge now holds the slot on /hold. The fetch is the test's OWNED
+    // future (pinned, not spawned yet): it is driven until the upstream
+    // confirms the request is parked there, so the later abort cannot race
+    // the head read.
+    let hold_url = format!("{url}/hold");
+    let held = bridge.clone();
+    let mut fetch_owned = Box::pin(wasm_fetch(
+        held,
+        wasm_request("GET", &hold_url, &[], &[], "wasm-lc-share-bridge-hold"),
+    ));
+    within("the bridge hold to reach the upstream", async {
+        tokio::select! {
+            _ = &mut fetch_owned => {
+                panic!("the bridge hold answered before the upstream parked it")
+            }
+            _ = upstream.hold_started.notified() => {}
+        }
+    })
+    .await;
+
+    // Barrier head -> body: the 500 ms head deadline (running since the hop
+    // start, before the head was flushed) is now past — 600 ms after
+    // hold_started. A future still waiting on TCP/TLS/head would have
+    // completed with the timeout refusal; with the long idle/total budgets
+    // (300 s) the only remaining phase is the /hold body. One EXPLICIT poll
+    // (a sleep or an is_finished would not prove the phase) must find the
+    // future Pending.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    within(
+        "the single explicit poll of the parked future",
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(fetch_owned.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        }),
+    )
+    .await;
+
+    // Only now is that same polled future moved into its own owned
+    // JoinHandle.
+    let bridge_hold = tokio::spawn(fetch_owned);
+
+    // The Deno socket path's /ok is refused by the bridge's call too.
+    let resp = call(&harness, Call::get(format!("{url}/ok"))).await;
+    assert_eq!(resp.status, 429);
+    assert_eq!(resp.egress_code(), Some("EGRESS_LIMIT"));
+    let event = wait_event(&harness.store, |e| {
+        e.code.as_deref() == Some("EGRESS_LIMIT") && e.process_id.as_deref() == Some("proc-1")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("limit"));
+    assert_eq!(
+        event.request_id, None,
+        "the Deno socket path has no host request id"
+    );
+
+    // Abort ONLY the bridge's /hold (its body is still waiting on the
+    // parked byte): the explicit poll above proved the guard already read
+    // the head, so the abort is post-head — the cancellation is reported
+    // once, with the head's status, the host request id, no process id and
+    // no code.
+    bridge_hold.abort();
+    let cancelled = match within("the aborted bridge hold to end", bridge_hold).await {
+        Ok(_) => panic!("the aborted bridge hold must be cancelled, not answer"),
+        Err(join_err) => join_err,
+    };
+    assert!(cancelled.is_cancelled());
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lc-share-bridge-hold")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("error"));
+    assert_eq!(
+        event.status,
+        Some(200),
+        "the abort is post-head: the head's status"
+    );
+    assert_eq!(event.code, None);
+    assert_eq!(event.process_id, None);
+    assert_eq!(event.worker.as_deref(), Some("egress-test"));
+    let message = event.message.unwrap();
+    assert!(message.contains("worker_disconnected"), "{message}");
+    assert!(message.contains("host=127.0.0.1"), "{message}");
+    // Let the upstream's parked /hold task drain (its connection is gone).
+    upstream.hold_release.notify_one();
+
+    // No duplication after the abort settles.
+    tokio::task::yield_now().await;
+    let reported = egress_events(&harness.store)
+        .iter()
+        .filter(|e| e.request_id.as_deref() == Some("wasm-lc-share-bridge-hold"))
+        .count();
+    assert_eq!(reported, 1, "the cancellation is reported exactly once");
+
+    // The slot is back: the guard's /ok works again (an empty request id is
+    // `None` in the event, like the Deno path's absence).
+    let response = wasm_fetch(
+        bridge,
+        wasm_request("GET", &format!("{url}/ok"), &[], &[], ""),
+    )
+    .await
+    .expect("the slot is free after the aborted hold");
+    assert_eq!(response.status, 200);
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.is_none() && e.process_id.is_none() && e.outcome.as_deref() == Some("ok")
+    })
+    .await;
+    assert_eq!(event.status, Some(200));
+
+    // Five attempts, one event and one sample each: two ok, two limit,
+    // one error (the cancellation).
+    wait_event_count(&harness.store, 5).await;
+    let events = egress_events(&harness.store);
+    assert_eq!(events.len(), 5);
+    let rendered = egress_metrics_prometheus(harness.guard.metrics());
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="ok"} 2"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="limit"} 2"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="error"} 1"#),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn wasm_bridge_lifecycle_cancellation_before_the_head_is_reported_once() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    let entered = Arc::new(Notify::new());
+    let released = Arc::new(Notify::new());
+    let resolver = Arc::new(WaitingResolver {
+        entered: entered.clone(),
+        released: released.clone(),
+    });
+    let cfg = settings(
+        &[443, port],
+        5_000,
+        10_000,
+        300_000,
+        300_000,
+        1024 * 1024,
+        1,
+    );
+    let harness = spawn_guard(resolver, true, cfg.clone()).await;
+    let url = url_of(&upstream);
+    let bridge = wasm_bridge(&harness, cfg);
+
+    // The bridge's fetch is admitted (the slot) and parks inside the DNS
+    // resolution; aborting the OWNED task drops the call there, before the
+    // head.
+    let held = bridge.clone();
+    let fetch = tokio::spawn(async move {
+        wasm_fetch(
+            held,
+            wasm_request(
+                "GET",
+                &format!("https://rebind.test:{port}/ok"),
+                &[],
+                &[],
+                "wasm-lc-cancel",
+            ),
+        )
+        .await
+    });
+    within("the resolver to be entered", entered.notified()).await;
+    fetch.abort();
+    let cancelled = match within("the aborted fetch to end", fetch).await {
+        Ok(_) => panic!("the aborted fetch must be cancelled, not answer"),
+        Err(join_err) => join_err,
+    };
+    assert!(cancelled.is_cancelled());
+
+    // The cancelled call is ONE error event with the reason, the host
+    // request id, no status and no code, and no process id.
+    let event = wait_event(&harness.store, |e| {
+        e.request_id.as_deref() == Some("wasm-lc-cancel")
+    })
+    .await;
+    assert_eq!(event.outcome.as_deref(), Some("error"));
+    assert_eq!(event.code, None);
+    assert_eq!(event.status, None);
+    assert_eq!(event.process_id, None);
+    assert_eq!(event.worker.as_deref(), Some("egress-test"));
+    assert_eq!(event.version.as_deref(), Some("1.0.0"));
+    assert_eq!(event.namespace.as_deref(), Some("ns"));
+    let message = event.message.unwrap();
+    assert!(message.contains("worker_disconnected"), "{message}");
+    assert!(message.contains("host=rebind.test"), "{message}");
+
+    // Release the resolver for the later call and confirm the slot is free.
+    released.notify_waiters();
+    let response = wasm_fetch(
+        bridge,
+        wasm_request(
+            "GET",
+            &format!("{url}/ok"),
+            &[],
+            &[],
+            "wasm-lc-cancel-after",
+        ),
+    )
+    .await
+    .expect("the slot is free after the cancellation");
+    assert_eq!(response.status, 200);
+
+    // Two events, no duplicate of the cancellation.
+    wait_event_count(&harness.store, 2).await;
+    let events = egress_events(&harness.store);
+    assert_eq!(events.len(), 2);
+    let cancels = events
+        .iter()
+        .filter(|e| {
+            e.message
+                .as_deref()
+                .is_some_and(|m| m.contains("worker_disconnected"))
+        })
+        .count();
+    assert_eq!(cancels, 1, "the cancellation is reported exactly once");
+    let rendered = egress_metrics_prometheus(harness.guard.metrics());
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="error"} 1"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="ok"} 1"#),
+        "{rendered}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests: the WASM bridge non-text response headers (EDG-52 07b P2) — a
+// response header that is valid HTTP (obs-text) but not text must come back
+// to the guest as the static transport error, and its one event must be the
+// error (never `ok`, never the concurrency `limit`, never the worker
+// going away), with the conversion reason and the slot released
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn wasm_bridge_non_text_response_headers_are_one_transport_error() {
+    let upstream = spawn_upstream().await;
+    let port = upstream.addr.port();
+    // maxConcurrent 1: the error must release the slot, not leak it.
+    let cfg = settings(
+        &[443, port],
+        5_000,
+        10_000,
+        300_000,
+        300_000,
+        1024 * 1024,
+        1,
+    );
+    let harness = spawn_guard(ScriptedResolver::none(), true, cfg.clone()).await;
+    let url = url_of(&upstream);
+    let bridge = wasm_bridge(&harness, cfg);
+    // The raw obs-text value the upstream sends (a 0x80 byte: valid
+    // HTTP, not UTF-8).
+    let obs_value: &[u8] = b"fixture-header-canary-\x80";
+
+    // CONTROL (the Deno socket path): the SAME upstream answer is a
+    // normal response — 200, an empty body, no read error — and the raw
+    // header value survives as EXACT bytes (hyper keeps the obs-text;
+    // only the WASM to_str conversion is not text).
+    let reply = call(&harness, Call::get(format!("{url}/obs-empty"))).await;
+    assert_eq!(reply.status, 200);
+    assert!(reply.body.is_empty());
+    assert!(reply.error.is_none());
+    assert_eq!(
+        reply.headers.get("x-obs").map(|value| value.as_bytes()),
+        Some(obs_value),
+        "the socket path forwards the raw obs-text value"
+    );
+
+    // POSITIVE (the bridge): the plain ASCII /empty still passes.
+    let response = wasm_fetch(
+        bridge.clone(),
+        wasm_request(
+            "GET",
+            &format!("{url}/empty"),
+            &[],
+            &[],
+            "wasm-obs-empty-ascii",
+        ),
+    )
+    .await
+    .expect("the ASCII empty body passes the bridge");
+    assert_eq!((response.status, response.body.len()), (200, 0));
+
+    // NEGATIVE (the bridge): the non-text header is the STATIC transport
+    // error class — never the raw bytes, never a normal response.
+    let error = wasm_refusal(
+        wasm_fetch(
+            bridge.clone(),
+            wasm_request(
+                "GET",
+                &format!("{url}/obs-empty"),
+                &[],
+                &[],
+                "wasm-obs-raw-80",
+            ),
+        )
+        .await,
+        "the non-text response header",
+    );
+    assert_eq!(error, WasmHttpError::Transport);
+
+    // EXACTLY one event for that request id (the control call, the empty
+    // body and this one have each reported): the error with the
+    // conversion reason, the seen status, no guard code, no process id
+    // (the WASM path), zero bytes handed out.
+    wait_event_count(&harness.store, 3).await;
+    let obs_events: Vec<_> = egress_events(&harness.store)
+        .into_iter()
+        .filter(|event| event.request_id.as_deref() == Some("wasm-obs-raw-80"))
+        .collect();
+    assert_eq!(
+        obs_events.len(),
+        1,
+        "exactly one event for the failed call: {obs_events:?}"
+    );
+    let event = &obs_events[0];
+    assert_eq!(event.outcome.as_deref(), Some("error"));
+    assert_eq!(event.status, Some(200));
+    assert_eq!(event.code, None);
+    assert_eq!(event.process_id, None);
+    let message = event.message.as_deref().unwrap().to_string();
+    assert!(
+        message.contains("reason=invalid_response_headers"),
+        "{message}"
+    );
+    assert!(message.contains("bytes=0"), "{message}");
+
+    // The error path and the event carry no header name, no value byte
+    // and no lossy form of the 0x80 (U+FFFD): not in the event's
+    // serialized form, not in the message, not in the log.
+    let json = serde_json::to_string(event).unwrap();
+    for needle in ["fixture-header-canary", "x-obs"] {
+        assert!(
+            !json.contains(needle),
+            "the event must not contain {needle:?}: {json}"
+        );
+    }
+    assert!(
+        !json.contains('\u{fffd}'),
+        "the event must not leak U+FFFD: {json}"
+    );
+    assert!(!message.contains("x-obs"), "{message}");
+    let logs = String::from_utf8_lossy(log_sink().lock().unwrap().as_slice()).to_string();
+    assert!(
+        !logs.to_ascii_lowercase().contains("fixture-header-canary"),
+        "the log must not contain the header canary"
+    );
+
+    // The slot is RECOVERED: the next positive call under maxConcurrent 1
+    // is admitted (the error released the permit; it did not leak it).
+    let response = wasm_fetch(
+        bridge.clone(),
+        wasm_request("GET", &format!("{url}/ok"), &[], &[], "wasm-obs-ok-after"),
+    )
+    .await
+    .expect("the slot is released by the error");
+    assert_eq!(
+        (response.status, response.body.as_ref()),
+        (200, b"hello-egress" as &[u8])
+    );
+
+    // Four attempts (the socket control, the bridge empty, the bridge
+    // obs-error and the recovery): three ok and one error, and only the
+    // /ok 12 bytes were handed out.
+    wait_event_count(&harness.store, 4).await;
+    let rendered = egress_metrics_prometheus(harness.guard.metrics());
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="ok"} 3"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"edger_egress_requests_total{worker="egress-test",outcome="error"} 1"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"edger_egress_response_bytes_total{worker="egress-test"} 12"#),
+        "{rendered}"
     );
 }

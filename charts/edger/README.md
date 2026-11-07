@@ -264,8 +264,86 @@ Breach note (size channel): a compressed body leaks information through its
 size. Responses that reflect user input together with a secret (CSRF token,
 session data) can leak the secret by size — mitigate with `Cache-Control:
 no-transform` on those routes, per-request masked tokens, or
-`EDGER_COMPRESSION=off`. See
-[planning doc](../../planning/edger/docs/compression.md#nota-breach-canal-de-tamanho).
+`EDGER_COMPRESSION=off`.
+
+## SSE, WASM guests and the managed database
+
+These features are implemented in PR #179 (EDG-52 to EDG-56) and not yet
+released; nothing here says an environment already runs them. This
+section lists what the chart exposes today and what it does not.
+
+**Host-held SSE** ([planning doc](../../planning/edger/docs/sse.md)). Three
+environment variables, read once at boot, with no upper bound; an invalid value
+logs a `warn` and falls back to the default:
+
+- `EDGER_SSE_MAX_CONNECTIONS` (default `1024`, process total; `0` keeps the
+  broker registered but disabled, so an authorized subscription answers
+  `503 SSE_UNAVAILABLE`).
+- `EDGER_SSE_MAX_CONNECTIONS_PER_APP` (default `256`, minimum `1`; a ceiling over
+  the manifest `sse.maxConnections`).
+- `EDGER_SSE_HEARTBEAT_MS` (default `15000`, minimum `1000`; also the TTL check
+  granularity).
+
+The chart has **no dedicated value** for them. Pass them with `extraEnv`, for
+example:
+
+```yaml
+extraEnv:
+  - name: EDGER_SSE_MAX_CONNECTIONS_PER_APP
+    value: "128"
+```
+
+The broker lives in the process memory, so there is no fan-out across pods (the
+chart is single-replica by design). A client that stopped reading keeps its
+slot until the TCP connection ends, and disabling or deleting a worker does not
+close open subscriptions: they end at their own TTL.
+
+**App secrets and egress** (already in the chart). `appSecrets.enabled`,
+`appSecrets.dbPath` and `appSecrets.keySecret.name`/`.key` become
+`EDGER_APP_SECRETS_DB` and `EDGER_SECRETS_KEY_FILE`; the master key comes from an
+existing Secret and is never stored by the chart. `egress.blockCidrs` becomes
+`EDGER_EGRESS_BLOCK_CIDRS`, and the node IP is always set in `EDGER_NODE_IP`.
+WASM guests use the same vault (secrets are injected per execution) and the same
+egress guard (through the `edger_http_v1.fetch` import). These keys have no
+Rancher form fields.
+
+**Managed SQLD database** ([planning doc](../../planning/edger/docs/sqld-managed.md)).
+EdgeR manages namespaces on an **external** `sqld`; it does not start one, and
+this chart does not deploy one. The chart exposes none of the seven
+`EDGER_SQLD_*` variables (`EDGER_SQLD_ADMIN_URL`, `EDGER_SQLD_ADMIN_KEY_FILE`,
+`EDGER_SQLD_USER_URL`, `EDGER_SQLD_REGISTRY_DB`, `EDGER_SQLD_SIGNER_KEY_FILE`,
+`EDGER_SQLD_MANAGED_BUDGET_BYTES`, `EDGER_SQLD_BACKUP_DIR`), mounts no volume
+for the ledger, the key files or the backup directory (which must be `0700`
+directories owned by the process user), and the root filesystem is read-only.
+The variables are all-or-none: a partial set stops the `edger` boot. It also
+needs the app secrets vault above. Using the feature on Kubernetes through this
+chart is therefore not supported yet; `extraEnv`/`extraEnvFrom` alone cannot
+provide the private files and directories. The current chart does not configure
+the managed database at all. Separately, `deploy/production/sqld.yaml` keeps the
+`sqld` admin API on loopback (`127.0.0.1:9090`, inside the `sqld` pod), so the
+`edger` pod cannot reach the admin address that `EDGER_SQLD_ADMIN_URL` requires.
+Both are known gaps; no date is promised for closing them.
+
+**Pod shutdown.** On SIGTERM the `edger` drains open HTTP connections for at
+most `EDGER_HTTP_DRAIN_MS` (default `10000`, counted from the signal; `0`
+removes the limit and the wait is unbounded again; an invalid value logs a
+`warn` and falls back to the default). When it expires, the remaining
+connections die with the process after a `warn`; cron and the worker pool still
+shut down normally and the exit is successful. It applies to every HTTP
+connection, not only SSE. The default budgets add up the drain (10 s), cron
+(7 s: 5 grace, 1 abort, 1 margin) and the pool (up to 15 s), which is 32 s. That
+sum is **not a guaranteed ceiling**: after aborting the cron supervisor the
+process waits for it to end without a deadline, and a reconciliation pass in
+progress is not interrupted by the abort. This chart does **not** set
+`terminationGracePeriodSeconds`, so the Kubernetes default of 30 s applies, which
+is shorter than that sum: when the budgets run out, the kubelet sends SIGKILL
+before the process finishes on its own. This is derived
+from the code, not tested in a cluster. The chart has no value for the variable;
+pass it through `extraEnv`.
+
+**Ephemeral WASM.** A `kind: wasm` worker without `ttl` recompiles its module on
+every request (about 9 s per request in the `dev` profile with a 6.6 MB Go
+module; release cost not measured). Declare `ttl` for Go guests.
 
 ## Helm (terminal)
 

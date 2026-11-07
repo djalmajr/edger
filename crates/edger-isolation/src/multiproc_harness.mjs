@@ -8,6 +8,87 @@ const socketPath = Deno.args[0];
 const entryUrl = Deno.args[1];
 const nodeHttpMode = Deno.args[2] ?? "capture";
 const nodeHttpSocketPath = `${socketPath}.http`;
+// (managed database) The 4th argument is the database origin the HOST
+// validated; absent or empty = no fetch interception (the old behavior).
+const managedDatabaseOrigin = Deno.args[3] ?? "";
+
+// Native fetch machinery, captured before any user code runs so the wrapper
+// below keeps working if the app later replaces a global. The wrapper is NOT
+// a security boundary (the guest shares this realm and may open the guard
+// socket itself): the host sink validates every call regardless.
+const nativeFetch = globalThis.fetch;
+const NativeRequest = globalThis.Request;
+const NativeHeaders = globalThis.Headers;
+const NativeURL = globalThis.URL;
+const nativeCreateHttpClient = Deno.createHttpClient;
+const managedGuardSocket = Deno.env.get("EDGER_EGRESS_SOCKET");
+let managedClient = null;
+
+// Forwards `fetch` calls whose NORMALIZED origin equals the host origin to
+// the guard socket through a private Unix HttpClient, with the real target
+// in `x-edger-egress-url`. Everything else goes to the native fetch with the
+// caller's arguments untouched (a Request body is never consumed here), so
+// the normal permissions still apply. Fails closed: an invalid origin or a
+// missing socket throws without echoing the value.
+function installManagedDatabaseFetch() {
+  if (managedDatabaseOrigin === "") return;
+  let origin;
+  try {
+    const parsed = new NativeURL(managedDatabaseOrigin);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("scheme");
+    origin = parsed.origin;
+  } catch (_) {
+    throw new Error("managed database origin is invalid");
+  }
+  if (!managedGuardSocket) {
+    throw new Error("managed database guard socket is missing");
+  }
+  managedClient = nativeCreateHttpClient({
+    proxy: { transport: "unix", path: managedGuardSocket },
+  });
+  const guardUrl = "http://edger-egress.invalid/";
+  const databaseUrl = (input) => {
+    try {
+      const url = new NativeURL(input instanceof NativeRequest ? input.url : String(input));
+      return url.origin === origin ? url : null;
+    } catch (_) {
+      return null; // not absolute: the native fetch reports it as before
+    }
+  };
+  globalThis.fetch = function fetch(input, init) {
+    const url = databaseUrl(input);
+    if (url === null) return nativeFetch(input, init);
+    // The fragment never goes to the wire.
+    url.hash = "";
+    let request;
+    try {
+      request = new NativeRequest(input, init);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    const headers = new NativeHeaders(request.headers);
+    // The URL of THIS call always wins over a header the app supplied.
+    headers.set("x-edger-egress-url", url.href);
+    return nativeFetch(guardUrl, {
+      method: request.method,
+      headers,
+      body: request.body,
+      signal: request.signal,
+      redirect: "manual",
+      duplex: "half",
+      client: managedClient,
+    });
+  };
+}
+
+function closeManagedClient() {
+  try {
+    managedClient?.close();
+  } catch (_) {
+    // already closed.
+  }
+  managedClient = null;
+}
 
 // A durable per-worker process must survive background errors thrown by user
 // code AFTER a response was sent — a stray `setInterval` that enqueues into a
@@ -53,6 +134,7 @@ async function handleShutdown(reason, graceMs) {
     ]);
     timedOut = result === "timed_out";
   }
+  closeManagedClient();
   return { drained: pending.length, timedOut };
 }
 
@@ -528,6 +610,7 @@ function makeRoutesHandler(routes, fallback) {
 }
 
 async function loadHandler() {
+  installManagedDatabaseFetch();
   await installNodeHttpAdapter();
   const mod = await import(entryUrl);
   let handler = capturedHandler;
@@ -603,6 +686,10 @@ async function writeTagged(tag, payload) {
   await writeFrame(framed);
 }
 
+// The only response-head serializer of the harness (the Node-style adapter and
+// every handler flavor end in a `Response` whose head goes through it).
+const SSE_PUBLISH_HEADER = "x-edger-sse-publish";
+
 function streamedResponseHeaders(headers) {
   const hopByHop = new Set([
     "connection",
@@ -614,7 +701,24 @@ function streamedResponseHeaders(headers) {
     "transfer-encoding",
     "upgrade",
   ]);
-  return Array.from(headers.entries()).filter(([name]) => !hopByHop.has(name.toLowerCase()));
+  const pairs = [];
+  for (const [name, value] of headers.entries()) {
+    const lower = name.toLowerCase();
+    if (hopByHop.has(lower)) continue;
+    if (lower === SSE_PUBLISH_HEADER) {
+      // `Headers` folds repeated values of one name into a single
+      // comma-joined value and gives no way back. Base64url holds no comma,
+      // so one pair per item restores one header per SSE directive. The
+      // value is never decoded here; an empty item stays an empty value and
+      // the host refuses it.
+      for (const item of value.split(",")) {
+        pairs.push([name, item.replace(/^[ \t]+|[ \t]+$/g, "")]);
+      }
+      continue;
+    }
+    pairs.push([name, value]);
+  }
+  return pairs;
 }
 
 async function respond(handler, raw) {
@@ -710,8 +814,17 @@ async function respond(handler, raw) {
       // cancel(); capture any rejection.
       reader.cancel().catch(() => {});
     });
+    // Set when the loop stops at the byte cap WITHOUT having seen the end of
+    // the body (a body of exactly the cap length counts too: the end is not
+    // observed). The end frame then says so, so a completed-execution caller
+    // never takes the cut body for a whole response.
+    let truncated = false;
     try {
-      while (total < STREAM_MAX_BYTES) {
+      while (true) {
+        if (total >= STREAM_MAX_BYTES) {
+          truncated = true;
+          break;
+        }
         const { done, value } = await reader.read();
         if (done) break;
         const bytes = asUint8Array(value);
@@ -737,6 +850,9 @@ async function respond(handler, raw) {
       // Natural end or the byte cap: release the reader (the cleanup
       // path). On the cancel path the handler already cancelled it without
       // awaiting (the producer may ignore the cancel).
+      if (truncated) {
+        endPayload = new TextEncoder().encode(JSON.stringify({ truncated: true }));
+      }
       try {
         await reader.cancel();
       } catch (_) {

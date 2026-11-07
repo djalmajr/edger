@@ -1,0 +1,17 @@
+# EdgeR example: host-held SSE with a Deno guest (EDG-55).
+name: sse-deno
+version: "1.0.0"
+kind: fetch
+entrypoint: index.ts
+visibility: public
+nameRoute: true
+secrets:
+  # The Bearer token the guest compares; written through the admin API.
+  - SSE_ACCESS_TOKEN
+timeout: 30s
+maxProcesses: 1
+sse:
+  subscribe: ["/events"]
+  publish: ["/publish"]
+  ttl: 5m
+  maxConnections: 256

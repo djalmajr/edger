@@ -112,6 +112,17 @@ pub fn router() -> Router<OrchestratorState> {
             "/api/admin/workers/{name}/secrets/{secret}",
             put(write_app_secret).delete(delete_app_secret),
         )
+        // (EDG-54) Banco SQLD gerenciado: só root real, `no-store` em tudo.
+        .route(
+            "/api/admin/workers/{name}/database",
+            get(get_worker_database)
+                .put(put_worker_database)
+                .layer(axum::middleware::map_response(sqld_no_store)),
+        )
+        .route(
+            "/api/admin/workers/{name}/database/backup",
+            post(backup_worker_database).layer(axum::middleware::map_response(sqld_no_store)),
+        )
         .route(
             "/api/admin/workers/{name}/files",
             get(worker_files)
@@ -1650,6 +1661,393 @@ async fn delete_app_secret(
         Ok(result) => Json(result).into_response(),
         Err(err) => admin_error(map_error_status(&err), &err, &headers),
     }
+}
+
+// ───────────── EDG-54 (15e): banco SQLD gerenciado por worker ─────────────
+//
+// Três rotas EXATAS, só root REAL (nunca o `root_principal` do open mode):
+//   GET|PUT /api/admin/workers/{name}/database
+//   POST    /api/admin/workers/{name}/database/backup
+// Nada vem do visitante além de `quotaBytes` (PUT): sem versão, namespace,
+// URL, JWT, chave ou query. O dono é montado SÓ de referências instaladas do
+// índice (nome integral + namespace RBAC). Ordem: credencial real → gate de
+// senha → root → guard de mutação → query → serviço registrado → dono do
+// índice → body limitado (lido só aqui) → compatibilidade (PUT) → serviço.
+// Toda resposta das três rotas (inclusive 401/403/405/413) é `no-store`.
+// A API nunca recicla nem encerra processos: o vínculo vale no próximo spawn.
+
+/// Teto do body do PUT/POST (bytes), lido em streaming e só após a auth.
+const SQLD_BODY_LIMIT: usize = 1024;
+
+struct SqldApiError {
+    status: StatusCode,
+    err: CoreError,
+}
+
+impl SqldApiError {
+    fn new(status: StatusCode, code: &str, message: &str) -> Self {
+        Self {
+            status,
+            err: CoreError::new(code, message),
+        }
+    }
+
+    fn invalid(message: &str) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "INVALID_SQLD_REQUEST", message)
+    }
+
+    fn unavailable() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "SQLD_UNAVAILABLE",
+            "managed database service is unavailable",
+        )
+    }
+
+    fn conflict() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "SQLD_CONFLICT",
+            "managed database conflicts with the current state or configuration",
+        )
+    }
+
+    fn not_found() -> Self {
+        Self::new(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "managed database not found",
+        )
+    }
+}
+
+impl From<CoreError> for SqldApiError {
+    fn from(err: CoreError) -> Self {
+        Self {
+            status: map_error_status(&err),
+            err,
+        }
+    }
+}
+
+/// Mapeamento EXAUSTIVO (sem `_`) dos erros do serviço para status estáticos;
+/// nenhum texto do serviço/SQLD nem `Debug` aninhado chega ao cliente.
+fn sqld_service_error(error: crate::sqld_provision::SqldProvisionError) -> SqldApiError {
+    use crate::sqld_provision::SqldProvisionError as E;
+    use crate::sqld_registry::SqldRegistryError as R;
+    match error {
+        E::InvalidQuota => SqldApiError::invalid("quotaBytes is not acceptable"),
+        E::TokenConflict
+        | E::TokenMissing
+        | E::QuotaConflict
+        | E::BudgetExceeded
+        | E::KeyConflict
+        | E::MissingRemote
+        | E::NotReady
+        | E::QuotaMismatch => SqldApiError::conflict(),
+        E::NotFound => SqldApiError::not_found(),
+        E::Unavailable
+        | E::InvalidConfig
+        | E::InvalidOrigin
+        | E::CreateNotVisible
+        | E::DataTimeout
+        | E::DataTransport
+        | E::DataStatus
+        | E::DataInvalid
+        | E::DataTooLarge
+        | E::Busy
+        | E::Internal
+        | E::Vault
+        | E::Admin(_)
+        | E::Backup(_) => SqldApiError::unavailable(),
+        E::Registry(inner) => match inner {
+            R::InvalidQuota => SqldApiError::invalid("quotaBytes is not acceptable"),
+            R::QuotaConflict
+            | R::BudgetExceeded
+            | R::NamespaceCollision
+            | R::InvalidTransition
+            | R::NotProven
+            | R::PublicKeyMismatch
+            | R::Conflict => SqldApiError::conflict(),
+            R::NotFound => SqldApiError::not_found(),
+            R::InvalidWorker
+            | R::InvalidRbacNamespace
+            | R::InvalidBudget
+            | R::BudgetMismatch
+            | R::Integrity
+            | R::UnsupportedSchema
+            | R::ForeignDatabase
+            | R::UnsafePath
+            | R::WeakPermissions
+            | R::UnsafeJournalMode
+            | R::Busy
+            | R::Storage
+            | R::Unsupported
+            | R::Signer(_) => SqldApiError::unavailable(),
+        },
+    }
+}
+
+/// `no-store` em TODA resposta das rotas (camada da rota: cobre também o 405).
+async fn sqld_no_store(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn sqld_response(headers: &HeaderMap, result: Result<serde_json::Value, SqldApiError>) -> Response {
+    match result {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => admin_error(error.status, &error.err, headers),
+    }
+}
+
+/// Credencial REAL: `authenticate_headers` (nunca o atalho do open mode e
+/// nunca o header interno), depois o gate de senha, depois `is_root`.
+async fn sqld_require_real_root(
+    state: &OrchestratorState,
+    headers: &HeaderMap,
+) -> Result<ApiKeyPrincipal, SqldApiError> {
+    let principal = state
+        .auth
+        .authenticate_headers(headers)
+        .await
+        .ok_or_else(|| CoreError::new("UNAUTHORIZED", "missing or invalid API key"))?;
+    state.auth.require_password_changed(headers)?;
+    if !principal.is_root {
+        return Err(CoreError::new("FORBIDDEN", "admin API requires root credentials").into());
+    }
+    Ok(principal)
+}
+
+struct SqldTarget {
+    service: std::sync::Arc<crate::sqld_provision::SqldProvisionService>,
+    owner: crate::sqld_provision::SqldOwner,
+    versions: Vec<edger_core::WorkerRef>,
+}
+
+/// Auth + guards + serviço + dono do índice, SEM tocar no body. Nenhum
+/// `ensure`/`backup` acontece aqui.
+async fn sqld_target(
+    state: &OrchestratorState,
+    headers: &HeaderMap,
+    method: &str,
+    uri: &axum::http::Uri,
+    name: &str,
+) -> Result<SqldTarget, SqldApiError> {
+    let principal = sqld_require_real_root(state, headers).await?;
+    validate_admin_mutation_security(method, headers, &principal)?;
+    if uri.query().is_some() {
+        return Err(SqldApiError::invalid("query parameters are not accepted"));
+    }
+    let service = state
+        .server
+        .sqld_service()
+        .cloned()
+        .ok_or_else(SqldApiError::unavailable)?;
+    // Qualquer referência core do nome nega (403), antes do 404.
+    if state
+        .index
+        .admin_workers()
+        .iter()
+        .any(|info| info.name == name && info.origin != WorkerOrigin::User)
+    {
+        return Err(CoreError::new("FORBIDDEN", "core workers have no managed database").into());
+    }
+    let versions: Vec<edger_core::WorkerRef> = state
+        .index
+        .worker_refs()
+        .into_iter()
+        .filter(|worker| worker.name == name)
+        .collect();
+    let Some(first) = versions.first() else {
+        return Err(CoreError::new("NOT_FOUND", "worker not found").into());
+    };
+    let owner = crate::sqld_provision::SqldOwner::new(first.name.clone(), first.namespace.clone());
+    Ok(SqldTarget {
+        service,
+        owner,
+        versions,
+    })
+}
+
+/// Lê o body com teto DURO em streaming: o `Content-Length` acima do teto é
+/// recusado sem ler nada, e um body sem tamanho (chunked) é abandonado no
+/// primeiro byte além do teto.
+async fn sqld_read_body(
+    headers: &HeaderMap,
+    body: axum::body::Body,
+) -> Result<Bytes, SqldApiError> {
+    use http_body_util::{BodyExt, LengthLimitError, Limited};
+    let too_large = || {
+        SqldApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "INVALID_SQLD_REQUEST",
+            "request body is too large",
+        )
+    };
+    if let Some(value) = headers.get(axum::http::header::CONTENT_LENGTH) {
+        let length = value
+            .to_str()
+            .ok()
+            .and_then(|text| text.parse::<u64>().ok())
+            .ok_or_else(|| SqldApiError::invalid("invalid content-length"))?;
+        if length > SQLD_BODY_LIMIT as u64 {
+            return Err(too_large());
+        }
+    }
+    match Limited::new(body, SQLD_BODY_LIMIT).collect().await {
+        Ok(collected) => Ok(collected.to_bytes()),
+        Err(error) if error.downcast_ref::<LengthLimitError>().is_some() => Err(too_large()),
+        Err(_) => Err(SqldApiError::invalid("request body could not be read")),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SqldPutBody {
+    quota_bytes: u64,
+}
+
+/// Só um OBJETO JSON: o serde aceitaria `[16777216]` (sequência) para uma
+/// struct, então o primeiro byte útil precisa ser `{`.
+fn sqld_is_json_object(bytes: &[u8]) -> bool {
+    bytes.trim_ascii_start().first() == Some(&b'{')
+}
+
+fn sqld_state_name(state: crate::sqld_registry::SqldRegistryState) -> &'static str {
+    use crate::sqld_registry::SqldRegistryState as S;
+    match state {
+        S::Intent => "intent",
+        S::Proven => "proven",
+        S::Ready => "ready",
+        S::Conflict => "conflict",
+    }
+}
+
+fn sqld_database_json(
+    metadata: &crate::sqld_provision::SqldProvisionMetadata,
+) -> serde_json::Value {
+    json!({
+        "state": sqld_state_name(metadata.state),
+        "sqlNamespace": metadata.sql_namespace,
+        "quotaBytes": metadata.quota_bytes,
+    })
+}
+
+fn sqld_backup_json(artifact: &crate::sqld_backup::BackupArtifact) -> serde_json::Value {
+    use crate::sqld_backup::RetentionStatus as T;
+    json!({
+        "fileName": artifact.file_name,
+        "bytes": artifact.bytes,
+        "sha256": artifact.sha256,
+        "retention": match artifact.retention {
+            T::Complete => "complete",
+            T::Incomplete => "incomplete",
+        },
+    })
+}
+
+async fn get_worker_database(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    uri: axum::http::Uri,
+) -> Response {
+    let result = async {
+        let target = sqld_target(&state, &headers, "GET", &uri, &name).await?;
+        let metadata = target
+            .service
+            .metadata(&target.owner)
+            .await
+            .map_err(sqld_service_error)?;
+        Ok(json!({
+            "database": metadata.as_ref().map(sqld_database_json),
+            "activation": "nextSpawn",
+        }))
+    }
+    .await;
+    sqld_response(&headers, result)
+}
+
+async fn put_worker_database(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    request: Request<axum::body::Body>,
+) -> Response {
+    let result = async {
+        let (parts, body) = request.into_parts();
+        let target = sqld_target(&state, &headers, "PUT", &parts.uri, &name).await?;
+        let bytes = sqld_read_body(&headers, body).await?;
+        let payload: SqldPutBody = Some(&bytes[..])
+            .filter(|bytes| sqld_is_json_object(bytes))
+            .and_then(|bytes| serde_json::from_slice(bytes).ok())
+            .ok_or_else(|| SqldApiError::invalid("body must be {\"quotaBytes\": <integer>}"))?;
+        if payload.quota_bytes < crate::sqld_registry::MIN_QUOTA_BYTES
+            || !payload
+                .quota_bytes
+                .is_multiple_of(crate::sqld_registry::QUOTA_ALIGN_BYTES)
+            || i64::try_from(payload.quota_bytes).is_err()
+        {
+            return Err(SqldApiError::invalid("quotaBytes is not acceptable"));
+        }
+        // Compatibilidade de TODAS as versões instaladas do nome ANTES de
+        // qualquer ensure (nada é reservado nem criado em caso de conflito).
+        // Pura: não reescreve versões nem ignora pinned/staged/disabled.
+        let origin = state
+            .server
+            .sqld_data_origin()
+            .ok_or_else(SqldApiError::unavailable)?;
+        for version in &target.versions {
+            crate::managed_database_config::apply_managed_database_config(version, origin)
+                .map_err(|_| SqldApiError::conflict())?;
+        }
+        let outcome = target
+            .service
+            .ensure(&target.owner, payload.quota_bytes)
+            .await
+            .map_err(sqld_service_error)?;
+        Ok(json!({
+            "database": sqld_database_json(&outcome.metadata),
+            "activation": "nextSpawn",
+            "initialBackup": outcome.initial_backup.as_ref().map(sqld_backup_json),
+        }))
+    }
+    .await;
+    sqld_response(&headers, result)
+}
+
+async fn backup_worker_database(
+    State(state): State<OrchestratorState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    request: Request<axum::body::Body>,
+) -> Response {
+    let result = async {
+        let (parts, body) = request.into_parts();
+        let target = sqld_target(&state, &headers, "POST", &parts.uri, &name).await?;
+        let bytes = sqld_read_body(&headers, body).await?;
+        if !bytes.iter().all(u8::is_ascii_whitespace) {
+            let empty_object = sqld_is_json_object(&bytes)
+                && matches!(
+                    serde_json::from_slice::<serde_json::Value>(&bytes),
+                    Ok(serde_json::Value::Object(map)) if map.is_empty()
+                );
+            if !empty_object {
+                return Err(SqldApiError::invalid("body must be empty or {}"));
+            }
+        }
+        let artifact = target
+            .service
+            .backup(&target.owner)
+            .await
+            .map_err(sqld_service_error)?;
+        Ok(json!({ "backup": sqld_backup_json(&artifact) }))
+    }
+    .await;
+    sqld_response(&headers, result)
 }
 
 async fn invoke_worker_root(
@@ -4156,6 +4554,7 @@ pub(crate) fn map_error_status(err: &CoreError) -> StatusCode {
         | "DEPLOY_STAGED_REQUIRES_PUBLIC"
         | "DEPLOY_PATH_DENIED"
         | "DEPLOY_VISIBILITY_IMMUTABLE"
+        | "INVALID_SQLD_REQUEST"
         | "CORE_NAME_RESERVED"
         | "PROMOTE_VERSION_REQUIRED"
         | "PROMOTE_INVALID_VERSION"
@@ -4173,6 +4572,7 @@ pub(crate) fn map_error_status(err: &CoreError) -> StatusCode {
         "CONSOLE_STORE_UNAVAILABLE"
         | "KEYS_STORE_UNAVAILABLE"
         | "SECRETS_UNAVAILABLE"
+        | "SQLD_UNAVAILABLE"
         | "STORE_ERROR"
         | "STATE_BUSY"
         | "LOCK_ERROR"
@@ -4195,6 +4595,7 @@ pub(crate) fn map_error_status(err: &CoreError) -> StatusCode {
         | "HEALTH_CHECK_NOT_CONFIGURED"
         | "KEY_REVOKED"
         | "KEY_NOT_REVOKED"
+        | "SQLD_CONFLICT"
         | "SECRETS_LIMIT" => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }

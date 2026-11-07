@@ -5,8 +5,13 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::config::WorkerConfig;
-use crate::execution::{normalize_fullstack_adapter, ExecutionKind, SUPPORTED_FULLSTACK_ADAPTERS};
-use crate::manifest::WorkerManifest;
+use crate::execution::{
+    normalize_fullstack_adapter, ExecutionKind, SUPPORTED_FULLSTACK_ADAPTERS,
+    WASM_FULLSTACK_ADAPTER,
+};
+use crate::manifest::{
+    is_portable_relative_path, is_valid_api_prefix, is_valid_wasm_entrypoint, WorkerManifest,
+};
 use crate::secrets::is_valid_secret_name;
 
 /// Maximum number of `cron[]` entries a worker manifest may declare
@@ -31,6 +36,11 @@ pub const MAX_EGRESS_TOTAL_TIMEOUT_MS: u64 = 3_600_000;
 pub const MAX_EGRESS_MAX_RESPONSE_BYTES: u64 = 1024 * 1024 * 1024;
 /// Egress `maxConcurrent` range (EDG-38): 1 to 256.
 pub const MAX_EGRESS_MAX_CONCURRENT: u32 = 256;
+/// Maximum `sse.subscribe[]` and `sse.publish[]` entries each (EDG-55).
+pub const MAX_SSE_ROUTES: usize = 16;
+/// Range of `sse.ttl` (EDG-55, ms): 5 s to 1 h.
+pub const MIN_SSE_TTL_MS: u64 = 5_000;
+pub const MAX_SSE_TTL_MS: u64 = 3_600_000;
 
 /// Resolved worker identity (namespaced + semver).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -354,6 +364,9 @@ pub fn validate_worker_manifest(manifest: &WorkerManifest) -> Result<(), crate::
         }
     }
 
+    validate_wasm_backend_contract(manifest)?;
+    validate_sse_contract(manifest)?;
+
     let Some(kind) = manifest.kind.as_deref() else {
         return Ok(());
     };
@@ -383,12 +396,16 @@ pub fn validate_worker_manifest(manifest: &WorkerManifest) -> Result<(), crate::
         ));
     }
 
-    let has_ssr_entrypoint = manifest
-        .ssr_entrypoint
-        .as_deref()
-        .or(manifest.entrypoint.as_deref())
-        .map(str::trim)
-        .is_some_and(|entry| !entry.is_empty());
+    // A WASM fullstack declares its backend in `wasmBackend` (validated above);
+    // `ssrEntrypoint` is a JS/TS SSR concept and is never inferred for it.
+    let is_wasm_adapter = normalize_fullstack_adapter(adapter) == Some(WASM_FULLSTACK_ADAPTER);
+    let has_ssr_entrypoint = is_wasm_adapter
+        || manifest
+            .ssr_entrypoint
+            .as_deref()
+            .or(manifest.entrypoint.as_deref())
+            .map(str::trim)
+            .is_some_and(|entry| !entry.is_empty());
     if !has_ssr_entrypoint {
         return Err(crate::error::CoreError::validation(
             "manifest.ssrEntrypoint",
@@ -408,6 +425,182 @@ pub fn validate_worker_manifest(manifest: &WorkerManifest) -> Result<(), crate::
         }
     }
 
+    Ok(())
+}
+
+/// Explicit SPA + WASM backend contract (EDG-53), pure (no filesystem access).
+/// `wasmBackend` is valid only with `kind: fullstack|ssr` and `adapter: wasm`;
+/// that adapter requires the `wasmBackend` object and a non-empty `clientDir`.
+/// A mix with any other kind/adapter is refused, never ignored. Error messages
+/// are static and name the field; they never echo the input.
+fn validate_wasm_backend_contract(
+    manifest: &WorkerManifest,
+) -> Result<(), crate::error::CoreError> {
+    use crate::error::CoreError;
+
+    let is_fullstack_kind = manifest.kind.as_deref().is_some_and(|kind| {
+        matches!(
+            kind.trim().to_ascii_lowercase().as_str(),
+            "ssr" | "fullstack"
+        )
+    });
+    let is_wasm_adapter = manifest.adapter.as_deref().is_some_and(|adapter| {
+        normalize_fullstack_adapter(adapter) == Some(WASM_FULLSTACK_ADAPTER)
+    });
+
+    if manifest.wasm_backend.is_some() && !(is_fullstack_kind && is_wasm_adapter) {
+        return Err(CoreError::validation(
+            "manifest.wasmBackend",
+            "wasmBackend is only valid with kind fullstack and adapter wasm",
+        ));
+    }
+    if is_wasm_adapter && !is_fullstack_kind {
+        return Err(CoreError::validation(
+            "manifest.adapter",
+            "adapter wasm is only valid with kind fullstack",
+        ));
+    }
+    if !is_wasm_adapter {
+        return Ok(());
+    }
+
+    let Some(backend) = manifest.wasm_backend.as_ref() else {
+        return Err(CoreError::validation(
+            "manifest.wasmBackend",
+            "wasmBackend is required for adapter wasm",
+        ));
+    };
+    match manifest.client_dir.as_deref() {
+        None => {
+            return Err(CoreError::validation(
+                "manifest.clientDir",
+                "clientDir is required for adapter wasm",
+            ))
+        }
+        Some(dir) if !is_portable_relative_path(dir) => {
+            return Err(CoreError::validation(
+                "manifest.clientDir",
+                "clientDir must be a non-empty relative portable path without ., .., //, drive, backslash or control characters",
+            ))
+        }
+        Some(_) => {}
+    }
+    match backend.entrypoint.as_deref() {
+        None => {
+            return Err(CoreError::validation(
+                "manifest.wasmBackend.entrypoint",
+                "wasmBackend.entrypoint is required",
+            ))
+        }
+        Some(entry) if !is_valid_wasm_entrypoint(entry) => {
+            return Err(CoreError::validation(
+                "manifest.wasmBackend.entrypoint",
+                "wasmBackend.entrypoint must be a relative portable path ending in .wasm or .wat",
+            ))
+        }
+        Some(_) => {}
+    }
+    match backend.api_prefix.as_deref() {
+        None => Err(CoreError::validation(
+            "manifest.wasmBackend.apiPrefix",
+            "wasmBackend.apiPrefix is required",
+        )),
+        Some(prefix) if !is_valid_api_prefix(prefix) => Err(CoreError::validation(
+            "manifest.wasmBackend.apiPrefix",
+            "wasmBackend.apiPrefix must be a canonical absolute non-root path such as /api",
+        )),
+        Some(_) => Ok(()),
+    }
+}
+
+/// Host-held SSE contract (EDG-55), pure. `subscribe` has 1 to 16 routes and
+/// `publish` 0 to 16, each a valid `SseRoutePattern`; `ttl` is a duration from
+/// 5 s to 1 h; `maxConnections` is at least 1. `static-spa` workers never
+/// run guest code per request, so `sse` is refused there, and a fullstack
+/// WASM worker serves guest code only under its `apiPrefix`, so every route
+/// must lie under it. Error messages are static and never echo the input.
+fn validate_sse_contract(manifest: &WorkerManifest) -> Result<(), crate::error::CoreError> {
+    use crate::config::{infer_execution_kind, SseRoutePattern};
+    use crate::error::CoreError;
+
+    let Some(sse) = manifest.sse.as_ref() else {
+        return Ok(());
+    };
+
+    let kind = infer_execution_kind(manifest);
+    if matches!(kind, ExecutionKind::StaticSpa { .. }) {
+        return Err(CoreError::validation(
+            "manifest.sse",
+            "sse is not supported for kind static-spa",
+        ));
+    }
+
+    if sse.subscribe.is_empty() || sse.subscribe.len() > MAX_SSE_ROUTES {
+        return Err(CoreError::validation(
+            "manifest.sse.subscribe",
+            format!("sse.subscribe must have between 1 and {MAX_SSE_ROUTES} routes"),
+        ));
+    }
+    if sse.publish.len() > MAX_SSE_ROUTES {
+        return Err(CoreError::validation(
+            "manifest.sse.publish",
+            format!("sse.publish must have at most {MAX_SSE_ROUTES} routes"),
+        ));
+    }
+
+    let api_prefix = match &kind {
+        ExecutionKind::Fullstack { adapter, .. } if adapter == WASM_FULLSTACK_ADAPTER => Some(
+            manifest
+                .wasm_backend
+                .as_ref()
+                .and_then(|backend| backend.api_prefix.as_deref())
+                .ok_or_else(|| {
+                    CoreError::validation(
+                        "manifest.sse",
+                        "sse on a fullstack wasm worker requires wasmBackend.apiPrefix",
+                    )
+                })?,
+        ),
+        _ => None,
+    };
+
+    for (field, routes) in [("subscribe", &sse.subscribe), ("publish", &sse.publish)] {
+        for (position, route) in routes.iter().enumerate() {
+            let path = format!("manifest.sse.{field}[{position}]");
+            let pattern = SseRoutePattern::parse(route)
+                .map_err(|error| CoreError::validation(&path, error.message()))?;
+            if let Some(prefix) = api_prefix {
+                if !pattern.is_under(prefix) {
+                    return Err(CoreError::validation(
+                        &path,
+                        "sse routes of a fullstack wasm worker must be under wasmBackend.apiPrefix",
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(ttl) = sse.ttl.as_ref() {
+        let Some(ttl_ms) = crate::config::parse_duration_to_ms(ttl) else {
+            return Err(CoreError::validation(
+                "manifest.sse.ttl",
+                "sse.ttl must be a duration such as 5m",
+            ));
+        };
+        if !(MIN_SSE_TTL_MS..=MAX_SSE_TTL_MS).contains(&ttl_ms) {
+            return Err(CoreError::validation(
+                "manifest.sse.ttl",
+                "sse.ttl must be between 5s and 1h",
+            ));
+        }
+    }
+
+    if sse.max_connections == Some(0) {
+        return Err(CoreError::validation(
+            "manifest.sse.maxConnections",
+            "sse.maxConnections must be at least 1",
+        ));
+    }
     Ok(())
 }
 
@@ -1118,5 +1311,451 @@ egress:
             validate_worker_manifest(&bad).is_err(),
             "a totalTimeout above 1h is rejected"
         );
+    }
+}
+
+#[cfg(test)]
+mod wasm_backend_contract_tests {
+    use super::*;
+    use crate::manifest::WasmBackendManifest;
+
+    fn valid() -> WorkerManifest {
+        WorkerManifest {
+            name: "spa-wasm".into(),
+            kind: Some("fullstack".into()),
+            adapter: Some("wasm".into()),
+            client_dir: Some("dist".into()),
+            wasm_backend: Some(WasmBackendManifest {
+                entrypoint: Some("backend/index.wasm".into()),
+                api_prefix: Some("/api".into()),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn error_text(manifest: &WorkerManifest) -> String {
+        validate_worker_manifest(manifest)
+            .expect_err("must be refused")
+            .to_string()
+    }
+
+    fn with_backend(
+        entrypoint: Option<&str>,
+        api_prefix: Option<&str>,
+        client_dir: Option<&str>,
+    ) -> WorkerManifest {
+        let mut manifest = valid();
+        manifest.wasm_backend = Some(WasmBackendManifest {
+            entrypoint: entrypoint.map(str::to_string),
+            api_prefix: api_prefix.map(str::to_string),
+        });
+        manifest.client_dir = client_dir.map(str::to_string);
+        manifest
+    }
+
+    #[test]
+    fn valid_contract_passes_with_default_and_custom_prefix_and_ssr_alias() {
+        validate_worker_manifest(&valid()).expect("valid");
+        validate_worker_manifest(&with_backend(
+            Some("b/x.wat"),
+            Some("/rpc/v1"),
+            Some("web/dist"),
+        ))
+        .expect("custom");
+        let mut ssr_alias = valid();
+        ssr_alias.kind = Some("ssr".into());
+        validate_worker_manifest(&ssr_alias).expect("ssr alias");
+    }
+
+    #[test]
+    fn yaml_manifest_validates_and_missing_nested_fields_are_refused() {
+        let yaml = r#"
+name: spa-wasm
+kind: fullstack
+adapter: wasm
+clientDir: dist
+wasmBackend:
+  entrypoint: backend/index.wasm
+  apiPrefix: /api
+"#;
+        let manifest: WorkerManifest = serde_saphyr::from_str(yaml).expect("parses");
+        validate_worker_manifest(&manifest).expect("valid");
+        let missing: WorkerManifest = serde_saphyr::from_str(
+            "name: x\nkind: fullstack\nadapter: wasm\nclientDir: dist\nwasmBackend:\n  apiPrefix: /api\n",
+        )
+        .expect("parses");
+        assert!(error_text(&missing).contains("manifest.wasmBackend.entrypoint"));
+    }
+
+    #[test]
+    fn missing_required_fields_are_refused_with_the_field_name() {
+        let mut no_backend = valid();
+        no_backend.wasm_backend = None;
+        assert!(error_text(&no_backend).contains("manifest.wasmBackend"));
+        assert!(error_text(&with_backend(None, Some("/api"), Some("dist")))
+            .contains("manifest.wasmBackend.entrypoint"));
+        assert!(
+            error_text(&with_backend(Some("a.wasm"), None, Some("dist")))
+                .contains("manifest.wasmBackend.apiPrefix")
+        );
+        for dir in [None, Some(""), Some("  ")] {
+            assert!(
+                error_text(&with_backend(Some("a.wasm"), Some("/api"), dir))
+                    .contains("manifest.clientDir"),
+                "{dir:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mixing_wasm_backend_with_other_kinds_or_adapters_is_refused() {
+        // wasmBackend with a JS adapter.
+        let mut js = valid();
+        js.adapter = Some("nextjs".into());
+        js.ssr_entrypoint = Some("server.js".into());
+        assert!(error_text(&js).contains("manifest.wasmBackend"));
+        // wasmBackend without adapter wasm, on a non-fullstack kind or no kind.
+        for kind in [Some("spa"), Some("wasm"), Some("fetch"), None] {
+            let mut m = valid();
+            m.kind = kind.map(str::to_string);
+            m.adapter = None;
+            assert!(error_text(&m).contains("manifest.wasmBackend"), "{kind:?}");
+        }
+        // adapter wasm with a non-fullstack kind, with and without wasmBackend.
+        for kind in [Some("spa"), Some("wasm"), Some("fetch"), None] {
+            let mut m = valid();
+            m.kind = kind.map(str::to_string);
+            assert!(error_text(&m).contains("manifest."), "{kind:?}");
+            m.wasm_backend = None;
+            assert!(error_text(&m).contains("manifest.adapter"), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn hostile_client_dir_and_entrypoint_paths_are_refused() {
+        for bad in [
+            "/abs", "a//b", "..", "a/../b", "./a", "C:/x", "a\\b", "a\0b", "a\nb",
+        ] {
+            assert!(
+                error_text(&with_backend(Some("a.wasm"), Some("/api"), Some(bad)))
+                    .contains("manifest.clientDir"),
+                "clientDir {bad:?}"
+            );
+        }
+        for bad in [
+            "",
+            "/a.wasm",
+            "../a.wasm",
+            "a/../b.wasm",
+            "a//b.wasm",
+            "./a.wasm",
+            "C:/a.wasm",
+            "a\\b.wasm",
+            "a\0.wasm",
+            "a\n.wasm",
+            "a.js",
+            "a.wasm/",
+            "wasm",
+        ] {
+            assert!(
+                error_text(&with_backend(Some(bad), Some("/api"), Some("dist")))
+                    .contains("manifest.wasmBackend.entrypoint"),
+                "entrypoint {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hostile_api_prefixes_are_refused() {
+        for bad in [
+            "", "/", "api", "/api/", "//api", "/api//x", "/.", "/..", "/a/../b", "/a b", "/a\tb",
+            "/a\0b", "/a%2f", "/a?x", "/a#x", "/a\\b",
+        ] {
+            assert!(
+                error_text(&with_backend(Some("a.wasm"), Some(bad), Some("dist")))
+                    .contains("manifest.wasmBackend.apiPrefix"),
+                "apiPrefix {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn error_messages_are_static_and_do_not_echo_the_input() {
+        let text = error_text(&with_backend(
+            Some("../secret-marker.wasm"),
+            Some("/api"),
+            Some("dist"),
+        ));
+        assert!(!text.contains("secret-marker"));
+        let text = error_text(&with_backend(
+            Some("a.wasm"),
+            Some("/a?secret-marker"),
+            Some("dist"),
+        ));
+        assert!(!text.contains("secret-marker"));
+        let text = error_text(&with_backend(
+            Some("a.wasm"),
+            Some("/api"),
+            Some("../secret-marker"),
+        ));
+        assert!(!text.contains("secret-marker"));
+    }
+
+    #[test]
+    fn existing_js_fullstack_validation_is_unchanged() {
+        let js = WorkerManifest {
+            name: "n".into(),
+            kind: Some("fullstack".into()),
+            adapter: Some("nextjs".into()),
+            ssr_entrypoint: Some("server.js".into()),
+            ..Default::default()
+        };
+        validate_worker_manifest(&js).expect("valid");
+        // ssrEntrypoint stays mandatory for the JS adapters.
+        let mut missing = js.clone();
+        missing.ssr_entrypoint = None;
+        assert!(error_text(&missing).contains("manifest.ssrEntrypoint"));
+        // Unknown adapters are still refused and wasm is not in the JS list.
+        let mut unknown = js.clone();
+        unknown.adapter = Some("bogus".into());
+        let text = error_text(&unknown);
+        assert!(text.contains("manifest.adapter"));
+        assert!(!text.contains("wasm"));
+        // Non-fullstack kinds without wasm fields are untouched.
+        for kind in ["spa", "wasm", "fetch"] {
+            let m = WorkerManifest {
+                name: "n".into(),
+                kind: Some(kind.into()),
+                ..Default::default()
+            };
+            validate_worker_manifest(&m).expect(kind);
+        }
+        validate_worker_manifest(&WorkerManifest::default()).expect("empty");
+    }
+
+    #[test]
+    fn padded_fullstack_wasm_kinds_validate_and_classify_consistently() {
+        for kind in [" fullstack ", " ssr ", " FullStack ", " SSR "] {
+            let mut manifest = with_backend(Some("backend.wasm"), Some("/api"), Some("dist"));
+            manifest.kind = Some(kind.into());
+            let worker = create_worker_ref(PathBuf::from("worker"), manifest)
+                .expect("the padded kind passes manifest validation");
+            assert_eq!(
+                worker.kind,
+                ExecutionKind::Fullstack {
+                    adapter: "wasm".into()
+                }
+            );
+            assert!(!worker.kind.uses_process_backend());
+            assert!(worker.config.fullstack.unwrap().wasm_backend.is_some());
+        }
+    }
+}
+
+#[cfg(test)]
+mod sse_contract_tests {
+    use super::*;
+
+    fn parse(yaml: &str) -> WorkerManifest {
+        serde_saphyr::from_str(yaml).expect("the manifest yaml parses")
+    }
+
+    fn validate(yaml: &str) -> Result<(), crate::error::CoreError> {
+        validate_worker_manifest(&parse(yaml))
+    }
+
+    fn js(sse: &str) -> String {
+        format!("name: hub\nentrypoint: index.ts\nsse:\n{sse}")
+    }
+
+    fn refused(yaml: &str, field: &str, message: &str) {
+        let error = validate(yaml).expect_err(yaml);
+        assert!(error.message.contains(field), "{field}: {}", error.message);
+        assert!(
+            error.message.contains(message),
+            "{message}: {}",
+            error.message
+        );
+    }
+
+    fn routes(prefix: &str, count: usize) -> String {
+        (0..count)
+            .map(|n| format!("\"/{prefix}{n}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    const WASM_FULLSTACK: &str = "name: hub\nkind: fullstack\nadapter: wasm\nclientDir: dist\nwasmBackend:\n  entrypoint: backend/app.wasm\n  apiPrefix: /api\n";
+
+    #[test]
+    fn valid_sse_manifests_pass() {
+        validate(&js("  subscribe: [\"/api/events\"]\n")).expect("minimal");
+        validate(&js(
+            "  subscribe: [\"/a\", \"/b/*\"]\n  publish: [\"/p/*\"]\n  ttl: 5m\n  maxConnections: 1\n",
+        ))
+        .expect("complete");
+        validate(&format!(
+            "{WASM_FULLSTACK}sse:\n  subscribe: [\"/api/events\"]\n  publish: [\"/api/rooms/*\"]\n"
+        ))
+        .expect("fullstack wasm under the prefix");
+        validate("name: hub\nkind: wasm\nentrypoint: app.wasm\nsse:\n  subscribe: [\"/events\"]\n")
+            .expect("plain wasm module serves HTTP through edger_handle");
+        validate("name: hub\nkind: fullstack\nadapter: hono\nssrEntrypoint: server.ts\nsse:\n  subscribe: [\"/events\"]\n")
+            .expect("js fullstack");
+        validate("name: plain\nentrypoint: index.ts\n").expect("no sse changes nothing");
+    }
+
+    #[test]
+    fn subscribe_is_required_and_bounded() {
+        refused(
+            &js("  publish: [\"/p\"]\n"),
+            "manifest.sse.subscribe",
+            "between 1 and 16",
+        );
+        refused(
+            &js("  subscribe: []\n"),
+            "manifest.sse.subscribe",
+            "between 1 and 16",
+        );
+        refused(
+            &js(&format!("  subscribe: [{}]\n", routes("s", 17))),
+            "manifest.sse.subscribe",
+            "between 1 and 16",
+        );
+        validate(&js(&format!("  subscribe: [{}]\n", routes("s", 16)))).expect("16 routes");
+    }
+
+    #[test]
+    fn publish_is_optional_and_bounded() {
+        validate(&js("  subscribe: [\"/s\"]\n  publish: []\n")).expect("empty publish");
+        refused(
+            &js(&format!(
+                "  subscribe: [\"/s\"]\n  publish: [{}]\n",
+                routes("p", 17)
+            )),
+            "manifest.sse.publish",
+            "at most 16",
+        );
+        validate(&js(&format!(
+            "  subscribe: [\"/s\"]\n  publish: [{}]\n",
+            routes("p", 16)
+        )))
+        .expect("16 routes");
+    }
+
+    #[test]
+    fn every_route_form_is_refused_in_both_lists_with_its_position() {
+        for bad in [
+            "api",
+            "/a%2Fb",
+            "/a?x",
+            "/a#x",
+            "/a*",
+            "/a/*/b",
+            "/a/:id",
+            "/a\\u0001b",
+        ] {
+            refused(
+                &js(&format!("  subscribe: [\"/ok\", \"{bad}\"]\n")),
+                "manifest.sse.subscribe[1]",
+                "sse routes",
+            );
+            refused(
+                &js(&format!("  subscribe: [\"/ok\"]\n  publish: [\"{bad}\"]\n")),
+                "manifest.sse.publish[0]",
+                "sse routes",
+            );
+        }
+    }
+
+    #[test]
+    fn route_error_messages_do_not_echo_the_input() {
+        let error = validate(&js("  subscribe: [\"/secret-token%\"]\n")).expect_err("refused");
+        assert!(!error.message.contains("secret-token"), "{}", error.message);
+    }
+
+    #[test]
+    fn ttl_is_bounded_between_five_seconds_and_one_hour() {
+        for ok in ["5s", "5000ms", "1h", "60m", "300"] {
+            validate(&js(&format!("  subscribe: [\"/s\"]\n  ttl: {ok}\n"))).expect(ok);
+        }
+        for bad in [
+            "4s", "4999ms", "0", "61m", "3601", "2h", "soon", "-5", "1.5", "true", "[5]",
+        ] {
+            refused(
+                &js(&format!("  subscribe: [\"/s\"]\n  ttl: {bad}\n")),
+                "manifest.sse.ttl",
+                "sse.ttl",
+            );
+        }
+    }
+
+    #[test]
+    fn max_connections_must_be_at_least_one() {
+        validate(&js("  subscribe: [\"/s\"]\n  maxConnections: 1\n")).expect("1");
+        validate(&js("  subscribe: [\"/s\"]\n  maxConnections: 100000\n"))
+            .expect("the host caps it");
+        refused(
+            &js("  subscribe: [\"/s\"]\n  maxConnections: 0\n"),
+            "manifest.sse.maxConnections",
+            "at least 1",
+        );
+    }
+
+    #[test]
+    fn static_spa_refuses_sse_however_it_is_declared() {
+        for head in [
+            "name: site\nkind: static-spa\nentrypoint: index.html\n",
+            "name: site\nkind: spa\n",
+            "name: site\nentrypoint: index.html\n",
+        ] {
+            refused(
+                &format!("{head}sse:\n  subscribe: [\"/s\"]\n"),
+                "manifest.sse",
+                "static-spa",
+            );
+        }
+    }
+
+    #[test]
+    fn fullstack_wasm_requires_every_route_under_the_api_prefix() {
+        for (list, bad) in [
+            ("subscribe", "/events"),
+            ("subscribe", "/apix"),
+            ("subscribe", "/apix/*"),
+            ("subscribe", "/*"),
+            ("publish", "/other/*"),
+            ("publish", "/ap/x"),
+        ] {
+            let (sse, position) = if list == "subscribe" {
+                (
+                    format!("sse:\n  subscribe: [\"/api/ok\", \"{bad}\"]\n"),
+                    "[1]",
+                )
+            } else {
+                (
+                    format!("sse:\n  subscribe: [\"/api/ok\"]\n  publish: [\"{bad}\"]\n"),
+                    "[0]",
+                )
+            };
+            refused(
+                &format!("{WASM_FULLSTACK}{sse}"),
+                &format!("manifest.sse.{list}{position}"),
+                "apiPrefix",
+            );
+        }
+        validate(&format!(
+            "{WASM_FULLSTACK}sse:\n  subscribe: [\"/api\", \"/api/*\"]\n"
+        ))
+        .expect("the prefix itself and its wildcard are under it");
+    }
+
+    #[test]
+    fn fullstack_wasm_without_a_backend_is_refused_by_the_backend_contract() {
+        let error = validate(
+            "name: hub\nkind: fullstack\nadapter: wasm\nclientDir: dist\nsse:\n  subscribe: [\"/api/s\"]\n",
+        )
+        .expect_err("no wasmBackend");
+        assert!(error.message.contains("wasmBackend"), "{}", error.message);
     }
 }

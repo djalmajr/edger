@@ -45,6 +45,13 @@ impl ServerConfig {
     }
 }
 
+/// Serviço SQLD gerenciado + origem de dados do host, registrados juntos no
+/// boot. Nunca lidos de env/arquivo por request.
+struct SqldManagedHost {
+    service: Arc<crate::sqld_provision::SqldProvisionService>,
+    data_origin: String,
+}
+
 struct ServerStateInner {
     ready: AtomicBool,
     tenant_routing_enabled: AtomicBool,
@@ -72,10 +79,19 @@ struct ServerStateInner {
     /// `EDGER_SECRETS_KEY_FILE` (as rotas respondem 503
     /// `SECRETS_UNAVAILABLE`).
     app_secrets: std::sync::OnceLock<std::sync::Arc<crate::app_secrets::AppSecretVault>>,
+    /// Serviço host de banco SQLD gerenciado (EDG-54) e a origem de dados
+    /// normalizada do host: registro no boot (uma vez). `None` = serviço
+    /// desconfigurado (as rotas de banco respondem 503 `SQLD_UNAVAILABLE`).
+    sqld_managed: std::sync::OnceLock<SqldManagedHost>,
     /// Contadores do guarda de saída (EDG-38): registro no boot (uma vez).
     /// `None` = nenhum guarda configurado; o `/metrics` sai sem as linhas
     /// `edger_egress_*`.
     egress_metrics: std::sync::OnceLock<crate::metrics::EgressMetrics>,
+    /// Broker SSE do host (EDG-55): registro no boot (uma vez). `None` =
+    /// broker desligado: as rotas `subscribe` respondem 503
+    /// `SSE_UNAVAILABLE`, as rotas `publish` descartam as diretivas e o
+    /// `/metrics` sai sem as linhas `edger_sse_*`.
+    sse_broker: std::sync::OnceLock<std::sync::Arc<crate::sse_broker::SseBroker>>,
 }
 
 /// Shared application state for health/readiness and future pipeline wiring.
@@ -102,7 +118,9 @@ impl ServerState {
                 worker_errors: crate::worker_errors::WorkerErrorLog::default(),
                 detach_budget: std::sync::OnceLock::new(),
                 app_secrets: std::sync::OnceLock::new(),
+                sqld_managed: std::sync::OnceLock::new(),
                 egress_metrics: std::sync::OnceLock::new(),
+                sse_broker: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -145,6 +163,26 @@ impl ServerState {
             .map(crate::metrics::egress_metrics_prometheus)
     }
 
+    /// Registra o broker SSE do host (EDG-55). Definido no boot, uma vez;
+    /// definir duas vezes é no-op (a primeira chamada vence).
+    pub fn set_sse_broker(&self, broker: std::sync::Arc<crate::sse_broker::SseBroker>) {
+        let _ = self.inner.sse_broker.set(broker);
+    }
+
+    /// O broker SSE registrado, ou `None` (broker desligado).
+    pub fn sse_broker(&self) -> Option<std::sync::Arc<crate::sse_broker::SseBroker>> {
+        self.inner.sse_broker.get().cloned()
+    }
+
+    /// As linhas Prometheus `edger_sse_*`, ou `None` sem broker. Os dois
+    /// renderizadores do `/metrics` leem por aqui.
+    pub fn sse_metrics_prometheus(&self) -> Option<String> {
+        self.inner
+            .sse_broker
+            .get()
+            .map(|broker| crate::metrics::sse_metrics_prometheus(&broker.snapshot()))
+    }
+
     /// Registra o cofre de segredos de app (EDG-38). Definido no boot, uma
     /// vez; definir duas vezes é no-op (a primeira chamada vence).
     pub fn set_app_secrets(&self, vault: std::sync::Arc<crate::app_secrets::AppSecretVault>) {
@@ -156,6 +194,34 @@ impl ServerState {
     /// o resolvedor de injeção no spawn leem por aqui.
     pub fn app_secrets(&self) -> Option<&std::sync::Arc<crate::app_secrets::AppSecretVault>> {
         self.inner.app_secrets.get()
+    }
+
+    /// Registra o serviço SQLD gerenciado (EDG-54) e a origem de dados
+    /// normalizada do host. Definido no boot, uma vez; definir duas vezes é
+    /// no-op (a primeira chamada vence). Não constrói nem valida o serviço.
+    pub fn set_sqld_managed(
+        &self,
+        service: Arc<crate::sqld_provision::SqldProvisionService>,
+        data_origin: impl Into<String>,
+    ) {
+        let _ = self.inner.sqld_managed.set(SqldManagedHost {
+            service,
+            data_origin: data_origin.into(),
+        });
+    }
+
+    /// O serviço SQLD gerenciado, quando registrado no boot.
+    pub fn sqld_service(&self) -> Option<&Arc<crate::sqld_provision::SqldProvisionService>> {
+        self.inner.sqld_managed.get().map(|host| &host.service)
+    }
+
+    /// A origem de dados normalizada do host (a mesma do serviço), quando
+    /// registrado no boot.
+    pub fn sqld_data_origin(&self) -> Option<&str> {
+        self.inner
+            .sqld_managed
+            .get()
+            .map(|host| host.data_origin.as_str())
     }
 
     pub fn set_tenant_identity_client(&self, client: crate::tenant_identity::TenantIdentityClient) {
@@ -294,6 +360,9 @@ async fn metrics(State(state): State<ServerState>) -> impl IntoResponse {
     }
     if let Some(egress) = state.egress_metrics_prometheus() {
         body.push_str(&egress);
+    }
+    if let Some(sse) = state.sse_metrics_prometheus() {
+        body.push_str(&sse);
     }
     (
         [(

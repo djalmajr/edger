@@ -9,10 +9,10 @@ use axum::response::IntoResponse;
 use axum::routing::{any, get};
 use axum::{Json, Router};
 use edger_core::{
-    effective_max_body_size_bytes_usize, ApiKeyPrincipal, CoreError, ExecutionKind, WorkerRef,
-    INTERNAL_REQUEST_HEADER,
+    effective_max_body_size_bytes_usize, ApiKeyPrincipal, CoreError, ExecutionKind,
+    SerializedRequest, SerializedResponse, WorkerRef, WorkerResponse, INTERNAL_REQUEST_HEADER,
 };
-use edger_worker::{WorkerError, WorkerPool};
+use edger_worker::{CompletedResponse, WorkerError, WorkerPool};
 use serde_json::json;
 use tower_http::compression::predicate::Predicate;
 use tower_http::trace::TraceLayer;
@@ -39,6 +39,11 @@ use crate::routing_policy::{
 };
 use crate::server::{
     request_id_from_headers, request_id_middleware, request_metrics_middleware, ServerState,
+};
+use crate::sse_broker::{SseScope, SseSubscribeError, SseSubscription};
+use crate::sse_directive::{
+    is_sse_header_name, parse_publish, parse_subscribe, strip_sse_headers,
+    SSE_SUBSCRIBE_MAX_BODY_BYTES,
 };
 use crate::wire::{axum_to_serialized_with_limit, serialized_to_axum};
 
@@ -187,6 +192,9 @@ async fn metrics_handler(
     }
     if let Some(egress) = state.server.egress_metrics_prometheus() {
         body.push_str(&egress);
+    }
+    if let Some(sse) = state.server.sse_metrics_prometheus() {
+        body.push_str(&sse);
     }
     (
         [(
@@ -405,6 +413,7 @@ async fn dispatch_resolved_route(
                                 trusted_tenant,
                                 cohort_cookie,
                                 owned_host: None,
+                                allow_sse: true,
                             },
                         )
                         .await;
@@ -443,6 +452,7 @@ async fn dispatch_resolved_route(
                         trusted_tenant,
                         cohort_cookie,
                         owned_host: None,
+                        allow_sse: true,
                     },
                 )
                 .await;
@@ -489,6 +499,7 @@ async fn dispatch_resolved_route(
                         // worker's own host, so the wire URI carries the
                         // real origin (EDG-33).
                         owned_host,
+                        allow_sse: true,
                     },
                 )
                 .await;
@@ -801,6 +812,11 @@ struct DispatchParams {
     /// `@version` pin, homepage fallback, plugin base on an owner-less
     /// host, control-plane invoke, cron, health check and warmup).
     owned_host: Option<String>,
+    /// (EDG-55) Whether this dispatch may open an SSE subscription or
+    /// publish SSE events. `false` for the control-plane invoke, which
+    /// never subscribes nor publishes (its `x-edger-sse-*` headers are
+    /// still stripped).
+    allow_sse: bool,
 }
 
 pub(crate) async fn invoke_worker(
@@ -832,6 +848,7 @@ pub(crate) async fn invoke_worker(
             // Control-plane invoke is not a vhost dispatch: the worker
             // keeps the relative URI (EDG-33).
             owned_host: None,
+            allow_sse: false,
         },
     )
     .await
@@ -894,6 +911,7 @@ async fn dispatch_worker(
         trusted_tenant,
         cohort_cookie,
         owned_host,
+        allow_sse,
     } = params;
 
     // No request header can assert tenant identity. Only the authenticated
@@ -904,6 +922,14 @@ async fn dispatch_worker(
             "x-tenant-id",
             HeaderValue::from_str(&tenant).expect("validated Tenancit slug is a header value"),
         );
+    }
+
+    // (EDG-55) A worker with `sse` never sees an `x-edger-sse-*` header from
+    // the visitor, on any route: those names are the guest's own channel to
+    // the host and must not be forgeable from outside.
+    let strips_sse_headers = worker.config.sse.is_some();
+    if strips_sse_headers {
+        strip_sse_request_headers(req.headers_mut());
     }
 
     // Per-worker admission ceiling (Epic 20.08): protects an individual worker
@@ -993,32 +1019,24 @@ async fn dispatch_worker(
     #[cfg(feature = "otel")]
     inject_current_trace_context(&mut serialized.headers);
 
-    let retry_request = serialized.clone();
-    let retry_kind_hint = kind_hint.clone();
     let request_method = serialized.method.clone();
-    let first_attempt = state
-        .pool
-        .fetch_worker_stream(&worker, serialized, kind_hint)
-        .await;
-    let worker_result = match first_attempt {
-        Err(err) if should_retry_worker_transport(&request_method, &err) => {
-            tracing::warn!(
-                request_id = %request_id,
-                worker_name = %worker.name,
-                worker_version = %worker.version,
-                error = %err,
-                "retrying idempotent worker request after transient transport failure"
-            );
-            state
-                .pool
-                .fetch_worker_stream(&worker, retry_request, retry_kind_hint)
-                .await
+    let sse_mode = if allow_sse {
+        sse_mode_for(&worker, &request_method, &dispatch_path)
+    } else {
+        SseMode::Off
+    };
+    let worker_result = match sse_mode {
+        SseMode::Off => fetch_with_retry(state, &worker, serialized, kind_hint, &request_id)
+            .await
+            .map(Produced::Worker),
+        SseMode::Subscribe | SseMode::Publish => {
+            run_sse_execution(state, &worker, serialized, kind_hint, sse_mode, &request_id).await
         }
-        result => result,
     };
 
-    let worker_response = match worker_result.map_err(worker_error_to_core) {
-        Ok(response) => response,
+    let produced = match worker_result.map_err(worker_error_to_core) {
+        Ok(Produced::Reply(response)) => return Ok(response),
+        Ok(produced) => produced,
         Err(err) => {
             let status = map_error_status(&err).as_u16();
             state.server.worker_errors().record(
@@ -1070,24 +1088,43 @@ async fn dispatch_worker(
         }
     };
 
-    let response_status = match &worker_response {
-        edger_core::WorkerResponse::Buffered(response) => response.status,
-        edger_core::WorkerResponse::Streamed(response) => response.status,
+    // (EDG-55) A worker with `sse` answers with no `x-edger-sse-*` header on
+    // any route, streamed heads included.
+    let mut produced = produced;
+    if strips_sse_headers {
+        if let Produced::Worker(worker_response) = &mut produced {
+            match worker_response {
+                edger_core::WorkerResponse::Buffered(response) => {
+                    strip_sse_headers(&mut response.headers)
+                }
+                edger_core::WorkerResponse::Streamed(response) => {
+                    strip_sse_headers(&mut response.headers)
+                }
+            }
+        }
+    }
+    let response_status = match &produced {
+        Produced::Worker(edger_core::WorkerResponse::Buffered(response)) => response.status,
+        Produced::Worker(edger_core::WorkerResponse::Streamed(response)) => response.status,
+        Produced::Subscribed { .. } => StatusCode::OK.as_u16(),
+        Produced::Reply(_) => unreachable!("replies return before this point"),
     };
     // (EDG-9) Dispatch telemetry: the response content-type is the worker's
     // `content-type` header (case-insensitive). Only that single header
     // value is recorded — never other headers, cookies or auth material.
-    let content_type: Option<String> = match &worker_response {
-        edger_core::WorkerResponse::Buffered(response) => response
+    let content_type: Option<String> = match &produced {
+        Produced::Worker(edger_core::WorkerResponse::Buffered(response)) => response
             .headers
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
             .map(|(_, value)| value.clone()),
-        edger_core::WorkerResponse::Streamed(response) => response
+        Produced::Worker(edger_core::WorkerResponse::Streamed(response)) => response
             .headers
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
             .map(|(_, value)| value.clone()),
+        Produced::Subscribed { .. } => Some("text/event-stream".into()),
+        Produced::Reply(_) => None,
     };
     let duration_ms = started.elapsed().as_millis() as u64;
 
@@ -1139,6 +1176,22 @@ async fn dispatch_worker(
         response_status,
     );
 
+    let worker_response = match produced {
+        Produced::Worker(worker_response) => worker_response,
+        Produced::Subscribed {
+            headers,
+            subscription,
+        } => {
+            let mut response = sse_subscription_response(headers, subscription)?;
+            if let Some(cookie) = cohort_cookie {
+                if let Ok(value) = HeaderValue::from_str(&cookie) {
+                    response.headers_mut().append(header::SET_COOKIE, value);
+                }
+            }
+            return Ok(response);
+        }
+        Produced::Reply(response) => return Ok(response),
+    };
     let mut response = match worker_response {
         edger_core::WorkerResponse::Buffered(response) => {
             // Only a BUFFERED response can be short-circuited to a 304: its
@@ -1207,6 +1260,303 @@ async fn dispatch_worker(
         }
     }
     Ok(response)
+}
+
+/// What one dispatch produced (EDG-55).
+enum Produced {
+    /// A worker response (buffered or streamed), converted by the common
+    /// path.
+    Worker(WorkerResponse),
+    /// The guest authorized an SSE subscription: the host holds the
+    /// connection and the guest has already finished.
+    Subscribed {
+        headers: Vec<(String, String)>,
+        subscription: SseSubscription,
+    },
+    /// A ready response (an SSE error), returned as is.
+    Reply(Response<Body>),
+}
+
+/// How the SSE settings of the worker apply to one request (EDG-55).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SseMode {
+    Off,
+    Publish,
+    Subscribe,
+}
+
+/// `GET` on a `subscribe` route subscribes; any other method but `HEAD`
+/// on a `publish` route may publish; everything else is a plain request.
+/// `path` is worker-relative and still percent-encoded.
+fn sse_mode_for(worker: &WorkerRef, method: &str, path: &str) -> SseMode {
+    let Some(sse) = worker.config.sse.as_ref() else {
+        return SseMode::Off;
+    };
+    if method.eq_ignore_ascii_case("HEAD") {
+        return SseMode::Off;
+    }
+    if method.eq_ignore_ascii_case("GET") && sse.subscribe.iter().any(|route| route.matches(path)) {
+        return SseMode::Subscribe;
+    }
+    if sse.publish.iter().any(|route| route.matches(path)) {
+        return SseMode::Publish;
+    }
+    SseMode::Off
+}
+
+fn strip_sse_request_headers(headers: &mut HeaderMap) {
+    let names: Vec<axum::http::HeaderName> = headers
+        .keys()
+        .filter(|name| is_sse_header_name(name.as_str()))
+        .cloned()
+        .collect();
+    for name in names {
+        headers.remove(name);
+    }
+}
+
+/// The common worker fetch, with the one retry of an idempotent request
+/// after a transient transport failure.
+async fn fetch_with_retry(
+    state: &OrchestratorState,
+    worker: &WorkerRef,
+    serialized: SerializedRequest,
+    kind_hint: Option<ExecutionKind>,
+    request_id: &str,
+) -> Result<WorkerResponse, WorkerError> {
+    let retry_request = serialized.clone();
+    let retry_kind_hint = kind_hint.clone();
+    let request_method = serialized.method.clone();
+    let first_attempt = state
+        .pool
+        .fetch_worker_stream(worker, serialized, kind_hint)
+        .await;
+    match first_attempt {
+        Err(err) if should_retry_worker_transport(&request_method, &err) => {
+            tracing::warn!(
+                request_id = %request_id,
+                worker_name = %worker.name,
+                worker_version = %worker.version,
+                error = %err,
+                "retrying idempotent worker request after transient transport failure"
+            );
+            state
+                .pool
+                .fetch_worker_stream(worker, retry_request, retry_kind_hint)
+                .await
+        }
+        result => result,
+    }
+}
+
+/// SSE subscribe / publish route (EDG-55): the guest runs to completion
+/// (slot already free), then the host decides from its response.
+async fn run_sse_execution(
+    state: &OrchestratorState,
+    worker: &WorkerRef,
+    serialized: SerializedRequest,
+    kind_hint: Option<ExecutionKind>,
+    mode: SseMode,
+    request_id: &str,
+) -> Result<Produced, WorkerError> {
+    let Some(sse) = worker.config.sse.clone() else {
+        return fetch_with_retry(state, worker, serialized, kind_hint, request_id)
+            .await
+            .map(Produced::Worker);
+    };
+    let max_body_bytes = match mode {
+        SseMode::Subscribe => SSE_SUBSCRIBE_MAX_BODY_BYTES,
+        SseMode::Publish | SseMode::Off => effective_max_body_size_bytes_usize(&worker.config),
+    };
+    let request_method = serialized.method.clone();
+    let retry_request = serialized.clone();
+    let retry_kind_hint = kind_hint.clone();
+    let fallback_request = serialized.clone();
+    let fallback_kind_hint = kind_hint.clone();
+    let first_attempt = state
+        .pool
+        .fetch_worker_completed(worker, serialized, kind_hint, max_body_bytes)
+        .await;
+    let result = match first_attempt {
+        Err(err) if should_retry_worker_transport(&request_method, &err) => {
+            tracing::warn!(
+                request_id = %request_id,
+                worker_name = %worker.name,
+                worker_version = %worker.version,
+                error = %err,
+                "retrying idempotent worker request after transient transport failure"
+            );
+            state
+                .pool
+                .fetch_worker_completed(worker, retry_request, retry_kind_hint, max_body_bytes)
+                .await
+        }
+        result => result,
+    };
+    let CompletedResponse {
+        status,
+        mut headers,
+        body,
+    } = match result {
+        Ok(completed) => completed,
+        // The answer is served by the host (an asset): no guest ran, so
+        // there are no directives; the normal path serves it.
+        Err(WorkerError::CompletedNotGuest) => {
+            return fetch_with_retry(
+                state,
+                worker,
+                fallback_request,
+                fallback_kind_hint,
+                request_id,
+            )
+            .await
+            .map(Produced::Worker);
+        }
+        Err(WorkerError::CompletedBodyTooLarge { .. }) => {
+            return Ok(Produced::Reply(match mode {
+                SseMode::Publish | SseMode::Off => sse_response_too_large(),
+                SseMode::Subscribe => sse_invalid_directive(),
+            }));
+        }
+        Err(err) => return Err(err),
+    };
+
+    let broker = state.server.sse_broker();
+    let scope = SseScope {
+        worker: worker.name.clone(),
+        namespace: worker.namespace.clone(),
+    };
+    match mode {
+        SseMode::Subscribe if status == 200 => match parse_subscribe(&headers) {
+            Err(_) => {
+                tracing::warn!(
+                    request_id = %request_id,
+                    worker_name = %worker.name,
+                    "invalid SSE subscribe directive"
+                );
+                return Ok(Produced::Reply(sse_invalid_directive()));
+            }
+            Ok(Some(topics)) => {
+                let Some(broker) = broker else {
+                    return Ok(Produced::Reply(sse_unavailable()));
+                };
+                let app_max = usize::try_from(sse.max_connections).unwrap_or(usize::MAX);
+                return Ok(
+                    match broker.subscribe(
+                        scope,
+                        topics,
+                        app_max,
+                        std::time::Duration::from_millis(sse.ttl_ms),
+                    ) {
+                        Ok(subscription) => Produced::Subscribed {
+                            headers,
+                            subscription,
+                        },
+                        Err(SseSubscribeError::Capacity) => Produced::Reply(sse_capacity()),
+                        Err(SseSubscribeError::Unavailable) => Produced::Reply(sse_unavailable()),
+                    },
+                );
+            }
+            Ok(None) => {}
+        },
+        SseMode::Publish if (200..300).contains(&status) => {
+            if let Some(broker) = broker.filter(|broker| broker.is_enabled()) {
+                match parse_publish(&headers) {
+                    Err(_) => {
+                        tracing::warn!(
+                            request_id = %request_id,
+                            worker_name = %worker.name,
+                            "invalid SSE publish directive"
+                        );
+                        return Ok(Produced::Reply(sse_invalid_directive()));
+                    }
+                    Ok(events) if !events.is_empty() => broker.publish(&scope, events),
+                    Ok(_) => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    strip_sse_headers(&mut headers);
+    Ok(Produced::Worker(WorkerResponse::Buffered(
+        SerializedResponse {
+            status,
+            headers,
+            body: if body.is_empty() { None } else { Some(body) },
+        },
+    )))
+}
+
+/// The host-served SSE response of an authorized subscription: the five
+/// contract headers, the guest's other headers (cookies included), no
+/// length, no validators, no encoding.
+fn sse_subscription_response(
+    headers: Vec<(String, String)>,
+    subscription: SseSubscription,
+) -> Result<Response<Body>, CoreError> {
+    const DROPPED: [&str; 7] = [
+        "cache-control",
+        "content-encoding",
+        "content-length",
+        "content-type",
+        "etag",
+        "last-modified",
+        "transfer-encoding",
+    ];
+    let mut headers: Vec<(String, String)> = headers
+        .into_iter()
+        .filter(|(name, _)| {
+            !is_sse_header_name(name)
+                && !DROPPED
+                    .iter()
+                    .any(|dropped| name.eq_ignore_ascii_case(dropped))
+        })
+        .collect();
+    headers.push(("content-type".into(), "text/event-stream".into()));
+    headers.push(("cache-control".into(), "no-store".into()));
+    headers.push(("x-accel-buffering".into(), "no".into()));
+    let response = serialized_to_axum(SerializedResponse {
+        status: StatusCode::OK.as_u16(),
+        headers,
+        body: None,
+    })?;
+    Ok(response.map(|_| Body::from_stream(subscription)))
+}
+
+fn sse_invalid_directive() -> Response<Body> {
+    json_error(
+        StatusCode::BAD_GATEWAY,
+        "SSE_INVALID_DIRECTIVE",
+        "the worker returned an invalid SSE directive",
+    )
+}
+
+fn sse_response_too_large() -> Response<Body> {
+    json_error(
+        StatusCode::BAD_GATEWAY,
+        "SSE_RESPONSE_TOO_LARGE",
+        "the worker response is larger than the allowed size",
+    )
+}
+
+fn sse_capacity() -> Response<Body> {
+    let mut response = json_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "SSE_CAPACITY",
+        "no SSE connection available",
+    );
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
+    response
+}
+
+fn sse_unavailable() -> Response<Body> {
+    json_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "SSE_UNAVAILABLE",
+        "SSE is not available",
+    )
 }
 
 /// Ensure `accept-encoding` is listed in the response's `Vary`. Mirrors the

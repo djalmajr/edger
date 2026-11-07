@@ -14,7 +14,12 @@ mod conditional;
 pub mod console_auth;
 pub mod cron;
 pub mod deploy;
+pub mod egress_database;
 pub mod egress_guard;
+pub mod egress_wasm_bridge;
+pub mod managed_database_config;
+pub mod managed_database_egress;
+pub mod managed_database_isolate;
 pub mod manifest_index_stub;
 pub mod manifest_loader;
 pub mod mcp_http;
@@ -28,6 +33,14 @@ pub mod router;
 pub mod routing_policy;
 pub mod security;
 pub mod server;
+pub mod sqld_admin;
+pub mod sqld_backup;
+pub mod sqld_managed_config;
+pub mod sqld_provision;
+pub mod sqld_registry;
+pub mod sqld_signer;
+pub mod sse_broker;
+pub mod sse_directive;
 pub mod state_export;
 pub mod tenant_identity;
 pub mod tracing_init;
@@ -50,9 +63,13 @@ pub use deploy::{
     rescan_workers_and_prewarm, rescan_workers_and_prewarm_with_events, run_pending_releases,
     run_pending_releases_with_events, InstalledWorker, RescanReport, MAX_DEPLOY_PACKAGE_BYTES,
 };
+pub use egress_database::{EgressDatabaseGrant, EgressDatabaseGrantError};
 pub use egress_guard::{
     EgressGuard, EgressGuardConfig, EgressOutcome, EgressResolver, EgressWorkerContext,
     SystemEgressResolver, EGRESS_GUARD_HOST, MAX_REDIRECTS,
+};
+pub use egress_wasm_bridge::{
+    assemble_wasm_isolate, assemble_wasm_isolate_with_database, EgressWasmBridge,
 };
 pub use manifest_index_stub::{ManifestEntry, ManifestIndex};
 pub use manifest_loader::{

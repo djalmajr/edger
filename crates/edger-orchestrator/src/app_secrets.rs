@@ -18,7 +18,7 @@
 //! operacional — apenas o nome e os metadados.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -26,7 +26,7 @@ use base64::Engine;
 use chacha20poly1305::aead::{Aead, Generate, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use edger_core::{AppSecretResolver, CoreError};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use zeroize::Zeroizing;
 
 /// Master key length in bytes (ChaCha20 key size).
@@ -227,6 +227,74 @@ impl AppSecretsStore {
         Ok(())
     }
 
+    /// Compare-and-set atômico: UMA transação SQLite `IMMEDIATE` sob o mutex
+    /// da conexão cobre leitura, decifragem/comparação, contagem do teto e
+    /// gravação + commit. O lock de escrita do SQLite é tomado no `BEGIN`,
+    /// então outro handle (ou processo) no mesmo arquivo não escreve entre a
+    /// comparação e o commit: ele espera (até o busy timeout) ou falha com
+    /// `STORE_ERROR`, nunca intercala. `Ok(false)` = conflito e NADA mudou
+    /// (a transação é descartada sem commit). Qualquer erro também faz
+    /// rollback. `None` exige ausência; `Some` exige igualdade exata do
+    /// plaintext atual (decifrado aqui; um row que não decifra é erro, sem
+    /// overwrite). Com `expected = None` e row presente o resultado é
+    /// `false` sem decifrar: a ausência já foi refutada.
+    #[allow(clippy::too_many_arguments)]
+    fn compare_and_set(
+        &self,
+        key: &Zeroizing<[u8; KEY_LEN]>,
+        worker: &str,
+        name: &str,
+        expected: Option<&str>,
+        nonce: &[u8; NONCE_LEN],
+        ciphertext: &[u8],
+        now: i64,
+        max: usize,
+    ) -> Result<bool, CoreError> {
+        let mut conn = self.conn.lock().map_err(|_| lock_err())?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_err)?;
+        let current: Option<EncryptedSecret> = tx
+            .query_row(
+                "SELECT nonce, ciphertext FROM app_secrets WHERE worker = ?1 AND name = ?2",
+                params![worker, name],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(db_err)?;
+        match (&current, expected) {
+            (Some(_), None) | (None, Some(_)) => return Ok(false),
+            (Some((stored_nonce, stored_ct)), Some(want)) => {
+                let plain = decrypt(key, worker, name, stored_nonce, stored_ct)?;
+                if plain.as_str() != want {
+                    return Ok(false);
+                }
+            }
+            (None, None) => {
+                let count: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM app_secrets WHERE worker = ?1",
+                        params![worker],
+                        |row| row.get(0),
+                    )
+                    .map_err(db_err)?;
+                if count >= max as i64 {
+                    return Err(CoreError::new(
+                        "SECRETS_LIMIT",
+                        format!(
+                            "worker {worker} already has the maximum of {max} app secrets; delete one first"
+                        ),
+                    ));
+                }
+            }
+        }
+        #[cfg(test)]
+        run_cas_window_hook();
+        Self::execute_upsert(&tx, worker, name, nonce, ciphertext, now)?;
+        tx.commit().map_err(db_err)?;
+        Ok(true)
+    }
+
     fn read(&self, worker: &str, name: &str) -> Result<Option<EncryptedSecret>, CoreError> {
         let conn = self.conn.lock().map_err(|_| lock_err())?;
         let row: Option<EncryptedSecret> = conn
@@ -278,69 +346,38 @@ impl AppSecretsStore {
 /// `key: None` = cofre INDISPONÍVEL (sem `EDGER_SECRETS_KEY_FILE`, ou o
 /// arquivo inválido/ilegível no boot): leitura e escrita respondem falha
 /// fechada, e o resolvedor injeta nada.
+///
+/// (EDG-52 06b) O material do cofre vive em `Arc<AppSecretVaultInner>`: o
+/// resolvedor assíncrono clona o `Arc` para o job do pool de bloqueio SEM
+/// copiar a chave mestra — o `Zeroizing` da chave só é liberado quando o
+/// ÚLTIMO trabalho em voo (e o cofre) terminam. Sem `Clone`/`Debug`
+/// públicos novos: o cofre continua derivando nenhuma das duas.
 pub struct AppSecretVault {
-    store: AppSecretsStore,
-    key: Option<Zeroizing<[u8; KEY_LEN]>>,
+    inner: Arc<AppSecretVaultInner>,
 }
 
-impl AppSecretVault {
-    /// Cofre disponível: store aberto em `path` + chave mestra em memória.
-    pub fn open(path: impl AsRef<Path>, key: Zeroizing<[u8; KEY_LEN]>) -> Result<Self, CoreError> {
-        let store = AppSecretsStore::open(path)?;
-        Ok(Self {
-            store,
-            key: Some(key),
-        })
-    }
+/// (EDG-52 06b) Posse compartilhada do cofre: o store serializado, a chave
+/// mestra zeroizada e o slot de admissão do lookup offloadado. O `Arc`
+/// leva tudo ao closure de `spawn_blocking` sem copiar material da chave.
+struct AppSecretVaultInner {
+    store: AppSecretsStore,
+    key: Option<Zeroizing<[u8; KEY_LEN]>>,
+    /// (EDG-52 06b) Slot de admissão POR COFRE, capacidade 1: a conexão já é
+    /// serial atrás de um único `Mutex<Connection>`, então no máximo um
+    /// lookup bloqueante fica em voo por cofre — sem fila de jobs bloqueantes
+    /// sem limite. O await de admissão é cancelável (um caller derrubado ali
+    /// não cria job), e o permit só é liberado quando o lookup/cifra
+    /// realmente termina — o job em voo nunca é preemptado: o SQLite em voo
+    /// roda até o fim e o permit sai com o job.
+    lookup_slot: Arc<tokio::sync::Semaphore>,
+}
 
-    /// Cofre indisponível: sem chave mestra (o store nem precisa abrir —
-    /// nada pode ser lido nem gravado, e o boot segue servindo).
-    pub fn unavailable() -> Self {
-        Self {
-            store: AppSecretsStore::in_memory().expect("in-memory sqlite opens"),
-            key: None,
-        }
-    }
-
-    /// O cofre tem chave mestra (rotas respondem; injeção é possível).
-    pub fn is_available(&self) -> bool {
-        self.key.is_some()
-    }
-
-    /// Caminho do arquivo de banco (None quando o store é em memória —
-    /// ex.: cofre indisponível sem chave).
-    pub fn db_path(&self) -> Option<&Path> {
-        self.store.db_path()
-    }
-
-    /// Cópia consistente do banco (`VACUUM INTO`) para o estado export;
-    /// a export do estado usa a MESMA semântica da `api-keys.db`.
-    pub fn export_to(&self, target: &Path) -> Result<(), CoreError> {
-        self.store.export_to(target)
-    }
-
-    /// Grava (ou sobrepõe) um segredo, cifrado com nonce novo. Teto por
-    /// worker (F5): um NOME NOVO com `MAX_SECRETS_PER_WORKER` segredos já
-    /// gravados falha com `SECRETS_LIMIT` (409 na API); sobrescrever um
-    /// existente continua funcionando.
-    pub fn set(&self, worker: &str, name: &str, value: &str) -> Result<(), CoreError> {
-        let key = self.key.as_ref().ok_or_else(unavailable_err)?;
-        let (nonce, ciphertext) = encrypt(key, worker, name, value)?;
-        self.store.upsert_capped(
-            worker,
-            name,
-            &nonce,
-            &ciphertext,
-            now_unix_seconds(),
-            MAX_SECRETS_PER_WORKER,
-        )
-    }
-
+impl AppSecretVaultInner {
     /// Lê e decifra um segredo. `None` = ausente OU falha fechada (chave
     /// errada/trocada): o erro SEM o valor vai para o log. O valor devolvido
     /// vive em `Zeroizing` (F4): é zeroizado no drop, salvo a recuperação
     /// explícita na fronteira com o resolvedor (`mem::take`).
-    pub fn get(&self, worker: &str, name: &str) -> Option<Zeroizing<String>> {
+    fn get(&self, worker: &str, name: &str) -> Option<Zeroizing<String>> {
         let key = self.key.as_ref()?;
         match self.store.read(worker, name) {
             Ok(Some((nonce, ciphertext))) => {
@@ -363,13 +400,119 @@ impl AppSecretVault {
             }
         }
     }
+}
+
+impl AppSecretVault {
+    /// Cofre disponível: store aberto em `path` + chave mestra em memória.
+    pub fn open(path: impl AsRef<Path>, key: Zeroizing<[u8; KEY_LEN]>) -> Result<Self, CoreError> {
+        Ok(Self::with_parts(AppSecretsStore::open(path)?, Some(key)))
+    }
+
+    /// Cofre indisponível: sem chave mestra (o store nem precisa abrir —
+    /// nada pode ser lido nem gravado, e o boot segue servindo).
+    pub fn unavailable() -> Self {
+        Self::with_parts(
+            AppSecretsStore::in_memory().expect("in-memory sqlite opens"),
+            None,
+        )
+    }
+
+    fn with_parts(store: AppSecretsStore, key: Option<Zeroizing<[u8; KEY_LEN]>>) -> Self {
+        Self {
+            inner: Arc::new(AppSecretVaultInner {
+                store,
+                key,
+                lookup_slot: Arc::new(tokio::sync::Semaphore::new(1)),
+            }),
+        }
+    }
+
+    /// O cofre tem chave mestra (rotas respondem; injeção é possível).
+    pub fn is_available(&self) -> bool {
+        self.inner.key.is_some()
+    }
+
+    /// Caminho do arquivo de banco (None quando o store é em memória —
+    /// ex.: cofre indisponível sem chave).
+    pub fn db_path(&self) -> Option<&Path> {
+        self.inner.store.db_path()
+    }
+
+    /// Cópia consistente do banco (`VACUUM INTO`) para o estado export;
+    /// a export do estado usa a MESMA semântica da `api-keys.db`.
+    pub fn export_to(&self, target: &Path) -> Result<(), CoreError> {
+        self.inner.store.export_to(target)
+    }
+
+    /// Grava (ou sobrepõe) um segredo, cifrado com nonce novo. Teto por
+    /// worker (F5): um NOME NOVO com `MAX_SECRETS_PER_WORKER` segredos já
+    /// gravados falha com `SECRETS_LIMIT` (409 na API); sobrescrever um
+    /// existente continua funcionando.
+    pub fn set(&self, worker: &str, name: &str, value: &str) -> Result<(), CoreError> {
+        let key = self.inner.key.as_ref().ok_or_else(unavailable_err)?;
+        let (nonce, ciphertext) = encrypt(key, worker, name, value)?;
+        self.inner.store.upsert_capped(
+            worker,
+            name,
+            &nonce,
+            &ciphertext,
+            now_unix_seconds(),
+            MAX_SECRETS_PER_WORKER,
+        )
+    }
+
+    /// Compare-and-set atômico (host interno, SÍNCRONO): grava `value` só se
+    /// o estado atual bater com `expected` (`None` = ausente; `Some` =
+    /// plaintext idêntico; `Some("")` é um valor real). `true` = aplicado;
+    /// `false` = conflito e nada mudou. Não adquire `lookup_slot` nem chama
+    /// `resolve_secret`: o chamador offloada e mantém a admissão. Mesma cifra,
+    /// AAD, nonce aleatório e teto por worker de `set`; `created_at` é
+    /// preservado na substituição. `value` e `expected` têm no máximo
+    /// `MAX_SECRET_VALUE_BYTES`. Cofre indisponível, row que não decifra ou
+    /// falha de banco → erro SEM o plaintext e sem overwrite. Um `set`
+    /// manual concorrente continua permitido e é serializado pelo SQLite.
+    pub fn compare_and_set(
+        &self,
+        worker: &str,
+        name: &str,
+        expected: Option<&str>,
+        value: &str,
+    ) -> Result<bool, CoreError> {
+        let key = self.inner.key.as_ref().ok_or_else(unavailable_err)?;
+        if value.len() > MAX_SECRET_VALUE_BYTES
+            || expected.is_some_and(|expected| expected.len() > MAX_SECRET_VALUE_BYTES)
+        {
+            return Err(CoreError::new(
+                "VALIDATION_ERROR",
+                format!("secret value must have at most {MAX_SECRET_VALUE_BYTES} bytes (16 KiB)"),
+            ));
+        }
+        let (nonce, ciphertext) = encrypt(key, worker, name, value)?;
+        self.inner.store.compare_and_set(
+            key,
+            worker,
+            name,
+            expected,
+            &nonce,
+            &ciphertext,
+            now_unix_seconds(),
+            MAX_SECRETS_PER_WORKER,
+        )
+    }
+
+    /// Lê e decifra um segredo — a forma SINCRONA (APIs existentes):
+    /// bloqueia a thread do chamador no mutex do store. O resolvedor
+    /// assíncrono (`resolve_secret`) offloada a mesma operação.
+    pub fn get(&self, worker: &str, name: &str) -> Option<Zeroizing<String>> {
+        self.inner.get(worker, name)
+    }
 
     /// Remove um segredo. `true` se existia.
     pub fn delete(&self, worker: &str, name: &str) -> Result<bool, CoreError> {
         if !self.is_available() {
             return Err(unavailable_err());
         }
-        self.store.delete(worker, name)
+        self.inner.store.delete(worker, name)
     }
 
     /// Lista nomes + datas (nunca o valor).
@@ -378,6 +521,7 @@ impl AppSecretVault {
             return Err(unavailable_err());
         }
         Ok(self
+            .inner
             .store
             .list(worker)?
             .into_iter()
@@ -391,22 +535,102 @@ impl AppSecretVault {
 
     /// Store subjacente (caminho do banco, export `VACUUM INTO`).
     pub fn store(&self) -> &AppSecretsStore {
-        &self.store
+        &self.inner.store
     }
 }
 
-/// `AppSecretResolver` para o backend de processo: o resolvedor injeta no
-/// env DO processo do worker que declara o nome — e só dele.
+#[cfg(test)]
+thread_local! {
+    /// Hook de teste (por thread) executado DENTRO da transação do CAS,
+    /// depois da comparação e antes da escrita.
+    static CAS_WINDOW_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn run_cas_window_hook() {
+    if let Some(hook) = CAS_WINDOW_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+}
+
+/// (EDG-52 06b) Instrumentação privada de teste: conta os jobs bloqueantes
+/// offloadados criados pelo `resolve_secret` (processo inteiro — os testes
+/// de offload se serializam em `OFFLOAD_TEST_LOCK`) e força um job a
+/// paniquear para provar o fail closed do join. Nunca existe no build de
+/// produção.
+#[cfg(test)]
+static JOBS_SPAWNED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// (EDG-52 06b) Força o PRÓXIMO job offloadado a paniquear (só em teste).
+#[cfg(test)]
+static FORCED_JOB_PANIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+fn jobs_spawned_for_test() -> &'static std::sync::atomic::AtomicUsize {
+    &JOBS_SPAWNED
+}
+
+#[cfg(test)]
+fn reset_jobs_spawned_for_test() {
+    JOBS_SPAWNED.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// `AppSecretResolver` para os dois backends (processo e WASM): cada nome
+/// declarado é injetado só no env DO worker — no backend de processo, no
+/// spawn; no backend WASM, no Store fresco de cada execução.
 #[async_trait]
 impl AppSecretResolver for AppSecretVault {
     async fn resolve_secret(&self, worker: &str, name: &str) -> Option<String> {
-        // A fronteira com o resolvedor exige um `String` comum (o valor vai
-        // para o env do processo filho — a cópia é aceitável, e o core não
-        // depende de `zeroize`). O `zeroize` 1.9.0 não tem `into_inner`:
-        // recupera o valor sem copiar com `mem::take` (o wrapper fica
-        // com um `String` vazio, zeroizado no drop).
-        self.get(worker, name)
-            .map(|mut value| std::mem::take(&mut *value))
+        // (EDG-52 06b) Offload: o lookup SQLite + a decifragem ChaCha20 nunca
+        // rodam numa thread Tokio. Chave mestra ausente (cofre indisponível)
+        // responde `None` SEM NENHUM I/O — antes da admissão.
+        self.inner.key.as_ref()?;
+        // Slot por cofre (capacidade 1 — a conexão já é serial). O await de
+        // admissão é cancelável: um caller derrubado aqui libera nada e não
+        // cria job bloqueante nenhum.
+        let permit = match Arc::clone(&self.inner.lookup_slot).acquire_owned().await {
+            Ok(permit) => permit,
+            // O slot nunca é fechado; fail closed mesmo assim.
+            Err(_) => return None,
+        };
+        #[cfg(test)]
+        jobs_spawned_for_test().fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let inner = Arc::clone(&self.inner);
+        let worker = worker.to_owned();
+        let name = name.to_owned();
+        // Cópias APENAS dos nomes para o log do join falho (nunca o valor);
+        // os owned vão para o closure.
+        let worker_log = worker.clone();
+        let name_log = name.clone();
+        // O permit MOVE para o job: é liberado só quando o lookup/cifra
+        // realmente termina (ou o job paniqueia) — inclusive no cancel
+        // do chamador deste await. O job em voo nunca é preemptado: o
+        // SQLite em voo roda até o fim e o permit sai com o drop do job.
+        let job = tokio::task::spawn_blocking(move || {
+            let _slot = permit;
+            #[cfg(test)]
+            if FORCED_JOB_PANIC.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                panic!("forced app secret lookup job failure (test only)");
+            }
+            inner
+                .get(&worker, &name)
+                .map(|mut value| std::mem::take(&mut *value))
+        });
+        match job.await {
+            Ok(value) => value,
+            // Fail closed: um `JoinError` pode carregar o payload do panic
+            // (que pode conter o segredo), então ele nunca é formatado,
+            // logado nem devolvido — só a mensagem estática com os nomes.
+            Err(_) => {
+                tracing::error!(
+                    worker = %worker_log,
+                    secret = %name_log,
+                    "app secret lookup task failed; failing closed without the value"
+                );
+                None
+            }
+        }
     }
 }
 
@@ -542,6 +766,8 @@ fn restrict_vault_permissions(_path: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn key(bytes: u8) -> Zeroizing<[u8; KEY_LEN]> {
         Zeroizing::new([bytes; KEY_LEN])
@@ -833,6 +1059,286 @@ mod tests {
         assert_eq!(vault.list("pinar").unwrap().len(), 64);
     }
 
+    // ---- compare_and_set (EDG-54 14v) ----
+
+    /// Linha crua (nonce, ciphertext, created_at, updated_at) lida por outra conexão.
+    type RawRow = (Vec<u8>, Vec<u8>, i64, i64);
+
+    fn raw_row(path: &Path, worker: &str, name: &str) -> Option<RawRow> {
+        let conn = Connection::open(path).unwrap();
+        conn.query_row(
+            "SELECT nonce, ciphertext, created_at, updated_at FROM app_secrets \
+             WHERE worker = ?1 AND name = ?2",
+            params![worker, name],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .unwrap()
+    }
+
+    fn raw_exec(path: &Path, sql: &str) {
+        Connection::open(path).unwrap().execute_batch(sql).unwrap();
+    }
+
+    fn short_busy(vault: &AppSecretVault) {
+        vault
+            .store()
+            .conn
+            .lock()
+            .unwrap()
+            .busy_timeout(Duration::from_millis(50))
+            .unwrap();
+    }
+
+    #[test]
+    fn cas_insert_replace_mismatch_empty_and_isolation() {
+        let (_dir, path) = temp_db();
+        let v = AppSecretVault::open(&path, key(1)).unwrap();
+        // ausente + expected None: insere.
+        assert!(v.compare_and_set("w", "T", None, "a").unwrap());
+        assert_eq!(get_str(&v, "w", "T").as_deref(), Some("a"));
+        // repetição com None: recusada, preserva o valor (manual).
+        let first = raw_row(&path, "w", "T").unwrap();
+        assert!(!v.compare_and_set("w", "T", None, "b").unwrap());
+        assert_eq!(raw_row(&path, "w", "T").unwrap(), first);
+        // mismatch: recusado e intacto.
+        assert!(!v.compare_and_set("w", "T", Some("zzz"), "b").unwrap());
+        assert_eq!(raw_row(&path, "w", "T").unwrap(), first);
+        // ausente + Some: false e nada criado.
+        assert!(!v.compare_and_set("w", "OTHER", Some("a"), "b").unwrap());
+        assert!(raw_row(&path, "w", "OTHER").is_none());
+        // substituição com expected correto: nonce/ciphertext novos.
+        assert!(v.compare_and_set("w", "T", Some("a"), "b").unwrap());
+        assert_eq!(get_str(&v, "w", "T").as_deref(), Some("b"));
+        let after = raw_row(&path, "w", "T").unwrap();
+        assert_ne!(after.0, first.0, "nonce must be fresh");
+        assert_ne!(after.1, first.1);
+        assert_eq!(after.2, first.2, "created_at preserved");
+        // vazio é valor real, não ausência.
+        assert!(v.compare_and_set("w", "E", None, "").unwrap());
+        assert_eq!(get_str(&v, "w", "E").as_deref(), Some(""));
+        assert!(!v.compare_and_set("w", "E", None, "x").unwrap());
+        assert!(!v.compare_and_set("w", "E", Some("x"), "y").unwrap());
+        assert!(v.compare_and_set("w", "E", Some(""), "y").unwrap());
+        // worker/name distintos isolados.
+        assert!(v.compare_and_set("w2", "T", None, "iso").unwrap());
+        assert!(v.compare_and_set("w", "T2", None, "iso2").unwrap());
+        assert_eq!(get_str(&v, "w", "T").as_deref(), Some("b"));
+        assert!(!v.compare_and_set("w2", "T", Some("b"), "x").unwrap());
+        assert_eq!(get_str(&v, "w2", "T").as_deref(), Some("iso"));
+    }
+
+    #[test]
+    fn cas_conflict_changes_nothing_and_success_keeps_created_at() {
+        let (_dir, path) = temp_db();
+        let v = AppSecretVault::open(&path, key(1)).unwrap();
+        v.set("w", "T", "a").unwrap();
+        // envelhece o row para qualquer mudança de timestamp aparecer.
+        raw_exec(
+            &path,
+            "UPDATE app_secrets SET created_at = 10, updated_at = 20",
+        );
+        let before = raw_row(&path, "w", "T");
+        assert!(!v.compare_and_set("w", "T", Some("nope"), "b").unwrap());
+        assert!(!v.compare_and_set("w", "T", None, "b").unwrap());
+        assert_eq!(raw_row(&path, "w", "T"), before);
+        assert!(v.compare_and_set("w", "T", Some("a"), "b").unwrap());
+        let after = raw_row(&path, "w", "T").unwrap();
+        assert_eq!(after.2, 10, "created_at preserved");
+        assert!(after.3 > 20, "updated_at refreshed");
+    }
+
+    #[test]
+    fn cas_enforces_the_cap_on_insert_but_not_on_replace() {
+        let (_dir, path) = temp_db();
+        let v = AppSecretVault::open(&path, key(1)).unwrap();
+        for i in 0..64 {
+            assert!(v
+                .compare_and_set("w", &format!("K{i:03}"), None, "v")
+                .unwrap());
+        }
+        let err = v.compare_and_set("w", "K064", None, "v").unwrap_err();
+        assert_eq!(err.code, "SECRETS_LIMIT");
+        assert!(raw_row(&path, "w", "K064").is_none());
+        assert_eq!(v.list("w").unwrap().len(), 64);
+        assert!(v.compare_and_set("w", "K000", Some("v"), "new").unwrap());
+        assert_eq!(get_str(&v, "w", "K000").as_deref(), Some("new"));
+        assert_eq!(v.list("w").unwrap().len(), 64);
+        // outro worker não sofre o teto.
+        assert!(v.compare_and_set("w2", "K064", None, "v").unwrap());
+    }
+
+    #[test]
+    fn cas_size_cap_applies_to_value_and_expected_without_touching_state() {
+        let (_dir, path) = temp_db();
+        let v = AppSecretVault::open(&path, key(1)).unwrap();
+        v.set("w", "T", "a").unwrap();
+        let before = raw_row(&path, "w", "T");
+        let big = "x".repeat(MAX_SECRET_VALUE_BYTES + 1);
+        let ok = "x".repeat(MAX_SECRET_VALUE_BYTES);
+        let err = v.compare_and_set("w", "T", Some("a"), &big).unwrap_err();
+        assert_eq!(err.code, "VALIDATION_ERROR");
+        let err = v.compare_and_set("w", "T", Some(&big), "b").unwrap_err();
+        assert_eq!(err.code, "VALIDATION_ERROR");
+        assert_eq!(raw_row(&path, "w", "T"), before);
+        assert!(v.compare_and_set("w", "T", Some("a"), &ok).unwrap());
+    }
+
+    #[test]
+    fn cas_fails_closed_when_unavailable_wrong_master_or_corrupt_row() {
+        let u = AppSecretVault::unavailable();
+        let err = u
+            .compare_and_set("w", "T", None, "secret-plain")
+            .unwrap_err();
+        assert_eq!(err.code, "SECRETS_UNAVAILABLE");
+        assert!(!err.message.contains("secret-plain"));
+
+        let (_dir, path) = temp_db();
+        let v = AppSecretVault::open(&path, key(1)).unwrap();
+        v.set("w", "T", "old-plain").unwrap();
+        let before = raw_row(&path, "w", "T");
+        // master errada: não decifra, sem overwrite, sem plaintext no erro.
+        let wrong = AppSecretVault::open(&path, key(2)).unwrap();
+        let err = wrong
+            .compare_and_set("w", "T", Some("old-plain"), "new-plain")
+            .unwrap_err();
+        assert_eq!(err.code, "SECRETS_DECRYPT_FAILED");
+        assert!(!err.message.contains("old-plain") && !err.message.contains("new-plain"));
+        assert_eq!(raw_row(&path, "w", "T"), before);
+        // ciphertext corrompido.
+        raw_exec(&path, "UPDATE app_secrets SET ciphertext = zeroblob(8)");
+        let before = raw_row(&path, "w", "T");
+        let err = v
+            .compare_and_set("w", "T", Some("old-plain"), "new-plain")
+            .unwrap_err();
+        assert_eq!(err.code, "SECRETS_DECRYPT_FAILED");
+        assert!(!err.message.contains("new-plain"));
+        assert_eq!(raw_row(&path, "w", "T"), before);
+        // nonce com tamanho inválido.
+        raw_exec(&path, "UPDATE app_secrets SET nonce = zeroblob(3)");
+        let before = raw_row(&path, "w", "T");
+        assert!(v.compare_and_set("w", "T", Some("old-plain"), "n").is_err());
+        assert_eq!(raw_row(&path, "w", "T"), before);
+    }
+
+    #[test]
+    fn cas_rolls_back_when_the_write_fails_inside_the_transaction() {
+        let (_dir, path) = temp_db();
+        let v = AppSecretVault::open(&path, key(1)).unwrap();
+        v.set("w", "T", "a").unwrap();
+        let before = raw_row(&path, "w", "T");
+        raw_exec(
+            &path,
+            "CREATE TRIGGER no_update BEFORE UPDATE ON app_secrets \
+             BEGIN SELECT RAISE(ABORT, 'blocked'); END; \
+             CREATE TRIGGER no_insert BEFORE INSERT ON app_secrets \
+             BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+        );
+        let err = v.compare_and_set("w", "T", Some("a"), "b").unwrap_err();
+        assert_eq!(err.code, "STORE_ERROR");
+        assert!(v.compare_and_set("w", "N", None, "b").is_err());
+        assert_eq!(raw_row(&path, "w", "T"), before);
+        assert!(raw_row(&path, "w", "N").is_none());
+        // a conexão não ficou com transação aberta: remove os triggers e repete.
+        raw_exec(&path, "DROP TRIGGER no_update; DROP TRIGGER no_insert;");
+        assert!(v.compare_and_set("w", "T", Some("a"), "b").unwrap());
+    }
+
+    /// Interleaving DENTRO da janela: com a comparação feita e a escrita
+    /// ainda pendente, outro handle (set manual e outro CAS) não consegue
+    /// escrever (lock IMMEDIATE tomado no BEGIN) — recebe erro de banco
+    /// ocupado em vez de intercalar.
+    #[test]
+    fn cas_holds_the_write_lock_between_compare_and_commit() {
+        let (_dir, path) = temp_db();
+        let a = AppSecretVault::open(&path, key(1)).unwrap();
+        let b = Arc::new(AppSecretVault::open(&path, key(1)).unwrap());
+        short_busy(&b);
+        a.set("w", "T", "a").unwrap();
+        let inside: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let (b2, inside2) = (b.clone(), inside.clone());
+        CAS_WINDOW_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                let mut log = inside2.lock().unwrap();
+                log.push(match b2.set("w", "T", "manual") {
+                    Ok(()) => "set:ok".into(),
+                    Err(e) => format!("set:{}", e.code),
+                });
+                log.push(match b2.compare_and_set("w", "T", Some("a"), "rival") {
+                    Ok(won) => format!("cas:{won}"),
+                    Err(e) => format!("cas:{}", e.code),
+                });
+            }));
+        });
+        assert!(a.compare_and_set("w", "T", Some("a"), "managed").unwrap());
+        assert_eq!(
+            *inside.lock().unwrap(),
+            vec!["set:STORE_ERROR".to_string(), "cas:STORE_ERROR".to_string()]
+        );
+        assert_eq!(get_str(&a, "w", "T").as_deref(), Some("managed"));
+        // o mesmo CAS rival, depois do commit, vê o estado real: false.
+        assert!(!b.compare_and_set("w", "T", Some("a"), "rival").unwrap());
+        // um PUT manual posterior continua autorizado.
+        b.set("w", "T", "manual").unwrap();
+        assert_eq!(get_str(&a, "w", "T").as_deref(), Some("manual"));
+    }
+
+    /// Manual set entre a leitura e o CAS (handles distintos): o CAS vê o
+    /// estado real, devolve false e preserva o manual.
+    #[test]
+    fn cas_after_a_manual_set_between_read_and_cas_returns_false_and_keeps_manual() {
+        let (_dir, path) = temp_db();
+        let a = AppSecretVault::open(&path, key(1)).unwrap();
+        let b = AppSecretVault::open(&path, key(1)).unwrap();
+        a.set("w", "T", "old").unwrap();
+        let read = get_str(&a, "w", "T").unwrap();
+        b.set("w", "T", "manual").unwrap();
+        let before = raw_row(&path, "w", "T");
+        assert!(!a.compare_and_set("w", "T", Some(&read), "managed").unwrap());
+        assert_eq!(raw_row(&path, "w", "T"), before);
+        assert_eq!(get_str(&a, "w", "T").as_deref(), Some("manual"));
+    }
+
+    /// Dois handles independentes (threads, mesmo arquivo, master igual)
+    /// disputam a mesma expectativa liberados por barrier: exatamente um
+    /// ganha. Threads do mesmo processo — não é prova multiprocesso.
+    #[test]
+    fn two_independent_handles_race_the_same_expectation_exactly_one_wins() {
+        for round in 0..20 {
+            let (_dir, path) = temp_db();
+            let seed = AppSecretVault::open(&path, key(1)).unwrap();
+            // rounds pares disputam a inserção (None), ímpares a substituição.
+            let expected = if round % 2 == 0 {
+                None
+            } else {
+                seed.set("w", "T", "base").unwrap();
+                Some("base")
+            };
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let handles: Vec<_> = (0..2)
+                .map(|i| {
+                    let path = path.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        let vault = AppSecretVault::open(&path, key(1)).unwrap();
+                        barrier.wait();
+                        let won = vault
+                            .compare_and_set("w", "T", expected, &format!("writer{i}"))
+                            .unwrap();
+                        (i, won)
+                    })
+                })
+                .collect();
+            let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+            let winners: Vec<_> = results.iter().filter(|(_, won)| *won).collect();
+            assert_eq!(winners.len(), 1, "round {round}: {results:?}");
+            assert_eq!(
+                get_str(&seed, "w", "T").unwrap(),
+                format!("writer{}", winners[0].0)
+            );
+        }
+    }
+
     /// (F6) o arquivo do cofre é criado com 0600 (Unix): nem legível por
     /// outros usuários do host, mesmo cifrado.
     #[cfg(unix)]
@@ -846,6 +1352,302 @@ mod tests {
             mode & 0o777,
             0o600,
             "app-secrets.db must be 0600, got {mode:o}"
+        );
+    }
+
+    /// (EDG-52 06b) Serializa os testes de offload no contador de jobs de
+    /// processo inteiro (os testes de unidade correm em threads paralelas).
+    static OFFLOAD_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+    async fn offload_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        OFFLOAD_TEST_LOCK.lock().await
+    }
+
+    /// (EDG-52 06b, TDD seed) While the REAL connection is fenced by a test
+    /// thread, the resolution must keep the Tokio `current_thread` runtime
+    /// responsive: the offloaded lookup waits on the fenced
+    /// `Mutex<Connection>` on the blocking pool, so a concurrent timer keeps
+    /// firing (the runtime heartbeat stays alive). The synchronous
+    /// implementation Red-fails this: the lookup blocks the runtime thread on
+    /// the same mutex and the timer cannot tick during the fenced window.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_resolver_keeps_the_tokio_thread_responsive_on_a_fenced_real_connection() {
+        let _guard = offload_test_lock().await;
+        let (_dir, path) = temp_db();
+        let vault = Arc::new(AppSecretVault::open(&path, key(1)).unwrap());
+        vault.set("w", "APP_SECRET", "canary-value-1").unwrap();
+
+        // A test thread fences the REAL connection via an RAII guard; the
+        // hold is BOUNDED on every path (release send, sender drop on panic,
+        // or the 10 s deadline), so the guard is always released and the
+        // thread always joins without an infinite wait.
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let fenced = Arc::clone(&vault);
+        let holder = std::thread::spawn(move || {
+            let fence = fenced.store().conn.lock().unwrap();
+            held_tx.send(()).ok();
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
+            drop(fence);
+        });
+        tokio::task::spawn_blocking(move || {
+            held_rx.recv_timeout(std::time::Duration::from_secs(10))
+        })
+        .await
+        .unwrap()
+        .expect("the holder thread must hold the real connection");
+
+        let ticks = Arc::new(AtomicUsize::new(0));
+        {
+            let counter = Arc::clone(&ticks);
+            let heartbeat = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
+                for _ in 0..40 {
+                    interval.tick().await;
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+            tokio::task::yield_now().await;
+            let baseline = ticks.load(Ordering::SeqCst);
+            {
+                let lookup = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    vault.resolve_secret("w", "APP_SECRET"),
+                );
+                tokio::pin!(lookup);
+                tokio::select! {
+                    res = lookup.as_mut() => {
+                        // Awaiting answer inside the fenced window: the
+                        // runtime thread was NOT blocked on the fence.
+                        release_tx.send(()).ok();
+                        let value = res
+                            .expect("the lookup must answer once the fence releases")
+                            .unwrap();
+                        let during = ticks.load(Ordering::SeqCst) - baseline;
+                        assert_eq!(value.as_str(), "canary-value-1");
+                        assert!(
+                            during >= 2,
+                            "the Tokio current_thread runtime must keep ticking while the lookup waits on the fenced connection (during={during})"
+                        );
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(800)) => {
+                        // The runtime stayed responsive during the fenced
+                        // window: release the connection and take the result.
+                        release_tx.send(()).ok();
+                        let value = lookup
+                            .await
+                            .expect("the lookup must finish once the fence releases")
+                            .unwrap();
+                        let during = ticks.load(Ordering::SeqCst) - baseline;
+                        assert_eq!(value.as_str(), "canary-value-1");
+                        assert!(
+                            during >= 2,
+                            "the Tokio current_thread runtime must keep ticking while the lookup waits on the fenced connection (during={during})"
+                        );
+                    }
+                }
+            }
+            let _ = heartbeat.await;
+        }
+        release_tx.send(()).ok();
+        holder.join().expect("the holder thread must join");
+    }
+
+    /// (EDG-52 06b) The in-flight offloaded lookup holds the per-vault slot
+    /// until it really finishes — NOT when the caller cancels — a second
+    /// caller is blocked at admission (a cancellable awaiter) and spawns no
+    /// new job, and once the connection is released the slot is back and the
+    /// vault resolves again. The holder thread is released/joined on every
+    /// path with a bounded hold (release send, sender drop on panic, 10 s
+    /// deadline) — no infinite wait.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_in_flight_lookup_holds_the_slot_until_the_real_release_and_admission_is_cancellable(
+    ) {
+        let _guard = offload_test_lock().await;
+        reset_jobs_spawned_for_test();
+
+        let (_dir, path) = temp_db();
+        let vault = Arc::new(AppSecretVault::open(&path, key(1)).unwrap());
+        vault.set("w", "APP_SECRET", "canary-value-1").unwrap();
+
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let fenced = Arc::clone(&vault);
+        let holder = std::thread::spawn(move || {
+            let fence = fenced.store().conn.lock().unwrap();
+            held_tx.send(()).ok();
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
+            drop(fence);
+        });
+        tokio::task::spawn_blocking(move || {
+            held_rx.recv_timeout(std::time::Duration::from_secs(10))
+        })
+        .await
+        .unwrap()
+        .expect("the holder thread must hold the real connection");
+
+        // The in-flight lookup and its caller cancel live in this scope:
+        // ending the scope drops the caller while the blocking job keeps
+        // running.
+        {
+            let lookup = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                vault.resolve_secret("w", "APP_SECRET"),
+            );
+            tokio::pin!(lookup);
+            tokio::select! {
+                _res = lookup.as_mut() => {
+                    panic!("the lookup must still be in flight while the connection is fenced")
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(600)) => {}
+            }
+            // The offload spawned exactly one blocking job, holding the
+            // per-vault slot (capacity 1).
+            assert_eq!(
+                jobs_spawned_for_test().load(Ordering::SeqCst),
+                1,
+                "the offload must have spawned exactly one blocking job"
+            );
+            assert!(
+                vault.inner.lookup_slot.try_acquire().is_err(),
+                "the slot must be held by the in-flight lookup"
+            );
+            // A second caller is blocked at ADMISSION: its timeout returns
+            // (cancellable awaiter) and it spawns no new job.
+            let second = tokio::time::timeout(
+                std::time::Duration::from_millis(300),
+                vault.resolve_secret("w", "APP_SECRET"),
+            )
+            .await;
+            assert!(
+                second.is_err(),
+                "the second caller must time out at admission while the slot is held"
+            );
+            assert_eq!(
+                jobs_spawned_for_test().load(Ordering::SeqCst),
+                1,
+                "a caller cancelled at admission must not spawn a new blocking job"
+            );
+        } // <- caller cancel: the pinned lookup future is dropped here.
+
+        // The slot stays held by the in-flight job: the caller cancel does
+        // not release it (the job is never preempted; the lookup keeps
+        // waiting on the fenced connection).
+        assert!(
+            vault.inner.lookup_slot.try_acquire().is_err(),
+            "the slot must stay held after the caller cancel, until the lookup really finishes"
+        );
+
+        // Release the fence: the in-flight job finishes (real SQLite read +
+        // decrypt; its result is dropped with the cancelled caller) and
+        // frees the slot.
+        release_tx.send(()).ok();
+        let freed = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match vault.inner.lookup_slot.try_acquire() {
+                Ok(permit) => {
+                    // Slot probe: hand the permit back.
+                    drop(permit);
+                    break;
+                }
+                Err(_) if std::time::Instant::now() < freed => {
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                }
+                Err(_) => {
+                    panic!("the slot must free once the in-flight lookup finishes");
+                }
+            }
+        }
+
+        // The slot is usable again: a fresh lookup is admitted and resolves
+        // the value from the real vault; only the fresh job was spawned.
+        let value = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            vault.resolve_secret("w", "APP_SECRET"),
+        )
+        .await
+        .expect("the fresh lookup must be admitted and finish")
+        .unwrap();
+        assert_eq!(value.as_str(), "canary-value-1");
+        assert_eq!(
+            jobs_spawned_for_test().load(Ordering::SeqCst),
+            2,
+            "only the in-flight and the fresh lookup may have spawned a job"
+        );
+
+        holder.join().expect("the holder thread must join");
+    }
+
+    /// (EDG-52 06b) A missing master key answers `None` WITHOUT ANY I/O:
+    /// no blocking job is spawned (no SQLite access on the blocking pool)
+    /// and the admission slot is never touched.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_unavailable_vault_resolves_to_none_without_io_and_without_a_job() {
+        let _guard = offload_test_lock().await;
+        reset_jobs_spawned_for_test();
+
+        let vault = AppSecretVault::unavailable();
+        let value = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            vault.resolve_secret("w", "APP_SECRET"),
+        )
+        .await
+        .expect("an unavailable vault must answer at once");
+        assert!(value.is_none(), "an unavailable vault fails closed to None");
+        assert_eq!(
+            jobs_spawned_for_test().load(Ordering::SeqCst),
+            0,
+            "no blocking job (no I/O) for a missing master key"
+        );
+        // No admission either: the vault's slot is untouched.
+        let permit = vault
+            .inner
+            .lookup_slot
+            .try_acquire()
+            .expect("nothing may have admitted against the slot");
+        drop(permit);
+    }
+
+    /// (EDG-52 06b) A panicked offloaded job fails closed: the caller gets
+    /// `None` (the panic payload never surfaces — only the static message
+    /// with the names is logged), and the job drop released the slot, so the
+    /// next lookup is admitted and resolves the real value.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_panicked_lookup_job_fails_closed_and_frees_the_slot() {
+        let _guard = offload_test_lock().await;
+        reset_jobs_spawned_for_test();
+
+        let (_dir, path) = temp_db();
+        let vault = AppSecretVault::open(&path, key(1)).unwrap();
+        vault.set("w", "APP_SECRET", "canary-value-1").unwrap();
+        FORCED_JOB_PANIC.store(true, Ordering::SeqCst);
+
+        let value = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            vault.resolve_secret("w", "APP_SECRET"),
+        )
+        .await
+        .expect("a panicked job must not hang the join");
+        assert!(
+            value.is_none(),
+            "a panicked lookup must fail closed without the value"
+        );
+
+        // The panicked job's drop released the slot: the next lookup is
+        // admitted and resolves the real value from the real vault.
+        let value = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            vault.resolve_secret("w", "APP_SECRET"),
+        )
+        .await
+        .expect("the slot must be free after the panicked job")
+        .unwrap();
+        assert_eq!(value.as_str(), "canary-value-1");
+        assert_eq!(
+            jobs_spawned_for_test().load(Ordering::SeqCst),
+            2,
+            "one job per lookup, panic included"
         );
     }
 }

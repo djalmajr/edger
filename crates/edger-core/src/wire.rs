@@ -136,9 +136,26 @@ pub struct StreamProductionState {
     /// "outcome present ⇒ production completed cleanly" invariant for any
     /// reader that does not check the flag.
     frame_timeout_recycle_outcome: std::sync::OnceLock<AbandonedStream>,
+    /// The harness stopped the body at `EDGER_STREAM_MAX_BYTES` (end frame
+    /// `{"truncated":true}`). The process is in sync and reusable and the
+    /// client still gets a clean end, but the response is NOT a complete
+    /// execution (EDG-55): a completed-execution caller must refuse it.
+    truncated: std::sync::atomic::AtomicBool,
 }
 
 impl StreamProductionState {
+    /// Marks that the body was cut at the stream byte cap. Set BEFORE the
+    /// clean-end marks and signals, so any reader that sees the end sees this.
+    pub fn mark_truncated(&self) {
+        self.truncated
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the body was cut at the stream byte cap.
+    pub fn is_truncated(&self) -> bool {
+        self.truncated.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Marks a clean production end that did not result from the duration cap.
     pub fn mark_complete(&self) {
         self.production_complete

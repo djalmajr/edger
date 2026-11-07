@@ -19,8 +19,8 @@ pub use factory::IsolateFactory;
 pub use instance::WorkerInstance;
 pub use metrics::{MetricsCollector, PoolMetrics, WorkerStats};
 pub use pool::{
-    AbandonDrainLimits, LifecycleEventSender, WorkerLifecycleEvent, WorkerLifecycleEventKind,
-    WorkerPool,
+    AbandonDrainLimits, CompletedResponse, LifecycleEventSender, WorkerLifecycleEvent,
+    WorkerLifecycleEventKind, WorkerPool,
 };
 pub use state::{transition, WorkerEvent, WorkerState};
 pub use supervisor::Supervisor;

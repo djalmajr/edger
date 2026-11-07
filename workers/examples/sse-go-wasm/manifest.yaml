@@ -1,0 +1,40 @@
+# EdgeR example: host-held SSE with a real Go (wasip1) guest (EDG-55).
+#
+# Build the entrypoint from inside this directory with the existing
+# Windows Go (stdlib only, no network, no go.sum):
+#
+#   GOOS=wasip1 GOARCH=wasm GOTOOLCHAIN=local GOWORK=off GOPROXY=off \
+#     go build -trimpath -buildmode=c-shared -ldflags='-s -w' -o index.wasm .
+#
+# abi.go is the unmodified copy of go-wasm-http/abi.go: the module imports
+# edger_http_v1.fetch even though this guest never calls it, so the guard
+# is enabled with an EMPTY allowNet. That pair GRANTS general HTTPS egress: the
+# guard does not read allowNet, so the guest could reach any HTTPS destination
+# the guard accepts (default port 443, IP classification, redirects, guard
+# limits); this guest never calls the import. The empty allowNet only means no
+# direct network for Deno.
+name: sse-go-wasm
+version: "1.0.0"
+kind: wasm
+entrypoint: index.wasm
+visibility: public
+nameRoute: true
+allowNet: []
+egress:
+  enabled: true
+secrets:
+  # The Bearer token the guest compares; written through the admin API.
+  - SSE_ACCESS_TOKEN
+timeout: 30s
+maxBodySize: 4mb
+# A `kind: wasm` worker is ephemeral by default (a fresh isolate, and a fresh
+# module compile, per request). An explicit worker `ttl` keeps ONE pooled
+# instance warm (module cache hits, `maxProcesses` really bounds it). It is
+# the worker ttl, not the SSE subscription lifetime below.
+ttl: 10m
+maxProcesses: 1
+sse:
+  subscribe: ["/events"]
+  publish: ["/publish"]
+  ttl: 5m
+  maxConnections: 256

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -1183,9 +1183,147 @@ impl WorkerPool {
             worker_version = %worker_ref.version,
             worker_namespace = worker_ref.namespace.as_deref().unwrap_or("")
         );
-        self.fetch_worker_stream_inner(worker_ref, req, kind_hint)
+        self.fetch_worker_stream_inner(worker_ref, req, kind_hint, None)
             .instrument(span)
             .await
+    }
+
+    /// Short-execution entry (EDG-55): runs the guest and returns ONLY after
+    /// it has really executed and finished. The whole body is buffered in
+    /// memory (at most `max_body_bytes`), the production ended cleanly and
+    /// the dispatch slot, the isolate guard and the instance state are
+    /// already released, so the next request to a `maxProcesses: 1` worker
+    /// gets the instance without waiting for a late release. Everything
+    /// else fails closed with no partial response: an answer served by the
+    /// host (`static-spa`, fullstack assets) is `CompletedNotGuest`, a body
+    /// over the limit is `CompletedBodyTooLarge`, a frame error, a cut
+    /// (max-duration / frame-timeout) or an end without clean production is
+    /// `CompletedStreamFailed`, and the worker `timeout` as the deadline of
+    /// the body and of the release wait is `CompletedTimeout`. That deadline
+    /// is counted from the arrival of the response head: queue and head keep
+    /// their own limits. A body dropped early goes through the existing
+    /// abandon path (cancel + bounded drain); dropping this future leaks no
+    /// slot.
+    ///
+    /// Memory bound: on the streamed path the collector never reserves more
+    /// than `max_body_bytes`. A buffered backend (WASM, `ttl: 0`) has already
+    /// materialized the whole answer before it reaches the pool, so on that
+    /// path the ceiling is the worker `maxBodySize` applied by the backend,
+    /// and `max_body_bytes` only decides whether the answer is accepted.
+    pub async fn fetch_worker_completed(
+        &self,
+        worker_ref: &WorkerRef,
+        req: SerializedRequest,
+        kind_hint: Option<ExecutionKind>,
+        max_body_bytes: usize,
+    ) -> Result<CompletedResponse, WorkerError> {
+        let span = tracing::info_span!(
+            "pool.fetch_completed",
+            request_id = %req.request_id,
+            worker_name = %worker_ref.name,
+            worker_version = %worker_ref.version,
+            worker_namespace = worker_ref.namespace.as_deref().unwrap_or("")
+        );
+        self.fetch_worker_completed_inner(worker_ref, req, kind_hint, max_body_bytes)
+            .instrument(span)
+            .await
+    }
+
+    async fn fetch_worker_completed_inner(
+        &self,
+        worker_ref: &WorkerRef,
+        req: SerializedRequest,
+        kind_hint: Option<ExecutionKind>,
+        max_body_bytes: usize,
+    ) -> Result<CompletedResponse, WorkerError> {
+        let (release, released) = StreamRelease::new();
+        let outcome = Arc::clone(&release.outcome);
+        let response = self
+            .fetch_worker_stream_inner(worker_ref, req, kind_hint, Some(release))
+            .await?;
+        let streamed = match response {
+            // Buffered backends (WASM, `ttl: 0`, no streaming support) run
+            // the whole dispatch inside the call: the slot is free here.
+            WorkerResponse::Buffered(res) => {
+                let body = res.body.unwrap_or_default();
+                if body.len() > max_body_bytes {
+                    return Err(WorkerError::CompletedBodyTooLarge {
+                        limit: max_body_bytes,
+                    });
+                }
+                return Ok(CompletedResponse {
+                    status: res.status,
+                    headers: res.headers,
+                    body,
+                });
+            }
+            WorkerResponse::Streamed(streamed) => streamed,
+        };
+        let StreamedResponse {
+            status,
+            headers,
+            mut body,
+            ..
+        } = streamed;
+
+        // Deadline of the body and of the release wait: the worker `timeout`,
+        // counted from the arrival of the head (queue and head keep their own
+        // limits, so a slow cold start does not eat the body budget).
+        let deadline = tokio::time::Instant::now()
+            + Duration::from_millis(worker_ref.config.timeout_ms.max(1));
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut chunks_seen: u32 = 0;
+        loop {
+            // `timeout_at` polls the inner future BEFORE its timer, so a
+            // stream of immediately ready chunks (empty ones never reach the
+            // byte limit) would never time out: check the deadline here.
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::CompletedTimeout);
+            }
+            let next = tokio::time::timeout_at(
+                deadline,
+                std::future::poll_fn(|cx| futures_core::Stream::poll_next(body.as_mut(), cx)),
+            )
+            .await;
+            match next {
+                Err(_) => return Err(WorkerError::CompletedTimeout),
+                Ok(None) => break,
+                Ok(Some(Err(_))) => return Err(WorkerError::CompletedStreamFailed),
+                Ok(Some(Ok(chunk))) => {
+                    // Checked BEFORE appending: at most `max_body_bytes`
+                    // plus the one chunk in hand is ever held, and the
+                    // stream is not polled again once the limit is crossed.
+                    if buffer.len().saturating_add(chunk.len()) > max_body_bytes {
+                        return Err(WorkerError::CompletedBodyTooLarge {
+                            limit: max_body_bytes,
+                        });
+                    }
+                    append_within_limit(&mut buffer, &chunk, max_body_bytes);
+                    // Cooperative yield so a run of ready chunks cannot
+                    // monopolize the executor thread.
+                    chunks_seen = chunks_seen.wrapping_add(1);
+                    if chunks_seen.is_multiple_of(READY_CHUNKS_BEFORE_YIELD) {
+                        tokio::task::yield_now().await;
+                    }
+                }
+            }
+        }
+        // The end of the body is NOT proof that the slot was released: it
+        // only hands the lifecycle to the completion path. The dispatch
+        // state (slot, isolate guard, instance state) is dropped last, and
+        // that drop is what resolves `released`.
+        drop(body);
+        if tokio::time::timeout_at(deadline, released).await.is_err() {
+            return Err(WorkerError::CompletedTimeout);
+        }
+        if outcome.load(Ordering::Acquire) != RELEASE_CLEAN {
+            return Err(WorkerError::CompletedStreamFailed);
+        }
+        Ok(CompletedResponse {
+            status,
+            headers,
+            body: Bytes::from(buffer),
+        })
     }
 
     async fn fetch_worker_stream_inner(
@@ -1193,6 +1331,7 @@ impl WorkerPool {
         worker_ref: &WorkerRef,
         req: SerializedRequest,
         kind_hint: Option<ExecutionKind>,
+        release: Option<StreamRelease>,
     ) -> Result<WorkerResponse, WorkerError> {
         let kind = kind_hint
             .clone()
@@ -1203,7 +1342,7 @@ impl WorkerPool {
         // cannot travel inside a 'static body stream — they stay buffered.
         if !streamable || worker_ref.config.ttl_ms == 0 {
             return self
-                .fetch_worker_inner(worker_ref, req, kind_hint)
+                .fetch_worker_inner_mode(worker_ref, req, kind_hint, release.is_some())
                 .await
                 .map(WorkerResponse::Buffered);
         }
@@ -1220,6 +1359,9 @@ impl WorkerPool {
             if let Some(asset) =
                 try_serve_fullstack_asset(&req, &config).map_err(WorkerError::Isolation)?
             {
+                if release.is_some() {
+                    return Err(WorkerError::CompletedNotGuest);
+                }
                 let duration_ms = started.elapsed().as_millis().max(1) as u64;
                 self.record_worker_result(&worker_ref, duration_ms, asset.status);
                 return Ok(WorkerResponse::Buffered(asset));
@@ -1324,8 +1466,10 @@ impl WorkerPool {
                     // stream terminals (completion/recycle) apply the same
                     // exclusion to the group request counter.
                     count_metrics,
+                    production_state: streamed.production_complete.clone(),
                     _dispatch_slot: dispatch_slot,
                     isolate_guard: Some(isolate_guard),
+                    release,
                 };
                 // Production-complete signal (EDG-8/EDG-9): the body, the
                 // signal observer and the flag-checked drop/error paths share
@@ -1428,6 +1572,20 @@ impl WorkerPool {
         req: SerializedRequest,
         kind_hint: Option<ExecutionKind>,
     ) -> Result<SerializedResponse, WorkerError> {
+        self.fetch_worker_inner_mode(worker_ref, req, kind_hint, false)
+            .await
+    }
+
+    /// `guest_only` (EDG-55 completed execution): an answer the host would
+    /// serve itself (`static-spa`, fullstack asset) is `CompletedNotGuest`
+    /// instead of a response, without executing the guest.
+    async fn fetch_worker_inner_mode(
+        &self,
+        worker_ref: &WorkerRef,
+        req: SerializedRequest,
+        kind_hint: Option<ExecutionKind>,
+        guest_only: bool,
+    ) -> Result<SerializedResponse, WorkerError> {
         self.ensure_active()?;
         let started = Instant::now();
         let record_observation = !is_health_check_request(&req);
@@ -1444,6 +1602,9 @@ impl WorkerPool {
             .or(Some(worker_ref.kind.clone()))
             .unwrap_or(ExecutionKind::FetchHandler);
         if let ExecutionKind::StaticSpa { inject_base } = &kind {
+            if guest_only {
+                return Err(WorkerError::CompletedNotGuest);
+            }
             let response = serve_static_spa_request(&req, &config, *inject_base)?;
             let duration_ms = started.elapsed().as_millis().max(1) as u64;
             if record_observation {
@@ -1455,6 +1616,9 @@ impl WorkerPool {
             if let Some(asset) =
                 try_serve_fullstack_asset(&req, &config).map_err(WorkerError::Isolation)?
             {
+                if guest_only {
+                    return Err(WorkerError::CompletedNotGuest);
+                }
                 let duration_ms = started.elapsed().as_millis().max(1) as u64;
                 if record_observation {
                     self.record_worker_result(&worker_ref, duration_ms, asset.status);
@@ -1531,6 +1695,10 @@ impl WorkerPool {
         let isolate_arc = instance.isolate();
         let mut isolate = isolate_arc.lock().await;
         let res = dispatch_to_isolate(isolate.as_mut(), kind, req, &config).await;
+        // The host's own truncation mark of the buffered calls, read under the
+        // isolate lock (no other dispatch can touch it) and always consumed so
+        // it never leaks into a later call.
+        let truncated = isolate.take_response_truncation();
         drop(isolate);
 
         let res = match res {
@@ -1583,6 +1751,16 @@ impl WorkerPool {
                 .record_worker_group_outcome(&worker_ref, request_outcome_for_status(res.status));
         }
         self.sync_worker_counts();
+        if guest_only && truncated {
+            // A body the host cut at its byte cap is not a complete
+            // execution: the completed entry fails closed, as on the streamed
+            // path (`complete_stream_state` -> `mark_cut`). The dispatch
+            // itself finished cleanly (the process is in sync and reusable),
+            // so it was accounted and released above like any other; only
+            // the answer is refused. An ordinary request keeps the truncated
+            // body.
+            return Err(WorkerError::CompletedStreamFailed);
+        }
         Ok(res)
     }
 
@@ -2446,8 +2624,83 @@ struct StreamDispatchState {
     /// same exclusion the dispatch entry applies. Existing counters (duration,
     /// outcome) are unaffected.
     count_metrics: bool,
+    /// The producer's state, read at completion for the byte-cap truncation
+    /// flag (EDG-55): a truncated body is a clean end for the client, never a
+    /// complete execution.
+    production_state: Option<Arc<StreamProductionState>>,
     _dispatch_slot: DispatchSlot,
     isolate_guard: Option<tokio::sync::OwnedMutexGuard<Box<dyn Isolate>>>,
+    /// Completed-execution release probe (EDG-55). MUST stay the LAST field:
+    /// fields drop in declaration order, so its signal resolves only after
+    /// the dispatch slot and the isolate guard are already released.
+    release: Option<StreamRelease>,
+}
+
+/// Ready chunks the completed collector reads in a row before it yields the
+/// executor (EDG-55).
+const READY_CHUNKS_BEFORE_YIELD: u32 = 64;
+
+/// Appends `chunk` to `buffer` growing the capacity geometrically but never
+/// past `limit` (the caller guarantees `buffer.len() + chunk.len() <= limit`),
+/// so the completed collector reserves at most the accepted body size.
+fn append_within_limit(buffer: &mut Vec<u8>, chunk: &[u8], limit: usize) {
+    let needed = buffer.len() + chunk.len();
+    if needed > buffer.capacity() {
+        let target = needed
+            .max(buffer.capacity().saturating_mul(2))
+            .min(limit.max(needed));
+        buffer.reserve_exact(target - buffer.len());
+    }
+    buffer.extend_from_slice(chunk);
+}
+
+const RELEASE_PENDING: u8 = 0;
+const RELEASE_CLEAN: u8 = 1;
+const RELEASE_CUT: u8 = 2;
+
+/// Release probe of a completed execution (EDG-55): `outcome` records how
+/// the dispatch ended (clean completion, a max-duration / frame-timeout cut
+/// that truncated the body, or neither - a recycle) and the oneshot sender
+/// resolves (by being dropped) once the whole dispatch state is gone.
+struct StreamRelease {
+    outcome: Arc<AtomicU8>,
+    _signal: tokio::sync::oneshot::Sender<()>,
+}
+
+impl StreamRelease {
+    fn new() -> (Self, tokio::sync::oneshot::Receiver<()>) {
+        let (signal, released) = tokio::sync::oneshot::channel();
+        (
+            Self {
+                outcome: Arc::new(AtomicU8::new(RELEASE_PENDING)),
+                _signal: signal,
+            },
+            released,
+        )
+    }
+
+    fn mark_clean(&self) {
+        let _ = self.outcome.compare_exchange(
+            RELEASE_PENDING,
+            RELEASE_CLEAN,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    /// The body was cut short by the reader (max-duration / frame-timeout)
+    /// and only LOOKS like a clean end: never a valid completed response.
+    fn mark_cut(&self) {
+        self.outcome.store(RELEASE_CUT, Ordering::Release);
+    }
+}
+
+/// Result of `WorkerPool::fetch_worker_completed` (EDG-55).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletedResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: bytes::Bytes,
 }
 
 struct DispatchSlot {
@@ -2511,6 +2764,9 @@ async fn finish_max_duration_state(state: StreamDispatchState, outcome: StreamCo
     let StreamCompletion::MaxDuration(cause) = outcome else {
         return;
     };
+    if let Some(release) = &state.release {
+        release.mark_cut();
+    }
     let detail = abandoned_detail(cause);
     let duration_ms = state
         .max_duration_elapsed_ms
@@ -2554,6 +2810,9 @@ async fn finish_frame_timeout_state(state: StreamDispatchState, outcome: StreamC
     let StreamCompletion::FrameTimeout(cause) = outcome else {
         return;
     };
+    if let Some(release) = &state.release {
+        release.mark_cut();
+    }
     let detail = abandoned_detail(cause);
     let duration_ms = state
         .frame_timeout_elapsed_ms
@@ -2912,13 +3171,27 @@ async fn complete_stream_state(state: StreamDispatchState) {
         outcome,
         started,
         count_metrics,
+        production_state,
         _dispatch_slot,
         isolate_guard,
+        release,
         ..
     } = state;
     drop(isolate_guard);
     let worker_ref = instance.worker_ref.clone();
     let _ = Supervisor::on_request_complete(instance, &config, &pool).await;
+    if let Some(release) = &release {
+        if production_state
+            .as_ref()
+            .is_some_and(|state| state.is_truncated())
+        {
+            // Cut at the stream byte cap: the process is reused and the
+            // client body ends cleanly, but the response is incomplete.
+            release.mark_cut();
+        } else {
+            release.mark_clean();
+        }
+    }
     let duration_ms = started.elapsed().as_millis().max(1) as u64;
     pool.inner.metrics.record_request_duration(duration_ms);
     pool.inner
@@ -2935,6 +3208,10 @@ async fn complete_stream_state(state: StreamDispatchState) {
         .metrics
         .record_worker_group_outcome(&worker_ref, outcome);
     pool.sync_worker_counts();
+    // Slot first, probe last: the probe resolves only after the dispatch
+    // slot is free.
+    drop(_dispatch_slot);
+    drop(release);
 }
 
 /// Abnormal end (mid-stream error, client disconnect, or an abandoned
@@ -3204,6 +3481,49 @@ impl Drop for DispatchCancelGuard<'_> {
         if self.protect {
             self.pool.recycle_cancelled(&self.instance);
         }
+    }
+}
+
+#[cfg(test)]
+mod append_within_limit_tests {
+    use super::append_within_limit;
+
+    #[test]
+    fn capacity_never_exceeds_the_limit_and_keeps_geometric_growth() {
+        // Many small chunks up to the exact limit: the capacity stays at or
+        // below the limit and the number of reallocations stays logarithmic.
+        let limit = 1000;
+        let mut buffer = Vec::new();
+        let mut capacities = std::collections::BTreeSet::new();
+        for _ in 0..limit {
+            append_within_limit(&mut buffer, b"x", limit);
+            assert!(buffer.capacity() <= limit, "capacity {}", buffer.capacity());
+            capacities.insert(buffer.capacity());
+        }
+        assert_eq!(buffer.len(), limit);
+        assert!(
+            capacities.len() <= 12,
+            "amortized growth kept: {} distinct capacities",
+            capacities.len()
+        );
+    }
+
+    #[test]
+    fn two_chunks_summing_to_the_limit_do_not_over_reserve() {
+        // A plain `extend_from_slice` doubling would reserve 1400 here.
+        let limit = 1000;
+        let mut buffer = Vec::new();
+        append_within_limit(&mut buffer, &[0u8; 700], limit);
+        append_within_limit(&mut buffer, &[0u8; 300], limit);
+        assert_eq!(buffer.len(), limit);
+        assert!(buffer.capacity() <= limit, "capacity {}", buffer.capacity());
+    }
+
+    #[test]
+    fn huge_limit_does_not_preallocate() {
+        let mut buffer = Vec::new();
+        append_within_limit(&mut buffer, b"abc", usize::MAX);
+        assert!(buffer.capacity() < 1024, "capacity {}", buffer.capacity());
     }
 }
 
