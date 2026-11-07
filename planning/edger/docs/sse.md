@@ -1,6 +1,6 @@
 # SSE mantido pelo host (EdgeR)
 
-**Status:** implementado neste branch (EDG-55), ainda sem commit e sem release.
+**Status:** implementado no PR #179 (EDG-55), ainda sem release.
 Este documento descreve o comportamento do código, com os limites reais. Onde o
 contrato de desenho e o código divergem, vale o código.
 **Prova:** `crates/edger-orchestrator/tests/sse_binary_e2e.rs` (binário `edger`

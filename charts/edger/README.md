@@ -268,8 +268,8 @@ no-transform` on those routes, per-request masked tokens, or
 
 ## SSE, WASM guests and the managed database
 
-These features are implemented on this branch (EDG-52 to EDG-56), uncommitted
-and unreleased; nothing here says an environment already runs them. This
+These features are implemented in PR #179 (EDG-52 to EDG-56) and not yet
+released; nothing here says an environment already runs them. This
 section lists what the chart exposes today and what it does not.
 
 **Host-held SSE** ([planning doc](../../planning/edger/docs/sse.md)). Three

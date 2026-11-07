@@ -1,7 +1,7 @@
 # Banco SQLD gerenciado (EdgeR)
 
-**Status:** implementado neste branch (EDG-52 a EDG-54), ainda sem commit e sem
-release. Este documento descreve o código; onde o contrato de desenho
+**Status:** implementado no PR #179 (EDG-52 a EDG-54), ainda sem release. Este
+documento descreve o código; onde o contrato de desenho
 (`.agents/plans/edger-sqld-provisioning-contract.md`) diverge, vale o código. Não
 há, aqui, afirmação de que o recurso foi publicado ou implantado em algum
 ambiente.

@@ -1,8 +1,8 @@
 # ABI Wasm (EdgeR)
 
 **Status:** ABI de request/response em linear memory e import HTTP
-`edger_http_v1.fetch` implementados no `edger-isolation`; sem commit nem release
-neste branch (EDG-52 a EDG-56)
+`edger_http_v1.fetch` implementados no `edger-isolation` no PR #179 (EDG-52 a
+EDG-56), ainda sem release
 
 **Origin:** `planning/edger/design.md` (Wasm standalone wasmtime + WASI)
 

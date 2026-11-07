@@ -93,8 +93,8 @@ Limites (sem afirmação de produção):
 ## SSE, WASM e banco gerenciado
 
 Esta seção descreve o que muda para quem opera, a partir do que o chart expõe
-hoje. Os recursos abaixo estão implementados neste branch (EDG-52 a EDG-56), sem
-commit e sem release; nada aqui afirma que algum ambiente já os executa.
+hoje. Os recursos abaixo estão implementados no PR #179 (EDG-52 a EDG-56), ainda
+sem release; nada aqui afirma que algum ambiente já os executa.
 
 **SSE mantido pelo host** ([sse.md](sse.md)). Três variáveis, lidas uma vez no
 boot, sem teto superior; valor inválido gera `warn` e usa o padrão:
