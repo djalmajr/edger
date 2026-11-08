@@ -259,7 +259,7 @@ Limites da prova da renovação:
   `EGRESS_DATABASE_DENIED` ou `EGRESS_DATABASE_AUTH_UNAVAILABLE`.
 - Outros destinos: só se o manifest declarou `egress`; a origem do banco nunca cai
   no caminho geral.
-- Na release que contenha o EDG-88, `deploy/production/sqld.yaml` configura o
+- Na release 0.3.2-rc.31, `deploy/production/sqld.yaml` configura o
   admin em `0.0.0.0:9090` e o Service ClusterIP `sqld-admin`. A NetworkPolicy
   de admin permite TCP 9090 só ao pod com labels de nome e instância `edger`,
   no mesmo namespace; a política de dados continua separada na porta 8080.
@@ -287,7 +287,7 @@ arquivos distintos.
 
 ## Chart e operação
 
-Na release que contenha o EDG-88, o chart `charts/edger/` expõe as sete variáveis
+Na release 0.3.2-rc.31, o chart `charts/edger/` expõe as sete variáveis
 `EDGER_SQLD_*` juntas por `managedDatabase.enabled=true`, sem incluir `sqld`.
 Configure `adminUrl`, `userUrl`, `adminKeySecret.name`/`.key`,
 `signerKeySecret.name`/`.key` e `budgetBytes`, junto de `appSecrets.enabled=true`
@@ -314,7 +314,7 @@ Veja
 
 O manifesto `deploy/production/sqld.yaml` fornece o Service ClusterIP
 `sqld-admin` na porta 9090 e a NetworkPolicy de admin descrita acima. Esses
-arquivos e o chart exigem a release que contenha o EDG-88; sua presença no
+arquivos e o chart exigem a release 0.3.2-rc.31; sua presença no
 repositório não significa publicação ou deploy. A aplicação real de modos,
 acesso e isolamento de rede pelo driver/CNI ainda exige validação em cluster.
 

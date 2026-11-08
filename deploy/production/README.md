@@ -134,8 +134,8 @@ Para banco gerenciado, configure `managedDatabase.adminUrl` como
 master do cofre. Habilite `appSecrets`, informe a origem HTTP de dados
 (`managedDatabase.userUrl`, porta 8080), orçamento e PVC de ledger/backups
 conforme [o chart](../../charts/edger/README.md#sse-wasm-guests-and-the-managed-database).
-Use um chart e binário que incluam EDG-88 e o banco gerenciado (ainda sem número
-de release definido); o mínimo histórico `0.3.2-rc.19` só cobre EDG-24 e não
+Use o chart e o binário 0.3.2-rc.31 ou posterior, que incluem EDG-88 e o banco
+gerenciado; o mínimo histórico `0.3.2-rc.19` só cobre EDG-24 e não
 atesta esses recursos. O ensaio e o corte devem usar a mesma versão validada.
 
 O acesso manual por `kubectl port-forward pod/<pod-sqld> 9090:9090` continua
@@ -662,6 +662,6 @@ de qualquer restore (final do backup, ensaio, janela).
   OpenBao `secret/cinzel/prod/database`), repositório do Pinar.
 - A versão do chart usada no corte: a publicada no ghcr (o chart deste
   repositório é a fonte; `rc.19` é o mínimo histórico da EDG-24; para
-  banco gerenciado selecione uma release validada contendo EDG-88, ainda a definir).
+  banco gerenciado use 0.3.2-rc.31 ou posterior, que contém EDG-88).
 - O `planner-edger` e demais releases fora da plataforma: cada um no
   seu lugar.
