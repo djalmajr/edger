@@ -1,7 +1,7 @@
 # sqld compartilhado (libSQL server) no namespace genérico `edger`.
 #
-# Um banco (namespace do libsql) por app e ambiente: `cinzel` e
-# `pinar-prd`, cada um com a sua `jwt_key` (criada via API
+# Um banco (namespace do libsql) por app e ambiente: `cinzel`,
+# `pinar-prd` e `nau-prd`, cada um com a sua `jwt_key` (criada via API
 # de admin, ver README.md). O namespace `default` nasce vazio — o banco
 # atual do Cinzel vive no PVC antigo `cinzel-sqld-data` e entra no banco
 # `cinzel` pelo restore da janela de corte, sem mover dados agora. Depois
@@ -155,12 +155,43 @@ spec:
       port: 8080
       targetPort: http
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nau-prd
+  namespace: edger
+spec:
+  selector:
+    app.kubernetes.io/name: sqld
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+# Origem de dados do banco gerenciado do EdgeR (`managedDatabase.userUrl`,
+# EDG-54). O host sempre envia `x-namespace-bin`, então o primeiro rótulo
+# do Host (`sqld-data`) nunca escolhe o banco.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sqld-data
+  namespace: edger
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: sqld
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
 # Só os pods do EdgeR (release `edger`, label `app.kubernetes.io/instance`
 # conforme o chart), os jobs de backup (`app.kubernetes.io/name:
-# sqld-backup`, ver backup/) e o hub colaborativo do Cinzel (namespace
-# `cinzel`, `app.kubernetes.io/name: cinzel-collab`, DJA-515) chegam ao
-# sqld na 8080. `kubectl port-forward` (API de admin e dumps) vai pelo
-# kubelet e não é afetado.
+# sqld-backup`, ver backup/), o hub colaborativo do Cinzel (namespace
+# `cinzel`, `app.kubernetes.io/name: cinzel-collab`, DJA-515) e o Nau
+# (namespace `nau`, `app.kubernetes.io/name: nau`) chegam ao sqld na 8080.
+# `kubectl port-forward` (API de admin e dumps) vai pelo kubelet e não é
+# afetado.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -185,9 +216,14 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/name: cinzel-collab
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nau
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nau
       ports:
         - port: 8080
-
 ---
 apiVersion: v1
 kind: Service
@@ -204,6 +240,9 @@ spec:
       targetPort: admin
 ---
 # Policies are additive: sqld-ingress continues to allow only the data port.
+# kube-router answers denied traffic with REJECT (icmp-port-unreachable):
+# a probe from a pod outside this policy sees ConnectionRefused, not a
+# timeout.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
