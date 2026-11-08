@@ -1,5 +1,5 @@
 # rc.19 abaixo é o mínimo histórico para EDG-24, não para banco gerenciado.
-# Para managedDatabase, escolha uma release contendo EDG-88 (ainda a definir)
+# Para managedDatabase, use 0.3.2-rc.31 ou posterior (contém EDG-88)
 # e use a mesma versão validada no ensaio e no corte.
 # Values do `helm install edger` no namespace do ENSAIO (Fase 0):
 #

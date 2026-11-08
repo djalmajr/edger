@@ -107,7 +107,7 @@ boot, sem teto superior; valor inválido gera `warn` e usa o padrão:
 - `EDGER_SSE_HEARTBEAT_MS` (padrão `15000`, mínimo `1000`; também é a
   granularidade do TTL das assinaturas).
 
-Na release que contenha o EDG-88, o chart expõe `sse.maxConnections`,
+Na release 0.3.2-rc.31, o chart expõe `sse.maxConnections`,
 `sse.maxConnectionsPerApp` e `sse.heartbeatMs`; vazios mantêm os padrões do
 binário, e zero explícito é emitido. Para o operador, o broker é por
 processo e o chart é de uma réplica, então não há fan-out entre pods; um cliente
@@ -152,7 +152,7 @@ para todas as conexões HTTP, não só o SSE. Os prazos padrão somam a drenagem
 pós-abort) e o pool (até 15 s), ou seja, um teto de 33 s quando
 `EDGER_HTTP_DRAIN_MS` não é `0`. Depois de abortar o supervisor do cron, a
 parada espera no máximo mais 1 s e gera `warn` se ele ainda não terminou.
-Na release que contenha o EDG-88, o chart define
+Na release 0.3.2-rc.31, o chart define
 `terminationGracePeriodSeconds: 45`, configurável pelo valor homônimo, acima
 da soma padrão de 33 s. `httpDrainMs` configura `EDGER_HTTP_DRAIN_MS`; vazio
 mantém o padrão do binário e zero explícito desliga o limite. Ao aumentar os

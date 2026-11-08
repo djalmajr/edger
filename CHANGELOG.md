@@ -10,7 +10,11 @@ All notable changes to EdgeR will be documented here.
 
 - The emergency `EDGER_JS_RUNTIME=bridge` fallback refuses workers declaring `sse:` before guest execution with `SSE_RUNTIME_UNSUPPORTED` (HTTP 500 `WORKER_ERROR`), without subscribing, publishing or changing the broker; workers without `sse:`, persistent Deno and WASM are unchanged.
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.30` (console admin role and
+Toward 0.3.2. Release candidates: `v0.3.2-rc.31` (Go/WASM HTTP runtime and
+WASM fullstack, managed SQLD database per app with fast quota-bound
+backups, host-held SSE, bounded HTTP drain, chart `managedDatabase` and
+45 s Pod grace, process-wide WASM compilation cache);
+`v0.3.2-rc.30` (console admin role and
 temporary passwords, the cPanel admin screens, the cPanel login waiting
 for login-options, egress header filtering and absolute DNS names, the
 Cinzel collab hub in `sqld-ingress`, `wasmtime` 49.0.5);
@@ -95,7 +99,7 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   every HTTP connection, not only SSE. The default budgets (drain 10 s, cron
   8 s: 5 grace, 1 abort-wait, 1 margin, 1 post-abort wait; pool up to 15 s,
   33 s in total) form a ceiling when `EDGER_HTTP_DRAIN_MS` is not `0`.
-  The release containing EDG-88 sets Helm `terminationGracePeriodSeconds: 45`
+  Release 0.3.2-rc.31 sets Helm `terminationGracePeriodSeconds: 45`
   by default and exposes `httpDrainMs`; increasing shutdown budgets requires
   adjusting the Pod grace too. No cluster deployment is implied.
   After aborting the cron supervisor, shutdown waits at most one more second
@@ -123,7 +127,7 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   (`own_token_is_renewed_while_the_same_deno_process_keeps_its_old_env`), and
   the two-process race branch "stable 409 then 200" was not
   exercised (both runs returned 200). The Helm chart exposes these variables
-  from the release containing EDG-88 (`managedDatabase`). See
+  from 0.3.2-rc.31 (`managedDatabase`). See
   `planning/edger/docs/sqld-managed.md`.
 - Console admin role (EDG-45, EDG-46, EDG-47): a non-root console user with
   role `admin`, signed in with a console session, manages the operators it
@@ -1039,6 +1043,35 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   `OTEL_*` variables. Upstream change kept: the OTLP exporters now retry a
   failed export up to 3 times with backoff (off the request path, in the
   batch processor).
+
+## [0.3.2-rc.31]
+
+- Go/WASM HTTP runtime (EDG-52, #179): the bounded `edger_http_v1.fetch`
+  import routes WASM guests through the egress guard with per-execution
+  grants, and a stdlib-only Go WASIp1 example (`go-wasm-http`).
+- WASM fullstack (EDG-53, #179): `kind: fullstack` with `adapter: wasm`
+  serves a SPA and a WASM API (`apiPrefix`) from one package.
+- Managed SQLD database (EDG-54, #179): the EdgeR manages one namespace
+  per app on an external `sqld` (seven all-or-none `EDGER_SQLD_*`
+  variables, per-app quota, sealed signing key and token renewal).
+- Host-held SSE (EDG-55, #179): manifest `sse:` with short guest
+  executions, an in-process broker and host connection limits; the
+  bridge fallback refuses workers declaring `sse:` (EDG-91, #180).
+- Bounded HTTP drain on shutdown (#179): `EDGER_HTTP_DRAIN_MS`
+  (default 10 s); the cron supervisor's post-abort wait is bounded
+  (EDG-90, #180), so the default shutdown ceiling is 33 s.
+- Managed database backups (EDG-87, #180): cap `max(256 MiB, 4 x app
+  quota)`, 1 MiB aggregation and HTTP/1.0 with a terminal `COMMIT` check;
+  507 `SQLD_BACKUP_TOO_LARGE` and 504 `SQLD_BACKUP_TIMEOUT`. A 1 GiB app
+  backs up in about 2.5 minutes and restores.
+- Chart (EDG-88, #180): `managedDatabase` (existing Secrets, dedicated
+  PVC, same-UID init fixing directory and file modes), `sse.*`,
+  `httpDrainMs` and `terminationGracePeriodSeconds: 45`; the production
+  `sqld` admin is reachable only from the `edger` pod.
+- WASM compilation cache (EDG-89, #180): one process-wide `Engine` and an
+  eight-module SHA-256 LRU, so `ttl: 0` workers compile once per module.
+- Planning and UI gates (EDG-86, #180): fail closed without `rg`, run in
+  Git Bash, and `refinement-lint` reports 0 RED and 0 WARN.
 
 ## [0.3.2-rc.30]
 
