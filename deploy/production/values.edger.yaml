@@ -7,8 +7,10 @@
 # digest vazio sobrescreveria o do chart e cairia numa tag mutável):
 #
 #   helm upgrade --install edger oci://ghcr.io/djalmajr/charts/edger \
-#     --version 0.3.2-rc.19 -n edger -f deploy/production/values.edger.yaml \
+#     --version 0.3.2-rc.31 -n edger -f deploy/production/values.edger.yaml \
 #     --history-max 5
+#
+# Em produção desde 2026-11-08: 0.3.2-rc.31, Helm revisão 14.
 #
 # O `--version` deve ser `0.3.2-rc.19` ou mais nova (a primeira com a
 # EDG-24, o `release` de worker só de root). Nada de segredo neste
@@ -26,6 +28,14 @@ rootKey:
   existingSecret: edger-root
   secretKey: root-key
 
+# Senha inicial do root do console (EDG-44): o Secret existente
+# `edger-console-root-password` (chave `password`), criado fora do git, só
+# semeia o root quando o banco de usuários do console está vazio.
+consoleAuth:
+  rootPasswordSecret:
+    name: edger-console-root-password
+    key: password
+
 # Cofre de segredos de app (EDG-38, 0.3.2-rc.24 ou mais nova): a chave
 # mestra vem do Secret existente `edger-app-secrets` (chave `master-key`),
 # criado fora do git (ver README.md); o banco cifrado fica no PVC de
@@ -35,6 +45,29 @@ appSecrets:
   keySecret:
     name: edger-app-secrets
     key: master-key
+
+# Banco gerenciado (EDG-54, 0.3.2-rc.31 ou mais nova), ligado em
+# 2026-11-08. Os dois Secrets e o PVC existem fora do Helm: `sqld-admin`
+# (chave `admin-auth-key`, a mesma do sqld), `edger-sqld-signer` (chave
+# `key`, 32 bytes em base64, diferente da master do cofre; cópia em
+# `secret/infra/edger/production/edger-sqld-signer` no OpenBao) e o PVC
+# `edger-managed-database` (managed-database-pvc.yaml), externo para que um
+# rollback do Helm nunca apague o ledger. budgetBytes é imutável depois do
+# primeiro boot. `userUrl` é o Service `sqld-data` e `adminUrl` o
+# `sqld-admin` (sqld.yaml).
+managedDatabase:
+  enabled: true
+  adminUrl: http://sqld-admin.edger.svc.cluster.local:9090
+  userUrl: http://sqld-data.edger.svc.cluster.local:8080
+  adminKeySecret:
+    name: sqld-admin
+    key: admin-auth-key
+  signerKeySecret:
+    name: edger-sqld-signer
+    key: key
+  budgetBytes: "4294967296"
+  persistence:
+    existingClaim: edger-managed-database
 
 userWorkers:
   persistence:

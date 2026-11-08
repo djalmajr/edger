@@ -24,14 +24,14 @@ corte, num PR deles (revisão do Cinzel, item 8).
 
 | Peça | Nome | Observação |
 |---|---|---|
-| EdgeR | release `edger`, `fullnameOverride: edger`, Service `edger:3000`, PVC `edger-user-workers` (local-path, 5Gi) | chart `charts/edger`, `rc.19` ou mais nova para EDG-24; banco gerenciado exige uma release que inclua EDG-88 (a definir); request 1 Gi / limite 4 Gi de memória |
+| EdgeR | release `edger`, `fullnameOverride: edger`, Service `edger:3000`, PVC `edger-user-workers` (local-path, 5Gi) | chart `charts/edger`, `rc.19` ou mais nova para EDG-24; banco gerenciado exige 0.3.2-rc.31 ou mais nova (EDG-88); em produção desde 2026-11-08 (rc.31, Helm revisão 14), com PVC externo `edger-managed-database`; request 1 Gi / limite 4 Gi de memória |
 | sqld | Deployment `sqld`, PVC `sqld-data` (local-path, 5Gi), `--enable-namespaces`, admin em `0.0.0.0:9090`, Service ClusterIP `sqld-admin:9090` com `--admin-auth-key` (via `LIBSQL_ADMIN_AUTH_KEY`), `--auth-jwt-key-file` (chave global só para o `default`) | 1 réplica, `Recreate`, tag `v0.24.32` fixada |
-| Bancos | namespaces do libsql `cinzel` e `pinar-prd`, cada um com `jwt_key` própria | o `default` nasce vazio; depois do corte e dos 7 dias de rollback, `--disable-default-namespace` |
-| Hosts dos bancos | Services `cinzel` e `pinar-prd` no namespace `edger`, todos com o seletor do pod `sqld`, porta 8080 | o cliente escolhe o banco pelo **primeiro rótulo do Host**: `http://cinzel.edger.svc.cluster.local:8080` → banco `cinzel`. Host sem ponto cai no `default` — nunca use o nome curto do Service como URL |
-| NetworkPolicy | `sqld-ingress`: entrada na 8080 só dos pods do EdgeR (`app.kubernetes.io/instance: edger`) dos jobs de backup (`app.kubernetes.io/name: sqld-backup`) e do hub colaborativo do Cinzel (namespace `cinzel`, `app.kubernetes.io/name: cinzel-collab`); `sqld-admin-ingress`: 9090 apenas do pod EdgeR | `kubectl port-forward` vai pelo kubelet e não é afetado |
+| Bancos | namespaces do libsql `cinzel`, `pinar-prd` e `nau-prd`, cada um com `jwt_key` própria | o `default` nasce vazio; depois do corte e dos 7 dias de rollback, `--disable-default-namespace` |
+| Hosts dos bancos | Services `cinzel`, `pinar-prd` e `nau-prd` no namespace `edger`, todos com o seletor do pod `sqld`, porta 8080; `sqld-data` é a origem de dados do banco gerenciado (o host sempre envia `x-namespace-bin`) | o cliente escolhe o banco pelo **primeiro rótulo do Host**: `http://cinzel.edger.svc.cluster.local:8080` → banco `cinzel`. Host sem ponto cai no `default` — nunca use o nome curto do Service como URL |
+| NetworkPolicy | `sqld-ingress`: entrada na 8080 só dos pods do EdgeR (`app.kubernetes.io/instance: edger`) dos jobs de backup (`app.kubernetes.io/name: sqld-backup`) do hub colaborativo do Cinzel (namespace `cinzel`, `app.kubernetes.io/name: cinzel-collab`) e do Nau (namespace `nau`, `app.kubernetes.io/name: nau`); `sqld-admin-ingress`: 9090 apenas do pod EdgeR | `kubectl port-forward` vai pelo kubelet e não é afetado; o kube-router recusa o tráfego negado com REJECT (ConnectionRefused, não timeout) |
 | Backup | um CronJob por banco (`sqld-backup-<banco>`), retenção/sentinela/token por banco, PVC `sqld-backups` compartilhado | restaurar um banco **não** para o EdgeR: só o app afetado sai do ar, com o worker desabilitado |
 | Rotas e TLS | IngressRoute `edger` (`edger.djalmajr.dev`, **só control plane** — adendo EDG-27), Middleware `edger-admin-ratelimit`, Certificate `edger-tls` (`letsencrypt-dns`), tudo em `edger` | as rotas dos apps (`cinzel.app`, `pinar.dev`, …) vivem nos repositórios dos apps e também são aplicadas em `edger` (o Traefik não tem `allowCrossNamespace`) |
-| Secrets | `edger-root`, `sqld-jwt`, `sqld-admin`, `sqld-jwt-<banco>`, `sqld-backup-<banco>` | nenhum valor em git; nada de `latest` em imagem |
+| Secrets | `edger-root`, `edger-console-root-password`, `edger-app-secrets`, `edger-sqld-signer`, `sqld-jwt`, `sqld-admin`, `sqld-jwt-<banco>`, `sqld-backup-<banco>` | nenhum valor em git; nada de `latest` em imagem |
 
 ## Inventário
 
@@ -43,7 +43,12 @@ corte, num PR deles (revisão do Cinzel, item 8).
 | sqld | Deployment | `sqld` | `sqld.yaml` |
 | Service do banco `cinzel` | Service | `cinzel` | `sqld.yaml` |
 | Service do banco `pinar-prd` | Service | `pinar-prd` | `sqld.yaml` |
+| Service do banco `nau-prd` | Service | `nau-prd` | `sqld.yaml` |
+| Origem de dados do banco gerenciado | Service | `sqld-data` | `sqld.yaml` |
+| API de admin do sqld | Service | `sqld-admin` | `sqld.yaml` |
 | Entrada no sqld | NetworkPolicy | `sqld-ingress` | `sqld.yaml` |
+| Entrada na API de admin | NetworkPolicy | `sqld-admin-ingress` | `sqld.yaml` |
+| Ledger e dumps do banco gerenciado | PersistentVolumeClaim | `edger-managed-database` | `managed-database-pvc.yaml` |
 | Saída do ensaio | NetworkPolicy (egress) | `ensaio-egress` | `rehearsal/egress.yaml` |
 | PVC dos backups | PersistentVolumeClaim | `sqld-backups` | `backup/pvc.yaml` |
 | Script de backup | ConfigMap (gerado) | `sqld-backup-script-<hash>` | `backup/backup.sh` + `backup/kustomization.yaml` |
@@ -57,7 +62,7 @@ corte, num PR deles (revisão do Cinzel, item 8).
 | EdgeR (release) | ConfigMap/PVC/Service/Deployment | `edger`, `edger-user-workers`, `edger:3000` | chart `charts/edger` + `values.edger.yaml` |
 
 Aplicação (produção): `kubectl apply -f namespace.yaml -f sqld.yaml -f
-control-plane.yaml -k backup/` — ou objeto a objeto; o backup precisa do
+managed-database-pvc.yaml -f control-plane.yaml -k backup/` — ou objeto a objeto; o backup precisa do
 kustomize porque gera o ConfigMap do script com hash.
 
 ## Segredos a criar
@@ -76,6 +81,8 @@ hora (ver o runbook do ensaio).
 | `sqld-jwt-<banco>` | `jwt-public-key` | chave JWT **do banco** (passada na criação via API de admin; guardada aqui para referência/auditoria) |
 | `sqld-backup-<banco>` | `token` | token de leitura do banco para o backup (`GET /dump` com Bearer) |
 | `edger-app-secrets` | `master-key` | chave mestra do cofre de segredos de app (EDG-38): 32 bytes em base64; perdê-la torna ilegíveis os segredos já gravados |
+| `edger-sqld-signer` | `key` | master do signer do banco gerenciado (EDG-54): 32 bytes em base64, diferente da master do cofre; sela as chaves Ed25519 por app. Cópia em `secret/infra/edger/production/edger-sqld-signer` (OpenBao, create-only, com os 9 `custom_metadata`) |
+| `edger-console-root-password` | `password` | senha inicial do root do console (EDG-44); só semeia o root com o banco de usuários vazio |
 
 ```sh
 # chave mestra do cofre de segredos de app (0.3.2-rc.24 ou mais nova,
@@ -86,6 +93,15 @@ openssl rand -base64 32 | tr -d '\n' > ./secrets/edger-app-secrets-master-key.tx
 chmod 600 ./secrets/edger-app-secrets-master-key.txt
 kubectl -n edger create secret generic edger-app-secrets \
   --from-file=master-key=./secrets/edger-app-secrets-master-key.txt
+
+# master do signer do banco gerenciado (0.3.2-rc.31 ou mais nova,
+# `managedDatabase` nos values): 32 bytes em base64, DIFERENTE da master do
+# cofre (o boot recusa as duas iguais). Guarde a cópia no OpenBao antes de
+# criar o Secret; sem ela, as chaves seladas por app não voltam a abrir.
+openssl rand -base64 32 | tr -d '\n' > ./secrets/edger-sqld-signer.txt
+chmod 600 ./secrets/edger-sqld-signer.txt
+kubectl -n edger create secret generic edger-sqld-signer \
+  --from-file=key=./secrets/edger-sqld-signer.txt
 
 # root key: copia da release atual SEM imprimir no terminal
 kubectl -n cinzel get secret cinzel-edger-root \
@@ -126,7 +142,7 @@ a NetworkPolicy `sqld-admin-ingress` admite somente pods com os labels
 `app.kubernetes.io/name: edger` e `app.kubernetes.io/instance: edger` no
 namespace `edger`. A política de dados na porta 8080 permanece independente.
 Isso exige um CNI que aplique NetworkPolicy. Não crie Ingress nem NodePort para
-a porta admin. Esta é a configuração dos manifestos, sem afirmar implantação.
+a porta admin. Implantado em produção em 2026-11-08 (sqld revisão 3).
 
 Para banco gerenciado, configure `managedDatabase.adminUrl` como
 `http://sqld-admin.edger.svc.cluster.local:9090`, o Secret admin existente

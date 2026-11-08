@@ -1,0 +1,18 @@
+# PVC do banco gerenciado do EdgeR (ledger em registry/ e dumps em
+# backups/), referenciado por `managedDatabase.persistence.existingClaim`
+# em values.edger.yaml. Fica fora do Helm de propósito: um
+# `helm rollback` para uma revisão sem managedDatabase apagaria um PVC
+# gerenciado pelo chart, e com ele o ledger (chaves seladas por app e
+# reservas de cota). Criado em 2026-11-08; aplique antes do primeiro
+# upgrade com managedDatabase. local-path não impõe a capacidade.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: edger-managed-database
+  namespace: edger
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
