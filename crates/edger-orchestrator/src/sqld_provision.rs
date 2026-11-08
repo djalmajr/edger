@@ -758,7 +758,11 @@ impl SqldProvisionService {
             let artifact = self
                 .inner
                 .backup
-                .create(&proven.sql_namespace, Zeroizing::new((*token).clone()))
+                .create_for_quota(
+                    &proven.sql_namespace,
+                    Zeroizing::new((*token).clone()),
+                    proven.quota_bytes,
+                )
                 .await?;
             initial_backup = Some(artifact);
             self.registry_mark_ready(owner).await?;
@@ -798,7 +802,7 @@ impl SqldProvisionService {
         let artifact = self
             .inner
             .backup
-            .create(&proven.sql_namespace, token)
+            .create_for_quota(&proven.sql_namespace, token, proven.quota_bytes)
             .await?;
         Ok(artifact)
     }

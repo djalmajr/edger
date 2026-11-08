@@ -22,7 +22,7 @@ use edger_core::{
     Isolate, IsolationError, SerializedRequest, SerializedResponse, StreamedResponse, WorkerConfig,
     WorkerRef, WorkerResponse,
 };
-use edger_isolation::{DenoProcessIsolate, StreamDetachBudget};
+use edger_isolation::{DenoFacade, DenoIsolate, DenoProcessIsolate, StreamDetachBudget};
 use edger_orchestrator::sse_broker::{SseBroker, SseLimits};
 use edger_orchestrator::{
     build_pipeline, load_manifests_from_dirs, ControlAuth, OrchestratorState, ServerState,
@@ -1638,6 +1638,163 @@ async fn without_a_broker_metrics_have_no_sse_line() {
     let env = start(vec![fetch_worker("hub", "")], Broker::Absent).await;
     let text = metrics(&env).await;
     assert!(!text.contains("edger_sse_"), "{text}");
+}
+
+// ---------------------------------------------------------------------------
+// The real bridge rejects SSE before evaluating the guest
+// ---------------------------------------------------------------------------
+
+struct BridgeFactory;
+
+impl IsolateFactory for BridgeFactory {
+    fn create_isolate(&self, _worker: &WorkerRef) -> Box<dyn Isolate> {
+        Box::new(DenoIsolate::new(DenoFacade::new()))
+    }
+}
+
+#[test]
+fn bridge_refuses_sse_before_reading_files_or_starting_deno() {
+    let manifest = serde_saphyr::from_str::<edger_core::WorkerManifest>(
+        "name: blocked\nsse:\n  subscribe: [\"/events\"]\n",
+    )
+    .unwrap();
+    let config = edger_core::parse_worker_config(&manifest);
+    assert!(config.worker_dir.is_none());
+    let runner = edger_isolation::deno::DenoCliRunner::new("must-not-be-executed");
+    let error = runner
+        .execute_fetch(
+            SerializedRequest {
+                method: "GET".into(),
+                uri: "/events".into(),
+                headers: vec![],
+                body: None,
+                request_id: "blocked".into(),
+                base_href: None,
+            },
+            &config,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "SSE_RUNTIME_UNSUPPORTED");
+    assert_eq!(error.message, "SSE is not supported by this runtime");
+}
+
+// The guest reports module evaluation to a loopback-only probe before it
+// registers a handler. A control proves the probe is live; a refusal must
+// leave both that execution counter and the entire broker snapshot unchanged.
+struct BridgeProbe {
+    hits: Arc<std::sync::atomic::AtomicUsize>,
+    addr: SocketAddr,
+    serve: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for BridgeProbe {
+    fn drop(&mut self) {
+        self.serve.abort();
+    }
+}
+
+impl BridgeProbe {
+    async fn start() -> Self {
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&hits);
+        let app = axum::Router::new().fallback(move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { "evaluated" }
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let serve = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        Self { hits, addr, serve }
+    }
+
+    fn worker(&self, with_sse: bool) -> Files {
+        let publish = URL_SAFE_NO_PAD.encode(r#"{"topic":"room.1","data":"from-bridge"}"#);
+        let source = format!(
+            r#"await (await fetch("http://{}/")).text();
+export default (req) => {{
+  const path = new URL(req.url).pathname;
+  const headers = new Headers({{ "content-type": "text/plain" }});
+  if (path === "/events") headers.set("x-edger-sse-subscribe", "room.1");
+  if (path === "/publish") headers.set("x-edger-sse-publish", "{publish}");
+  return new Response(new ReadableStream({{
+    start(c) {{ c.enqueue(new TextEncoder().encode("open-body")); }}
+  }}), {{ headers }});
+}};
+"#,
+            self.addr
+        );
+        Files {
+            dir: "bridgehub",
+            files: vec![
+                (
+                    "manifest.yaml",
+                    format!(
+                        "name: bridgehub\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\n{}",
+                        if with_sse { SSE_BLOCK } else { "" }
+                    ),
+                ),
+                ("index.ts", source),
+            ],
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs deno on PATH (EDGER_DENO_BIN); loopback only"]
+async fn bridge_sse_routes_are_refused_without_guest_execution_or_broker_changes() {
+    let probe = BridgeProbe::start().await;
+    let env = start_with(
+        vec![probe.worker(true)],
+        Broker::With(quiet_limits(1024)),
+        |_, _| Arc::new(BridgeFactory),
+    )
+    .await;
+    let before = stats(&env);
+    for (method, path) in [
+        ("POST", "/bridgehub/publish"),
+        ("GET", "/bridgehub/events"),
+        ("GET", "/bridgehub/publish"),
+        ("GET", "/bridgehub/ordinary"),
+    ] {
+        let response = request(env.addr, method, path, &[]).await;
+        assert_eq!(response.status, 500, "{method} {path}: {}", response.text());
+        assert_eq!(response.json()["code"], "WORKER_ERROR");
+        assert_eq!(
+            response.json()["message"],
+            "isolation error: [SSE_RUNTIME_UNSUPPORTED] SSE is not supported by this runtime"
+        );
+        response.assert_no_sse_headers();
+        assert_eq!(stats(&env), before, "{method} {path} changed the broker");
+        assert_eq!(probe.hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs deno on PATH (EDGER_DENO_BIN); loopback only"]
+async fn bridge_without_sse_keeps_its_partial_body_and_executes_the_guest() {
+    let probe = BridgeProbe::start().await;
+    let env = start_with(
+        vec![probe.worker(false)],
+        Broker::With(quiet_limits(1024)),
+        |_, _| Arc::new(BridgeFactory),
+    )
+    .await;
+    let before = stats(&env);
+    let response = request(env.addr, "POST", "/bridgehub/publish", &[]).await;
+    assert_eq!(response.status, 200, "{}", response.text());
+    assert_eq!(response.text(), "open-body");
+    assert_eq!(
+        response.header("x-edger-sse-publish"),
+        Some(
+            URL_SAFE_NO_PAD
+                .encode(r#"{"topic":"room.1","data":"from-bridge"}"#)
+                .as_str()
+        )
+    );
+    assert_eq!(stats(&env), before);
+    assert_eq!(probe.hits.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 // ---------------------------------------------------------------------------

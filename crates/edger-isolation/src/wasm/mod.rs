@@ -382,6 +382,59 @@ impl Isolate for WasmIsolate {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn edg89_ephemeral_isolates_compile_once_without_sharing_secrets_or_env() {
+        let _lock = super::handler::async_admission_test_lock().await;
+        let mut bytes = wat::parse_str(ENV_DUMP_WAT).unwrap();
+        bytes.extend_from_slice(&[0, 6, 5, b'e', b'd', b'g', b'8', b'9']);
+        let first_config = secrets_config(&["APP_SECRET"], &[("VALUE", "first")], 30_000);
+        let resolver: Arc<dyn AppSecretResolver> = Arc::new(MapResolver::new(&[(
+            "worker-a",
+            "APP_SECRET",
+            "edg89-private",
+        )]));
+        let mut first = WasmIsolate::from_worker_config(&first_config)
+            .with_wasm_bytes(bytes.clone())
+            .with_app_secrets("worker-a".into(), resolver);
+        let before = first.handler.compilation_count();
+        let env = parse_env_body(
+            first
+                .execute_wasm(sample_secrets_request(), &first_config)
+                .await
+                .unwrap()
+                .body
+                .unwrap()
+                .as_ref(),
+        );
+        assert_eq!(first_value(&env, "APP_SECRET"), Some("edg89-private"));
+        assert_eq!(first_value(&env, "VALUE"), Some("first"));
+        assert_eq!(first.handler.compilation_count(), before + 1);
+        let bare = secrets_config(&[], &[("OTHER", "second")], 30_000);
+        let mut second = WasmIsolate::from_worker_config(&bare).with_wasm_bytes(bytes);
+        assert_eq!(
+            second.handler.compilation_count(),
+            before + 1,
+            "fresh isolate observes the process compiler"
+        );
+        let env = parse_env_body(
+            second
+                .execute_wasm(sample_secrets_request(), &bare)
+                .await
+                .unwrap()
+                .body
+                .unwrap()
+                .as_ref(),
+        );
+        assert_eq!(first_value(&env, "APP_SECRET"), None);
+        assert_eq!(first_value(&env, "VALUE"), None);
+        assert_eq!(first_value(&env, "OTHER"), Some("second"));
+        assert_eq!(
+            second.handler.compilation_count(),
+            before + 1,
+            "same bytes must not compile again"
+        );
+    }
+
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
 

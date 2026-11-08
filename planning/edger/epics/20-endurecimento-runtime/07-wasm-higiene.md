@@ -1,6 +1,6 @@
 # Story 20.07: Higiene de Wasm
 
-**Origin:** planning/edger/epics/20-endurecimento-runtime/00-overview.md
+**Origin:** `planning/edger/epics/20-endurecimento-runtime/00-overview.md`
 
 ## Context
 

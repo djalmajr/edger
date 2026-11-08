@@ -35,7 +35,10 @@ fixtures de teste, sem alterar os manifestos aceitos pelo runtime.
 
 ## Verification
 
-- Path preflight do planejamento.
+```bash
+bash planning/edger/scripts/path-preflight.sh .
+```
+
 - Smoke de descoberta com os três roots.
 
 ## Status

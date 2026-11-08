@@ -7,7 +7,7 @@
 //! - `_initialize()` — optional; reactor modules (Go `-buildmode=c-shared`)
 //!   must run it once per instance before the first ABI call
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -39,10 +39,74 @@ const LOW_MEMORY_WASM_MEMORY_BYTES: usize = 128 * 1024 * 1024;
 const DEFAULT_WASM_TABLE_ELEMENTS: usize = 16_384;
 const DEFAULT_WASM_TIMEOUT_MS: u64 = 30_000;
 const WASM_EPOCH_TICK_MS: u64 = 10;
+const MODULE_CACHE_CAPACITY: usize = 8;
+
+/// Only immutable compiled code is shared. No execution authority or guest state.
+struct CompilationRuntime {
+    engine: Engine,
+    cache: Mutex<ModuleCache>,
+    #[cfg(test)]
+    compilations: AtomicU64,
+}
+
+impl CompilationRuntime {
+    fn new() -> Self {
+        let engine = build_engine();
+        spawn_epoch_ticker(&engine);
+        Self {
+            engine,
+            cache: Mutex::new(ModuleCache::default()),
+            #[cfg(test)]
+            compilations: AtomicU64::new(0),
+        }
+    }
+}
+
+fn process_compilation_runtime() -> Arc<CompilationRuntime> {
+    static RUNTIME: OnceLock<Arc<CompilationRuntime>> = OnceLock::new();
+    Arc::clone(RUNTIME.get_or_init(|| Arc::new(CompilationRuntime::new())))
+}
+
+#[derive(Default)]
+struct ModuleCache {
+    // Least recently used at the front; eight entries keep lookup bounded.
+    entries: VecDeque<(ModuleCacheKey, Module)>,
+}
+
+impl ModuleCache {
+    fn get(&mut self, key: &ModuleCacheKey) -> Option<Module> {
+        let index = self
+            .entries
+            .iter()
+            .position(|(candidate, _)| candidate == key)?;
+        let entry = self.entries.remove(index)?;
+        let module = entry.1.clone();
+        self.entries.push_back(entry);
+        Some(module)
+    }
+
+    fn insert(&mut self, key: ModuleCacheKey, module: Module) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|(candidate, _)| *candidate == key)
+        {
+            self.entries.remove(index);
+        }
+        self.entries.push_back((key, module));
+        if self.entries.len() > MODULE_CACHE_CAPACITY {
+            self.entries.pop_front();
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
 
 pub struct WasmHttpHandler {
-    engine: Engine,
-    module_cache: Mutex<HashMap<ModuleCacheKey, Module>>,
+    runtime: Arc<CompilationRuntime>,
     #[cfg(test)]
     in_flight: Arc<AtomicU64>,
     #[cfg(test)]
@@ -51,11 +115,12 @@ pub struct WasmHttpHandler {
 
 impl WasmHttpHandler {
     pub fn new() -> Self {
-        let engine = build_engine();
-        spawn_epoch_ticker(&engine);
+        Self::with_runtime(process_compilation_runtime())
+    }
+
+    fn with_runtime(runtime: Arc<CompilationRuntime>) -> Self {
         Self {
-            engine,
-            module_cache: Mutex::new(HashMap::new()),
+            runtime,
             #[cfg(test)]
             in_flight: Arc::new(AtomicU64::new(0)),
             #[cfg(test)]
@@ -100,11 +165,11 @@ impl WasmHttpHandler {
         // WASM_IMPORT_DENIED — no linker registration, no grant, ever.
         validate_import_policy(&module, /* http_granted */ false)?;
 
-        let mut linker = Linker::<WasmStoreState>::new(&self.engine);
+        let mut linker = Linker::<WasmStoreState>::new(&self.runtime.engine);
         p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)
             .map_err(|e| IsolationError::new("WASI_LINK", e.to_string()))?;
         let mut store = Store::new(
-            &self.engine,
+            &self.runtime.engine,
             WasmStoreState::new(wasi, limits, &WasmSecretEnv::empty()),
         );
         store.limiter(|state| &mut state.limits);
@@ -258,7 +323,7 @@ impl WasmHttpHandler {
         #[cfg(test)]
         let _in_flight = self.begin_async_request();
 
-        let mut linker = Linker::<WasmStoreState>::new(&self.engine);
+        let mut linker = Linker::<WasmStoreState>::new(&self.runtime.engine);
         p1::add_to_linker_async(&mut linker, |state| &mut state.wasi)
             .map_err(|e| IsolationError::new("WASI_LINK", e.to_string()))?;
         // (EDG-52 07a) register the versioned HTTP import ONLY for a
@@ -299,7 +364,10 @@ impl WasmHttpHandler {
                 )
                 .map_err(|e| IsolationError::new("WASM_HTTP_LINK", e.to_string()))?;
         }
-        let mut store = Store::new(&self.engine, WasmStoreState::new(wasi, limits, secrets));
+        let mut store = Store::new(
+            &self.runtime.engine,
+            WasmStoreState::new(wasi, limits, secrets),
+        );
         store.limiter(|state| &mut state.limits);
         store.set_epoch_deadline(1);
         store.epoch_deadline_callback(move |_ctx| {
@@ -394,12 +462,14 @@ impl WasmHttpHandler {
     fn compiled_module(&self, wasm_bytes: &[u8]) -> Result<Module, IsolationError> {
         validate_module_bytes(wasm_bytes)?;
         let key = ModuleCacheKey::from_bytes(wasm_bytes);
-        if let Some(module) = self.module_cache()?.get(&key).cloned() {
+        if let Some(module) = self.module_cache()?.get(&key) {
             return Ok(module);
         }
 
-        let module = Module::new(&self.engine, wasm_bytes)
+        let module = Module::new(&self.runtime.engine, wasm_bytes)
             .map_err(|e| IsolationError::new("WASM_COMPILE", e.to_string()))?;
+        #[cfg(test)]
+        self.runtime.compilations.fetch_add(1, Ordering::SeqCst);
         // (EDG-52 07a) sync embedding: the HTTP import is never granted.
         validate_import_policy(&module, /* http_granted */ false)?;
         self.module_cache()?.insert(key, module.clone());
@@ -423,7 +493,7 @@ impl WasmHttpHandler {
     ) -> Result<(Module, OwnedSemaphorePermit), IsolationError> {
         validate_module_bytes(wasm_bytes)?;
         let key = ModuleCacheKey::from_bytes(wasm_bytes);
-        if let Some(module) = self.module_cache()?.get(&key).cloned() {
+        if let Some(module) = self.module_cache()?.get(&key) {
             // (EDG-52) a cache hit that lands after the shared deadline
             // elapsed is not a success: a ready value is never accepted past
             // the deadline (tokio polls it before the timer).
@@ -448,7 +518,9 @@ impl WasmHttpHandler {
             ));
         }
 
-        let engine = self.engine.clone();
+        let engine = self.runtime.engine.clone();
+        #[cfg(test)]
+        let runtime = Arc::clone(&self.runtime);
         let bytes = wasm_bytes.to_vec();
         #[cfg(test)]
         let fence = compile_fence::capture();
@@ -460,6 +532,8 @@ impl WasmHttpHandler {
                 }
                 let module = Module::new(&engine, &bytes)
                     .map_err(|e| IsolationError::new("WASM_COMPILE", e.to_string()))?;
+                #[cfg(test)]
+                runtime.compilations.fetch_add(1, Ordering::SeqCst);
                 validate_import_policy(&module, http_granted)?;
                 Ok((module, permit))
             },
@@ -504,17 +578,24 @@ impl WasmHttpHandler {
         }
     }
 
-    fn module_cache(
-        &self,
-    ) -> Result<MutexGuard<'_, HashMap<ModuleCacheKey, Module>>, IsolationError> {
-        self.module_cache
-            .lock()
-            .map_err(|_| IsolationError::new("WASM_CACHE", "module cache lock poisoned"))
+    fn module_cache(&self) -> Result<MutexGuard<'_, ModuleCache>, IsolationError> {
+        self.runtime.cache.lock().or_else(|poison| {
+            let mut cache = poison.into_inner();
+            // Interrupted LRU state is disposable; keep only the same Engine.
+            *cache = ModuleCache::default();
+            self.runtime.cache.clear_poison();
+            Ok(cache)
+        })
     }
 
     #[cfg(test)]
     fn cached_module_count(&self) -> Result<usize, IsolationError> {
         Ok(self.module_cache()?.len())
+    }
+
+    #[cfg(test)]
+    pub(super) fn compilation_count(&self) -> u64 {
+        self.runtime.compilations.load(Ordering::SeqCst)
     }
 
     /// (test-only) counts the async requests admitted by this handler. The
@@ -1154,6 +1235,11 @@ mod compile_fence {
 mod tests {
     use super::*;
 
+    // Existing cold-compile/deadline tests own a fresh runtime; production uses OnceLock.
+    fn cold_handler() -> WasmHttpHandler {
+        WasmHttpHandler::with_runtime(Arc::new(CompilationRuntime::new()))
+    }
+
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::Instant;
@@ -1400,7 +1486,7 @@ mod tests {
     #[test]
     fn executes_request_response_abi() {
         let wasm_bytes = wat::parse_str(ECHO_URI_WAT).unwrap();
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let req = SerializedRequest {
             method: "POST".into(),
             uri: "/from-handler-test".into(),
@@ -1427,7 +1513,7 @@ mod tests {
     #[test]
     fn repeated_requests_reuse_cached_module() {
         let wasm_bytes = wat::parse_str(ECHO_URI_WAT).unwrap();
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let first = handler
             .execute_module(&wasm_bytes, &sample_request())
             .unwrap();
@@ -1438,6 +1524,110 @@ mod tests {
         assert_eq!(first.status, 200);
         assert_eq!(second.status, 200);
         assert_eq!(handler.cached_module_count().unwrap(), 1);
+    }
+
+    fn tagged_module(tag: u8) -> Vec<u8> {
+        let mut bytes = wat::parse_str(ECHO_URI_WAT).unwrap();
+        bytes.extend_from_slice(&[0, 2, 1, tag]); // distinct valid custom section
+        bytes
+    }
+
+    #[test]
+    fn edg89_different_bytes_compile_separately() {
+        let handler = cold_handler();
+        for tag in *b"aba" {
+            assert_eq!(
+                handler
+                    .execute_module(&tagged_module(tag), &sample_request())
+                    .unwrap()
+                    .status,
+                200
+            );
+        }
+        assert_eq!(handler.compilation_count(), 2);
+    }
+
+    #[test]
+    fn poisoned_cache_discards_modules_and_recovers_under_the_same_engine() {
+        let first = cold_handler();
+        let second = WasmHttpHandler::with_runtime(Arc::clone(&first.runtime));
+        let bytes = tagged_module(b'a');
+        let request = sample_request();
+        let expected = first.execute_module(&bytes, &request).unwrap();
+        assert_eq!(expected.status, 200);
+        assert_eq!(first.compilation_count(), 1);
+
+        // Inject a host panic while the real shared cache guard is alive.
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = first.runtime.cache.lock().unwrap();
+            panic!("injected cache owner panic");
+        }));
+        assert!(panic.is_err());
+        assert!(first.runtime.cache.is_poisoned());
+
+        let recovered = second.execute_module(&bytes, &request).unwrap();
+        assert_eq!(recovered.status, expected.status);
+        assert_eq!(recovered.headers, expected.headers);
+        assert_eq!(recovered.body, expected.body);
+        assert!(Arc::ptr_eq(&first.runtime, &second.runtime));
+        assert!(!first.runtime.cache.is_poisoned());
+        assert_eq!(
+            second.compilation_count(),
+            2,
+            "discard the old cached module"
+        );
+        assert_eq!(second.cached_module_count().unwrap(), 1);
+
+        // Recovery must preserve a working bounded LRU, rather than disabling caching.
+        for tag in b'b'..=b'i' {
+            assert_eq!(
+                second
+                    .execute_module(&tagged_module(tag), &request)
+                    .unwrap()
+                    .status,
+                200
+            );
+        }
+        assert_eq!(second.cached_module_count().unwrap(), 8);
+        assert_eq!(second.compilation_count(), 10);
+        second
+            .execute_module(&tagged_module(b'i'), &request)
+            .unwrap();
+        assert_eq!(
+            second.compilation_count(),
+            10,
+            "healthy hits still reuse code"
+        );
+        second.execute_module(&bytes, &request).unwrap();
+        assert_eq!(
+            second.compilation_count(),
+            11,
+            "the oldest module was evicted"
+        );
+        assert_eq!(second.cached_module_count().unwrap(), 8);
+        assert!(!second.runtime.cache.is_poisoned());
+    }
+
+    #[test]
+    fn edg89_ninth_key_evicts_least_recently_used() {
+        let handler = cold_handler();
+        let run = |tag| {
+            handler
+                .execute_module(&tagged_module(tag), &sample_request())
+                .unwrap()
+        };
+        for tag in b'a'..=b'h' {
+            run(tag);
+        }
+        assert_eq!(handler.compilation_count(), 8);
+        run(b'a'); // touch oldest: b, not a, must now be evicted
+        run(b'i');
+        assert_eq!(handler.cached_module_count().unwrap(), 8);
+        run(b'a');
+        assert_eq!(handler.compilation_count(), 9);
+        run(b'b');
+        assert_eq!(handler.compilation_count(), 10);
+        assert_eq!(handler.cached_module_count().unwrap(), 8);
     }
 
     #[test]
@@ -1459,7 +1649,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let limits = WasmRuntimeLimits {
             epoch_deadline_ticks: 1,
             ..WasmRuntimeLimits::default()
@@ -1494,7 +1684,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let limits = WasmRuntimeLimits {
             memory_bytes: 64 * 1024,
             ..WasmRuntimeLimits::default()
@@ -1524,7 +1714,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let err = WasmHttpHandler::new()
+        let err = cold_handler()
             .execute_module(&wasm_bytes, &sample_request())
             .unwrap_err();
 
@@ -1545,7 +1735,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let err = WasmHttpHandler::new()
+        let err = cold_handler()
             .execute_module(&wasm_bytes, &sample_request())
             .unwrap_err();
 
@@ -1568,7 +1758,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let err = WasmHttpHandler::new()
+        let err = cold_handler()
             .execute_module(&wasm_bytes, &sample_request())
             .unwrap_err();
 
@@ -1663,7 +1853,7 @@ mod tests {
             "#
         );
         let wasm_bytes = wat::parse_str(&wasm).unwrap();
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let res = handler
             .execute_module(&wasm_bytes, &sample_request())
             .unwrap();
@@ -1676,7 +1866,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_wasm_magic() {
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let err = handler
             .execute_module(b"not-wasm", &sample_request())
             .unwrap_err();
@@ -1688,7 +1878,7 @@ mod tests {
         let mut wasm_bytes = b"\0asm".to_vec();
         wasm_bytes.resize(MAX_MODULE_BYTES + 1, 0);
 
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let err = handler
             .execute_module(&wasm_bytes, &sample_request())
             .unwrap_err();
@@ -1707,7 +1897,7 @@ mod tests {
         )
         .unwrap();
 
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let err = handler
             .execute_module(&wasm_bytes, &sample_request())
             .unwrap_err();
@@ -1807,7 +1997,7 @@ mod tests {
         )
         .unwrap();
 
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let res = handler
             .execute_module_with_config(&wasm_bytes, &sample_request(), &WasiConfig::deny_all())
             .unwrap();
@@ -1822,7 +2012,7 @@ mod tests {
     #[test]
     fn reactor_initialize_runs_before_first_abi_call() {
         let wasm_bytes = wat::parse_str(REACTOR_INIT_WAT).unwrap();
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let res = handler
             .execute_module(&wasm_bytes, &sample_request())
             .unwrap();
@@ -1841,7 +2031,7 @@ mod tests {
     #[test]
     fn repeated_requests_run_initialize_once_per_store() {
         let wasm_bytes = wat::parse_str(REACTOR_INIT_WAT).unwrap();
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let first = handler
             .execute_module(&wasm_bytes, &sample_request())
             .unwrap();
@@ -1889,7 +2079,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let err = handler
             .execute_module(&wasm_bytes, &sample_request())
             .unwrap_err();
@@ -1912,7 +2102,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let err = handler
             .execute_module(&wasm_bytes, &sample_request())
             .unwrap_err();
@@ -1935,7 +2125,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let err = handler
             .execute_module(&wasm_bytes, &sample_request())
             .unwrap_err();
@@ -1963,7 +2153,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let limits = WasmRuntimeLimits {
             epoch_deadline_ticks: 1,
             ..WasmRuntimeLimits::default()
@@ -2521,7 +2711,7 @@ mod tests {
     async fn cancel_during_guest_releases_admission_and_store() {
         let _lock = async_admission_test_lock().await;
         async_admission_quiescent().await;
-        let handler = Arc::new(WasmHttpHandler::new());
+        let handler = Arc::new(cold_handler());
         let wasm_bytes = wat::parse_str(LONG_SPIN_WAT).unwrap();
         let admission = wasm_admission();
         let capacity = admission.capacity();
@@ -2596,7 +2786,7 @@ mod tests {
     async fn async_admission_caps_in_flight_work() {
         let _lock = async_admission_test_lock().await;
         async_admission_quiescent().await;
-        let handler = Arc::new(WasmHttpHandler::new());
+        let handler = Arc::new(cold_handler());
         let wasm_bytes = wat::parse_str(CPU_SPIN_WAT).unwrap();
         let admission = wasm_admission();
         let capacity = admission.capacity();
@@ -2644,7 +2834,7 @@ mod tests {
     async fn compile_retains_admission_permit_after_caller_cancel() {
         let _lock = async_admission_test_lock().await;
         async_admission_quiescent().await;
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let wasm_bytes = wat::parse_str(LONG_SPIN_WAT).unwrap();
         let admission = wasm_admission();
         let capacity = admission.capacity();
@@ -2711,7 +2901,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn expired_deadline_refuses_before_guest_work() {
         let _lock = async_admission_test_lock().await;
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let wasm_bytes = wat::parse_str(ECHO_URI_WAT).unwrap();
         let req = sample_request();
         let limits = WasmRuntimeLimits::default();
@@ -2857,7 +3047,7 @@ mod tests {
     async fn late_compile_error_is_timeout_not_compile() {
         let _lock = async_admission_test_lock().await;
         async_admission_quiescent().await;
-        let handler = Arc::new(WasmHttpHandler::new());
+        let handler = Arc::new(cold_handler());
         // Valid magic, broken body: the inline validation passes; the real
         // compiler inside the blocking task fails (WASM_COMPILE).
         let broken: Vec<u8> = b"\0asm\x01\x02\x03".to_vec();
@@ -3092,6 +3282,80 @@ mod tests {
     /// no headers, no body — a 14-byte frame the fixture can pass through.
     struct OkHttpTransport;
 
+    struct CacheProbeTransport {
+        calls: std::sync::atomic::AtomicUsize,
+        body: &'static [u8],
+    }
+
+    #[async_trait::async_trait]
+    impl crate::wasm::http::WasmHttpTransport for CacheProbeTransport {
+        async fn fetch(
+            &self,
+            _request: crate::wasm::http::WasmHttpRequest,
+            _response_body_limit: usize,
+        ) -> Result<crate::wasm::http::WasmHttpResponse, crate::wasm::http::WasmHttpError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(crate::wasm::http::WasmHttpResponse {
+                status: 200,
+                headers: vec![],
+                body: bytes::Bytes::from_static(self.body),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn edg89_cache_hit_rechecks_imports_and_never_reuses_http_grants() {
+        let _lock = async_admission_test_lock().await;
+        let first = cold_handler();
+        let second = WasmHttpHandler::with_runtime(Arc::clone(&first.runtime));
+        let bytes = wat::parse_str(HTTP_FETCH_WAT).unwrap();
+        let a = Arc::new(CacheProbeTransport {
+            calls: 0.into(),
+            body: b"a",
+        });
+        let b = Arc::new(CacheProbeTransport {
+            calls: 0.into(),
+            body: b"bbb",
+        });
+        let limits = WasmRuntimeLimits::default();
+        let grant_a = WasmHttpExecution {
+            transport: a.clone(),
+            request_id: "a".into(),
+        };
+        let grant_b = WasmHttpExecution {
+            transport: b.clone(),
+            request_id: "b".into(),
+        };
+        let run = async |handler: &WasmHttpHandler, grant: Option<&WasmHttpExecution>| {
+            handler
+                .execute_module_with_config_and_limits_async(
+                    &bytes,
+                    &sample_request(),
+                    &WasiConfig::deny_all(),
+                    &limits,
+                    &WasmSecretEnv::empty(),
+                    execution_deadline(&limits),
+                    grant,
+                )
+                .await
+        };
+        let reply = run(&first, Some(&grant_a)).await.unwrap();
+        assert_eq!(reply.body.unwrap().as_ref(), b"\x0f\x00");
+        assert_eq!(first.compilation_count(), 1);
+        let error = run(&second, None)
+            .await
+            .expect_err("cached HTTP import requires this execution's grant");
+        assert_eq!(error.code, "WASM_IMPORT_DENIED");
+        assert_eq!(second.compilation_count(), 1, "denial must exercise a hit");
+        assert_eq!(a.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(b.calls.load(Ordering::SeqCst), 0);
+        let reply = run(&second, Some(&grant_b)).await.unwrap();
+        assert_eq!(reply.body.unwrap().as_ref(), b"\x11\x00");
+        assert_eq!(a.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(b.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(second.compilation_count(), 1);
+    }
+
     #[async_trait::async_trait]
     impl crate::wasm::http::WasmHttpTransport for OkHttpTransport {
         async fn fetch(
@@ -3110,7 +3374,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn sync_embedding_denies_http_import_even_with_cached_async_module() {
         let _lock = async_admission_test_lock().await;
-        let handler = WasmHttpHandler::new();
+        let handler = cold_handler();
         let wasm_bytes = wat::parse_str(HTTP_FETCH_WAT).unwrap();
         let grant = WasmHttpExecution {
             transport: Arc::new(OkHttpTransport),
@@ -3154,7 +3418,7 @@ mod tests {
 
         // A cold sync compile of the same module is denied before
         // instantiation, on a fresh handler with an empty cache.
-        let fresh = WasmHttpHandler::new();
+        let fresh = cold_handler();
         let err = fresh
             .execute_module_with_config_and_limits(
                 &wasm_bytes,

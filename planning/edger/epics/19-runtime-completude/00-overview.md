@@ -1,6 +1,7 @@
 # Epic 19 — Completude do Runtime (features deferidas)
 
 **Origin:** investigação de features deferidas (sessão de tech-debt pós Epic 17/18)
+<!-- refinement-lint: allow origin — a origem é uma investigação de tech-debt (sessão pós Epic 17/18) sem documento no repositório; o arquivo foi criado no commit a31d4e1 (2026-07-03) -->
 
 ## Contexto
 

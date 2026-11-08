@@ -79,7 +79,7 @@
 - [x] Implementar lifecycle runners
 - [x] Substituir stub no `pipeline.rs`
 - [x] Criar mock `TestMiddleware` em `tests/registry_hooks.rs`
-- [x] Registro explícito no bin (placeholder para Epic 06)
+- [x] Registro explícito no bin (provisório; a lista explícita final no bin foi entregue no Epic 06, story 06.01 com `collect_extensions`)
 - [x] Documentar contrato short-circuit em `hooks.rs`
 - [x] Verificar bypass publicRoutes com `skip_hooks`
 

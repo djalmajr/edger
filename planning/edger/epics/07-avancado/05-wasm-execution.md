@@ -1,6 +1,7 @@
 # Story 07.05: Execução Wasm standalone (wasmtime + WASI)
 
 **Origin:** `planning/edger/epics/07-avancado/00-overview.md`
+<!-- refinement-lint: allow few-tasks — as tasks reais estão marcadas; o único item aberto é o preopen explícito de worker root para futuros workers WASI, mantido como pendência do Epic 07 -->
 
 ## Context
 - **Problema:** `ExecutionKind::WasmModule` só existe no mock; decisão do usuário exige wasmtime + WASI standalone, separado do isolate JS deno_core.

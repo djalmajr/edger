@@ -1,6 +1,7 @@
 # Epic 17: Edger minimalista (worker soberano)
 
 **Origin:** decisão do operador (2026-07-02) — reposicionar o edger como runtime serverless durável **sem opinião**, num contexto greenfield (nenhum worker em produção; liberdade total de remodelar). Contraparte de adição: `Epic 18 — Escala`.
+<!-- refinement-lint: allow origin — a origem é uma decisão do operador (2026-07-02) sem documento de intake ou roadmap no repositório; o arquivo foi criado no commit e899be5 (2026-07-02) -->
 
 ## Context
 

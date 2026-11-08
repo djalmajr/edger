@@ -10,15 +10,17 @@
 //!   é fixa (validada na construção, mesma fronteira de
 //!   `EgressDatabaseGrant`); namespace e token nunca compõem host ou caminho.
 //! * Só `200` produz artefato. Redirect, retry e proxy desligados. O
-//!   handler pinado (`http/user/dump.rs`) devolve o dump como `StreamBody`
-//!   chunked sem `Content-Type`; um erro DEPOIS dos headers aborta o corpo
-//!   (não há marcador de erro no stream) e chega aqui como erro de corpo
-//!   (`Incomplete`), nunca como dump. Erros ANTES do stream saem como JSON
+//!   handler pinado (`http/user/dump.rs`) devolve `StreamBody` sem
+//!   `Content-Type`. HTTP/1.1 usa framing chunked; erro depois dos headers
+//!   chega como erro de corpo (`Incomplete`). Backups por app usam HTTP/1.0
+//!   para evitar um frame por fragmento minúsculo: EOF exige também o COMMIT
+//!   terminal fora de strings/comentários, antes de autorizar a publicação.
+//!   Erros ANTES do stream saem como JSON
 //!   com status não-200; um `200` com `Content-Type: application/json`, com
 //!   `Content-Encoding` ou sem nenhum byte é recusado (`InvalidResponse`).
-//!   Não há validador SQL por texto.
+//!   A verificação lexical de conclusão é limitada, não valida SQL geral.
 //! * Limites: `connect` 5s, leitura 30s, prazo TOTAL 1800s (admissão + corpo
-//!   e publicação), cap de corpo 256 MiB (máximo configurável 1 GiB), retenção
+//!   e publicação), cap por app max(256 MiB, 4 x quota do ledger), retenção
 //!   fixa de EXATAMENTE 3 cópias por namespace. Um único slot compartilhado
 //!   entre clones.
 //!
@@ -76,7 +78,8 @@ pub const MAX_CONFIG_TIMEOUT: Duration = Duration::from_secs(1800);
 pub const DEFAULT_TOTAL_TIMEOUT: Duration = Duration::from_secs(1800);
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
-/// Cap padrão e máximo configurável do corpo do dump.
+/// Cap legado da API direta e máximo do override explícito de testes.
+/// Backups por app usam a quota autenticada e não este máximo fixo.
 pub const DEFAULT_MAX_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024 * 1024;
 
@@ -87,6 +90,142 @@ const FINAL_SUFFIX: &str = ".sql";
 const TMP_PREFIX: &str = ".tmp-";
 /// Chunks em voo entre o stream de rede e o job de escrita.
 const CHANNEL_DEPTH: usize = 4;
+const BATCH_BYTES: usize = 1024 * 1024;
+
+fn quota_max_bytes(quota_bytes: u64) -> Result<u64, SqldBackupError> {
+    if quota_bytes == 0 {
+        return Err(SqldBackupError::InvalidConfig);
+    }
+    quota_bytes
+        .checked_mul(4)
+        .map(|bytes| bytes.max(DEFAULT_MAX_BYTES))
+        .ok_or(SqldBackupError::InvalidConfig)
+}
+
+#[derive(Default, Clone, Copy)]
+enum SqlLex {
+    #[default]
+    Normal,
+    Quote(u8),
+    QuoteEnd(u8),
+    Dash,
+    Slash,
+    LineComment,
+    BlockComment,
+    BlockStar,
+}
+
+/// HTTP/1.0 EOF alone cannot prove completion. SQLD's transaction footer
+/// must be a real terminal statement, never text inside a value/comment.
+/// This is a bounded lexical completion check, not a general SQL validator.
+#[derive(Default)]
+struct DumpCompletion {
+    state: SqlLex,
+    statement: Vec<u8>,
+    invalid: bool,
+    committed: bool,
+}
+
+impl DumpCompletion {
+    fn token(&mut self, byte: u8) {
+        self.committed = false;
+        if self.statement.len() < 32 {
+            self.statement.push(byte.to_ascii_uppercase());
+        } else {
+            self.invalid = true;
+        }
+    }
+
+    fn push(&mut self, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            // Most of a large dump is hex BLOB content inside quotes.
+            if let SqlLex::Quote(quote) = self.state {
+                let Some(at) = bytes.iter().position(|byte| *byte == quote) else {
+                    return;
+                };
+                bytes = &bytes[at + 1..];
+                self.state = SqlLex::QuoteEnd(quote);
+                continue;
+            }
+            let byte = bytes[0];
+            bytes = &bytes[1..];
+            self.byte(byte);
+        }
+    }
+
+    fn byte(&mut self, byte: u8) {
+        match self.state {
+            SqlLex::Quote(_) => unreachable!("quotes are scanned by push"),
+            SqlLex::QuoteEnd(quote) if byte == quote => self.state = SqlLex::Quote(quote),
+            SqlLex::QuoteEnd(_) => {
+                self.state = SqlLex::Normal;
+                self.byte(byte);
+            }
+            SqlLex::Dash if byte == b'-' => {
+                if self.statement.last().is_some_and(|last| *last != b' ') {
+                    self.token(b' ');
+                }
+                self.state = SqlLex::LineComment;
+            }
+            SqlLex::Slash if byte == b'*' => {
+                if self.statement.last().is_some_and(|last| *last != b' ') {
+                    self.token(b' ');
+                }
+                self.state = SqlLex::BlockComment;
+            }
+            SqlLex::Dash | SqlLex::Slash => {
+                self.token(b'?');
+                self.state = SqlLex::Normal;
+                self.byte(byte);
+            }
+            SqlLex::LineComment => {
+                if byte == b'\n' {
+                    self.state = SqlLex::Normal;
+                }
+            }
+            SqlLex::BlockComment => {
+                if byte == b'*' {
+                    self.state = SqlLex::BlockStar;
+                }
+            }
+            SqlLex::BlockStar => {
+                self.state = match byte {
+                    b'/' => SqlLex::Normal,
+                    b'*' => SqlLex::BlockStar,
+                    _ => SqlLex::BlockComment,
+                }
+            }
+            SqlLex::Normal => match byte {
+                b'-' => self.state = SqlLex::Dash,
+                b'/' => self.state = SqlLex::Slash,
+                b'\'' | b'"' | b'`' | b'[' => {
+                    self.token(b'?');
+                    self.invalid = true;
+                    self.state = SqlLex::Quote(if byte == b'[' { b']' } else { byte });
+                }
+                b';' => {
+                    self.committed = !self.invalid
+                        && matches!(
+                            self.statement.trim_ascii(),
+                            b"COMMIT" | b"COMMIT TRANSACTION"
+                        );
+                    self.statement.clear();
+                    self.invalid = false;
+                }
+                byte if byte.is_ascii_whitespace() => {
+                    if self.statement.last().is_some_and(|last| *last != b' ') {
+                        self.token(b' ');
+                    }
+                }
+                byte => self.token(byte),
+            },
+        }
+    }
+
+    fn complete(&self) -> bool {
+        matches!(self.state, SqlLex::Normal) && self.committed && self.statement.is_empty()
+    }
+}
 
 /// Erros estáticos: nunca carregam token, corpo, query nem resposta SQLD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +345,8 @@ struct Inner {
     max_bytes: u64,
     #[cfg(all(test, unix))]
     write_gate: std::sync::Mutex<Option<tests::WriteGate>>,
+    #[cfg(all(test, unix))]
+    writes: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// Serviço de backup; clones compartilham o mesmo slot.
@@ -262,6 +403,8 @@ impl SqldBackupStore {
                     max_bytes: config.max_bytes,
                     #[cfg(all(test, unix))]
                     write_gate: std::sync::Mutex::new(None),
+                    #[cfg(all(test, unix))]
+                    writes: Arc::default(),
                 }),
             })
         }
@@ -274,9 +417,47 @@ impl SqldBackupStore {
         namespace: &str,
         token: Zeroizing<String>,
     ) -> Result<BackupArtifact, SqldBackupError> {
+        self.create_with_limit(
+            namespace,
+            token,
+            self.inner.max_bytes,
+            reqwest::Version::HTTP_11,
+        )
+        .await
+    }
+
+    /// App backups use the authenticated ledger quota, never the dump's headers.
+    /// A non-default explicit cap must cover the derived minimum or fail visibly.
+    pub async fn create_for_quota(
+        &self,
+        namespace: &str,
+        token: Zeroizing<String>,
+        quota_bytes: u64,
+    ) -> Result<BackupArtifact, SqldBackupError> {
+        let required = quota_max_bytes(quota_bytes)?;
+        let configured = self.inner.max_bytes;
+        if configured != DEFAULT_MAX_BYTES && configured < required {
+            return Err(SqldBackupError::InvalidConfig);
+        }
+        self.create_with_limit(
+            namespace,
+            token,
+            required.max(configured),
+            reqwest::Version::HTTP_10,
+        )
+        .await
+    }
+
+    async fn create_with_limit(
+        &self,
+        namespace: &str,
+        token: Zeroizing<String>,
+        max_bytes: u64,
+        version: reqwest::Version,
+    ) -> Result<BackupArtifact, SqldBackupError> {
         #[cfg(not(unix))]
         {
-            let _ = (namespace, token);
+            let _ = (namespace, token, max_bytes, version);
             Err(SqldBackupError::Unsupported)
         }
         #[cfg(unix)]
@@ -296,7 +477,15 @@ impl SqldBackupStore {
                     .map_err(|_| SqldBackupError::Transport)?;
             tokio::time::timeout_at(
                 deadline,
-                self.drive(namespace, authorization, namespace_header, permit, deadline),
+                self.drive(
+                    namespace,
+                    authorization,
+                    namespace_header,
+                    permit,
+                    deadline,
+                    max_bytes,
+                    version,
+                ),
             )
             .await
             .map_err(|_| SqldBackupError::Timeout)?
@@ -304,6 +493,7 @@ impl SqldBackupStore {
     }
 
     #[cfg(unix)]
+    #[allow(clippy::too_many_arguments)]
     async fn drive(
         &self,
         namespace: &str,
@@ -311,11 +501,17 @@ impl SqldBackupStore {
         namespace_header: HeaderValue,
         permit: tokio::sync::OwnedSemaphorePermit,
         deadline: Instant,
+        max_bytes: u64,
+        version: reqwest::Version,
     ) -> Result<BackupArtifact, SqldBackupError> {
         let inner = &self.inner;
         let mut response = inner
             .client
             .get(inner.dump_url.clone())
+            // SQLD emits tiny pieces of hex BLOBs. HTTP/1.0 makes an
+            // unknown-length dump EOF-delimited instead of framing every
+            // piece as its own HTTP chunk/body-channel message.
+            .version(version)
             .header(AUTHORIZATION, authorization)
             .header("x-namespace-bin", namespace_header)
             .send()
@@ -342,14 +538,14 @@ impl SqldBackupStore {
         {
             return Err(SqldBackupError::InvalidResponse);
         }
-        if response
-            .content_length()
-            .is_some_and(|len| len > inner.max_bytes)
-        {
+        if response.content_length().is_some_and(|len| len > max_bytes) {
             return Err(SqldBackupError::TooLarge);
         }
 
+        #[cfg(not(test))]
         let control = Arc::new(unix_fs::Control::default());
+        #[cfg(test)]
+        let control = Arc::new(unix_fs::Control::with_writes(Arc::clone(&inner.writes)));
         let mut guard = unix_fs::CancelGuard::new(Arc::clone(&control));
         let mut writer: Option<unix_fs::JobHandle> = None;
         let pumped = self
@@ -360,6 +556,8 @@ impl SqldBackupStore {
                 &control,
                 deadline,
                 &mut writer,
+                max_bytes,
+                version == reqwest::Version::HTTP_10,
             )
             .await;
         match pumped {
@@ -391,6 +589,7 @@ impl SqldBackupStore {
 
     /// Corpo -> job de escrita. `Ok` só depois de enviar `Finish`.
     #[cfg(unix)]
+    #[allow(clippy::too_many_arguments)]
     async fn pump(
         &self,
         response: &mut reqwest::Response,
@@ -399,12 +598,17 @@ impl SqldBackupStore {
         control: &Arc<unix_fs::Control>,
         deadline: Instant,
         writer: &mut Option<unix_fs::JobHandle>,
+        max_bytes: u64,
+        validate_sql: bool,
     ) -> Result<(), SqldBackupError> {
         let inner = &self.inner;
         let mut permit = Some(permit);
         let mut total: u64 = 0;
+        let mut batch = bytes::BytesMut::with_capacity(BATCH_BYTES);
+        let mut first = true;
+        let mut completion = DumpCompletion::default();
         loop {
-            let chunk = match response.chunk().await {
+            let mut chunk = match response.chunk().await {
                 Ok(Some(chunk)) => chunk,
                 Ok(None) => break,
                 Err(err) if err.is_timeout() => return Err(SqldBackupError::Timeout),
@@ -415,9 +619,12 @@ impl SqldBackupStore {
             }
             // Soma checada ANTES de entregar o chunk ao writer.
             total = match total.checked_add(chunk.len() as u64) {
-                Some(sum) if sum <= inner.max_bytes => sum,
+                Some(sum) if sum <= max_bytes => sum,
                 _ => return Err(SqldBackupError::TooLarge),
             };
+            if validate_sql {
+                completion.push(&chunk);
+            }
             if writer.is_none() {
                 let permit = permit.take().ok_or(SqldBackupError::Transport)?;
                 *writer = Some(unix_fs::spawn_job(unix_fs::JobArgs {
@@ -431,10 +638,32 @@ impl SqldBackupStore {
                 }));
             }
             let handle = writer.as_mut().ok_or(SqldBackupError::Transport)?;
-            handle.send(unix_fs::Msg::Chunk(chunk)).await?;
+            // Keep the first write prompt (including cancellation ownership),
+            // then coalesce the tiny SQLD fragments into byte-bounded messages.
+            if first {
+                let head =
+                    bytes::Bytes::copy_from_slice(&chunk.split_to(chunk.len().min(BATCH_BYTES)));
+                handle.send(unix_fs::Msg::Chunk(head)).await?;
+                first = false;
+            }
+            while !chunk.is_empty() {
+                let count = chunk.len().min(BATCH_BYTES - batch.len());
+                batch.extend_from_slice(&chunk.split_to(count));
+                if batch.len() == BATCH_BYTES {
+                    handle
+                        .send(unix_fs::Msg::Chunk(batch.split().freeze()))
+                        .await?;
+                }
+            }
         }
         // Corpo vazio nunca é um dump (e nunca roda fs).
         let handle = writer.as_mut().ok_or(SqldBackupError::InvalidResponse)?;
+        if validate_sql && !completion.complete() {
+            return Err(SqldBackupError::Incomplete);
+        }
+        if !batch.is_empty() {
+            handle.send(unix_fs::Msg::Chunk(batch.freeze())).await?;
+        }
         handle.send(unix_fs::Msg::Finish(total)).await
     }
 }
@@ -557,9 +786,18 @@ mod unix_fs {
     #[derive(Default)]
     pub(super) struct Control {
         state: AtomicU8,
+        #[cfg(test)]
+        writes: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl Control {
+        #[cfg(test)]
+        pub(super) fn with_writes(writes: Arc<std::sync::atomic::AtomicUsize>) -> Self {
+            Self {
+                writes,
+                ..Self::default()
+            }
+        }
         /// Chamador: pede cancelamento. Antes do commit impede a publicação;
         /// durante o commit o job desfaz o final depois de publicar.
         pub(super) fn request_cancel(&self) {
@@ -785,6 +1023,8 @@ mod unix_fs {
                         gate.pass();
                     }
                     file.write_all(&chunk).map_err(|_| SqldBackupError::Fs)?;
+                    #[cfg(test)]
+                    control.writes.fetch_add(1, Ordering::SeqCst);
                     hasher.update(&chunk);
                     written = written
                         .checked_add(chunk.len() as u64)
@@ -933,6 +1173,86 @@ mod tests {
     use std::sync::mpsc as std_mpsc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn edg87_quota_admits_the_serialized_one_gib_dump() {
+        assert_eq!(quota_max_bytes(0), Err(SqldBackupError::InvalidConfig));
+        assert_eq!(
+            quota_max_bytes(u64::MAX),
+            Err(SqldBackupError::InvalidConfig)
+        );
+        assert_eq!(
+            quota_max_bytes(1024 * 1024 * 1024).unwrap(),
+            4 * 1024 * 1024 * 1024
+        );
+        assert!(quota_max_bytes(1024 * 1024 * 1024).unwrap() > 2_147_513_437);
+        assert_eq!(quota_max_bytes(4096).unwrap(), DEFAULT_MAX_BYTES);
+    }
+
+    #[test]
+    fn edg87_completion_ignores_quoted_and_commented_fake_footers_across_chunks() {
+        let good = b"PRAGMA foreign_keys=OFF;\nBEGIN;\nCREATE TABLE \"a;\"(v);\nINSERT INTO \"a;\" VALUES ('a'';\nCOMMIT;\n');\nCOMMIT;\n";
+        for size in [1, 2, 7, good.len()] {
+            let mut completion = DumpCompletion::default();
+            for chunk in good.chunks(size) {
+                completion.push(chunk);
+            }
+            assert!(completion.complete(), "chunk size {size}");
+        }
+        for bad in [
+            b"BEGIN;\nINSERT INTO t VALUES ('payload\nCOMMIT;\n".as_slice(),
+            b"BEGIN;\n-- COMMIT;\n",
+            b"BEGIN;\n/* COMMIT; */\n",
+            b"BEGIN;\nINSERT INTO t VALUES ('x'';COMMIT;');\n",
+            b"BEGIN;\nINSERT INTO [COMMIT;] VALUES (1);\n",
+            b"BEGIN;\nINSERT INTO `COMMIT;` VALUES (1);\n",
+            b"BEGIN;\nCOM/* not one token */MIT;\n",
+            b"BEGIN;\nCOM-- not one token\nMIT;\n",
+            b"BEGIN;\nCOMMIT;\nINSERT INTO t VALUES ('unfinished",
+        ] {
+            let mut completion = DumpCompletion::default();
+            for byte in bad.chunks(1) {
+                completion.push(byte);
+            }
+            assert!(!completion.complete(), "fake completion: {bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn edg87_tiny_chunks_use_few_real_writes_with_identical_bytes_and_hash() {
+        use sha2::{Digest, Sha256};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}/", listener.local_addr().unwrap());
+        let serve = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .await
+                .unwrap();
+            for _ in 0..4096 {
+                socket.write_all(b"2\r\nab\r\n").await.unwrap();
+            }
+            socket.write_all(b"0\r\n\r\n").await.unwrap();
+        });
+        let dir = private_dir();
+        let store = SqldBackupStore::new(&origin, dir.path().to_path_buf()).unwrap();
+        let artifact = store
+            .create(NS, Zeroizing::new("test".into()))
+            .await
+            .unwrap();
+        serve.await.unwrap();
+        let expected = b"ab".repeat(4096);
+        assert_eq!(
+            std::fs::read(dir.path().join(artifact.file_name)).unwrap(),
+            expected
+        );
+        assert_eq!(artifact.bytes, expected.len() as u64);
+        assert_eq!(artifact.sha256, format!("{:x}", Sha256::digest(&expected)));
+        let writes = store.inner.writes.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(writes <= 2, "4096 tiny chunks caused {writes} real writes");
+    }
 
     /// Trava o job dentro do primeiro `write` até o teste liberar.
     pub(crate) struct WriteGate {

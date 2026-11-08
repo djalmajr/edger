@@ -1,6 +1,7 @@
 # Epic 20 — Endurecimento do Runtime (P0→P3)
 
 **Origin:** análise comparativa edger vs Supabase edge-runtime + run2biz edge-runtime
+<!-- refinement-lint: allow origin — a origem é uma análise comparativa com dois edge-runtimes sem documento no repositório; o arquivo foi criado no commit 939d999 (2026-07-03) -->
 
 ## Contexto
 

@@ -1,6 +1,7 @@
 # Story 06.03: Template de extensão — edger-ext-gateway (skeleton + wiring)
 
 **Origin:** `planning/edger/epics/06-extensibilidade/00-overview.md`
+<!-- refinement-lint: allow few-tasks — as tasks reais estão marcadas; o único item aberto é opcional (cargo generate ou script) e declarado fora de escopo no próprio texto (README basta) -->
 
 ## Context
 - **Problema:** Após `edger-ext-auth`, autores não têm skeleton copiável para novas extensões Middleware.

@@ -1,3 +1,6 @@
+# rc.19 abaixo é o mínimo histórico para EDG-24, não para banco gerenciado.
+# Para managedDatabase, escolha uma release contendo EDG-88 (ainda a definir)
+# e use a mesma versão validada no ensaio e no corte.
 # Values do `helm install edger` no namespace do ENSAIO (Fase 0):
 #
 #   helm upgrade --install edger oci://ghcr.io/djalmajr/charts/edger \

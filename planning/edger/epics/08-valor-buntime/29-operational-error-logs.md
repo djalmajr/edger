@@ -82,5 +82,13 @@
 - [x] `cargo fmt -- --check`
 - [x] `SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh`
 
+```bash
+cargo test -p edger-orchestrator --test security_operational admin_errors_preserve_request_id -- --exact
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
 ## Recommended next step
 - Continuar a próxima linha `must partial` da matriz.

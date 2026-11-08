@@ -284,13 +284,13 @@ logs a `warn` and falls back to the default:
 - `EDGER_SSE_HEARTBEAT_MS` (default `15000`, minimum `1000`; also the TTL check
   granularity).
 
-The chart has **no dedicated value** for them. Pass them with `extraEnv`, for
-example:
+Set `sse.maxConnections`, `sse.maxConnectionsPerApp` and `sse.heartbeatMs`
+to emit these variables. Empty strings omit them and retain the binary defaults;
+explicit `0` is passed through. Rancher exposes the same fields.
 
 ```yaml
-extraEnv:
-  - name: EDGER_SSE_MAX_CONNECTIONS_PER_APP
-    value: "128"
+sse:
+  maxConnectionsPerApp: "128"
 ```
 
 The broker lives in the process memory, so there is no fan-out across pods (the
@@ -309,20 +309,48 @@ Rancher form fields.
 
 **Managed SQLD database** ([planning doc](../../planning/edger/docs/sqld-managed.md)).
 EdgeR manages namespaces on an **external** `sqld`; it does not start one, and
-this chart does not deploy one. The chart exposes none of the seven
-`EDGER_SQLD_*` variables (`EDGER_SQLD_ADMIN_URL`, `EDGER_SQLD_ADMIN_KEY_FILE`,
-`EDGER_SQLD_USER_URL`, `EDGER_SQLD_REGISTRY_DB`, `EDGER_SQLD_SIGNER_KEY_FILE`,
-`EDGER_SQLD_MANAGED_BUDGET_BYTES`, `EDGER_SQLD_BACKUP_DIR`), mounts no volume
-for the ledger, the key files or the backup directory (which must be `0700`
-directories owned by the process user), and the root filesystem is read-only.
-The variables are all-or-none: a partial set stops the `edger` boot. It also
-needs the app secrets vault above. Using the feature on Kubernetes through this
-chart is therefore not supported yet; `extraEnv`/`extraEnvFrom` alone cannot
-provide the private files and directories. The current chart does not configure
-the managed database at all. Separately, `deploy/production/sqld.yaml` keeps the
-`sqld` admin API on loopback (`127.0.0.1:9090`, inside the `sqld` pod), so the
-`edger` pod cannot reach the admin address that `EDGER_SQLD_ADMIN_URL` requires.
-Both are known gaps; no date is promised for closing them.
+this chart does not deploy one. Set `managedDatabase.enabled=true` and configure
+`adminUrl`, `userUrl`, `adminKeySecret.name`/`.key`,
+`signerKeySecret.name`/`.key` and `budgetBytes`. All are required, together with
+`appSecrets.enabled=true` and its existing vault Secret. Incomplete configuration
+fails rendering. Rancher exposes these fields. No key contents belong in values.
+
+The seven `EDGER_SQLD_*` variables are emitted together. Admin and signer keys
+are mounted read-only at `/var/run/secrets/edger-sqld-admin/key` and
+`/var/run/secrets/edger-sqld-signer/key`, outside the default worker, overlay and
+Deno cache roots. Secret files use `0440` with the process group supplied by
+`fsGroup`; the effective `runAsGroup` must equal `podSecurityContext.fsGroup`.
+Keep custom guest-readable roots away from every key mount; boot verifies this.
+The signer master must differ from the app vault master. Admin keys must be
+printable ASCII without internal spaces; signer masters are 32 raw bytes or
+base64 of exactly 32 bytes. The chart never creates these Secrets.
+
+`managedDatabase.persistence` creates a dedicated RWO PVC (`size`, `storageClass`)
+or mounts `existingClaim`. An init container using the same image and security
+context as EdgeR creates/chmods `registry` and `backups` to `0700` without
+special bits as the same UID. It restores `0600` on existing regular files
+under both directories after fsGroup remount changes, including ledger,
+journal, backups and staging, without following symlinks or modifying other
+file types. Existing files must belong to that UID; boot still rejects unsafe
+paths and WAL/SHM sidecars. The ledger is `/var/lib/edger-managed/registry/registry.db`, and backups go
+to `/var/lib/edger-managed/backups`; the root filesystem stays read-only. The
+backup cap is `max(256 MiB, 4 × app quota)`. Budget for three retained copies
+plus one staging file per app, each up to that cap (up to 16× a large app's
+quota), in addition to its database, WAL and temporary files. The
+storage driver must honor `fsGroup` so this non-root init container can write
+the volume root. Existing claims must permit that UID to create/chmod these
+directories. Recreate also applies when only managed storage is enabled.
+Back up the ledger consistently and retain its signer master separately.
+
+`adminUrl` must be a reachable HTTP(S) origin; `userUrl` must be a distinct HTTP
+data origin, never port 9090. `budgetBytes` is decimal, at least 16 MiB and a
+multiple of 4096; the ledger rejects budget changes on later boots. File,
+URL and budget validation still runs at boot. The external manifest
+`deploy/production/sqld.yaml` provides a separate `sqld-admin` ClusterIP Service
+on 9090 and a NetworkPolicy admitting only the `edger` pod in its namespace.
+These source changes do not imply a release or an installation in any environment.
+Run `bash charts/edger/tests/render-check.sh` from the repository root for
+offline rendering checks; `HELM_BIN` can point to a specific Helm executable.
 
 **Pod shutdown.** On SIGTERM the `edger` drains open HTTP connections for at
 most `EDGER_HTTP_DRAIN_MS` (default `10000`, counted from the signal; `0`
@@ -331,19 +359,24 @@ removes the limit and the wait is unbounded again; an invalid value logs a
 connections die with the process after a `warn`; cron and the worker pool still
 shut down normally and the exit is successful. It applies to every HTTP
 connection, not only SSE. The default budgets add up the drain (10 s), cron
-(7 s: 5 grace, 1 abort, 1 margin) and the pool (up to 15 s), which is 32 s. That
-sum is **not a guaranteed ceiling**: after aborting the cron supervisor the
-process waits for it to end without a deadline, and a reconciliation pass in
-progress is not interrupted by the abort. This chart does **not** set
-`terminationGracePeriodSeconds`, so the Kubernetes default of 30 s applies, which
-is shorter than that sum: when the budgets run out, the kubelet sends SIGKILL
-before the process finishes on its own. This is derived
-from the code, not tested in a cluster. The chart has no value for the variable;
-pass it through `extraEnv`.
+(8 s: 5 grace, 1 abort-wait, 1 margin, 1 post-abort wait) and the pool (up to
+15 s), which is a 33 s ceiling when `EDGER_HTTP_DRAIN_MS` is not `0`.
+After aborting the cron supervisor, shutdown waits at most one more second
+and warns if it still has not stopped. This chart sets
+`terminationGracePeriodSeconds: 45` by default, configurable through the value
+of the same name, leaving margin over those default budgets. Increase it when
+changing shutdown budgets. This is derived from the code, not tested in a
+cluster. Set `httpDrainMs` to emit `EDGER_HTTP_DRAIN_MS`; an empty string
+retains the binary default, and `0` is passed through (unbounded drain).
 
-**Ephemeral WASM.** A `kind: wasm` worker without `ttl` recompiles its module on
-every request (about 9 s per request in the `dev` profile with a 6.6 MB Go
-module; release cost not measured). Declare `ttl` for Go guests.
+
+**Ephemeral WASM.** A `kind: wasm` worker with `ttl: 0` (also the default for
+this kind) creates a fresh isolate per request. One Engine and a content cache
+of compiled modules are shared per process, keyed by SHA-256 of the bytes with
+an eight-module LRU limit. Identical bytes compile once while cached, including
+across worker versions; eviction or process restart requires recompilation.
+Stores, instances, env, secrets and HTTP grants remain per execution, and import
+policy is checked again on every cache hit. `ttl` controls isolate lifetime.
 
 ## Helm (terminal)
 

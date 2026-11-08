@@ -1,6 +1,6 @@
 # Story 20.10: Cron multi-réplica com leader-election
 
-**Origin:** planning/edger/epics/20-endurecimento-runtime/00-overview.md
+**Origin:** `planning/edger/epics/20-endurecimento-runtime/00-overview.md`
 
 ## Context
 

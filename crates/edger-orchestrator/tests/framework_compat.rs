@@ -38,21 +38,23 @@ impl IsolateFactory for ProcessFactory {
     }
 }
 
-fn state(root: std::path::PathBuf) -> OrchestratorState {
+fn state(root: std::path::PathBuf) -> (OrchestratorState, tempfile::TempDir) {
+    let cache = tempfile::tempdir().unwrap();
     let server = ServerState::new_unready();
     let pool = WorkerPool::with_factory(
         PoolConfig::default(),
         Arc::new(ProcessFactory {
-            deno_cache_root: root.join(".edger-test-deno-cache"),
+            deno_cache_root: cache.path().to_path_buf(),
         }),
     );
     server.mark_ready(pool.clone());
-    OrchestratorState {
+    let state = OrchestratorState {
         server,
         pool,
         index: load_manifests_from_dirs(&[root]).unwrap(),
         auth: ControlAuth::with_static_key("test-root"),
-    }
+    };
+    (state, cache)
 }
 
 async fn get(app: Router, uri: &str) -> (StatusCode, String) {
@@ -150,7 +152,8 @@ Deno.serve(app.fetch);
 "#,
     );
 
-    let app = build_pipeline(state(root.path().to_path_buf()));
+    let (state, _cache) = state(root.path().to_path_buf());
+    let app = build_pipeline(state);
 
     // Express via node:http listener capture
     let (status, body) = get(app.clone(), "/express-app").await;
@@ -203,7 +206,8 @@ Deno.serve(app.fetch);
         ),
     );
 
-    let app = build_pipeline(state(root.path().to_path_buf()));
+    let (state, _cache) = state(root.path().to_path_buf());
+    let app = build_pipeline(state);
 
     // SSR page: HTML rendered server-side from JSX, dynamic expression evaluated.
     let (status, body) = get(app.clone(), "/ssr-app").await;
@@ -249,7 +253,8 @@ server.listen(3000);
 "#,
     );
 
-    let app = build_pipeline(state(root.path().to_path_buf()));
+    let (state, _cache) = state(root.path().to_path_buf());
+    let app = build_pipeline(state);
 
     let (status, body) = get(app.clone(), "/polka-style").await;
     assert_eq!(status, StatusCode::OK, "polka-style: {body}");
@@ -271,7 +276,8 @@ server.listen(3000);
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs deno + npm network (cold cache); run explicitly"]
 async fn nestjs_express_and_fastify_cover_enterprise_http_features() {
-    let app = build_pipeline(state(framework_test_root()));
+    let (state, _cache) = state(framework_test_root());
+    let app = build_pipeline(state);
 
     for (name, adapter) in [
         ("nest-express-demo", "express"),
@@ -337,7 +343,8 @@ async fn nestjs_express_and_fastify_cover_enterprise_http_features() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs deno + npm network (cold cache); run explicitly"]
 async fn fastify_and_koa_cover_server_lifecycle_and_middleware() {
-    let app = build_pipeline(state(framework_test_root()));
+    let (state, _cache) = state(framework_test_root());
+    let app = build_pipeline(state);
 
     for (name, framework, marker, stream_body) in [
         (

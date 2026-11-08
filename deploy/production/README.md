@@ -24,11 +24,11 @@ corte, num PR deles (revisão do Cinzel, item 8).
 
 | Peça | Nome | Observação |
 |---|---|---|
-| EdgeR | release `edger`, `fullnameOverride: edger`, Service `edger:3000`, PVC `edger-user-workers` (local-path, 5Gi) | chart `charts/edger`, `rc.19` ou mais nova (com a EDG-24); request 1 Gi / limite 4 Gi de memória |
-| sqld | Deployment `sqld`, PVC `sqld-data` (local-path, 5Gi), `--enable-namespaces`, admin em `127.0.0.1:9090` com `--admin-auth-key` (via `LIBSQL_ADMIN_AUTH_KEY`), `--auth-jwt-key-file` (chave global só para o `default`) | 1 réplica, `Recreate`, tag `v0.24.32` fixada |
+| EdgeR | release `edger`, `fullnameOverride: edger`, Service `edger:3000`, PVC `edger-user-workers` (local-path, 5Gi) | chart `charts/edger`, `rc.19` ou mais nova para EDG-24; banco gerenciado exige uma release que inclua EDG-88 (a definir); request 1 Gi / limite 4 Gi de memória |
+| sqld | Deployment `sqld`, PVC `sqld-data` (local-path, 5Gi), `--enable-namespaces`, admin em `0.0.0.0:9090`, Service ClusterIP `sqld-admin:9090` com `--admin-auth-key` (via `LIBSQL_ADMIN_AUTH_KEY`), `--auth-jwt-key-file` (chave global só para o `default`) | 1 réplica, `Recreate`, tag `v0.24.32` fixada |
 | Bancos | namespaces do libsql `cinzel` e `pinar-prd`, cada um com `jwt_key` própria | o `default` nasce vazio; depois do corte e dos 7 dias de rollback, `--disable-default-namespace` |
 | Hosts dos bancos | Services `cinzel` e `pinar-prd` no namespace `edger`, todos com o seletor do pod `sqld`, porta 8080 | o cliente escolhe o banco pelo **primeiro rótulo do Host**: `http://cinzel.edger.svc.cluster.local:8080` → banco `cinzel`. Host sem ponto cai no `default` — nunca use o nome curto do Service como URL |
-| NetworkPolicy | `sqld-ingress`: entrada na 8080 só dos pods do EdgeR (`app.kubernetes.io/instance: edger`) dos jobs de backup (`app.kubernetes.io/name: sqld-backup`) e do hub colaborativo do Cinzel (namespace `cinzel`, `app.kubernetes.io/name: cinzel-collab`) | `kubectl port-forward` vai pelo kubelet e não é afetado |
+| NetworkPolicy | `sqld-ingress`: entrada na 8080 só dos pods do EdgeR (`app.kubernetes.io/instance: edger`) dos jobs de backup (`app.kubernetes.io/name: sqld-backup`) e do hub colaborativo do Cinzel (namespace `cinzel`, `app.kubernetes.io/name: cinzel-collab`); `sqld-admin-ingress`: 9090 apenas do pod EdgeR | `kubectl port-forward` vai pelo kubelet e não é afetado |
 | Backup | um CronJob por banco (`sqld-backup-<banco>`), retenção/sentinela/token por banco, PVC `sqld-backups` compartilhado | restaurar um banco **não** para o EdgeR: só o app afetado sai do ar, com o worker desabilitado |
 | Rotas e TLS | IngressRoute `edger` (`edger.djalmajr.dev`, **só control plane** — adendo EDG-27), Middleware `edger-admin-ratelimit`, Certificate `edger-tls` (`letsencrypt-dns`), tudo em `edger` | as rotas dos apps (`cinzel.app`, `pinar.dev`, …) vivem nos repositórios dos apps e também são aplicadas em `edger` (o Traefik não tem `allowCrossNamespace`) |
 | Secrets | `edger-root`, `sqld-jwt`, `sqld-admin`, `sqld-jwt-<banco>`, `sqld-backup-<banco>` | nenhum valor em git; nada de `latest` em imagem |
@@ -120,16 +120,32 @@ Isso aconteceu no ensaio.
 
 ## Como criar um banco
 
-A API de admin (criar/apagar/configurar bancos) escuta em
-`127.0.0.1:9090` **dentro do pod** — fora do alcance da rede do cluster
-e da NetworkPolicy. Acesso por `kubectl port-forward` (ou `kubectl exec`
-com `curl 127.0.0.1:9090`); confirmado no ensaio (2026-10-15):
-`kubectl port-forward pod/<pod-sqld> 9090:9090` alcança o loopback do
-pod, e a autenticação é `Authorization: Basic <chave crua>`
-(`Bearer` dá 401; sem header, 401).
+A API de admin (criar/apagar/configurar bancos) escuta em `0.0.0.0:9090`.
+O Service **ClusterIP** `sqld-admin` publica apenas essa porta internamente;
+a NetworkPolicy `sqld-admin-ingress` admite somente pods com os labels
+`app.kubernetes.io/name: edger` e `app.kubernetes.io/instance: edger` no
+namespace `edger`. A política de dados na porta 8080 permanece independente.
+Isso exige um CNI que aplique NetworkPolicy. Não crie Ingress nem NodePort para
+a porta admin. Esta é a configuração dos manifestos, sem afirmar implantação.
+
+Para banco gerenciado, configure `managedDatabase.adminUrl` como
+`http://sqld-admin.edger.svc.cluster.local:9090`, o Secret admin existente
+`name: sqld-admin`, `key: admin-auth-key`, e um Secret de signer distinto da
+master do cofre. Habilite `appSecrets`, informe a origem HTTP de dados
+(`managedDatabase.userUrl`, porta 8080), orçamento e PVC de ledger/backups
+conforme [o chart](../../charts/edger/README.md#sse-wasm-guests-and-the-managed-database).
+Use um chart e binário que incluam EDG-88 e o banco gerenciado (ainda sem número
+de release definido); o mínimo histórico `0.3.2-rc.19` só cobre EDG-24 e não
+atesta esses recursos. O ensaio e o corte devem usar a mesma versão validada.
+
+O acesso manual por `kubectl port-forward pod/<pod-sqld> 9090:9090` continua
+possível pelo kubelet, fora da NetworkPolicy. A autenticação
+`Authorization: Basic <chave crua>` (`Bearer` e ausência de header dão 401) foi
+confirmada no ensaio de 2026-10-15; esse ensaio usou o listener em loopback,
+antes da alteração destes manifestos.
 
 ```sh
-# 1. abre o loopback da API de admin
+# 1. encaminha a API de admin para o localhost do operador
 kubectl -n edger get pods -l app.kubernetes.io/name=sqld \
   -o jsonpath='{.items[0].metadata.name}'
 kubectl -n edger port-forward pod/<pod-sqld> 9090:9090
@@ -645,6 +661,7 @@ de qualquer restore (final do backup, ensaio, janela).
 - Rotas e segredos dos apps: repositório do Cinzel (`deploy/k8s/`,
   OpenBao `secret/cinzel/prod/database`), repositório do Pinar.
 - A versão do chart usada no corte: a publicada no ghcr (o chart deste
-  repositório é a fonte; `values.edger.yaml` fixa `rc.19` ou mais nova).
+  repositório é a fonte; `rc.19` é o mínimo histórico da EDG-24; para
+  banco gerenciado selecione uma release validada contendo EDG-88, ainda a definir).
 - O `planner-edger` e demais releases fora da plataforma: cada um no
   seu lugar.

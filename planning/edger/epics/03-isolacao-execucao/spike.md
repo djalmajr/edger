@@ -42,7 +42,7 @@ Output: `spike_wasm compile_ms=10 invoke_ms=0 result=42`
 - V8 platform singleton: não exercitado neste spike — adicionar `deno_core` pinado na story 03.04
 - Op registration: pendente (facade Edge Runtime)
 - Async ops dispatch: pendente
-- Versões pinadas: wasmtime 29.x no workspace; deno_core TBD
+- Versões pinadas: wasmtime 29.x no workspace; `deno_core` nunca foi pinado (o Epic 15 reorientou a 07.04 para processo Deno persistente em vez de embutir `deno_core`)
 
 ## Go/no-go
 

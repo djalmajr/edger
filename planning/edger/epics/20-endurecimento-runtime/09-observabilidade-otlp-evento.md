@@ -1,6 +1,6 @@
 # Story 20.09: Evento por execução e follow-up OTLP
 
-**Origin:** planning/edger/epics/20-endurecimento-runtime/00-overview.md
+**Origin:** `planning/edger/epics/20-endurecimento-runtime/00-overview.md`
 
 ## Context
 

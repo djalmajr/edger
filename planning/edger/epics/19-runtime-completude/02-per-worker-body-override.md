@@ -1,6 +1,6 @@
 # Story 19.B: Per-worker body override
 
-**Origin:** planning/edger/epics/19-runtime-completude/00-overview.md
+**Origin:** `planning/edger/epics/19-runtime-completude/00-overview.md`
 
 ## Context
 

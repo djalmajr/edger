@@ -1005,7 +1005,9 @@ impl CronScheduler {
     /// tasks still pending the supervisor reports `cron shutdown
     /// incomplete` (the counters keep the remaining count) instead of
     /// declaring zero. If the supervisor itself passes the external limit
-    /// it is aborted and joined, and the counters are left as the
+    /// it is aborted and joined for at most one more
+    /// `SUPERVISOR_SHUTDOWN_MARGIN`; if it still has not stopped, a warning
+    /// is emitted and shutdown returns. The counters are left as the
     /// supervisor last published them.
     pub async fn shutdown(&mut self) {
         let _ = self.shutdown_tx.send(true);
@@ -1018,7 +1020,12 @@ impl CronScheduler {
                 _ = tokio::time::sleep(limit) => {
                     tracing::warn!("cron supervisor did not stop");
                     supervisor.abort();
-                    let _ = supervisor.await;
+                    if tokio::time::timeout(SUPERVISOR_SHUTDOWN_MARGIN, supervisor)
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!("cron supervisor did not stop after abort");
+                    }
                 }
             }
         }
@@ -1688,6 +1695,55 @@ mod tests {
     use super::*;
 
     use chrono::TimeZone;
+
+    // A started blocking task models a supervisor stuck in a synchronous
+    // reconciliation poll: abort cannot interrupt it. Constructing the
+    // scheduler here needs no production-visible injection hook.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_bounds_wait_for_supervisor_that_does_not_stop_after_abort() {
+        let config = CronSchedulerConfig::new(Some("test".into()))
+            .with_shutdown_grace(Duration::from_millis(10))
+            .with_shutdown_abort_wait(Duration::from_millis(10));
+        let budget = config.shutdown_grace
+            + config.shutdown_abort_wait
+            + SUPERVISOR_SHUTDOWN_MARGIN
+            + SUPERVISOR_SHUTDOWN_MARGIN;
+        let (started_tx, started_rx) = oneshot::channel();
+        let (completed_tx, completed_rx) = oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let supervisor = tokio::task::spawn_blocking(move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+            let _ = completed_tx.send(());
+        });
+        started_rx.await.unwrap();
+        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+        let mut scheduler = CronScheduler {
+            shutdown_tx,
+            supervisor: Some(supervisor),
+            config,
+            active: Arc::new(AtomicUsize::new(0)),
+            draining: Arc::new(AtomicUsize::new(0)),
+        };
+
+        let started = tokio::time::Instant::now();
+        let result =
+            tokio::time::timeout(budget + Duration::from_millis(500), scheduler.shutdown()).await;
+        let elapsed = started.elapsed();
+        // Clean up before asserting, including when the unbounded-await
+        // mutation makes the outer timeout expire.
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), completed_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.is_ok(), "shutdown exceeded its budget: {elapsed:?}");
+        assert!(
+            elapsed >= budget,
+            "post-abort wait was skipped: {elapsed:?}"
+        );
+        assert!(scheduler.supervisor.is_none());
+    }
 
     fn datetime(
         year: i32,

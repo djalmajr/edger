@@ -1,6 +1,6 @@
 # Story 19.C: Bundling condicional via deno bundle
 
-**Origin:** planning/edger/epics/19-runtime-completude/00-overview.md
+**Origin:** `planning/edger/epics/19-runtime-completude/00-overview.md`
 
 ## Context
 

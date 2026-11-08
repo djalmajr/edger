@@ -1,6 +1,7 @@
 # Epic 24: Frameworks Deno SSR
 
 **Origin:** pedido do usuário em 2026-07-17 e contratos oficiais em
+<!-- refinement-lint: allow origin — a origem é um pedido do usuário (2026-07-17) mais a referência externa citada acima, sem documento no repositório; o arquivo foi criado no commit 93810a0 (2026-07-17) -->
 <https://docs.deno.com/deploy/reference/frameworks/>.
 
 ## Context

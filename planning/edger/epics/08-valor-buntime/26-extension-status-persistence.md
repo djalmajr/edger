@@ -87,5 +87,16 @@
 - [x] `cargo fmt -- --check`
 - [x] `SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh`
 
+Comandos que ainda existem hoje:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
+Os dois `cargo test -p edger-orchestrator` acima são históricos: o `registry.rs` e o teste `admin_workers_plugins` foram removidos no Epic 17 (histórias `04-remover-gateway` e `05-remover-extensoes`), então nenhum comando atual os reproduz.
+
 ## Recommended next step
 - Após implementação: usar `/agile-status` em modo closure para registrar resultado e evidência.

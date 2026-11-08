@@ -1,6 +1,6 @@
 # Story 20.08: Admissão com rate-limit e idle timeout
 
-**Origin:** planning/edger/epics/20-endurecimento-runtime/00-overview.md
+**Origin:** `planning/edger/epics/20-endurecimento-runtime/00-overview.md`
 
 ## Context
 

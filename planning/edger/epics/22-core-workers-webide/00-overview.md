@@ -1,6 +1,7 @@
 # Epic 22: Workspace organizado, workers core e WebIDE nativa
 
 **Origin:** plano aprovado pelo usuário em 2026-07-13.
+<!-- refinement-lint: allow origin — a origem é um plano aprovado pelo usuário em 2026-07-13 sem documento no repositório; o arquivo foi criado no commit b933f3b (2026-07-14) -->
 
 ## Context
 

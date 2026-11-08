@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# Git Bash (MSYS) rewrites arguments that start with "/" into Windows paths and
+# hands native tools (rg.exe) POSIX-style "/c/..." paths they cannot resolve.
+# Both settings are harmless outside MSYS.
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL='*'
+
+if ! command -v rg >/dev/null 2>&1; then
+  echo "webide-ui-gate: ripgrep (rg) is required but was not found in PATH" >&2
+  exit 2
+fi
+
+# `pwd -W` (MSYS only) prints the native "C:/..." form; elsewhere plain `pwd`.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && { pwd -W 2>/dev/null || pwd; })"
 APP="$ROOT/workers/core/webide"
 SOURCE="$APP/src"
 DIST="$APP/dist"
@@ -41,6 +53,9 @@ require 'href="\./assets/index-[A-Za-z0-9_-]*\.css"' "$DIST/index.html"
 ls "$DIST"/assets/noto-sans-latin-wght-normal-*.woff2 >/dev/null 2>&1 \
   || { echo "missing fingerprinted noto-sans woff2 in dist/assets" >&2; exit 1; }
 
-bash "$APP/e2e/validate-flows.sh"
+# The flow validator is a separate script that relies on the default MSYS
+# argument conversion (it builds its own /c/... paths), so run it without the
+# overrides exported above.
+env -u MSYS_NO_PATHCONV -u MSYS2_ARG_CONV_EXCL bash "$APP/e2e/validate-flows.sh"
 
 echo "webide-ui-gate ok"

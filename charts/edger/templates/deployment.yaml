@@ -17,7 +17,7 @@ metadata:
   labels:
     {{- include "edger.labels" . | nindent 4 }}
 spec:
-  {{- if .Values.userWorkers.persistence.enabled }}
+  {{- if or .Values.userWorkers.persistence.enabled .Values.managedDatabase.enabled }}
   # A single-writer RWO PVC cannot be attached safely to old and new pods
   # during a rolling update, and each pod owns an independent in-memory index.
   strategy:
@@ -36,6 +36,7 @@ spec:
       labels:
         {{- include "edger.selectorLabels" . | nindent 8 }}
     spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -45,6 +46,20 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.managedDatabase.enabled }}
+      initContainers:
+        - name: managed-database-directories
+          image: {{ include "edger.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - "umask 077; mkdir -p /var/lib/edger-managed/registry /var/lib/edger-managed/backups; find /var/lib/edger-managed/registry /var/lib/edger-managed/backups -maxdepth 0 -type d -exec chmod u=rwx,go=,u-s,g-s,o-t {} +; find /var/lib/edger-managed/registry /var/lib/edger-managed/backups -xdev -type f ! -perm 0600 -exec chmod 0600 {} +"
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: managed-database
+              mountPath: /var/lib/edger-managed
+      {{- end }}
       containers:
         - name: edger
           image: {{ include "edger.image" . | quote }}
@@ -102,6 +117,28 @@ spec:
             - name: EDGER_SECRETS_KEY_FILE
               value: {{ include "edger.appSecretsKeyFilePath" . | quote }}
             {{- end }}
+            {{- range $name, $value := dict "EDGER_SSE_MAX_CONNECTIONS" .Values.sse.maxConnections "EDGER_SSE_MAX_CONNECTIONS_PER_APP" .Values.sse.maxConnectionsPerApp "EDGER_SSE_HEARTBEAT_MS" .Values.sse.heartbeatMs "EDGER_HTTP_DRAIN_MS" .Values.httpDrainMs }}
+            {{- if ne (toString $value) "" }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.managedDatabase.enabled }}
+            - name: EDGER_SQLD_ADMIN_URL
+              value: {{ .Values.managedDatabase.adminUrl | quote }}
+            - name: EDGER_SQLD_USER_URL
+              value: {{ .Values.managedDatabase.userUrl | quote }}
+            - name: EDGER_SQLD_ADMIN_KEY_FILE
+              value: /var/run/secrets/edger-sqld-admin/key
+            - name: EDGER_SQLD_SIGNER_KEY_FILE
+              value: /var/run/secrets/edger-sqld-signer/key
+            - name: EDGER_SQLD_REGISTRY_DB
+              value: /var/lib/edger-managed/registry/registry.db
+            - name: EDGER_SQLD_BACKUP_DIR
+              value: /var/lib/edger-managed/backups
+            - name: EDGER_SQLD_MANAGED_BUDGET_BYTES
+              value: {{ .Values.managedDatabase.budgetBytes | quote }}
+            {{- end }}
             {{- with $extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -140,6 +177,16 @@ spec:
             {{- if $appSecretsEnabled }}
             - name: app-secrets-key
               mountPath: {{ include "edger.appSecretsKeyMountPath" . }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.managedDatabase.enabled }}
+            - name: managed-database
+              mountPath: /var/lib/edger-managed
+            - name: managed-admin-key
+              mountPath: /var/run/secrets/edger-sqld-admin
+              readOnly: true
+            - name: managed-signer-key
+              mountPath: /var/run/secrets/edger-sqld-signer
               readOnly: true
             {{- end }}
           {{- if .Values.probes.startup.enabled }}
@@ -214,4 +261,19 @@ spec:
             items:
               - key: {{ .Values.appSecrets.keySecret.key | quote }}
                 path: {{ .Values.appSecrets.keySecret.key | quote }}
+        {{- end }}
+
+        {{- if .Values.managedDatabase.enabled }}
+        - name: managed-database
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-managed-database" (include "edger.fullname" .)) .Values.managedDatabase.persistence.existingClaim }}
+        {{- range $kind, $secret := dict "admin" .Values.managedDatabase.adminKeySecret "signer" .Values.managedDatabase.signerKeySecret }}
+        - name: managed-{{ $kind }}-key
+          secret:
+            secretName: {{ $secret.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ $secret.key | quote }}
+                path: key
+        {{- end }}
         {{- end }}

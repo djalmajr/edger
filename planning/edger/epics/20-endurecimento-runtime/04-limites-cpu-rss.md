@@ -1,6 +1,6 @@
 # Story 20.04: Limites de CPU e RSS
 
-**Origin:** planning/edger/epics/20-endurecimento-runtime/00-overview.md
+**Origin:** `planning/edger/epics/20-endurecimento-runtime/00-overview.md`
 
 ## Context
 

@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# Git Bash (MSYS) rewrites arguments that start with "/" into Windows paths and
+# hands native tools (rg.exe) POSIX-style "/c/..." paths they cannot resolve.
+# Both settings are harmless outside MSYS.
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL='*'
+
+if ! command -v rg >/dev/null 2>&1; then
+  echo "cpanel-ui-gate: ripgrep (rg) is required but was not found in PATH" >&2
+  exit 2
+fi
+
+# `pwd -W` (MSYS only) prints the native "C:/..." form; elsewhere plain `pwd`.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && { pwd -W 2>/dev/null || pwd; })"
 APP="$ROOT/workers/core/cpanel"
 SOURCE="$APP/src"
 DIST="$APP/dist"

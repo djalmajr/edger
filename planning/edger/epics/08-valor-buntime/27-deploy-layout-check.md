@@ -79,5 +79,13 @@
 - [x] `cargo clippy --workspace -- -D warnings`
 - [x] `cargo fmt -- --check`
 
+```bash
+python3 planning/edger/scripts/deploy-layout-check.py --repo .
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+```
+
 ## Recommended next step
 - Continuar com a próxima linha `must partial` da matriz.

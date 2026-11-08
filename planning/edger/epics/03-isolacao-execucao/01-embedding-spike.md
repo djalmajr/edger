@@ -1,6 +1,7 @@
 # Story 03.01: Spike de embedding (deno_core + facade; comparação wasmtime)
 
 **Origin:** `planning/edger/epics/03-isolacao-execucao/00-overview.md`  
+<!-- refinement-lint: allow few-tasks — todas as tasks reais estão marcadas; o único item aberto é condicional (“Se spike alterar direção”) e o próprio texto o registra como não necessário -->
 **Status:** completed (2026-06-29; deno V8 boot pendente 03.04)
 
 ## Context

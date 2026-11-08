@@ -1,6 +1,7 @@
 # Story 15.E: Streaming real + hardening + ponte v1 legada
 
 **Origin:** `planning/edger/epics/15-runtime-js-duravel/00-overview.md`
+<!-- refinement-lint: allow few-tasks — os dois itens abertos são critérios de aceite riscados e marcados como adiados (seccomp/landlock e passthrough/pré-warm); as tasks estão marcadas e o status é completed -->
 
 ## Context
 
