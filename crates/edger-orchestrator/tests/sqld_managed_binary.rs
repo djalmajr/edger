@@ -9,10 +9,22 @@ use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, MutexGuard,
 };
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+// Hold once per parent test, before listeners and until all child cleanup is done.
+// Do not lock in Fixture::new: one test can own multiple fixtures at the same time.
+static TCP_FIXTURE_TESTS: Mutex<()> = Mutex::new(());
+
+fn tcp_fixture_test_guard() -> MutexGuard<'static, ()> {
+    TCP_FIXTURE_TESTS.lock().unwrap_or_else(|poison| {
+        let guard = poison.into_inner();
+        TCP_FIXTURE_TESTS.clear_poison();
+        guard
+    })
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Identity {
@@ -278,6 +290,7 @@ fn rejects_before_vault(settings: &[(&str, &str)], expected: &str) {
 
 #[test]
 fn partial_and_invalid_configuration_fail_before_vault() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     rejects_before_vault(
         &[("EDGER_SQLD_ADMIN_URL", "http://127.0.0.1:1111")],
         "managed sqld configuration is incomplete",
@@ -432,6 +445,7 @@ impl Fixture {
 
 #[test]
 fn off_and_configured_boot_and_metadata_do_not_contact_sqld() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     for configured in [false, true] {
         let fx = Fixture::new();
         with_child(&mut fx.command(configured), |child| {
@@ -487,6 +501,7 @@ fn expect_boot_rejection(fx: &Fixture, cmd: &mut Command, expected: &str) {
 
 #[test]
 fn configured_without_vault_is_rejected_before_http() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     let fx = Fixture::new();
     let mut cmd = fx.command(true);
     cmd.env("EDGER_SECRETS_KEY_FILE", fx.root.path().join("missing"));
@@ -508,6 +523,7 @@ fn configured_without_vault_is_rejected_before_http() {
 
 #[test]
 fn invalid_complete_configuration_fails_before_vault() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     let fx = Fixture::new();
     let vault = fx.root.path().join("not-created/vault.db");
     let mut cmd = fx.command(true);
@@ -519,6 +535,7 @@ fn invalid_complete_configuration_fails_before_vault() {
 
 #[test]
 fn configured_boot_does_not_create_a_missing_worker_root_for_the_vault() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     let fx = Fixture::new();
     let missing = fx.root.path().join("missing-workers");
     let mut cmd = fx.command(true);
@@ -530,6 +547,7 @@ fn configured_boot_does_not_create_a_missing_worker_root_for_the_vault() {
 
 #[test]
 fn key_in_worker_root_or_cache_is_rejected_before_http() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     for (path, name, bytes) in [
         (
             "workers/admin-key",
@@ -568,6 +586,7 @@ fn key_in_worker_root_or_cache_is_rejected_before_http() {
 
 #[test]
 fn key_symlink_position_and_indexed_worker_target_are_protected() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     use std::os::unix::fs::symlink;
     {
         let fx = Fixture::new();
@@ -607,6 +626,7 @@ fn key_symlink_position_and_indexed_worker_target_are_protected() {
 
 #[test]
 fn relative_cache_protects_a_future_workers_parent() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     let fx = Fixture::new();
     let future = fx.root.path().join("future-workers");
     let cache = future.join("cache");
@@ -633,6 +653,7 @@ fn relative_cache_protects_a_future_workers_parent() {
 
 #[test]
 fn configured_boot_creates_private_roots_without_chmod_existing_roots() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     let fx = Fixture::new();
     let existing = fx.root.path().join("shared-cache");
     let new_cache = fx.root.path().join("new-cache");
@@ -665,6 +686,7 @@ fn private_admin_key(path: &std::path::Path) {
 
 #[test]
 fn indexed_disabled_and_staged_symlink_targets_are_protected() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     use std::os::unix::fs::symlink;
     for staged in [false, true] {
         let fx = Fixture::new();
@@ -715,6 +737,7 @@ fn indexed_disabled_and_staged_symlink_targets_are_protected() {
 
 #[test]
 fn shared_default_protects_only_the_three_home_subpaths() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     for relative in ["Library/Caches/deno", ".cache/deno", ".deno"] {
         let fx = Fixture::new();
         let key = fx.root.path().join("home").join(relative).join("admin-key");
@@ -742,6 +765,7 @@ fn shared_default_protects_only_the_three_home_subpaths() {
 
 #[test]
 fn relative_existing_worker_cache_resolves_symlink_before_parent() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     use std::os::unix::fs::symlink;
     let fx = Fixture::new();
     let external = fx.root.path().join("external");
@@ -771,6 +795,7 @@ fn relative_existing_worker_cache_resolves_symlink_before_parent() {
 
 #[test]
 fn relative_vault_master_is_the_evidence_and_symlink_location_is_protected() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     use std::os::unix::fs::symlink;
     let fx = Fixture::new();
     let mut control = fx.command(true);
@@ -806,6 +831,7 @@ fn relative_vault_master_is_the_evidence_and_symlink_location_is_protected() {
 
 #[test]
 fn future_cache_resolving_to_filesystem_root_refuses_key_without_chmod() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     use std::os::unix::fs::symlink;
     let fx = Fixture::new();
     let mode = fs::metadata("/").unwrap().permissions().mode() & 0o7777;
@@ -1869,6 +1895,7 @@ fn real_deno() -> std::ffi::OsString {
 #[test]
 #[ignore = "requires the real Deno 2.9.8 executable named by EDGER_DENO_BIN"]
 fn configured_edger_prewarms_canary_without_a_worker_request() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     let fx = Fixture::new();
     let witness = ImportWitness::new_with_gate(true);
     let deno = real_deno();
@@ -1933,6 +1960,7 @@ fn configured_edger_prewarms_canary_without_a_worker_request() {
 /// that descendant is adopted and cleaned in a later round.
 #[test]
 fn subreaper_kills_a_stubborn_descendant_tree_after_the_grace_period() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     let fx = Fixture::new();
     let mut tree = SubreaperTree::start(&fx.command(true), fx.root.path())
         .expect("start EdgeR under the subreaper helper");
@@ -2075,6 +2103,7 @@ fn hanging_prewarm_cleanup(fail: fn(&mut SubreaperTree, &ImportWitness), crash_f
 #[test]
 #[ignore = "requires the real Deno 2.9.8 executable named by EDGER_DENO_BIN"]
 fn timeout_before_the_pid_beacon_still_cleans_edger_and_deno() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     hanging_prewarm_cleanup(
         |tree, witness| {
             let error = wait_candidate(witness, tree, Duration::from_millis(300))
@@ -2088,18 +2117,21 @@ fn timeout_before_the_pid_beacon_still_cleans_edger_and_deno() {
 #[test]
 #[ignore = "requires the real Deno 2.9.8 executable named by EDGER_DENO_BIN"]
 fn panic_after_spawn_still_cleans_edger_and_deno() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     hanging_prewarm_cleanup(|_, _| panic!("forced panic after the Deno spawn"), false);
 }
 
 #[test]
 #[ignore = "requires the real Deno 2.9.8 executable named by EDGER_DENO_BIN"]
 fn edger_crash_leaves_an_adopted_deno_that_the_subreaper_still_cleans() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     hanging_prewarm_cleanup(|_, _| panic!("forced failure after the EdgeR crash"), true);
 }
 
 #[test]
 #[ignore = "requires the real Deno 2.9.8 executable named by EDGER_DENO_BIN"]
 fn invalid_boot_never_prewarms_or_imports_the_canary() {
+    let _tcp_fixture_guard = tcp_fixture_test_guard();
     let fx = Fixture::new();
     let witness = ImportWitness::new();
     let deno = std::env::var_os("EDGER_DENO_BIN")

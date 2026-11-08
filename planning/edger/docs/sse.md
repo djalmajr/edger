@@ -102,10 +102,9 @@ vira `502 SSE_INVALID_DIRECTIVE`, em vez de passar como 401.
   teto de 8 tópicos, 9 dá 502).
 - **WASM:** os pares chegam intactos; um segundo `x-edger-sse-subscribe` dá
   `502 SSE_INVALID_DIRECTIVE`.
-- **Fallback `EDGER_JS_RUNTIME=bridge`:** funde como o Deno persistente para
-  `subscribe`. Para `x-edger-sse-publish` **não separa as diretivas**: com mais de
-  uma, o valor fundido não decodifica e a resposta falha fechada com 502. Nenhum
-  teste de SSE cobre o bridge; isso decorre da leitura do código.
+- **Fallback `EDGER_JS_RUNTIME=bridge`:** recusa workers com `sse:` antes de
+  executar o guest, com `SSE_RUNTIME_UNSUPPORTED` na mensagem de um
+  `500 WORKER_ERROR`. Nenhuma diretiva chega ao broker.
 
 O harness Deno separa `x-edger-sse-publish` em um par por diretiva antes de
 enviar a cabeça ao host (base64url não contém vírgula). Ele não conhece o bloco
@@ -217,7 +216,7 @@ Uma instância por processo do `edger`, com estado em memória.
 5. **Cabeça com diretiva presente:** 100 headers, 8192 bytes por valor e 65536 no
    total; estouro dá 502 (Deno) ou 500 (WASM). Veja a seção acima.
 6. **`x-edger-sse-subscribe` repetido:** no Deno vira lista; no WASM dá 502. O
-   fallback `EDGER_JS_RUNTIME=bridge` não separa diretivas de publicação.
+   fallback `EDGER_JS_RUNTIME=bridge` recusa workers que declaram `sse:`.
 7. **Respostas de erro do SSE não emitem o evento `dispatch`.** As quatro
    respostas próprias do SSE (`SSE_INVALID_DIRECTIVE`, `SSE_RESPONSE_TOO_LARGE`,
    `SSE_CAPACITY`, `SSE_UNAVAILABLE`) retornam antes do evento operacional
@@ -412,13 +411,17 @@ publica, e um corpo com exatamente esse tamanho também é recusado. O caminho c
 (resposta que o host repassa ao cliente) continua com o corte limpo: o corpo é
 truncado e o frame de fim ainda é escrito.
 
-O fallback `EDGER_JS_RUNTIME=bridge` não tem essa proteção. Para corpos
-`text/plain` ou `text/event-stream`, ele encerra a captura depois do primeiro
-pedaço e de 25 ms sem dados, e entrega o corpo parcial como resposta bem-sucedida.
-Um guest nesse modo com uma diretiva na cabeça e o corpo ainda aberto assina ou
-publica mesmo sem terminar. O efeito fica restrito ao próprio app: a diretiva é
-dele. É um limite aceito do fallback de emergência e decorre da leitura do código;
-nenhum teste de SSE cobre o bridge.
+O fallback `EDGER_JS_RUNTIME=bridge` recusa qualquer execução de guest de um
+worker que declara `sse:`, inclusive em rotas comuns do mesmo worker, antes de
+ler arquivos, empacotar ou iniciar o guest. A resposta é `500 WORKER_ERROR`, com
+`SSE_RUNTIME_UNSUPPORTED` e a mensagem estática `SSE is not supported by this runtime`
+na mensagem do erro de isolamento, no mesmo formato do banco gerenciado quando
+o runtime não é suportado. Nada é assinado ou publicado e o broker não muda.
+Workers sem `sse:` mantêm o comportamento do bridge, inclusive a captura parcial
+de corpos `text/plain` e `text/event-stream`; Deno persistente e WASM seguem
+inalterados. Prova: os testes `bridge_*` em `tests/sse_pipeline.rs` (os dois que
+executam Deno real são `#[ignore]`, usam somente loopback e devem ser rodados com
+`--include-ignored`).
 
 A produção é bufferizada nos backends WASM e em `ttl: 0`; nesses casos o teto de
 memória do caminho é o `maxBodySize` do worker, e o limite da rota decide só se

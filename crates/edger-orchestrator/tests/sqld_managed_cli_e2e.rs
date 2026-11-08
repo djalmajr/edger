@@ -1663,6 +1663,9 @@ enum GatePoint {
 enum Release {
     Proceed,
     Abandon,
+    BackupTooLarge,
+    BackupTimeout,
+    BackupRemoteFailure,
 }
 
 struct GateState {
@@ -1872,7 +1875,23 @@ fn proxy_connection(inner: &ProxyInner, mut client: TcpStream) -> io::Result<()>
         .find(|gate| !gate.is_open() && (gate.matcher)(&request.method, &request.path))
         .cloned();
     if let Some(gate) = gate.as_ref().filter(|gate| gate.point == GatePoint::Before) {
-        if gate.hold() == Release::Abandon {
+        let release = gate.hold();
+        if release == Release::BackupTooLarge {
+            client.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 268435457\r\nConnection: close\r\n\r\n",
+            )?;
+            return Ok(());
+        }
+        if release == Release::BackupTimeout {
+            client.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n1\r\nx\r\n")?;
+            std::thread::sleep(Duration::from_secs(32));
+            return Ok(());
+        }
+        if release == Release::BackupRemoteFailure {
+            client.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+            return Ok(());
+        }
+        if release == Release::Abandon {
             inner
                 .trace
                 .lock()
@@ -4567,6 +4586,186 @@ fn diagnostic_one_gib_backup_progress_and_other_app_latency() {
     let root = root.unwrap();
     assert!(!root.exists());
     eprintln!("diagnostic-cleanup: removed {}", root.display());
+}
+
+#[test]
+#[ignore = "requires real edger, SQLD and Deno; 1 GiB database and a disk-backed TMPDIR"]
+fn one_gib_backup_completes_restores_and_keeps_other_app_responsive() {
+    use std::io::BufRead;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    scenario(2 * 1024 * MIB, |stack| {
+        for name in ["backup-large", "backup-neighbor"] {
+            stack.install_deno(name, "[]", "maxProcesses: 1\nttl: 1h\n");
+            stack.provision(name, 1024 * MIB);
+        }
+        assert!(stack.sql("backup-large", "CREATE TABLE big (v BLOB)").ok());
+        let fill_started = Instant::now();
+        let mut accepted = 0_u64;
+        loop {
+            assert!(fill_started.elapsed() < Duration::from_secs(780));
+            let reply = stack.sql(
+                "backup-large",
+                "INSERT INTO big VALUES (randomblob(1048576))",
+            );
+            if !reply.ok() {
+                assert!(
+                    reply
+                        .error
+                        .as_deref()
+                        .is_some_and(|e| e.contains("SQLITE_FULL")),
+                    "{reply:?}"
+                );
+                break;
+            }
+            accepted += MIB;
+            assert!(accepted <= 1024 * MIB);
+        }
+        assert!(accepted >= 1000 * MIB, "only {accepted} guest bytes");
+        assert_eq!(
+            stack
+                .sql("backup-large", "SELECT sum(length(v)) FROM big")
+                .cell(),
+            accepted.to_string()
+        );
+        let done = AtomicBool::new(false);
+        let started = Instant::now();
+        let mut probes = 0;
+        let mut worst_probe = Duration::ZERO;
+        let response = std::thread::scope(|scope| {
+            let port = stack.port;
+            let completed = &done;
+            let backup = scope.spawn(move || {
+                let reply = http_with_timeout(
+                    port,
+                    "POST",
+                    "/api/admin/workers/backup-large/database/backup",
+                    &[("Authorization", &format!("Bearer {ROOT_KEY}"))],
+                    b"",
+                    Duration::from_secs(1900),
+                );
+                completed.store(true, Ordering::SeqCst);
+                reply
+            });
+            while !done.load(Ordering::SeqCst) {
+                let at = Instant::now();
+                assert!(stack.sql("backup-neighbor", "SELECT 1").ok());
+                worst_probe = worst_probe.max(at.elapsed());
+                probes += 1;
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            backup.join().unwrap().unwrap()
+        });
+        let elapsed = started.elapsed();
+        assert_eq!(response.status, 200, "{}", response.text());
+        assert!(
+            elapsed < Duration::from_secs(1800),
+            "backup took {elapsed:?}"
+        );
+        assert!(probes > 0);
+        let artifact = response.json()["backup"].clone();
+        let bytes = artifact["bytes"].as_u64().unwrap();
+        assert!(bytes > 2 * 1000 * MIB && bytes <= 4 * 1024 * MIB);
+        let file = stack
+            .root
+            .path()
+            .join("state/backups")
+            .join(artifact["fileName"].as_str().unwrap());
+        assert_eq!(fs::metadata(&file).unwrap().len(), bytes);
+        let restore_started = Instant::now();
+        let db = rusqlite::Connection::open(stack.root.path().join("restored.sqlite")).unwrap();
+        // This controlled fixture's dump has one complete SQL statement per
+        // line (one hex BLOB per INSERT). Never collect the multi-GB dump.
+        for line in io::BufReader::new(fs::File::open(&file).unwrap()).lines() {
+            db.execute_batch(&line.unwrap()).unwrap();
+        }
+        let (rows, payload): (u64, u64) = db
+            .query_row("SELECT count(*),sum(length(v)) FROM big", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(rows, accepted / MIB);
+        assert_eq!(payload, accepted);
+        assert_eq!(
+            db.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        assert!(stack.sql("backup-neighbor", "SELECT 1").ok());
+        eprintln!("one-gib-backup: payload_bytes={accepted} rows={rows} dump_bytes={bytes} backup_seconds={:.6} MB_per_second={:.6} probes={probes} worst_probe_ms={} restore_seconds={:.6}",
+            elapsed.as_secs_f64(), bytes as f64 / elapsed.as_secs_f64() / 1_000_000.0,
+            worst_probe.as_millis(), restore_started.elapsed().as_secs_f64());
+    });
+}
+
+#[test]
+#[ignore = "requires real edger, SQLD and Deno; exercises the unchanged 30 s read deadline"]
+fn backup_size_timeout_and_remote_failures_have_distinct_static_http_errors() {
+    scenario_with(64 * MIB, true, |stack| {
+        stack.install_deno("backup-errors", "[]", "");
+        stack.provision("backup-errors", QUOTA);
+        let backups = stack.root.path().join("state/backups");
+        let names = || {
+            let mut names: Vec<_> = fs::read_dir(&backups)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = names();
+        for (release, status, code, message) in [
+            (
+                Release::BackupTooLarge,
+                507,
+                "SQLD_BACKUP_TOO_LARGE",
+                "managed database backup exceeds its size limit",
+            ),
+            (
+                Release::BackupTimeout,
+                504,
+                "SQLD_BACKUP_TIMEOUT",
+                "managed database backup deadline exceeded",
+            ),
+            (
+                Release::BackupRemoteFailure,
+                503,
+                "SQLD_UNAVAILABLE",
+                "managed database service is unavailable",
+            ),
+        ] {
+            let gate = Gate::new(
+                GatePoint::Before,
+                usize::MAX,
+                Duration::from_secs(40),
+                |method, path| method == "GET" && path == "/dump",
+            );
+            stack.data().add_gate(&gate);
+            let response = std::thread::scope(|scope| {
+                let port = stack.port;
+                let request = scope.spawn(move || {
+                    http_with_timeout(
+                        port,
+                        "POST",
+                        "/api/admin/workers/backup-errors/database/backup",
+                        &[("Authorization", &format!("Bearer {ROOT_KEY}"))],
+                        b"",
+                        Duration::from_secs(60),
+                    )
+                });
+                assert!(gate.wait_held(1, Duration::from_secs(10)));
+                gate.release(release);
+                request.join().unwrap().unwrap()
+            });
+            assert_eq!(response.status, status, "{}", response.text());
+            assert_eq!(response.json()["code"], code);
+            assert_eq!(response.json()["message"], message);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while names() != before {
+                assert!(Instant::now() < deadline, "error left a staging/final file");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    });
 }
 
 // ── the crash helper itself (this test executable as the child: no edger, no runtime, no external binary) ──

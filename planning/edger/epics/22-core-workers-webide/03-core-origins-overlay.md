@@ -38,7 +38,11 @@ install existente.
 
 ## Verification
 
-- Testes `manifest_loader`, `deploy_install` e `admin_endpoints`.
+```bash
+cargo test -p edger-orchestrator manifest_loader
+cargo test -p edger-orchestrator --test deploy_install
+cargo test -p edger-orchestrator --test admin_endpoints
+```
 
 ## Status
 

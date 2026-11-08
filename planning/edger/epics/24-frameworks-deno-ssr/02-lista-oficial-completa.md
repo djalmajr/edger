@@ -1,5 +1,7 @@
 # Story 24.02: Lista oficial completa
 
+**Origin:** `planning/edger/epics/24-frameworks-deno-ssr/00-overview.md`
+
 ## Context
 
 A referência oficial do Deno Deploy passou a explicitar nove frameworks. Após

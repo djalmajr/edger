@@ -85,5 +85,16 @@
 - [x] `cargo fmt -- --check`
 - [x] `SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh`
 
+Comandos que ainda existem hoje:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt -- --check
+SCRATCH=planning/edger/status/evidence planning/edger/scripts/run-gates.sh
+```
+
+O `cargo test -p edger-orchestrator --test registry_hooks` acima é histórico: o teste não existe mais em `crates/edger-orchestrator/tests` e o sistema de extensões/registry/hooks foi removido no Epic 17 (história `05-remover-extensoes`).
+
 ## Recommended next step
 - Continuar a próxima linha `must partial` da matriz.

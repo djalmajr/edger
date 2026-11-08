@@ -1,0 +1,16 @@
+{{- if and .Values.managedDatabase.enabled (not .Values.managedDatabase.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "edger.fullname" . }}-managed-database
+  labels:
+    {{- include "edger.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.managedDatabase.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.managedDatabase.persistence.size | quote }}
+{{- end }}

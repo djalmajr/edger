@@ -382,3 +382,125 @@ questions:
     type: multiline
     default: "[]"
     group: Runtime
+
+  - variable: sse.maxConnections
+    label: SSE Connections
+    description: Process connection limit; empty retains the binary default.
+    type: string
+    default: ""
+    group: Runtime
+
+  - variable: sse.maxConnectionsPerApp
+    label: SSE Connections per App
+    description: Per-app connection ceiling; empty retains the binary default.
+    type: string
+    default: ""
+    group: Runtime
+
+  - variable: sse.heartbeatMs
+    label: SSE Heartbeat (ms)
+    description: Heartbeat interval; empty retains the binary default.
+    type: string
+    default: ""
+    group: Runtime
+
+  - variable: httpDrainMs
+    label: HTTP Drain (ms)
+    description: HTTP shutdown budget; empty retains the binary default, zero is unbounded.
+    type: string
+    default: ""
+    group: Runtime
+
+  - variable: terminationGracePeriodSeconds
+    label: Pod Termination Grace (s)
+    description: Allow shutdown budgets to complete before SIGKILL.
+    type: int
+    default: 45
+    group: Runtime
+
+  - variable: managedDatabase.enabled
+    label: Enable Managed SQLD
+    description: Manage namespaces on external SQLD; requires the app secrets vault.
+    type: boolean
+    default: false
+    group: Runtime
+
+  - variable: managedDatabase.adminUrl
+    label: SQLD Admin Origin
+    description: Reachable external SQLD admin origin.
+    type: string
+    default: ""
+    show_if: "managedDatabase.enabled=true"
+    group: Runtime
+
+  - variable: managedDatabase.userUrl
+    label: SQLD Data Origin
+    description: HTTP data origin distinct from admin, never port 9090.
+    type: string
+    default: ""
+    show_if: "managedDatabase.enabled=true"
+    group: Runtime
+
+  - variable: managedDatabase.adminKeySecret.name
+    label: SQLD Admin Secret
+    description: Existing Secret holding the admin key.
+    type: string
+    default: ""
+    show_if: "managedDatabase.enabled=true"
+    group: Runtime
+
+  - variable: managedDatabase.adminKeySecret.key
+    label: SQLD Admin Secret Field
+    description: Secret data key holding the admin key.
+    type: string
+    default: ""
+    show_if: "managedDatabase.enabled=true"
+    group: Runtime
+
+  - variable: managedDatabase.signerKeySecret.name
+    label: SQLD Signer Secret
+    description: Existing Secret holding a signer master distinct from the vault master.
+    type: string
+    default: ""
+    show_if: "managedDatabase.enabled=true"
+    group: Runtime
+
+  - variable: managedDatabase.signerKeySecret.key
+    label: SQLD Signer Secret Field
+    description: Secret data key holding the signer master.
+    type: string
+    default: ""
+    show_if: "managedDatabase.enabled=true"
+    group: Runtime
+
+  - variable: managedDatabase.budgetBytes
+    label: SQLD Managed Budget (bytes)
+    description: Reservation budget; decimal, at least 16 MiB and a multiple of 4096.
+    type: string
+    default: ""
+    show_if: "managedDatabase.enabled=true"
+    group: Runtime
+
+  - variable: managedDatabase.persistence.existingClaim
+    label: Managed SQLD PVC
+    description: Existing dedicated PVC; empty creates one.
+    type: pvc
+    default: ""
+    show_if: "managedDatabase.enabled=true"
+    group: Runtime
+
+  - variable: managedDatabase.persistence.storageClass
+    label: Managed SQLD Storage Class
+    description: Storage class used when creating the dedicated PVC.
+    type: storageclass
+    default: ""
+    show_if: "managedDatabase.enabled=true"
+    group: Runtime
+
+  - variable: managedDatabase.persistence.size
+    label: Managed SQLD Volume Size
+    description: Space for the registry and backups, separate from SQLD data.
+    type: string
+    default: 5Gi
+    show_if: "managedDatabase.enabled=true"
+    group: Runtime

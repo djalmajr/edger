@@ -4,6 +4,12 @@ All notable changes to EdgeR will be documented here.
 
 ## [Unreleased]
 
+- WASM isolates share one process Engine and an eight-module SHA-256 LRU cache, so ephemeral (`ttl: 0`) workers reuse resident compilations while import policy, HTTP grants, secrets, env and guest state remain per execution.
+
+- Managed database backups use HTTP/1.0 with a bounded lexical completion check and aggregate SQLD fragments into byte-bounded 1 MiB messages and use `max(256 MiB, 4 × app quota)` from the ledger; size and deadline failures return static `SQLD_BACKUP_TOO_LARGE` (507) and `SQLD_BACKUP_TIMEOUT` (504). Failures before publication preserve prior copies; a deadline observed after successful `finish()` can return timeout after publishing the complete copy and running retention. Existing cancellation, deadlines, atomic publication and retention remain.
+
+- The emergency `EDGER_JS_RUNTIME=bridge` fallback refuses workers declaring `sse:` before guest execution with `SSE_RUNTIME_UNSUPPORTED` (HTTP 500 `WORKER_ERROR`), without subscribing, publishing or changing the broker; workers without `sse:`, persistent Deno and WASM are unchanged.
+
 Toward 0.3.2. Release candidates: `v0.3.2-rc.30` (console admin role and
 temporary passwords, the cPanel admin screens, the cPanel login waiting
 for login-options, egress header filtering and absolute DNS names, the
@@ -87,10 +93,13 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   limit the remaining connections die with the process, after a `warn`; cron and
   the pool still shut down normally and the exit is successful. It applies to
   every HTTP connection, not only SSE. The default budgets (drain 10 s, cron
-  7 s, pool up to 15 s, 32 s in total) exceed the Kubernetes default
-  `terminationGracePeriodSeconds` of 30 s, which the Helm chart does not set.
-  That sum is not a guaranteed ceiling: after aborting the cron supervisor the
-  process waits for it to end without a deadline.
+  8 s: 5 grace, 1 abort-wait, 1 margin, 1 post-abort wait; pool up to 15 s,
+  33 s in total) form a ceiling when `EDGER_HTTP_DRAIN_MS` is not `0`.
+  The release containing EDG-88 sets Helm `terminationGracePeriodSeconds: 45`
+  by default and exposes `httpDrainMs`; increasing shutdown budgets requires
+  adjusting the Pod grace too. No cluster deployment is implied.
+  After aborting the cron supervisor, shutdown waits at most one more second
+  and warns if it still has not stopped.
 - On the short SSE execution path, a guest response cut by
   `EDGER_STREAM_MAX_BYTES` counts as an unsuccessful execution: it neither
   subscribes nor publishes, and a body of exactly that size is refused too. The
@@ -109,11 +118,13 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   `EDGER_SQLD_ADMIN_KEY_FILE`, `EDGER_SQLD_USER_URL`, `EDGER_SQLD_REGISTRY_DB`,
   `EDGER_SQLD_SIGNER_KEY_FILE`, `EDGER_SQLD_MANAGED_BUDGET_BYTES` and
   `EDGER_SQLD_BACKUP_DIR`; a partial set stops the boot. No restore route, no
-  delete route and no signing-key rotation. Token renewal inside a live
-  process is proven by component tests only (the binary proves renewal on the
-  next spawn), and the two-process race branch "stable 409 then 200" was not
-  exercised (both runs returned 200). The Helm chart does not expose these
-  variables. See `planning/edger/docs/sqld-managed.md`.
+  delete route and no signing-key rotation. Token renewal is proven through the
+  binary on the next spawn and inside the same live Deno process
+  (`own_token_is_renewed_while_the_same_deno_process_keeps_its_old_env`), and
+  the two-process race branch "stable 409 then 200" was not
+  exercised (both runs returned 200). The Helm chart exposes these variables
+  from the release containing EDG-88 (`managedDatabase`). See
+  `planning/edger/docs/sqld-managed.md`.
 - Console admin role (EDG-45, EDG-46, EDG-47): a non-root console user with
   role `admin`, signed in with a console session, manages the operators it
   covers (every permission, namespace and worker literally within its own,

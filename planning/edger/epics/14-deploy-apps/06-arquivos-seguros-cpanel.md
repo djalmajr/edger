@@ -68,6 +68,13 @@
   `planning/edger/status/evidence/files-safe-cpanel-2026-07-15.txt`.
 - Gate Rust, `cpanel-ui-gate.sh`, refinamento e `git diff --check` devem passar.
 
+```bash
+cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo fmt -- --check
+planning/edger/scripts/cpanel-ui-gate.sh
+python3 planning/edger/scripts/refinement-lint.py --scope planning/edger
+git diff --check
+```
+
 ## Fluxo recomendado para atualização de conteúdo
 
 1. Criar draft em staging a partir da versão escolhida.

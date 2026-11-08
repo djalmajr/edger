@@ -17,8 +17,8 @@
 #
 # A chave global de JWT (`sqld-jwt`) só autentica o namespace `default`;
 # os bancos com `jwt_key` própria não consultam a global. A API de admin
-# (criar/apagar/configurar bancos) escuta em 127.0.0.1:9090 dentro do
-# pod — fora do alcance da rede do cluster — com a chave do Secret
+# (criar/apagar/configurar bancos) escuta em 0.0.0.0:9090, via Service
+# ClusterIP sqld-admin e NetworkPolicy exclusiva para o pod edger, com a chave do Secret
 # `sqld-admin` (a flag aceita a variável `LIBSQL_ADMIN_AUTH_KEY` no
 # v0.24.32, então a chave não entra na linha de comando do processo).
 apiVersion: v1
@@ -70,7 +70,7 @@ spec:
             - --db-path=/var/lib/sqld/data.sqld
             - --http-listen-addr=0.0.0.0:8080
             - --enable-namespaces
-            - --admin-listen-addr=127.0.0.1:9090
+            - --admin-listen-addr=0.0.0.0:9090
             - --auth-jwt-key-file=/etc/sqld/jwt-public-key
           env:
             - name: LIBSQL_ADMIN_AUTH_KEY
@@ -81,6 +81,8 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            - name: admin
+              containerPort: 9090
           readinessProbe:
             httpGet:
               path: /health
@@ -185,3 +187,39 @@ spec:
               app.kubernetes.io/name: cinzel-collab
       ports:
         - port: 8080
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sqld-admin
+  namespace: edger
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: sqld
+  ports:
+    - name: admin
+      port: 9090
+      targetPort: admin
+---
+# Policies are additive: sqld-ingress continues to allow only the data port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sqld-admin-ingress
+  namespace: edger
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sqld
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: edger
+              app.kubernetes.io/instance: edger
+      ports:
+        - protocol: TCP
+          port: 9090

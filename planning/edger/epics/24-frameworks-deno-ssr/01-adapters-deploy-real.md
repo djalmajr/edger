@@ -1,5 +1,7 @@
 # Story 24.01: Adapters e deploy real
 
+**Origin:** `planning/edger/epics/24-frameworks-deno-ssr/00-overview.md`
+
 ## Context
 
 Os builds oficiais de Next.js, Nuxt, Astro e SolidStart seguiam contratos

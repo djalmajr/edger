@@ -213,3 +213,28 @@ hpa:
   minReplicas: 1
   maxReplicas: 5
   targetCPUUtilizationPercentage: 70
+
+# Empty strings omit the env variable and retain the binary default.
+sse:
+  maxConnections: ""
+  maxConnectionsPerApp: ""
+  heartbeatMs: ""
+httpDrainMs: ""
+terminationGracePeriodSeconds: 45
+
+# External SQLD only; keys must already exist and signer must differ from vault.
+managedDatabase:
+  enabled: false
+  adminUrl: ""
+  userUrl: ""
+  adminKeySecret:
+    name: ""
+    key: ""
+  signerKeySecret:
+    name: ""
+    key: ""
+  budgetBytes: ""
+  persistence:
+    existingClaim: ""
+    storageClass: ""
+    size: 5Gi

@@ -114,6 +114,29 @@ Workers are persisted on one PVC while the routing index remains process-local.
 Multiple replicas are therefore unsafe until worker distribution is coordinated.
 */}}
 {{- define "edger.validate" -}}
+{{- if .Values.managedDatabase.enabled -}}
+{{- if not .Values.appSecrets.enabled -}}
+{{- fail "managedDatabase requires appSecrets.enabled=true" -}}
+{{- end -}}
+{{- $db := .Values.managedDatabase -}}
+{{- range $field, $value := dict "adminUrl" $db.adminUrl "userUrl" $db.userUrl "adminKeySecret.name" $db.adminKeySecret.name "adminKeySecret.key" $db.adminKeySecret.key "signerKeySecret.name" $db.signerKeySecret.name "signerKeySecret.key" $db.signerKeySecret.key "budgetBytes" $db.budgetBytes -}}
+{{- if not (trim (toString $value)) -}}
+{{- fail (printf "managedDatabase.%s is required when enabled" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- $uid := .Values.podSecurityContext.runAsUser -}}
+{{- $gid := .Values.podSecurityContext.runAsGroup -}}
+{{- if hasKey .Values.securityContext "runAsUser" -}}
+{{- $uid = .Values.securityContext.runAsUser -}}
+{{- end -}}
+{{- if hasKey .Values.securityContext "runAsGroup" -}}
+{{- $gid = .Values.securityContext.runAsGroup -}}
+{{- end -}}
+{{- if or (le (int $uid) 0) (le (int $gid) 0) (ne (int $gid) (int .Values.podSecurityContext.fsGroup)) -}}
+{{- fail "managedDatabase requires a non-root runAsUser and runAsGroup equal to podSecurityContext.fsGroup" -}}
+{{- end -}}
+{{- end -}}
+
 {{- if and .Values.consoleAuth.rootPasswordSecret.name (not .Values.consoleAuth.rootPasswordSecret.key) -}}
 {{- fail "consoleAuth.rootPasswordSecret.key é obrigatório quando consoleAuth.rootPasswordSecret.name está configurado" -}}
 {{- end -}}

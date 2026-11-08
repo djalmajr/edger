@@ -98,6 +98,8 @@ jobs:
           --set-string 'ingress.annotations=konghq.com/strip-path: "true"'
           --set-string 'extraEnv=[]'
           >/tmp/edger-rancher-form.yaml
+      - name: Render checks and managed database init modes
+        run: bash charts/edger/tests/render-check.sh
 
   image:
     name: Container image

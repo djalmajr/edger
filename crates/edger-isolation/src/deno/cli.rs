@@ -68,6 +68,14 @@ impl DenoCliRunner {
         req: SerializedRequest,
         config: &WorkerConfig,
     ) -> Result<SerializedResponse, IsolationError> {
+        // The bridge can return a partial body as success. Refuse SSE before
+        // any filesystem, bundling or guest execution can take place.
+        if config.sse.is_some() {
+            return Err(IsolationError::new(
+                "SSE_RUNTIME_UNSUPPORTED",
+                "SSE is not supported by this runtime",
+            ));
+        }
         let worker_dir = config.worker_dir.as_ref().ok_or_else(|| {
             IsolationError::new("DENO_WORKER_DIR_MISSING", "worker_dir is required for Deno")
         })?;

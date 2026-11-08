@@ -1,6 +1,6 @@
 # Story 19.A: Remover UdsTransport vestigial
 
-**Origin:** planning/edger/epics/19-runtime-completude/00-overview.md
+**Origin:** `planning/edger/epics/19-runtime-completude/00-overview.md`
 
 ## Context
 

@@ -1,6 +1,7 @@
 # Story 22.05: Editor e rascunhos locais da WebIDE
 
 **Origin:** `planning/edger/epics/22-core-workers-webide/00-overview.md`
+<!-- refinement-lint: allow verification-commands — a verificação registrada é E2E manual no Browser; o único comando citado (deno check de src/app.js) ficou obsoleto porque src/app.js foi removido na migração do WebIDE para React (commit e9352b8, 2026-07-14), então não há comando atual a fixar -->
 
 ## Context
 

@@ -107,8 +107,9 @@ boot, sem teto superior; valor inválido gera `warn` e usa o padrão:
 - `EDGER_SSE_HEARTBEAT_MS` (padrão `15000`, mínimo `1000`; também é a
   granularidade do TTL das assinaturas).
 
-O chart **não tem valor dedicado** para elas: hoje só chegam ao Pod por
-`extraEnv` ou `extraEnvFrom`. Para o operador, o que importa: o broker é por
+Na release que contenha o EDG-88, o chart expõe `sse.maxConnections`,
+`sse.maxConnectionsPerApp` e `sse.heartbeatMs`; vazios mantêm os padrões do
+binário, e zero explícito é emitido. Para o operador, o broker é por
 processo e o chart é de uma réplica, então não há fan-out entre pods; um cliente
 que parou de ler segura a vaga até o TCP acabar; e desabilitar ou apagar um worker
 não derruba assinaturas abertas (só o TTL delas). Métricas em `/metrics`:
@@ -116,17 +117,23 @@ não derruba assinaturas abertas (só o TTL delas). Métricas em `/metrics`:
 `edger_sse_disconnects_total` e `edger_sse_rejected_total`.
 
 **Banco SQLD gerenciado** ([sqld-managed.md](sqld-managed.md)). O EdgeR gerencia
-namespaces de um `sqld` **externo**; o chart não inclui `sqld` e não expõe as sete
+namespaces de um `sqld` **externo**; o chart não inclui `sqld`. Na release que
+contenha o EDG-88, `managedDatabase.enabled=true` emite juntas as sete
 variáveis `EDGER_SQLD_ADMIN_URL`, `EDGER_SQLD_ADMIN_KEY_FILE`,
 `EDGER_SQLD_USER_URL`, `EDGER_SQLD_REGISTRY_DB`, `EDGER_SQLD_SIGNER_KEY_FILE`,
-`EDGER_SQLD_MANAGED_BUDGET_BYTES` e `EDGER_SQLD_BACKUP_DIR`. Todas sem padrão e
-todas ou nenhuma: com parte delas, o `edger` não sobe. Além delas, o recurso
-exige o cofre de segredos (`appSecrets.enabled` com `appSecrets.keySecret.*`).
-Como o chart usa `readOnlyRootFilesystem` e não monta volumes para o ledger, as
-chaves e os backups (diretórios `0700` do usuário do processo), usar o recurso em
-Kubernetes pelo chart não é suportado hoje; é uma lacuna a fechar.
-Os manifestos de `deploy/production/sqld.yaml` mantêm o admin do `sqld` em
-`127.0.0.1:9090` dentro do pod dele, inalcançável pelo `edger`.
+`EDGER_SQLD_MANAGED_BUDGET_BYTES` e `EDGER_SQLD_BACKUP_DIR`. Configure `adminUrl`,
+`userUrl`, `adminKeySecret.name`/`.key`, `signerKeySecret.name`/`.key` e
+`budgetBytes`, além de `appSecrets.enabled` com `appSecrets.keySecret.*`.
+Configuração incompleta falha na renderização. Secrets existentes montam as
+chaves fora dos workers; `managedDatabase.persistence` cria PVC RWO ou usa
+`existingClaim`. O init, no mesmo UID do processo, deixa `registry` e `backups`
+em `0700` sem bits especiais e restaura `0600` nos arquivos regulares existentes,
+sem seguir symlinks. Ledger e backups ficam em `/var/lib/edger-managed`, com
+raiz do container somente leitura e estratégia Recreate. O driver deve honrar
+`fsGroup`; arquivos existentes precisam pertencer ao UID do processo.
+`deploy/production/sqld.yaml` expõe admin em `0.0.0.0:9090` pelo Service ClusterIP
+`sqld-admin`, com NetworkPolicy permitindo essa porta apenas ao pod EdgeR da
+release `edger` no mesmo namespace. Não houve deploy nem prova em cluster.
 
 **Segredos e egress já expostos pelo chart.** `appSecrets.*` vira
 `EDGER_APP_SECRETS_DB` e `EDGER_SECRETS_KEY_FILE` (a chave vem de um Secret
@@ -141,15 +148,16 @@ por no máximo `EDGER_HTTP_DRAIN_MS` (padrão `10000`, contado a partir do sinal
 vale o padrão). Ao expirar, as conexões que sobraram morrem com o processo, depois
 de um `warn`; o cron e o pool encerram normalmente e a saída é com sucesso. Vale
 para todas as conexões HTTP, não só o SSE. Os prazos padrão somam a drenagem
-(10 s), o cron (7 s: 5 de graça, 1 de abort e 1 de margem) e o pool (até 15 s), ou
-seja 32 s. Essa soma **não é um teto garantido**: depois de abortar o supervisor
-do cron, o processo espera ele terminar sem prazo, e uma passada de reconciliação
-em andamento não é interrompida pelo abort. O chart **não define**
-`terminationGracePeriodSeconds`, então vale o padrão de 30 s do Kubernetes,
-**menor** que essa soma: quando os prazos se esgotam, o kubelet envia SIGKILL antes
-de o `edger` terminar sozinho. Esta seção descreve a conta a partir
-do código; não houve teste em cluster. O chart não expõe a variável; ela só chega
-ao Pod por `extraEnv`.
+(10 s), o cron (8 s: 5 de graça, 1 de abort-wait, 1 de margem e 1 de espera
+pós-abort) e o pool (até 15 s), ou seja, um teto de 33 s quando
+`EDGER_HTTP_DRAIN_MS` não é `0`. Depois de abortar o supervisor do cron, a
+parada espera no máximo mais 1 s e gera `warn` se ele ainda não terminou.
+Na release que contenha o EDG-88, o chart define
+`terminationGracePeriodSeconds: 45`, configurável pelo valor homônimo, acima
+da soma padrão de 33 s. `httpDrainMs` configura `EDGER_HTTP_DRAIN_MS`; vazio
+mantém o padrão do binário e zero explícito desliga o limite. Ao aumentar os
+prazos, ajuste também a graça do Pod; dreno sem limite não tem teto de 33 s.
+Esta seção descreve a conta a partir do código; não houve teste em cluster.
 
 **WASM efêmero.** Um `kind: wasm` sem `ttl` recompila o módulo a cada pedido
 (cerca de 9 s no perfil `dev` com um módulo Go de 6,6 MB; release não medido).

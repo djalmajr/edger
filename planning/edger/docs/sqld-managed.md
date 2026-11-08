@@ -118,6 +118,12 @@ spawn**: `activation: "nextSpawn"`; processos vivos não são tocados (use o
 - `503 SQLD_UNAVAILABLE`: serviço não configurado, cofre indisponível, qualquer
   falha remota (admin, dados, backup), falha de integridade ou armazenamento do
   ledger, e esgotamento de admissão (15 s).
+- `507 SQLD_BACKUP_TOO_LARGE`: dump acima de `max(256 MiB, 4 × quotaBytes)`.
+- `504 SQLD_BACKUP_TIMEOUT`: prazo de backup esgotado, inclusive durante a
+  admissão pelo slot global. As duas mensagens são estáticas. Erros anteriores
+  à publicação não publicam arquivo nem removem cópias anteriores. Se o prazo
+  vencer após `finish()` ter sucesso, a resposta ainda pode ser timeout com a
+  cópia completa já publicada e a retenção já executada.
 - `404 NOT_FOUND`, `403 FORBIDDEN`, `400 INVALID_SQLD_REQUEST`, `401`, `413`.
 
 ## Quotas e limites
@@ -154,18 +160,45 @@ ledger selado exige backup consistente separado e a mesma master para ser lido.
   só prova que o dump é restaurável.
 - Retenção: fixa em 3 cópias por namespace. Falha na limpeza devolve
   `retention: "incomplete"` e mantém o arquivo novo.
-- Limites do dump: 256 MiB, conexão de 5 s, leitura de 30 s e 1800 s no total.
-  São constantes do código, **sem variável de ambiente**.
-- **Limite conhecido (EDG-87):** o teto vale para o dump SQL serializado, não para
-  os bytes gravados nem para a quota, e a quota pode ser maior que ele. Quando o
-  dump de um app passa de 256 MiB, esta rota não gera backup novo; a falha acontece
-  antes da publicação e as cópias anteriores continuam guardadas (a retenção só
-  roda depois de uma publicação bem-sucedida). No ensaio, o backup de um app com
-  1 GiB preenchido produziu o dump a cerca de 0,19 MB/s e não respondeu em 600 s.
-  Estimativa, não observada: nesse ritmo o teto seria alcançado em cerca de 23
-  minutos, e o pedido terminaria em `503 SQLD_UNAVAILABLE`, sem dizer a causa.
-  Durante o backup, outro app continuou respondendo às consultas e às rotas admin.
-  A correção está no card EDG-87.
+- Limites do dump (EDG-87): `max(256 MiB, 4 × quotaBytes)` por app, obtido do
+  registro do ledger tanto no backup inicial quanto no sob demanda. O teto vale
+  para o SQL serializado: um banco de BLOBs pode gerar cerca de 2× seus dados.
+  Conexão de 5 s, leitura de 30 s e 1800 s no total (incluindo admissão) são
+  mantidos, **sem variável de ambiente nova**. A API direta de testes mantém seu
+  override; um override explícito menor que o necessário para o app é recusado,
+  nunca usado silenciosamente como teto menor.
+- O leitor agrega os fragmentos do SQLD em mensagens de até 1 MiB numa fila de
+  profundidade 4, antes da escrita e do hash. A primeira escrita é imediata; o
+  restante é agregado e a cauda é enviada no EOF. O corpo não é coletado inteiro.
+  Cancelamento, slot global, publicação atômica, retenção e fsync final permanecem.
+- O transporte por app usa HTTP/1.0 para evitar um frame HTTP por pequeno
+  fragmento do BLOB. Como EOF não distingue sozinho fim normal de truncamento,
+  uma checagem lexical incremental exige o `COMMIT` terminal real, fora de
+  strings, identificadores citados e comentários; um marcador dentro dos dados
+  não serve. Memória de análise limitada, sem coletar o dump nem validar SQL
+  geral. Um EOF sem essa conclusão retorna `Incomplete`, remove o staging e
+  preserva cópias anteriores. Não há retry ou requisição extra.
+- Limite conhecido do SQLD 0.24.32: na revisão de segurança (2026-11-08), uma
+  tabela criada pelo app com identificador citado contendo aspas e quebra de
+  linha fez o próprio `GET /dump` do SQLD terminar antes do rodapé. A checagem
+  recusa esse dump (`Incomplete`, cópias anteriores preservadas), então um app
+  assim não consegue gerar backup; o efeito fica restrito ao próprio app.
+- Orçamento de disco: **3 cópias retidas + 1 staging**, cada uma até
+  `max(256 MiB, 4 × quotaBytes)`; para quotas grandes isso é até **16× a quota**
+  só para backups, além do banco, WAL e temporários. O ledger não reserva esse
+  espaço de backup. Erros de tamanho (507) e prazo (504) anteriores à publicação
+  mantêm as cópias antigas; um timeout observado após `finish()` bem-sucedido
+  pode ocorrer com publicação e retenção já concluídas.
+- Ensaio local em WSL (2026-11-08, SQLD 0.24.32, binário em perfil de testes):
+  app com quota de 1 GiB, 1.022 linhas e 1.071.644.672 bytes de BLOBs gerou dump
+  de 2.143.319.075 bytes. Duas execuções concluíram em 140,05 s (15,30 MB/s) e
+  153,94 s (13,92 MB/s). Ambas restauraram em SQLite com contagem, soma dos
+  comprimentos e `integrity_check` corretos. O outro app respondeu a 517 e 544
+  consultas durante os backups (maiores latências observadas: 175 ms e 2.270 ms).
+  A prova reproduzível é
+  `one_gib_backup_completes_restores_and_keeps_other_app_responsive`, em
+  `tests/sqld_managed_cli_e2e.rs`; para esse ensaio grande use um `TMPDIR` em
+  disco, não tmpfs.
 
 ## Token e renovação
 
@@ -226,10 +259,12 @@ Limites da prova da renovação:
   `EGRESS_DATABASE_DENIED` ou `EGRESS_DATABASE_AUTH_UNAVAILABLE`.
 - Outros destinos: só se o manifest declarou `egress`; a origem do banco nunca cai
   no caminho geral.
-- O `sqld` de exemplo em `deploy/production/sqld.yaml` mantém o admin em
-  `127.0.0.1:9090` dentro do pod e uma NetworkPolicy `sqld-ingress` só na porta
-  8080. O pod do `edger` **não alcança o admin** assim como está: `EDGER_SQLD_ADMIN_URL`
-  exige um endereço de admin alcançável, o que esses manifestos não fornecem.
+- Na release que contenha o EDG-88, `deploy/production/sqld.yaml` configura o
+  admin em `0.0.0.0:9090` e o Service ClusterIP `sqld-admin`. A NetworkPolicy
+  de admin permite TCP 9090 só ao pod com labels de nome e instância `edger`,
+  no mesmo namespace; a política de dados continua separada na porta 8080.
+  Configure `EDGER_SQLD_ADMIN_URL` com a origem de admin alcançável pelo EdgeR;
+  a origem de dados dos guests continua distinta e não aceita porta 9090.
 
 ## Duas instâncias disputando o mesmo app
 
@@ -252,19 +287,36 @@ arquivos distintos.
 
 ## Chart e operação
 
-O chart `charts/edger/` **não expõe** nenhuma das sete variáveis `EDGER_SQLD_*`,
-não monta volumes para o ledger, as chaves e os backups, e não inclui `sqld`. Na
-prática, em Kubernetes hoje, o operador teria que injetar as variáveis por
-`extraEnv`/`extraEnvFrom` e montar os arquivos e diretórios `0700` por conta
-própria; isso é uma lacuna do chart, não um procedimento suportado. Veja
+Na release que contenha o EDG-88, o chart `charts/edger/` expõe as sete variáveis
+`EDGER_SQLD_*` juntas por `managedDatabase.enabled=true`, sem incluir `sqld`.
+Configure `adminUrl`, `userUrl`, `adminKeySecret.name`/`.key`,
+`signerKeySecret.name`/`.key` e `budgetBytes`, junto de `appSecrets.enabled=true`
+e seu Secret existente. A renderização recusa configuração incompleta. As
+chaves admin e signer são Secrets existentes montados somente para leitura,
+fora das raízes legíveis pelos guests, com `0440` e grupo do processo;
+`runAsGroup` deve coincidir com `fsGroup`. A master do signer deve diferir da
+master do cofre.
+
+`managedDatabase.persistence` cria PVC RWO ou monta `existingClaim`. O init usa
+a mesma imagem e contexto de segurança do EdgeR (UID padrão `10001`), cria
+`registry` e `backups` em `0700` sem bits especiais e restaura `0600` em todos
+os arquivos regulares existentes sob esses diretórios, incluindo ledger,
+journal, backups e staging. Não segue symlinks nem altera tipos não regulares;
+o boot mantém suas recusas de caminhos inseguros e de WAL/SHM presentes.
+As chaves seladas por app ficam no ledger; as masters vêm dos Secrets, fora
+desse PVC. O init não troca donos: arquivos existentes devem pertencer ao UID
+do processo, e o driver precisa honrar `fsGroup` para permitir criar os diretórios.
+O ledger é `/var/lib/edger-managed/registry/registry.db` e os backups ficam em
+`/var/lib/edger-managed/backups`. A raiz do container permanece somente leitura;
+a estratégia é Recreate. Preserve backup consistente do ledger e sua master.
+Veja
 [deployment-k8s.md](deployment-k8s.md).
 
-Há uma segunda lacuna, de operação: `deploy/production/sqld.yaml` mantém o admin
-do `sqld` em loopback (`--admin-listen-addr=127.0.0.1:9090`, dentro do pod do
-`sqld`), portanto o pod do `edger` **não consegue** alcançar o endereço que
-`EDGER_SQLD_ADMIN_URL` exige. Hoje nem o chart configura o banco gerenciado nem os
-manifestos de produção o tornam alcançável. As duas são lacunas conhecidas; este
-documento não promete data para fechá-las.
+O manifesto `deploy/production/sqld.yaml` fornece o Service ClusterIP
+`sqld-admin` na porta 9090 e a NetworkPolicy de admin descrita acima. Esses
+arquivos e o chart exigem a release que contenha o EDG-88; sua presença no
+repositório não significa publicação ou deploy. A aplicação real de modos,
+acesso e isolamento de rede pelo driver/CNI ainda exige validação em cluster.
 
 ## Provas e o que falta
 
@@ -277,5 +329,6 @@ alheio como conflito, renovação no próximo spawn e durante a vida do mesmo pr
 Deno (`own_token_is_renewed_while_the_same_deno_process_keeps_its_old_env`), o
 ensaio com orçamento de 5 GiB (`five_gib_budget_and_one_gib_guest_fill_preserve_other_apps`)
 e as disputas acima. Não provado: o ramo "409 estável e depois 200" da disputa de
-dois processos, o backup de um banco maior que o teto do dump (ver Backup) e
-qualquer instalação em cluster.
+dois processos e qualquer instalação em cluster. A prova de backup de cerca de
+1 GiB, com restauração e outro app respondendo, está em
+`one_gib_backup_completes_restores_and_keeps_other_app_responsive`.

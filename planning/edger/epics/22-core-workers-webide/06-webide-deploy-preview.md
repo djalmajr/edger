@@ -1,6 +1,7 @@
 # Story 22.06: Deploy explícito, preview e histórico
 
 **Origin:** `planning/edger/epics/22-core-workers-webide/00-overview.md`
+<!-- refinement-lint: allow verification-commands — a verificação registrada é comparação byte a byte do ZIP e E2E manual no Browser, sem comando de shell; os arquivos src/app.js citados em Files foram removidos na migração para React (commit e9352b8, 2026-07-14) -->
 
 ## Context
 

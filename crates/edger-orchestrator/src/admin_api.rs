@@ -1736,6 +1736,19 @@ fn sqld_service_error(error: crate::sqld_provision::SqldProvisionError) -> SqldA
     use crate::sqld_provision::SqldProvisionError as E;
     use crate::sqld_registry::SqldRegistryError as R;
     match error {
+        E::Backup(crate::sqld_backup::SqldBackupError::TooLarge) => SqldApiError::new(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "SQLD_BACKUP_TOO_LARGE",
+            "managed database backup exceeds its size limit",
+        ),
+        E::Backup(
+            crate::sqld_backup::SqldBackupError::Timeout
+            | crate::sqld_backup::SqldBackupError::AdmissionTimeout,
+        ) => SqldApiError::new(
+            StatusCode::GATEWAY_TIMEOUT,
+            "SQLD_BACKUP_TIMEOUT",
+            "managed database backup deadline exceeded",
+        ),
         E::InvalidQuota => SqldApiError::invalid("quotaBytes is not acceptable"),
         E::TokenConflict
         | E::TokenMissing

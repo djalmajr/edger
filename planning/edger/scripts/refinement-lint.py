@@ -4,6 +4,13 @@ Planning lint for edger — mirrors agile-refinement SKILL.md Mode 1 checklist.
 Emits verbose per-category, per-file lines (OK and findings).
 Usage:
   python3 planning/edger/scripts/refinement-lint.py [--scope PATH] [--repo ROOT]
+
+Justified exceptions: a planning file can silence ONE warning class, for that
+file only, with a one-line HTML marker that carries a non-empty reason:
+  <!-- refinement-lint: allow <check> — <reason> -->
+The recognised <check> identifiers are listed in ALLOW_CHECKS. A marker with an
+unknown <check>, an empty reason or a malformed body is itself a WARN and
+silences nothing. Silenced warnings are counted as `Allowed: N` in the summary.
 """
 
 from __future__ import annotations
@@ -74,6 +81,42 @@ EPIC_FOLDER_RE = re.compile(r"epics/(\d{2})-[^/]+/")
 
 SIZE_VALUES = {"small", "medium", "large", "spike", "xlarge"}
 
+# Stable identifiers for the warning classes that a file may justify with an
+# allow marker (see the module docstring). One identifier per class.
+ALLOW_CHECKS = {
+    "origin": "Missing **Origin:** field",
+    "few-tasks": "Only N tasks (expected >=3)",
+    "verification-commands": "No fenced verification commands",
+    "placeholder": "Placeholder pattern",
+    "stale-in-progress": "Status in-progress but all tasks checked",
+}
+
+ALLOW_RE = re.compile(r"<!--\s*refinement-lint:\s*allow\b(.*?)-->", re.S)
+ALLOW_BODY_RE = re.compile(r"^\s*(\S+)\s*(?:(?:—|--)\s*(.*?))?\s*$", re.S)
+FENCE_RE = re.compile(r"^```.*?^```", re.S | re.M)
+
+
+def parse_allow_markers(text: str) -> tuple[dict[str, str], list[str]]:
+    """Return (valid {check: reason}, list of problems) for the markers in text.
+
+    Markers inside fenced code blocks are examples and are ignored.
+    """
+    allowed: dict[str, str] = {}
+    problems: list[str] = []
+    for m in ALLOW_RE.finditer(FENCE_RE.sub("", text)):
+        body = ALLOW_BODY_RE.match(m.group(1))
+        if not body:
+            problems.append("malformed allow marker (expected: allow <check> — <reason>)")
+            continue
+        check, reason = body.group(1), (body.group(2) or "").strip()
+        if check not in ALLOW_CHECKS:
+            problems.append(f"allow marker with unknown check: {check}")
+        elif not reason:
+            problems.append(f"allow marker for {check} has an empty reason")
+        else:
+            allowed[check] = reason
+    return allowed, problems
+
 
 @dataclass
 class Finding:
@@ -88,6 +131,7 @@ class LintState:
     findings: list[Finding] = field(default_factory=list)
     ok_lines: list[str] = field(default_factory=list)
     files_checked: list[Path] = field(default_factory=list)
+    allowed: list[tuple[str, str, str]] = field(default_factory=list)
 
     def ok(self, category: str, location: str, detail: str = "") -> None:
         suffix = f" — {detail}" if detail else ""
@@ -96,12 +140,28 @@ class LintState:
     def add(self, category: str, severity: str, location: str, message: str) -> None:
         self.findings.append(Finding(category, severity, location, message))
 
+    def add_unless_allowed(
+        self,
+        check: str,
+        category: str,
+        severity: str,
+        location: str,
+        message: str,
+        text: str,
+    ) -> None:
+        """Like add(), but a valid allow marker for `check` in `text` silences it."""
+        reason = parse_allow_markers(text)[0].get(check)
+        if reason:
+            self.allowed.append((location, check, reason))
+        else:
+            self.add(category, severity, location, message)
+
 
 def rel(repo: Path, p: Path) -> str:
     try:
-        return str(p.relative_to(repo))
+        return p.relative_to(repo).as_posix()
     except ValueError:
-        return str(p)
+        return p.as_posix()
 
 
 def iter_md_files(scope: Path) -> list[Path]:
@@ -121,7 +181,7 @@ def is_story_file(p: Path) -> bool:
 
 
 def is_epic_overview(p: Path) -> bool:
-    return p.name == "00-overview.md" and "/epics/" in str(p)
+    return p.name == "00-overview.md" and "/epics/" in p.as_posix()
 
 
 def is_planning_md(p: Path, repo: Path) -> bool:
@@ -194,7 +254,9 @@ def lint_cross_refs(repo: Path, files: list[Path], state: LintState) -> None:
             else:
                 state.add(category, RED, r, f"Origin missing: {origin}")
         elif is_story_file(fpath) or is_epic_overview(fpath):
-            state.add(category, WARN, r, "Missing **Origin:** field")
+            state.add_unless_allowed(
+                "origin", category, WARN, r, "Missing **Origin:** field", text
+            )
 
         for ref in extract_path_refs(text):
             target = repo / ref
@@ -367,7 +429,14 @@ def lint_completeness(repo: Path, files: list[Path], state: LintState) -> None:
             if len(unchecked) >= 3:
                 state.ok(category, r, f"{len(unchecked)} actionable tasks")
             elif unchecked:
-                state.add(category, WARN, r, f"Only {len(unchecked)} tasks (expected >=3)")
+                state.add_unless_allowed(
+                    "few-tasks",
+                    category,
+                    WARN,
+                    r,
+                    f"Only {len(unchecked)} tasks (expected >=3)",
+                    text,
+                )
             elif completed:
                 state.ok(category, r, f"completed story ({len(checked)} tasks done)")
             else:
@@ -376,7 +445,14 @@ def lint_completeness(repo: Path, files: list[Path], state: LintState) -> None:
             if re.search(r"```(?:bash|sh)?\s*\n", text):
                 state.ok(category, r, "verification commands")
             else:
-                state.add(category, WARN, r, "No fenced verification commands")
+                state.add_unless_allowed(
+                    "verification-commands",
+                    category,
+                    WARN,
+                    r,
+                    "No fenced verification commands",
+                    text,
+                )
 
 
 def lint_product_traceability(repo: Path, files: list[Path], state: LintState) -> None:
@@ -462,12 +538,23 @@ def lint_format(repo: Path, files: list[Path], state: LintState) -> None:
             else:
                 state.add(category, RED, r, f"Bad story filename: {name}")
 
+        text = fpath.read_text(encoding="utf-8")
+        for problem in parse_allow_markers(text)[1]:
+            state.add(category, WARN, r, problem)
+
         for pat in PLACEHOLDER_PATTERNS:
-            if pat.search(fpath.read_text(encoding="utf-8")):
+            if pat.search(text):
                 # TODO in task checkboxes is OK if whole-file placeholder
                 if pat.pattern == r"\bTODO\b":
                     continue
-                state.add(category, WARN, r, f"Placeholder pattern: {pat.pattern}")
+                state.add_unless_allowed(
+                    "placeholder",
+                    category,
+                    WARN,
+                    r,
+                    f"Placeholder pattern: {pat.pattern}",
+                    text,
+                )
                 break
         else:
             state.ok(category, r, "no placeholder tokens")
@@ -517,7 +604,14 @@ def lint_stale(repo: Path, files: list[Path], state: LintState) -> None:
 
         if "in progress" in text.lower() or "in-progress" in text.lower():
             if unchecked == 0 and checked > 0:
-                state.add(category, WARN, r, "Status in-progress but all tasks checked")
+                state.add_unless_allowed(
+                    "stale-in-progress",
+                    category,
+                    WARN,
+                    r,
+                    "Status in-progress but all tasks checked",
+                    text,
+                )
             else:
                 state.ok(category, r, "in-progress with open tasks")
         else:
@@ -549,7 +643,7 @@ def lint_inventory(repo: Path, state: LintState) -> None:
 def run_lint(repo: Path, scope: Path) -> LintState:
     state = LintState()
     files = [f for f in iter_md_files(scope) if is_planning_md(f, repo) or f == scope]
-    if scope.name == "planning" or str(scope).endswith("planning/edger"):
+    if scope.name == "planning" or scope.as_posix().endswith("planning/edger"):
         files = iter_md_files(repo / "planning/edger")
         files = [f for f in files if f.is_file()]
 
@@ -564,7 +658,7 @@ def run_lint(repo: Path, scope: Path) -> LintState:
     lint_scope(repo, files, state)
     lint_stale(repo, files, state)
 
-    if str(scope).endswith("planning/edger") or scope == repo / "planning/edger":
+    if scope.as_posix().endswith("planning/edger") or scope == repo / "planning/edger":
         lint_inventory(repo, state)
 
     return state
@@ -621,8 +715,17 @@ def format_report(repo: Path, scope: Path, state: LintState, round_label: str) -
     warns = [f for f in state.findings if f.severity == WARN]
     infos = [f for f in state.findings if f.severity == INFO]
 
+    if state.allowed:
+        lines.append("## Allowed (justified in the file by a refinement-lint marker)")
+        for location, check, reason in sorted(state.allowed):
+            lines.append(f"  [ALLOWED] {location}: {check} — {reason}")
+        lines.append("")
+
     lines.append("## Summary")
-    lines.append(f"  RED: {len(reds)}  WARN: {len(warns)}  INFO: {len(infos)}  OK lines: {len(state.ok_lines)}")
+    lines.append(
+        f"  RED: {len(reds)}  WARN: {len(warns)}  INFO: {len(infos)}  "
+        f"Allowed: {len(state.allowed)}  OK lines: {len(state.ok_lines)}"
+    )
     if reds:
         lines.append("VERDICT: FAIL — fix RED findings before proceeding")
     else:

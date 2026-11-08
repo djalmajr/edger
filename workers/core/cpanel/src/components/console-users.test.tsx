@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import * as React from "react";
 import type { AdminUser, Principal } from "../lib/api";
 
-const { cleanup, render, screen, waitFor, within } = await import(
+const { cleanup, fireEvent, render, screen, waitFor, within } = await import(
   "@testing-library/react"
 );
 const { default: userEvent } = await import("@testing-library/user-event");
@@ -604,13 +604,15 @@ describe("ConsoleUsers", () => {
     expect(screen.queryByText("user-07")).toBeNull();
 
     // Searching from page two resets to page one and narrows to the match.
-    await user.type(search, "user-07");
+    // Set complete search values: each intermediate keystroke re-renders the
+    // grid, but this test asserts filtering and pagination, not keyboard input.
+    fireEvent.change(search, { target: { value: "user-07" } });
     expect(screen.getByText("Page 1 of 1")).toBeTruthy();
     expect(table.querySelectorAll("tbody tr")).toHaveLength(1);
     expect(screen.getByText("user-07")).toBeTruthy();
 
     // Extending the term to a no-match shows the specific search empty text...
-    await user.type(search, "zzz");
+    fireEvent.change(search, { target: { value: "user-07zzz" } });
     expect(
       screen.getByText("No users match the search.", { exact: false }),
     ).toBeTruthy();
@@ -627,7 +629,12 @@ describe("ConsoleUsers", () => {
     ).toBeNull();
 
     // Namespaces are searchable even when no username matches.
-    await user.type(search, "platform");
+    fireEvent.change(search, { target: { value: "platform" } });
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(screen.getByText("zeta")).toBeTruthy();
+
+    // Workers are searchable even when neither username nor namespace matches.
+    fireEvent.change(search, { target: { value: "w-edge" } });
     expect(table.querySelectorAll("tbody tr")).toHaveLength(1);
     expect(screen.getByText("zeta")).toBeTruthy();
   });

@@ -1,6 +1,7 @@
 # Story 05.04: Auth + namespace gate (ApiKeyPrincipal, Turso/SQLite, publicRoutes bypass)
 
 **Origin:** `planning/edger/epics/05-orquestrador/00-overview.md`
+<!-- refinement-lint: allow few-tasks — as tasks reais estão marcadas; o único item aberto é a implementação Turso/libSQL opcional, registrada como pendência na seção Pendências da própria história -->
 
 ## Context
 - **Problema:** Requisições chegam ao pipeline sem autenticação nem verificação de namespace; contrato Buntime de principals não é aplicado.

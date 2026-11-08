@@ -35,7 +35,11 @@ montagens separadas para permitir persistência explícita no container e no Hel
 
 ## Verification
 
-- `helm lint charts/edger` e `helm template edger charts/edger`.
+```bash
+helm lint charts/edger
+helm template edger charts/edger
+```
+
 - Build e inspeção do usuário e conteúdo da imagem.
 
 ## Status

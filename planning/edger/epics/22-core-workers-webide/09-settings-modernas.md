@@ -118,6 +118,15 @@
 - [x] `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check`
 - [x] Browser: User/Workspace, busca e reset; unit tests: Modified, herança e efeitos do modelo.
 
+```bash
+cd workers/core/webide && bun run test
+cd workers/core/webide && bun run typecheck
+cd workers/core/webide && bun run build
+cd workers/core/webide && bun run test:flows
+planning/edger/scripts/webide-ui-gate.sh
+cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -- --check
+```
+
 ## Status
 
 completed (2026-07-15) — modelo, UI, efeitos, fluxo E2E catalogado, interações

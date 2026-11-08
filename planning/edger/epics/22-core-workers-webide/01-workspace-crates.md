@@ -34,8 +34,10 @@ Cargo permanecem estáveis.
 
 ## Verification
 
-- `cargo metadata --no-deps`
-- Gate Rust obrigatório do workspace.
+```bash
+cargo metadata --no-deps
+cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo fmt -- --check
+```
 
 ## Status
 

@@ -1,6 +1,7 @@
 # Story 15.D: Limites de recurso reais por worker
 
 **Origin:** `planning/edger/epics/15-runtime-js-duravel/00-overview.md`
+<!-- refinement-lint: allow few-tasks — os dois itens abertos são critérios de aceite riscados e marcados como adiados (métricas RSS/CPU e teto de CPU); todas as tasks de cada fase estão marcadas -->
 
 ## Context
 

@@ -1,6 +1,6 @@
 # Story 20.02: OIDC claims para namespaces
 
-**Origin:** planning/edger/epics/20-endurecimento-runtime/00-overview.md
+**Origin:** `planning/edger/epics/20-endurecimento-runtime/00-overview.md`
 
 ## Context
 

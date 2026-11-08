@@ -1,6 +1,7 @@
 # Story 07.07: Hardening, limites e matriz de compatibilidade Buntime
 
 **Origin:** `planning/edger/epics/07-avancado/00-overview.md`
+<!-- refinement-lint: allow few-tasks — os dois itens abertos são ressalvas registradas no texto (gate completo em ambiente sem sandbox de loopback; cenários slow/ephemeral/burst como follow-up), não tasks por fazer -->
 
 ## Context
 - **Problema:** Foundation phase fecha sem enforcement rigoroso de limites body/header, sem testes sistemáticos de paridade Buntime, e sem baselines de performance documentadas (decisão usuário: measurement em PR 12).

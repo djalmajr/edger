@@ -233,6 +233,78 @@ mod unix {
     // ----------------------------------------------------------------- tests
 
     #[tokio::test]
+    async fn quota_cap_refuses_an_excess_without_touching_previous_copies() {
+        let dir = private_dir();
+        let good = serve(dump_steps(&[b"BEGIN;\nCOMMIT;\n"])).await;
+        let artifact = SqldBackupStore::new(&good.origin, dir.path().to_owned())
+            .unwrap()
+            .create_for_quota(NS, tok(), 128 * 1024 * 1024)
+            .await
+            .unwrap();
+        let before = listing(dir.path());
+        let over = serve(vec![
+            w("HTTP/1.1 200 OK\r\nContent-Length: 536870913\r\n\r\n"),
+            Step::Hold,
+        ])
+        .await;
+        let error = SqldBackupStore::new(&over.origin, dir.path().to_owned())
+            .unwrap()
+            .create_for_quota(NS, tok(), 128 * 1024 * 1024)
+            .await
+            .unwrap_err();
+        assert_eq!(error, SqldBackupError::TooLarge);
+        assert_eq!(listing(dir.path()), before);
+        assert_eq!(
+            std::fs::read(dir.path().join(artifact.file_name)).unwrap(),
+            b"BEGIN;\nCOMMIT;\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_cap_below_the_quota_requirement_is_rejected_before_network() {
+        let server = serve(dump_steps(&[b"dump"])).await;
+        let dir = private_dir();
+        let error = store(&server.origin, dir.path(), config())
+            .create_for_quota(NS, tok(), 1024 * 1024 * 1024)
+            .await
+            .unwrap_err();
+        assert_eq!(error, SqldBackupError::InvalidConfig);
+        assert_eq!(server.accepted(), 0);
+        assert!(listing(dir.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn quota_backup_requires_a_real_terminal_commit_on_close_delimited_eof() {
+        let dir = private_dir();
+        let good = serve(dump_steps(&[b"BEGIN;\nCOMMIT;\n"])).await;
+        SqldBackupStore::new(&good.origin, dir.path().to_owned())
+            .unwrap()
+            .create_for_quota(NS, tok(), 16 * 1024 * 1024)
+            .await
+            .unwrap();
+        let before = listing(dir.path());
+        for body in [
+            "BEGIN;\nINSERT INTO t VALUES ('payload\nCOMMIT;\n",
+            "BEGIN;\n-- COMMIT;\n",
+            "BEGIN;\n/* COMMIT; */\n",
+        ] {
+            let server = serve(vec![
+                w("HTTP/1.0 200 OK\r\nConnection: close\r\n\r\n"),
+                w(body),
+            ])
+            .await;
+            let error = SqldBackupStore::new(&server.origin, dir.path().to_owned())
+                .unwrap()
+                .create_for_quota(NS, tok(), 16 * 1024 * 1024)
+                .await
+                .unwrap_err();
+            assert_eq!(error, SqldBackupError::Incomplete);
+            assert_eq!(listing(dir.path()), before);
+            assert!(server.heads()[0].starts_with("GET /dump HTTP/1.0\r\n"));
+        }
+    }
+
+    #[tokio::test]
     async fn publishes_chunked_dump_privately_with_real_bytes_and_digest() {
         let dump = format!("BEGIN;\nINSERT INTO t VALUES('{BODY_CANARY}');\nCOMMIT;\n");
         let parts: Vec<&[u8]> = vec![

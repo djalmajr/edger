@@ -32,6 +32,61 @@ const ROOT_KEY: &str = "edg53-11b-local-root-canary";
 const ASSET: &str = "assets/app-a1b2c3d4.js";
 const LOG_TAIL_BYTES: usize = 2048;
 
+/// EDG-89: a real Go guest, fresh isolate on each request, same binary process.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "opt-in: real Go artifact, needs EDGER_GO_WASM_FIXTURE"]
+async fn ephemeral_wasm_reuses_compilation_across_requests() {
+    let fixture = std::env::var("EDGER_GO_WASM_FIXTURE").expect("real Go fixture required");
+    let wasm = fs::read(&fixture).expect("read immutable Go fixture");
+    assert_eq!(&wasm[..4], b"\0asm");
+    assert!(wasm.len() > 1_000_000);
+    let manifest = b"name: wasm-ephemeral\nversion: \"1.0.0\"\nkind: wasm\nentrypoint: index.wasm\nttl: 0\ntimeout: 60s\nallowNet: []\negress:\n  enabled: true\n";
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut zip = zip::ZipWriter::new(&mut cursor);
+        for (name, data) in [
+            ("manifest.yaml", manifest.as_slice()),
+            ("index.wasm", &wasm),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+    let root = tempfile::tempdir().unwrap();
+    let client = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .unwrap();
+    let mut edger = Edger::launch(root.path());
+    edger.wait_ready(&client).await;
+    install(&client, &edger, cursor.into_inner()).await;
+    let mut elapsed = Vec::new();
+    for index in 0..2 {
+        let start = Instant::now();
+        let reply = get(&client, &edger, "/wasm-ephemeral/inspect?cache=89", None).await;
+        elapsed.push(start.elapsed());
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+        let body = reply.json();
+        assert_eq!(body["method"], "GET");
+        assert_eq!(body["path"], "/inspect");
+        assert_eq!(body["rawQuery"], "cache=89");
+        eprintln!(
+            "edg89 request={} elapsed_ms={:.3} fixture_sha256={}",
+            index + 1,
+            elapsed[index].as_secs_f64() * 1000.0,
+            sha_hex(&wasm)
+        );
+    }
+    assert!(
+        elapsed[1] * 4 < elapsed[0],
+        "warm request must avoid Go JIT: {elapsed:?}"
+    );
+    eprintln!("edg89 shutdown={}", edger.shutdown());
+}
+
 // ---------------------------------------------------------------------------
 // Fixtures: WAT guest + synthetic packages
 // ---------------------------------------------------------------------------

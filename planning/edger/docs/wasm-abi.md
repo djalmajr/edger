@@ -19,11 +19,14 @@ EDG-56), ainda sem release
   export do módulo e decodifica a response devolvida também pela memória linear.
 - Cada request cria um `Store` e uma instância novos (`_initialize` roda de novo
   a cada vez). Memória e globals do guest não são reutilizados entre requests.
-- O módulo compilado é reutilizado por um cache de conteúdo (SHA-256 dos bytes)
-  que mora **dentro do isolate** (`WasmIsolate`/`WasmHttpHandler`), isto é, de
-  uma instância do pool. Não há `Engine` global nem cache do wasmtime em disco.
-  Veja [Custo do WASM efêmero](#custo-do-wasm-efêmero): o `ttl` decide se esse
-  cache sobrevive entre requests.
+- Um `Engine` por processo, com a mesma configuração de epoch, serve todos os
+  isolates WASM. O cache de `Module` é compartilhado por SHA-256 dos bytes,
+  limitado a **8 entradas com descarte LRU**; caminhos, nomes e versões não
+  entram na chave. Bytes iguais reutilizam a compilação enquanto residentes;
+  bytes diferentes compilam separadamente. Não há cache em disco.
+- Só `Module` entra no cache: `Store`, `Linker`, instância, env, segredos e
+  grants são novos por execução. A política de imports é reverificada em
+  todo pedido, inclusive acerto do cache. Veja [Custo do WASM efêmero](#custo-do-wasm-efêmero).
 - A resposta é bufferizada: o frame precisa estar completo na memória do guest
   quando `edger_handle` retorna. O guest não faz streaming. O SSE do EdgeR não
   mantém o `Store` vivo: o guest autoriza e publica em execuções curtas e o host
@@ -173,7 +176,7 @@ Pelo pool, o timeout externo do worker (`execute_with_limits`) dispara antes do
 prazo interno, que é arredondado para cima: o erro visto pelo chamador é
 `TIMEOUT`, não `WASM_TIMEOUT`. Qualquer erro do isolate (trap, timeout,
 `WASM_IMPORT_DENIED`, frame inválido) é tratado como crítico: a instância é
-terminada e removida, e o cache de módulo dessa instância se perde. Na superfície
+terminada e removida; o módulo compilado permanece no cache do processo até o descarte LRU. Na superfície
 HTTP, um `WorkerError` vira `500 WORKER_ERROR`; o código do WASM aparece na
 mensagem e no evento `dispatch`.
 
@@ -241,41 +244,40 @@ depende do modo do processo:
   redirects revalidados; os limites de tempo, tamanho e concorrência do guard).
   `allowNet: []` só significa que o Deno não tem rede direta; não restringe o
   guard. Sem o par, toda requisição falha com `WASM_IMPORT_DENIED` e, como o erro
-  é crítico, a instância e seu cache de módulo se perdem a cada falha.
+  é crítico, a instância se perde a cada falha. Isso não concede imports a um módulo já compilado.
 
 Sockets brutos seguem negados em ambos os modos. O guard também recusa a porta 9090 e qualquer redirect no caminho do
 banco; detalhes do egress em [egress-byok.md](egress-byok.md).
 
 ## Custo do WASM efêmero
 
-`kind: wasm` sem `ttl` no manifest recebe `ttl` 0 (o padrão de 300 s só vale para
-`static-spa`, `fetch`, `routes` e `fullstack` com kind ou entrypoint declarado).
-Com `ttl` 0, o pool cria uma instância e um isolate novos **a cada pedido**, com
-`Engine` novo e cache de módulo vazio, e os descarta ao fim: o arquivo é relido e
-o módulo é **recompilado a cada pedido**.
+`kind: wasm` sem `ttl` recebe `ttl` 0 (o padrão de 300 s continua valendo para
+`fullstack` com kind explícito). O pool ainda cria um isolate novo por pedido;
+memória, globals, env e segredos do guest não sobrevivem. O Engine e os módulos
+compilados agora pertencem ao processo: o arquivo é relido, mas os mesmos bytes
+acertam o cache SHA-256 de oito módulos com LRU. O primeiro pedido compila;
+expiração de ttl, maxRequests, oneshot e reciclagem não descartam esse cache.
+O nono módulo remove o menos usado; uma nova chamada daquele módulo recompila.
+Reiniciar o processo também perde o cache. Prewarm não compila antecipadamente.
 
-Com `ttl` explícito maior que zero, a instância fica ociosa com timer deslizante;
-o primeiro pedido compila e os seguintes acertam o cache. O cache se perde por
-expiração do `ttl`, `maxRequests`, `isolation: oneshot`, despejo LRU (capacidade
-32), reciclagem ou qualquer erro do isolate. O prewarm (`minProcesses`) não
-compila: a compilação acontece no primeiro pedido.
+Compilações concorrentes da mesma chave podem duplicar trabalho: o mutex protege
+somente o cache e não bloqueia outras chaves durante a compilação. A publicação
+é sincronizada e não duplica entradas. A compilação assíncrona continua fora da
+thread Tokio, com o mesmo prazo absoluto e a permissão retida até o compilador
+terminar. A política de imports é checada de novo no hit com o grant atual;
+HTTP, resolução de segredos e env continuam estritamente por execução.
 
-O que foi **medido** (perfil `dev`, sem release; módulo do exemplo `sse-go-wasm`
-de 6,6 MB, 6.653.087 bytes no build de conferência, binário `edger` real, durante a
-prova do SSE):
-
-| Configuração | Pedido | Tempo |
-|---|---|---|
-| `ttl` 0 (padrão do kind) | cada um | cerca de 9 s (uniforme) |
-| `ttl` explícito | primeiro | cerca de 9 s |
-| `ttl` explícito | seguintes | cerca de 80 ms |
-
-O custo em **release não foi medido** e não deve ser extrapolado dos números do
-perfil `dev`. O módulo de `go-wasm-http` é maior (11.676.592 bytes no build de
-conferência, ainda abaixo do limite de 16 MiB) e seu tempo **não foi medido**. A recomendação é declarar `ttl` em todo guest Go (por exemplo
-`ttl: 10m`, como em `workers/examples/sse-go-wasm/manifest.yaml`). O `ttl` do
-worker não é o `ttl` das assinaturas SSE (`sse.ttl`). O fullstack com
-`adapter: wasm` tem `ttl` padrão de 300 s, porque seu kind é explícito.
+A medição histórica (~9 s por pedido com Go de 6,6 MB em dev) descreve o runtime
+anterior, que criava Engine/cache por isolate. O teste ignorado
+`ephemeral_wasm_reuses_compilation_across_requests` usa o binário real e o
+artefato Go imutável indicado por `EDGER_GO_WASM_FIXTURE`, com dois pedidos e
+respostas verificadas. No WSL, perfil dev e artefato de 11.676.592 bytes
+(SHA-256 `8062d9cbed8f48dd8f167d7805b2f83e30e401c0d3a072c9d82dc5f810f535b0`),
+os pedidos antes da mudança levaram 17.258 ms e 17.194 ms; depois, 16.675 ms e
+158 ms. São observações locais, não percentis ou SLA. O relatório EDG-89 guarda
+os logs completos. O teste exige segundo pedido pelo menos quatro vezes mais rápido.
+Custos em release não foram medidos. O ttl do worker controla a vida do isolate,
+não a compilação do processo nem o ttl das assinaturas SSE (`sse.ttl`).
 
 ## WASM no mesmo app da SPA (`kind: fullstack`, `adapter: wasm`)
 

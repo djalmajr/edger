@@ -1,6 +1,6 @@
 # Story 20.03: Ciclo de vida do pool
 
-**Origin:** planning/edger/epics/20-endurecimento-runtime/00-overview.md
+**Origin:** `planning/edger/epics/20-endurecimento-runtime/00-overview.md`
 
 ## Context
 
