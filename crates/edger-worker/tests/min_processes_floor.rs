@@ -398,6 +398,101 @@ async fn warm_two_idle(pool: &WorkerPool, factory: &CountingFactory, worker_ref:
     assert!(second.await.unwrap().is_ok());
 }
 
+// EDG-94: the current enabled state overrides the captured WorkerRef.
+#[tokio::test]
+async fn current_disabled_state_releases_the_ttl_floor() {
+    tokio::time::pause();
+    let factory = Arc::new(CountingFactory::new(0));
+    let pool = pool(factory.clone(), 8);
+    let enabled = Arc::new(AtomicBool::new(true));
+    pool.set_enabled_predicate({
+        let enabled = enabled.clone();
+        move |_| enabled.load(Ordering::SeqCst)
+    });
+    let worker = floor_worker_ref("disabled-ttl", 1, 1, 100, 0);
+    pool.prewarm_worker(&worker).await.unwrap();
+    fetch(&pool, &worker, "/arm").await;
+    advance(105).await;
+    assert_eq!(pool.worker_stats().len(), 1);
+    assert_eq!(group_kept(&pool, &worker.name), 1);
+
+    enabled.store(false, Ordering::SeqCst);
+    advance(105).await;
+    assert!(pool.worker_stats().is_empty(), "disabled floor must expire");
+    advance(500).await;
+    assert_eq!(factory.created_count(), 1, "disabled floor must not refill");
+    assert_eq!(pool.get_metrics().active_workers, 0);
+    pool.shutdown().unwrap().await.unwrap();
+}
+
+#[tokio::test]
+async fn current_disabled_state_prevents_replenishment_after_removal() {
+    tokio::time::pause();
+    let factory = Arc::new(CountingFactory::new(0));
+    let pool = pool(factory.clone(), 8);
+    let enabled = Arc::new(AtomicBool::new(true));
+    pool.set_enabled_predicate({
+        let enabled = enabled.clone();
+        move |_| enabled.load(Ordering::SeqCst)
+    });
+    let worker = floor_worker_ref("disabled-removal", 1, 1, 30_000, 1);
+    pool.prewarm_worker(&worker).await.unwrap();
+    fetch(&pool, &worker, "/enabled-retire").await;
+    settle(64).await;
+    assert_eq!(factory.created_count(), 2, "enabled floor must refill");
+    assert_eq!(pool.worker_stats().len(), 1);
+
+    enabled.store(false, Ordering::SeqCst);
+    fetch(&pool, &worker, "/disabled-retire").await;
+    settle(64).await;
+    assert!(
+        pool.worker_stats().is_empty(),
+        "disabled floor must stay empty"
+    );
+    assert_eq!(factory.created_count(), 2);
+    assert_eq!(pool.get_metrics().active_workers, 0);
+    pool.shutdown().unwrap().await.unwrap();
+}
+
+#[tokio::test]
+async fn disabled_state_is_rechecked_when_a_queued_replenishment_runs() {
+    tokio::time::pause();
+    let factory = Arc::new(CountingFactory::new(0));
+    let pool = pool(factory.clone(), 8);
+    let enabled = Arc::new(AtomicBool::new(true));
+    pool.set_enabled_predicate({
+        let enabled = enabled.clone();
+        move |_| enabled.load(Ordering::SeqCst)
+    });
+    let worker = floor_worker_ref("disabled-queued", 2, 2, 30_000, 0);
+    pool.prewarm_worker(&worker).await.unwrap();
+    let removed = pool.worker_group(&worker).unwrap().instances_snapshot()[0].clone();
+    removed.set_state(WorkerState::Terminated);
+    pool.remove_instance(&removed);
+    enabled.store(false, Ordering::SeqCst);
+    settle(64).await;
+    assert_eq!(pool.worker_stats().len(), 1);
+    assert_eq!(
+        factory.created_count(),
+        2,
+        "queued attempt must recheck enabled"
+    );
+    pool.shutdown().unwrap().await.unwrap();
+}
+
+#[tokio::test]
+async fn disabled_state_prevents_a_stale_background_prewarm() {
+    tokio::time::pause();
+    let factory = Arc::new(CountingFactory::new(0));
+    let pool = pool(factory.clone(), 8);
+    pool.set_enabled_predicate(|_| false);
+    let worker = floor_worker_ref("disabled-prewarm", 1, 1, 30_000, 0);
+    assert_eq!(pool.prewarm_worker(&worker).await.unwrap(), 0);
+    assert_eq!(factory.created_count(), 0);
+    assert!(pool.worker_stats().is_empty());
+    pool.shutdown().unwrap().await.unwrap();
+}
+
 // 1. `min_processes: 1`, short TTL: after SEVERAL expirations the instance
 //    is still alive and Idle; the next request is served by the SAME
 //    instance (no cold start, no new isolate), and each expiry that kept it

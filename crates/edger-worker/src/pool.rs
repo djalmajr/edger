@@ -172,6 +172,7 @@ struct WorkerPoolInner {
     config: PoolConfig,
     cache: WorkerLru,
     factory: Arc<dyn IsolateFactory>,
+    enabled_predicate: Mutex<Option<WorkerEnabledPredicate>>,
     metrics: Arc<MetricsCollector>,
     ephemeral: EphemeralGate,
     circuit_breakers: Mutex<HashMap<WorkerCacheKey, CircuitBreakerState>>,
@@ -314,6 +315,8 @@ pub struct WorkerLifecycleEvent {
 
 pub type LifecycleEventSender = tokio::sync::mpsc::Sender<WorkerLifecycleEvent>;
 
+type WorkerEnabledPredicate = Arc<dyn Fn(&WorkerRef) -> bool + Send + Sync>;
+
 #[derive(Default)]
 struct CircuitBreakerState {
     consecutive_failures: u32,
@@ -386,6 +389,7 @@ impl WorkerPool {
                 cache: WorkerLru::new(config.max_size),
                 config,
                 factory,
+                enabled_predicate: Mutex::new(None),
                 metrics,
                 ephemeral,
                 circuit_breakers: Mutex::new(HashMap::new()),
@@ -398,6 +402,30 @@ impl WorkerPool {
                 abandon_drain,
             }),
         }
+    }
+
+    /// Consult current control-plane state when maintaining a process floor.
+    /// Without a predicate, standalone pools keep their existing behavior.
+    /// The callback must be synchronous and must not call back into the pool.
+    pub fn set_enabled_predicate(
+        &self,
+        predicate: impl Fn(&WorkerRef) -> bool + Send + Sync + 'static,
+    ) {
+        *self
+            .inner
+            .enabled_predicate
+            .lock()
+            .expect("enabled predicate lock") = Some(Arc::new(predicate));
+    }
+
+    fn worker_is_enabled(&self, worker_ref: &WorkerRef) -> bool {
+        let predicate = self
+            .inner
+            .enabled_predicate
+            .lock()
+            .expect("enabled predicate lock")
+            .clone();
+        predicate.is_none_or(|predicate| predicate(worker_ref))
     }
 
     fn ensure_active(&self) -> Result<(), WorkerError> {
@@ -689,30 +717,45 @@ impl WorkerPool {
             .config
             .min_processes
             .min(worker_ref.config.max_processes.max(1));
-        let group = self.get_or_create_group(&worker_ref)?;
-        if group.is_evicted() {
-            // The group was evicted between the lookup and now: prewarming
-            // it would orphan processes outside the cache. The identity's
-            // next prewarm applies to the current generation.
-            return Ok(0);
-        }
-        let instances = group.ensure_min_processes(target, || {
-            let spawn_start = Instant::now();
-            let instance = self.create_instance(&worker_ref);
-            instance.attach_group(&group);
-            self.inner.metrics.record_miss();
-            self.inner
-                .metrics
-                .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
-            instance
-        });
+        let (group, instances) = {
+            // A delayed enable prewarm must not recreate a disabled group
+            // after recycle's drained-set snapshot. Admit under the same
+            // lock as close/replenishment and consult the live flag there.
+            let _admission = self
+                .inner
+                .close_admission
+                .lock()
+                .expect("close/admission lock");
+            if !self.worker_is_enabled(&worker_ref) {
+                return Ok(0);
+            }
+            let group = self.get_or_create_group(&worker_ref)?;
+            if group.is_evicted() || group.is_closed() {
+                return Ok(0);
+            }
+            let instances = group.ensure_min_processes(target, || {
+                let spawn_start = Instant::now();
+                let instance = self.create_instance(&worker_ref);
+                instance.attach_group(&group);
+                self.inner.metrics.record_miss();
+                self.inner
+                    .metrics
+                    .record_spawn_latency(spawn_start.elapsed().as_millis().max(1) as u64);
+                instance
+            });
+            (group, instances)
+        };
         self.sync_worker_counts();
 
         let mut spawned = 0;
         for instance in instances {
             let dispatch_lock = instance.dispatch_lock();
             let guard = dispatch_lock.lock_owned().await;
-            if group.is_evicted() {
+            if group.is_evicted()
+                || group.is_closed()
+                || self.inner.shutdown.load(Ordering::SeqCst)
+                || !self.worker_is_enabled(&worker_ref)
+            {
                 break;
             }
             let just_spawned = instance.state() == WorkerState::Creating;
@@ -1811,7 +1854,8 @@ impl WorkerPool {
         // the removal.
         let keep_empty = !self.inner.shutdown.load(Ordering::SeqCst)
             && instance.worker_ref.config.min_processes > 0
-            && instance.worker_ref.config.ttl_ms > 0;
+            && instance.worker_ref.config.ttl_ms > 0
+            && self.worker_is_enabled(&instance.worker_ref);
         self.inner
             .cache
             .remove_instance(&key, instance.id(), keep_empty);
@@ -1847,7 +1891,10 @@ impl WorkerPool {
         if self.inner.shutdown.load(Ordering::SeqCst) {
             return;
         }
-        if worker_ref.config.ttl_ms == 0 || worker_ref.config.min_processes == 0 {
+        if worker_ref.config.ttl_ms == 0
+            || worker_ref.config.min_processes == 0
+            || !self.worker_is_enabled(worker_ref)
+        {
             return;
         }
         // Capture the instance's OWN group as a WEAK now (promoted only at
@@ -1931,7 +1978,10 @@ impl WorkerPool {
                 .close_admission
                 .lock()
                 .expect("close/admission lock");
-            if group.is_evicted() || group.is_closed() || self.inner.shutdown.load(Ordering::SeqCst)
+            if group.is_evicted()
+                || group.is_closed()
+                || self.inner.shutdown.load(Ordering::SeqCst)
+                || !self.worker_is_enabled(worker_ref)
             {
                 return;
             }
@@ -1994,7 +2044,10 @@ impl WorkerPool {
             // the admitted placeholders stay in the group's vector, and the
             // close-time snapshot (taken under the same lock, after this
             // admission) includes them, so the drain terminates them.
-            if group.is_evicted() || group.is_closed() || self.inner.shutdown.load(Ordering::SeqCst)
+            if group.is_evicted()
+                || group.is_closed()
+                || self.inner.shutdown.load(Ordering::SeqCst)
+                || !self.worker_is_enabled(worker_ref)
             {
                 break;
             }
@@ -2063,7 +2116,11 @@ impl WorkerPool {
         let group = instance.own_group();
         let floor = group
             .as_ref()
-            .filter(|group| !group.is_evicted() && !group.is_closed())
+            .filter(|group| {
+                !group.is_evicted()
+                    && !group.is_closed()
+                    && self.worker_is_enabled(&instance.worker_ref)
+            })
             .map(|_| instance.worker_ref.config.min_processes)
             .unwrap_or(0);
         if floor == 0 {

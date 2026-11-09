@@ -440,6 +440,22 @@ immutable image of the release. Kong strips the `/apps/` prefix (the
 helm rollback edger <revision> -n hyper
 ```
 
+## Worker enable, disable and recycle
+
+`POST /api/admin/workers/{name}/disable?version=<v>` persists the disabled
+state, then releases that version's processes using the same bounded drain
+as explicit recycle. The response keeps the existing fields and adds
+`recycled`, the number released. If persistence fails, no process is closed.
+The pool reads the current enabled state for TTL floor protection and floor
+replenishment: a disabled version is not kept alive or recreated by
+`minProcesses`. Enabling still schedules the floor prewarm in the background
+(`prewarm: "scheduled"`); a cPanel enable also releases every version it
+mutually disables. HTTP and MCP toggles share this behavior.
+
+`POST /api/admin/workers/{name}/recycle?version=<v>` remains available to
+restart an enabled version from its current files or apply changed secrets;
+it keeps the enabled flag and schedules its floor prewarm when configured.
+
 ## Upgrade notes
 
 With worker persistence enabled, the Deployment uses the `Recreate` strategy

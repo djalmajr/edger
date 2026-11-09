@@ -62,6 +62,10 @@ pub(crate) const ADMIN_CONTROL_AUTH_HEADER: &str = "x-edger-control-authorizatio
 
 /// Build the full axum application (health + readiness + pipeline fallback).
 pub fn build_pipeline(state: OrchestratorState) -> Router {
+    let index = state.index.clone();
+    state.pool.set_enabled_predicate(move |worker| {
+        index.is_worker_enabled(&worker.name, &worker.version)
+    });
     let metrics_state = state.server.clone();
     let inner = Router::new()
         .route("/", get(root_redirect))

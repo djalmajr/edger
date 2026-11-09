@@ -57,6 +57,7 @@ Campos allowlisted: ID monotônico, timestamp, source, kind, level, identidade, 
 
 - Release configurado produz `release.started` e termina em `release.succeeded`, `release.failed` ou `release.skipped`; comando, env e stderr não entram no envelope.
 - Drain produz `process.drain.started`, `process.drain.completed` ou `process.drain.timed_out`, seguido de `process.terminated`.
+- Disable persistido libera os processos da versão pelo mesmo drain limitado do recycle e retorna `recycled`; falha de persistência não fecha processos. O mutual disable do cPanel libera todas as versões afetadas. O pool consulta o enabled atual antes de proteger o piso no TTL ou repô-lo, sem recriar versão desabilitada. Enable continua agendando prewarm em background (`prewarm: "scheduled"`).
 - O ACK de shutdown diferencia promises registradas de timeout real. Contagem, duração, causa e process ID ficam disponíveis quando conhecidos.
 - TTL, max requests, ephemeral, erro crítico, recycle de stream e shutdown global usam o mesmo produtor bounded.
 - ANSI/controle, bytes inválidos e padrões sensíveis passam por sanitização/truncamento central.

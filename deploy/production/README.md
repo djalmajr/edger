@@ -599,8 +599,14 @@ inteiro para.
 - **Restore por banco** (emergência; **não para o EdgeR** — o restore de
   um app só desabilita o worker daquele app):
   1. desabilitar o worker do app
-     (`POST /api/admin/workers/<app>/disable` por port-forward — o resto
-     dos apps continua no ar);
+     (`POST /api/admin/workers/<app>/disable?version=<v>` por port-forward,
+     para cada versão que deve parar — o resto dos apps continua no ar).
+     O disable persiste o estado e libera os processos com o mesmo drain
+     limitado do recycle; `recycled` informa quantos foram liberados. Se a
+     persistência falhar, nenhum processo é fechado. O pool consulta o estado
+     atual e não mantém nem repõe o piso `minProcesses` de versão desabilitada,
+     portanto não é preciso chamar recycle depois de disable. O enable volta
+     a agendar o prewarm do piso em background;
   2. o restore do Cinzel **recusa destino não vazio** — esvaziar o
      banco pela API de admin: `DELETE /v1/namespaces/<banco>` e `POST
      /v1/namespaces/<banco>/create` com a `jwt_key` (a sequência exata

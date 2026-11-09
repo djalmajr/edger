@@ -21,6 +21,354 @@ use tower::ServiceExt;
 
 const ROOT_KEY: &str = "test-root";
 
+async fn floor_toggle(app: &axum::Router, action: &str, mcp: bool) -> Value {
+    if !mcp {
+        let (status, json, text) = send(
+            app,
+            "POST",
+            &format!("/api/admin/workers/hello/{action}?version=1.0.0"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        return json;
+    }
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {
+            "name": format!("edger.{action}_worker"),
+            "arguments": {"name": "hello", "version": "1.0.0"},
+        },
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/mcp")
+                .header("authorization", format!("Bearer {ROOT_KEY}"))
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_ne!(json["result"]["isError"], true, "{json}");
+    serde_json::from_str(json["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn disable_releases_the_live_floor_and_enable_prewarms_through_http_and_mcp() {
+    let _guard = MUTATION_PLANE_LOCK.lock().await;
+    for mcp in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        write_worker(root.path(), "hello@1.0.0", "hello",
+            "name: hello\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nttl: 30s\nminProcesses: 2\nmaxProcesses: 2\n");
+        let (state, app) = state_for(root.path());
+        let worker = state.index.resolve_worker("hello", Some("1.0.0")).unwrap();
+        assert_eq!(state.pool.prewarm_worker(&worker).await.unwrap(), 2);
+        let instances = state
+            .pool
+            .worker_group(&worker)
+            .unwrap()
+            .instances_snapshot();
+
+        let json = floor_toggle(&app, "disable", mcp).await;
+        assert_eq!(json["status"], "disabled");
+        assert_eq!(json["prewarm"], "not_configured");
+        assert_eq!(json["recycled"], 2);
+        assert!(state.pool.worker_stats().is_empty());
+        assert!(instances
+            .iter()
+            .all(|instance| instance.state() == edger_worker::WorkerState::Terminated));
+        assert_eq!(
+            fs::read_to_string(root.path().join("hello@1.0.0/.edger-enabled")).unwrap(),
+            "enabled=false\n"
+        );
+
+        let json = floor_toggle(&app, "enable", mcp).await;
+        assert_eq!(json["prewarm"], "scheduled");
+        for _ in 0..1000 {
+            if state.pool.worker_stats().len() == 2 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let stats = state.pool.worker_stats();
+        assert_eq!(stats.len(), 2, "enable must prewarm the floor");
+        assert!(stats
+            .iter()
+            .all(|stat| !instances.iter().any(|old| old.id() == stat.worker_id)));
+        state.pool.shutdown().unwrap().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn failed_disable_persistence_keeps_the_live_floor() {
+    let _guard = MUTATION_PLANE_LOCK.lock().await;
+    let root = tempfile::tempdir().unwrap();
+    write_worker(root.path(), "hello@1.0.0", "hello",
+        "name: hello\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nttl: 30s\nminProcesses: 1\nmaxProcesses: 1\n");
+    let (state, app) = state_for(root.path());
+    let worker = state.index.resolve_worker("hello", None).unwrap();
+    state.pool.prewarm_worker(&worker).await.unwrap();
+    let instance = state
+        .pool
+        .worker_group(&worker)
+        .unwrap()
+        .instances_snapshot()[0]
+        .clone();
+    // A directory at the marker path produces a real I/O failure even as root.
+    fs::create_dir(root.path().join("hello@1.0.0/.edger-enabled")).unwrap();
+    let (status, json, text) = send(
+        &app,
+        "POST",
+        "/api/admin/workers/hello/disable?version=1.0.0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{text}");
+    assert_eq!(json["code"], "DEPLOY_IO", "{text}");
+    assert!(
+        state
+            .index
+            .resolve_worker("hello", None)
+            .unwrap()
+            .config
+            .enabled
+    );
+    assert_eq!(state.pool.worker_stats()[0].worker_id, instance.id());
+    assert_eq!(instance.state(), edger_worker::WorkerState::Idle);
+    state.pool.shutdown().unwrap().await.unwrap();
+}
+
+fn cpanel_floor_state() -> (tempfile::TempDir, OrchestratorState, axum::Router) {
+    let root = tempfile::tempdir().unwrap();
+    for version in ["1.0.0", "2.0.0", "3.0.0"] {
+        write_worker(root.path(), &format!("cpanel@{version}"), "cpanel",
+            &format!("name: cpanel\nversion: \"{version}\"\nentrypoint: index.ts\nkind: fetch\nttl: 30s\nminProcesses: 1\nmaxProcesses: 1\n"));
+        let dir = root.path().join(format!("cpanel@{version}"));
+        if version == "1.0.0" {
+            fs::write(dir.join(".edger-enabled"), "enabled=false\n").unwrap();
+        } else {
+            // Enabled staged versions coexist until a non-staged enable.
+            fs::write(dir.join(".edger-revision"), "test\nstaged=true\n").unwrap();
+        }
+    }
+    let (state, app) = state_for_roots(&[], Some(&root.path().to_path_buf()), &[]);
+    (root, state, app)
+}
+
+#[tokio::test]
+async fn cpanel_enable_releases_every_mutually_disabled_version() {
+    let _guard = MUTATION_PLANE_LOCK.lock().await;
+    let (root, state, app) = cpanel_floor_state();
+    let mut instances = Vec::new();
+    for version in ["2.0.0", "3.0.0"] {
+        let worker = state.index.resolve_worker("cpanel", Some(version)).unwrap();
+        state.pool.prewarm_worker(&worker).await.unwrap();
+        instances.extend(
+            state
+                .pool
+                .worker_group(&worker)
+                .unwrap()
+                .instances_snapshot(),
+        );
+    }
+    let (status, json, text) = send(
+        &app,
+        "POST",
+        "/api/admin/workers/cpanel/enable?version=1.0.0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(json["recycled"], 2);
+    assert_eq!(json["prewarm"], "scheduled");
+    assert!(instances
+        .iter()
+        .all(|instance| instance.state() == edger_worker::WorkerState::Terminated));
+    assert!(state
+        .pool
+        .worker_stats()
+        .iter()
+        .all(|stat| stat.version == "1.0.0"));
+    for version in ["2.0.0", "3.0.0"] {
+        assert!(state.index.resolve_worker("cpanel", Some(version)).is_err());
+        assert_eq!(
+            fs::read_to_string(root.path().join(format!("cpanel@{version}/.edger-enabled")))
+                .unwrap(),
+            "enabled=false\n"
+        );
+    }
+    state.pool.shutdown().unwrap().await.unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_cpanel_enable_restores_the_floor_after_a_mutual_disable_drain() {
+    let _guard = MUTATION_PLANE_LOCK.lock().await;
+    let (_root, state, app) = cpanel_floor_state();
+    let disabled: Vec<_> = state
+        .index
+        .plan_worker_enabled("cpanel", Some("1.0.0"), true)
+        .unwrap()
+        .changes
+        .into_iter()
+        .filter(|change| !change.enabled)
+        .map(|change| {
+            state
+                .index
+                .resolve_worker("cpanel", Some(&change.version))
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(disabled.len(), 2);
+    for worker in &disabled {
+        state.pool.prewarm_worker(worker).await.unwrap();
+    }
+    let first = state
+        .pool
+        .worker_group(&disabled[0])
+        .unwrap()
+        .instances_snapshot()[0]
+        .clone();
+    let last = state
+        .pool
+        .worker_group(&disabled[1])
+        .unwrap()
+        .instances_snapshot()[0]
+        .clone();
+    let dispatch = first.dispatch_lock().lock_owned().await;
+    let enable = tokio::spawn({
+        let app = app.clone();
+        async move {
+            send(
+                &app,
+                "POST",
+                "/api/admin/workers/cpanel/enable?version=1.0.0",
+            )
+            .await
+        }
+    });
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    assert!(state.index.is_worker_enabled("cpanel", "1.0.0"));
+    assert!(
+        !enable.is_finished(),
+        "the first drain must wait for its dispatch"
+    );
+
+    // Re-enable the later staged version while the first drain is blocked.
+    // Its prewarm reuses the still-live process before the later drain starts.
+    let (status, json, text) = send(
+        &app,
+        "POST",
+        &format!(
+            "/api/admin/workers/cpanel/enable?version={}",
+            disabled[1].version
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(json["prewarm"], "scheduled");
+    for _ in 0..64 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(last.state(), edger_worker::WorkerState::Idle);
+    drop(dispatch);
+    let (status, json, text) = enable.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(json["recycled"], 2);
+    for _ in 0..1000 {
+        if state.pool.worker_stats().iter().any(|stat| {
+            stat.version == disabled[1].version && stat.state == edger_worker::WorkerState::Idle
+        }) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(state
+        .index
+        .is_worker_enabled("cpanel", &disabled[1].version));
+    assert!(
+        state
+            .pool
+            .worker_stats()
+            .iter()
+            .any(|stat| stat.version == disabled[1].version && stat.worker_id != last.id()),
+        "a concurrent enable must retain its floor after the later drain"
+    );
+    state.pool.shutdown().unwrap().await.unwrap();
+}
+
+#[tokio::test]
+async fn disable_drains_an_in_flight_dispatch_before_termination() {
+    let _guard = MUTATION_PLANE_LOCK.lock().await;
+    let root = tempfile::tempdir().unwrap();
+    write_worker(root.path(), "hello@1.0.0", "hello",
+        "name: hello\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nttl: 30s\nminProcesses: 1\nmaxProcesses: 1\n");
+    let (state, app) = state_for(root.path());
+    let worker = state.index.resolve_worker("hello", None).unwrap();
+    state.pool.prewarm_worker(&worker).await.unwrap();
+    let instance = state
+        .pool
+        .worker_group(&worker)
+        .unwrap()
+        .instances_snapshot()[0]
+        .clone();
+    let dispatch = instance.dispatch_lock().lock_owned().await;
+    let disable = tokio::spawn(async move { floor_toggle(&app, "disable", false).await });
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    assert!(state.index.resolve_worker("hello", None).is_err());
+    assert!(
+        !disable.is_finished(),
+        "disable must wait for the dispatch to drain"
+    );
+    assert_ne!(instance.state(), edger_worker::WorkerState::Terminated);
+    drop(dispatch);
+    assert_eq!(disable.await.unwrap()["recycled"], 1);
+    assert_eq!(instance.state(), edger_worker::WorkerState::Terminated);
+    state.pool.shutdown().unwrap().await.unwrap();
+}
+
+#[tokio::test]
+async fn repeated_disable_releases_a_process_left_on_an_already_disabled_version() {
+    let _guard = MUTATION_PLANE_LOCK.lock().await;
+    let root = tempfile::tempdir().unwrap();
+    write_worker(root.path(), "hello@1.0.0", "hello",
+        "name: hello\nversion: \"1.0.0\"\nentrypoint: index.ts\nkind: fetch\nttl: 30s\nminProcesses: 1\nmaxProcesses: 1\n");
+    let (state, app) = state_for(root.path());
+    let worker = state.index.resolve_worker("hello", None).unwrap();
+    state.pool.prewarm_worker(&worker).await.unwrap();
+    let instance = state
+        .pool
+        .worker_group(&worker)
+        .unwrap()
+        .instances_snapshot()[0]
+        .clone();
+    // Reproduce the pre-EDG-94 state: persisted disabled, process still live.
+    fs::write(
+        root.path().join("hello@1.0.0/.edger-enabled"),
+        "enabled=false\n",
+    )
+    .unwrap();
+    state
+        .index
+        .set_worker_enabled("hello", Some("1.0.0"), false)
+        .unwrap();
+    let json = floor_toggle(&app, "disable", false).await;
+    assert_eq!(json["recycled"], 1);
+    assert_eq!(instance.state(), edger_worker::WorkerState::Terminated);
+    assert!(state.pool.worker_stats().is_empty());
+    assert_eq!(floor_toggle(&app, "disable", false).await["recycled"], 0);
+    state.pool.shutdown().unwrap().await.unwrap();
+}
+
 /// File-level lock for the tests below that mutate workers or run a state
 /// export: the mutation plane (`MUTATION_PLANE` in `deploy.rs`, D36) is a
 /// process-global static, and these tests run in parallel in one test
