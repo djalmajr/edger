@@ -11,10 +11,10 @@
 #   kubectl delete namespace edger-ensaio   # ao fim (e os PVs local-path)
 #
 # Origem dos objetos:
-# - sqld.yaml aqui é uma cópia de ../sqld.yaml (produção) com o namespace
-#   `edger-ensaio` — o kustomize não aceita arquivo de resource fora do
-#   diretório do overlay (nem `..` nem symlink); a cópia é verificável
-#   pelo diff citado no cabeçalho dela;
+# - sqld.yaml aqui é uma cópia histórica de ../sqld.yaml (produção), com
+#   o Service Nau adicionado no namespace `edger-ensaio`; precisa ser
+#   regenerada antes de um ensaio completo, conforme seu cabeçalho. O
+#   kustomize não aceita resource fora do overlay (nem `..` nem symlink);
 # - ../backup é referenciado pelo diretório (aceito) e o `namespace:`
 #   deste kustomization sobrescreve o `edger` dos manifests;
 # - os patches abaixo trocam só as SQLD_URL dos backups para o FQDN dos
@@ -41,3 +41,7 @@ patches:
     target:
       kind: CronJob
       name: sqld-backup-pinar-prd
+  - path: patch-cronjob-nau-prd.yaml
+    target:
+      kind: CronJob
+      name: sqld-backup-nau-prd
