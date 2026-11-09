@@ -10,7 +10,7 @@ const CELL_DATA_OFFSET: usize = 38;
 // selects little-endian words; the stored checksum itself is big-endian.
 fn checksum(bytes: &[u8], mut state: [u32; 2]) -> [u32; 2] {
     assert_eq!(bytes.len() % 8, 0);
-    for pair in bytes.chunks_exact(8) {
+    for pair in bytes.as_chunks::<8>().0 {
         let first = u32::from_le_bytes(pair[..4].try_into().unwrap());
         let second = u32::from_le_bytes(pair[4..].try_into().unwrap());
         state[0] = state[0].wrapping_add(first).wrapping_add(state[1]);
