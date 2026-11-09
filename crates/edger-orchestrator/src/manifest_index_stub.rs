@@ -660,6 +660,18 @@ impl ManifestIndex {
             && principal_can_access_worker(principal, name)
     }
 
+    /// Current flag for one exact version, without cloning its configuration.
+    /// Missing versions and an unavailable index have no process floor.
+    pub fn is_worker_enabled(&self, name: &str, version: &str) -> bool {
+        self.inner.read().ok().is_some_and(|state| {
+            state.entries.get(name).is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|entry| entry.worker.version == version && entry.worker.config.enabled)
+            })
+        })
+    }
+
     pub fn worker_refs(&self) -> Vec<WorkerRef> {
         let Ok(state) = self.inner.read() else {
             return Vec::new();

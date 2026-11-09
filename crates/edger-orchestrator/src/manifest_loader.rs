@@ -286,6 +286,19 @@ pub(crate) fn persist_worker_enabled(
     enabled: bool,
     held_slot: Option<&crate::deploy::WorkerMutationSlot>,
 ) -> Result<AdminWorkerInfo, CoreError> {
+    persist_worker_enabled_with_changes(index, name, version, enabled, held_slot)
+        .map(|plan| plan.info)
+}
+
+/// Return the exact applied change set so process cleanup follows only a
+/// successful persistence, including cPanel's mutual disable.
+pub(crate) fn persist_worker_enabled_with_changes(
+    index: &ManifestIndex,
+    name: &str,
+    version: Option<&str>,
+    enabled: bool,
+    held_slot: Option<&crate::deploy::WorkerMutationSlot>,
+) -> Result<crate::manifest_index_stub::WorkerEnabledPlan, CoreError> {
     // One slot per indexed version, in stable order, BEFORE the plan: a
     // stale snapshot must never decide the claim set, the state export must
     // not capture a marker mid-write, and an install or delete of any
@@ -399,7 +412,7 @@ pub(crate) fn persist_worker_enabled(
             "enable/disable rolled back: the persisted toggle was not applied"
         );
     }
-    result
+    result.map(|info| crate::manifest_index_stub::WorkerEnabledPlan { info, ..plan })
 }
 
 /// Best-effort rollback of a cleared default-version pointer: temp file,

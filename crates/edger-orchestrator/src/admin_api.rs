@@ -2777,9 +2777,42 @@ async fn worker_mutation(
         // in-memory flag moves; a failed persist leaves memory unchanged and
         // errors here. MCP `enable_worker`/`disable_worker` reach the same
         // route, so they persist through this path too.
-        persist_worker_enabled(&state.index, &name, version.as_deref(), enabled, None)
+        crate::manifest_loader::persist_worker_enabled_with_changes(
+            &state.index,
+            &name,
+            version.as_deref(),
+            enabled,
+            None,
+        )
     }) {
-        Ok(worker) => {
+        Ok(plan) => {
+            let worker = plan.info;
+            // Persistence succeeded: release every version this operation
+            // disabled, including mutual disables from a cPanel enable.
+            let mut disabled_versions: Vec<_> = plan
+                .changes
+                .into_iter()
+                .filter(|change| !change.enabled)
+                .map(|change| change.version)
+                .collect();
+            // Repeating disable also releases a process left by an older
+            // runtime, even when the flag was already false.
+            if !enabled && !disabled_versions.contains(&worker.version) {
+                disabled_versions.push(worker.version.clone());
+            }
+            let mut recycled = 0;
+            for version in disabled_versions {
+                recycled += state
+                    .pool
+                    .recycle_worker(&worker.name, Some(&version))
+                    .await;
+                // An overlapping enable may have won while another version
+                // drained. Restore its floor only if it is currently enabled.
+                // The target's prewarm is scheduled once below.
+                if version != worker.version {
+                    schedule_min_process_prewarm(&state, &worker.name, &version);
+                }
+            }
             // (EDG-12) enable prewarms the min-processes floor in the
             // background; disable never prewarms (the version is inactive,
             // so the helper reports `not_configured`). The response never
@@ -2793,6 +2826,7 @@ async fn worker_mutation(
                 ),
                 "status": worker.status,
                 "prewarm": prewarm,
+                "recycled": recycled,
             }))
             .into_response()
         }

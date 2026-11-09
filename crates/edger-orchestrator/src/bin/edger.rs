@@ -544,6 +544,10 @@ async fn main() -> anyhow::Result<()> {
         Some(lifecycle_sender),
         abandon_drain,
     );
+    let pool_index = index.clone();
+    pool.set_enabled_predicate(move |worker| {
+        pool_index.is_worker_enabled(&worker.name, &worker.version)
+    });
     server.mark_ready(pool.clone());
     // Run each worker's release command (migrations) once per version before serving.
     run_pending_releases_with_events(&index, &server.operational_events()).await?;
