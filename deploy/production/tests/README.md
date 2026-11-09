@@ -100,4 +100,3 @@ This experiment is local and does not prove Cloudflare Worker or Transform
 Rule behavior, Pseudo IPv4 mode, origin TLS, DNS, or a real EdgeR request. The
 Cloudflare/Worker/Transform/PseudoIPv4 checks remain trust-boundary gates
 before any production cutover.
-

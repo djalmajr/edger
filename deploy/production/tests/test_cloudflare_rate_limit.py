@@ -860,4 +860,3 @@ if __name__ == "__main__":
     except (HarnessError, OSError, subprocess.SubprocessError) as exc:
         print(f"INF-34 Traefik integration: FAIL [env/contract] {exc}", file=sys.stderr)
         raise SystemExit(1)
-
