@@ -1,20 +1,18 @@
-# COPIA de ../sqld.yaml (produção) para o namespace descartável do
-# ensaio: os mesmos objetos (PVC sqld-data, Deployment sqld, Services
-# dos bancos, NetworkPolicy) com o namespace `edger-ensaio` em vez de
-# `edger` — nada mais muda. O kustomize não aceita arquivo de resource
-# fora do diretório do overlay, então a plataforma não "aponta" para o
-# arquivo de produção; a cópia é verificável com:
+# CÓPIA HISTÓRICA de ../sqld.yaml (produção) para `edger-ensaio`, com o
+# Service `nau-prd` acrescentado para o backup isolado do Nau. Não atesta
+# paridade atual com produção: mantém o listener admin em loopback e
+# ainda não inclui os Services e a política de admin do banco gerenciado.
+# O kustomize não aceita arquivo de resource fora do overlay; o diff
+# abaixo ajuda a revisar a cópia, desconsiderando este cabeçalho:
 #
 #   diff <(sed 's/edger-ensaio/edger/g' rehearsal/sqld.yaml) sqld.yaml
 #
-# Se ../sqld.yaml mudar, regenere a cópia (substituir o namespace) antes
-# do ensaio — o ensaio só é válido com os manifests idênticos ao corte.
-# A API de admin continua em 127.0.0.1:9090 do pod (Secret `sqld-admin`),
-# como em produção.
-# --- conteúdo abaixo: cópia de ../sqld.yaml (produção) ---
+# Antes de um ensaio completo, regenere e revise a cópia (substituir o
+# namespace) — o ensaio só é válido com os manifests idênticos ao corte.
+# --- conteúdo abaixo: cópia histórica com o Service Nau ---
 #
-# Um banco (namespace do libsql) por app e ambiente: `cinzel` e
-# `pinar-prd`, cada um com a sua `jwt_key` (criada via API
+# Um banco (namespace do libsql) por app e ambiente: `cinzel`,
+# `pinar-prd` e `nau-prd`, cada um com a sua `jwt_key` (criada via API
 # de admin, ver README.md). O namespace `default` nasce vazio — o banco
 # atual do Cinzel vive no PVC antigo `cinzel-sqld-data` e entra no banco
 # `cinzel` pelo restore da janela de corte, sem mover dados agora. Depois
@@ -157,6 +155,19 @@ apiVersion: v1
 kind: Service
 metadata:
   name: pinar-prd
+  namespace: edger-ensaio
+spec:
+  selector:
+    app.kubernetes.io/name: sqld
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nau-prd
   namespace: edger-ensaio
 spec:
   selector:

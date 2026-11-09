@@ -1,0 +1,15 @@
+# URL do backup do banco `nau-prd` no namespace do ensaio.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sqld-backup-nau-prd
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: backup
+              env:
+                - name: SQLD_URL
+                  value: http://nau-prd.edger-ensaio.svc.cluster.local:8080
