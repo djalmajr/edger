@@ -10,7 +10,9 @@ All notable changes to EdgeR will be documented here.
 
 - The emergency `EDGER_JS_RUNTIME=bridge` fallback refuses workers declaring `sse:` before guest execution with `SSE_RUNTIME_UNSUPPORTED` (HTTP 500 `WORKER_ERROR`), without subscribing, publishing or changing the broker; workers without `sse:`, persistent Deno and WASM are unchanged.
 
-Toward 0.3.2. Release candidates: `v0.3.2-rc.31` (Go/WASM HTTP runtime and
+Toward 0.3.2. Release candidates: `v0.3.2-rc.32` (disable releases worker
+processes and respects live enabled state, bundled SQLite 3.54.1 security
+patch); `v0.3.2-rc.31` (Go/WASM HTTP runtime and
 WASM fullstack, managed SQLD database per app with fast quota-bound
 backups, host-held SSE, bounded HTTP drain, chart `managedDatabase` and
 45 s Pod grace, process-wide WASM compilation cache);
@@ -1043,6 +1045,23 @@ zero-downtime host switch, 21/21 probes 200 across four promotes).
   `OTEL_*` variables. Upstream change kept: the OTLP exporters now retry a
   failed export up to 3 times with backoff (off the request path, in the
   batch processor).
+
+## [0.3.2-rc.32]
+
+- Disabling a worker version (EDG-94, #183): HTTP and MCP toggles persist
+  the state first, then release its processes through the same bounded
+  drain as explicit recycle; the response adds the `recycled` count. A
+  persistence failure closes no processes. A cPanel enable also releases
+  every version it mutually disables.
+- Process floors (EDG-94, #183): live enabled checks prevent disabled
+  versions from being kept by `minProcesses`, refilled or recreated by
+  stale prewarm. Enable retains the existing background floor prewarm.
+- `rusqlite` 0.41.1 and `libsqlite3-sys` 0.39.1 bundle SQLite 3.54.1,
+  fixing the WAL page disclosure in RUSTSEC-2026-0459 without an advisory
+  ignore (#184).
+- Production manifests (#182): synchronize the checked-in rc.31 managed
+  database configuration, external ledger PVC, `sqld` Services and ingress
+  policy.
 
 ## [0.3.2-rc.31]
 
