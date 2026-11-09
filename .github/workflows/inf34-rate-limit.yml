@@ -1,0 +1,44 @@
+name: INF-34 EdgeR rate limit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/production/control-plane.yaml"
+      - "deploy/production/tests/**"
+      - ".github/workflows/inf34-rate-limit.yml"
+  pull_request:
+    paths:
+      - "deploy/production/control-plane.yaml"
+      - "deploy/production/tests/**"
+      - ".github/workflows/inf34-rate-limit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  rate-limit:
+    name: EdgeR rate-limit harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Record the tested revision
+        run: git rev-parse HEAD
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install the pinned harness dependency
+        run: python -m pip install --disable-pip-version-check --no-warn-script-location PyYAML==6.0.3
+
+      - name: Pull the canonical Traefik image
+        run: docker pull traefik@sha256:321153f6f732f912cf5c6f0597fe38743fc7895d482d7d8804a479ae0403e151
+
+      - name: Run the rate-limit contract on this head
+        run: python3 deploy/production/tests/test_cloudflare_rate_limit.py --manifest deploy/production/control-plane.yaml
