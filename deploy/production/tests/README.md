@@ -39,7 +39,12 @@ The caller-supplied SHA-256 must match the file before Docker is contacted;
 the harness does not treat a differently named policy as EdgeR policy.
 
 The harness refuses a missing or mismatched image. Its only Docker config
-mount is a private temporary directory, mounted read-only. It creates one
+mount is a private temporary directory, mounted read-only. On Linux,
+`TemporaryDirectory` starts at mode `0700`, which can prevent a non-root
+container from traversing the bind mount; the harness changes only its own
+generated fixture directory to `0755` and its generated files to `0644` before
+the read-only mount. It runs the pinned image explicitly as UID `65532` and
+checks that identity before start. It creates one
 labelled temporary bridge network, identifies its gateway as the trusted test
 peer, and publishes the container only on an ephemeral `127.0.0.1` port. It
 uses `docker exec` with the pinned image's existing `wget` for the container-

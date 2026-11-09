@@ -321,6 +321,11 @@ def write_configs(
     route_middlewares: list[str],
     allowlist: dict[str, Any],
 ) -> None:
+    # Linux Docker may traverse a bind mount as a non-root UID; Python's
+    # TemporaryDirectory is 0700, so make only this generated fixture
+    # traversable before mounting it read-only. The files stay owner-writable
+    # and readable by the UID used by the pinned container.
+    directory.chmod(0o755)
     static = {
         "entryPoints": {"web": {"address": f":{CONTAINER_PORT}"}},
         "ping": {"manualRouting": True},
@@ -351,8 +356,12 @@ def write_configs(
         }
     }
     yaml = require_yaml()
-    (directory / "traefik.yml").write_text(yaml.safe_dump(static, sort_keys=False), encoding="utf-8")
-    (directory / "dynamic.yaml").write_text(yaml.safe_dump(dynamic, sort_keys=False), encoding="utf-8")
+    static_path = directory / "traefik.yml"
+    dynamic_path = directory / "dynamic.yaml"
+    static_path.write_text(yaml.safe_dump(static, sort_keys=False), encoding="utf-8")
+    dynamic_path.write_text(yaml.safe_dump(dynamic, sort_keys=False), encoding="utf-8")
+    static_path.chmod(0o644)
+    dynamic_path.chmod(0o644)
 
 
 def docker_inspect(container: str) -> dict[str, Any]:
@@ -573,6 +582,8 @@ class OwnedContainer:
                 f"{OWNER_LABEL}={self.token}",
                 "--label",
                 f"{MANIFEST_LABEL}={self.manifest_sha256}",
+                "--user",
+                "65532",
                 "--read-only",
                 "--security-opt",
                 "no-new-privileges:true",
@@ -596,6 +607,8 @@ class OwnedContainer:
         labels = (metadata.get("Config") or {}).get("Labels") or {}
         if labels.get(OWNER_LABEL) != self.token or labels.get(MANIFEST_LABEL) != self.manifest_sha256:
             raise HarnessError("owned container label proof failed before start")
+        if (metadata.get("Config") or {}).get("User") != "65532":
+            raise HarnessError("owned container must run as UID 65532")
         started = run_command(["docker", "start", self.container_id], timeout=30)
         if started.returncode != 0:
             raise HarnessError(f"docker start failed: {started.stderr.strip()}")
