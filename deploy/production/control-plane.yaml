@@ -28,10 +28,11 @@
 # sozinho, por exemplo, também pegaria `/apifoo`, que no EdgeR é rota de
 # worker, não do control plane.
 #
-# O rate limit limita cada IP de cliente (o Service do Traefik roda com
-# externalTrafficPolicy=Local, então a origem é o endereço real). Atrasa
-# o chute de chaves e floods; as chaves são de 256 bits, então isso é
-# defesa em profundidade, não o controle de acesso.
+# O middleware legado abaixo limita o peer TCP e permanece somente como alvo de
+# rollback. A rota usa o middleware Cloudflare abaixo: depois do allowlist do
+# peer, ele separa a quota por visitante em `CF-Connecting-IP`. Os dois objetos
+# mantêm a reversão explícita sem confundir identidade de quota com controle de
+# acesso; ambos continuam sendo defesa em profundidade contra chaves e floods.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -42,6 +43,22 @@ spec:
     average: 20
     period: 1s
     burst: 100
+---
+# The legacy middleware remains available for rollback; the Cloudflare-aware
+# object gives the protected route a visitor identity without changing the
+# old middleware's semantics for any other consumer.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: edger-admin-ratelimit-cloudflare
+  namespace: edger
+spec:
+  rateLimit:
+    average: 20
+    period: 1s
+    burst: 100
+    sourceCriterion:
+      requestHeaderName: CF-Connecting-IP
 ---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -55,7 +72,8 @@ spec:
       # o Traefik do k3s não aceita quebra de linha na regra; mantenha numa linha
       match: Host(`edger.djalmajr.dev`) && (Path(`/`) || Path(`/health`) || Path(`/healthz`) || Path(`/livez`) || Path(`/ready`) || Path(`/readyz`) || Path(`/metrics`) || Path(`/metrics/stats`) || Path(`/api`) || PathPrefix(`/api/`) || PathPrefix(`/.well-known`) || Path(`/cpanel`) || PathPrefix(`/cpanel/`) || Path(`/webide`) || PathPrefix(`/webide/`))
       middlewares:
-        - name: edger-admin-ratelimit
+        - name: cloudflare-only
+        - name: edger-admin-ratelimit-cloudflare
       services:
         - name: edger
           port: 3000
