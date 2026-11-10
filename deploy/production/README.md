@@ -54,6 +54,7 @@ corte, num PR deles (revisão do Cinzel, item 8).
 | Script de backup | ConfigMap (gerado) | `sqld-backup-script-<hash>` | `backup/backup.sh` + `backup/kustomization.yaml` |
 | Backup do banco `cinzel` | CronJob | `sqld-backup-cinzel` | `backup/cronjob-cinzel.yaml` |
 | Backup do banco `pinar-prd` | CronJob | `sqld-backup-pinar-prd` | `backup/cronjob-pinar-prd.yaml` |
+| Backup do banco `nau-prd` | CronJob | `sqld-backup-nau-prd` | `backup/cronjob-nau-prd.yaml` |
 | Rate limit do admin | Middleware (traefik.io/v1alpha1) | `edger-admin-ratelimit` | `control-plane.yaml` |
 | Rota do control plane | IngressRoute (traefik.io/v1alpha1) | `edger` | `control-plane.yaml` |
 | Certificado do control plane | Certificate (cert-manager.io/v1) | `edger-tls` | `control-plane.yaml` |
@@ -256,14 +257,19 @@ Detalhes:
   primeiro rótulo do Host; o nome curto `cinzel` (sem ponto) cairia no
   namespace `default` e o backup dumperia o banco errado.
 - **Horários escalonados** (03:30 cinzel — slot atual do Cinzel; 03:40
-  pinar-prd, UTC): o PVC `sqld-backups` é
+  pinar-prd; 03:50 nau-prd, UTC): o PVC `sqld-backups` é
   compartilhado e o local-path é single writer por nó; o escalonado
-  evita dois jobs escrevendo no mesmo volume ao mesmo tempo.
+  reduz a sobreposição dos jobs; `Forbid` vale por CronJob e não impede
+  que bancos diferentes escrevam ao mesmo tempo se um dump demorar.
 - **Retenção**: 14 dumps por banco (o plano fixa 14 para o Cinzel; os
   Pinar seguem o mesmo valor por coerência — **confirmar com o Pinar
   antes do corte**).
 - **Sentinela**: `__migrations` para o Cinzel (o restore do Cinzel confere
   a tabela; o backup reconfere no dump); vazio para os Pinar.
+- **Nau**: `SENTINEL` vazio enquanto a tabela de migração não for
+  fornecida. O job valida gzip íntegro, SQL não vazio e `COMMIT;` final;
+  isso não atesta restauração nem o schema do Nau. Configura 14 dumps;
+  confirmar retenção e capacidade do PVC antes de ativá-lo.
 - O script (`backup/backup.sh`, adaptado do do Cinzel) valida o dump
   (gzip íntegro, não vazio, `COMMIT;` final, sentinela quando
   configurada) e mantém a retenção por prefixo. O seletor de rede do
@@ -304,8 +310,9 @@ Cinzel; acesso ao nó (VPS).
    ```sh
    kubectl apply -k deploy/production/rehearsal
    ```
-   Antes: se `sqld.yaml`/`backup/` mudaram desde a cópia, regenere
-   `rehearsal/sqld.yaml` (diff citado no cabeçalho do arquivo).
+   Antes de um ensaio completo, regenere e revise `rehearsal/sqld.yaml`
+   (diff citado no cabeçalho): a cópia histórica recebeu apenas o Service
+   Nau e ainda difere da configuração atual de banco gerenciado/admin.
 2. Criar os Secrets em `edger-ensaio` com os **mesmos nomes** da
    produção e **todos** com valores descartáveis: `edger-root` — uma
    root key **nova, gerada na hora** (NUNCA a real — a real autentica
@@ -321,6 +328,10 @@ Cinzel; acesso ao nó (VPS).
    ```
    Os backups dos bancos Pinar não rodam de fato no ensaio, mas os
    Secrets precisam existir (o CronJob monta o `secretKeyRef`).
+   O backup do Nau também exige `sqld-backup-nau-prd` (chave `token`)
+   com token de leitura descartável, válido apenas para o banco `nau-prd`
+   criado no sqld do ensaio. O overlay troca a URL para o Service local;
+   nunca copie o token de produção para `edger-ensaio`.
 3. Instalar o EdgeR no ensaio (mesmo chart e versão do corte):
    ```sh
    helm upgrade --install edger oci://ghcr.io/djalmajr/charts/edger \

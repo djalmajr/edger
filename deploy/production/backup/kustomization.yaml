@@ -14,6 +14,7 @@ resources:
   - pvc.yaml
   - cronjob-cinzel.yaml
   - cronjob-pinar-prd.yaml
+  - cronjob-nau-prd.yaml
 configMapGenerator:
   - name: sqld-backup-script
     files:

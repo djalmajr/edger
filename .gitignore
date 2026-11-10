@@ -46,7 +46,12 @@ edger-bin
 # Personal soho team choices (roles, kinds, models, effort)
 /.agents/soho.conf
 /.agents/herdr-soho.conf
-/.agents/herdr-roles/
+/.agents/plans/
+
+# Local diagnostic captures include identities and session metadata.
+/.agents/evidence/goal-issues-20261105/
+/.agents/evidence/pi-anthropic-sonnet-5-5-check-20261105.jsonl
+/.agents/evidence/edg61-memory-investigation-20261105.md
 
 # Legacy framework test cache (new runs use a system tempdir)
 workers/framework-tests/.edger-test-deno-cache/
